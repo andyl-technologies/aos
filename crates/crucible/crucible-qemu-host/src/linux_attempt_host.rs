@@ -131,6 +131,15 @@ impl LinuxQemuAttemptHostConfig {
     pub const fn maximum_inodes(&self) -> u64 {
         self.storage.maximum_inodes()
     }
+
+    /// Returns how many attempt host owners may exist at once.
+    ///
+    /// Every live attempt and every retained source world holds one storage
+    /// project ID until it is reaped.
+    #[must_use]
+    pub const fn project_id_count(&self) -> u32 {
+        self.storage.project_id_count()
+    }
 }
 
 /// Exclusive allocator for paired Linux QEMU process and storage owners.

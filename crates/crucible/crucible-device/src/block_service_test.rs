@@ -34,7 +34,7 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.block-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'6');
+    assert_eq!(unsupported_version[version_index], b'7');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         BlockSnapshot::from_canonical_bytes(&unsupported_version),
@@ -120,7 +120,11 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
     assert_eq!(original.overlay().page_count(), 0);
     assert_eq!(original.next_exact_local_event(), Some(10_000));
     let snapshot = original.snapshot();
-    let mut restored = ok(BlockDevice::restore(&snapshot, ramp_base(PAGE_SIZE), None));
+    let mut restored = ok(BlockDevice::restore(
+        &snapshot,
+        ramp_base(PAGE_SIZE),
+        &mem(),
+    ));
 
     assert_eq!(ok(original.advance_to(9_999)), 0);
     assert_eq!(original.overlay().page_count(), 0);
@@ -345,7 +349,11 @@ fn retained_flush_release_rolls_back_when_completion_order_is_exhausted() {
 
     let mut exhausted = original.snapshot();
     exhausted.core.next_seq = u32::MAX;
-    let mut restored = ok(BlockDevice::restore(&exhausted, ramp_base(PAGE_SIZE), None));
+    let mut restored = ok(BlockDevice::restore(
+        &exhausted,
+        ramp_base(PAGE_SIZE),
+        &mem(),
+    ));
     let before = restored.snapshot();
     assert!(matches!(
         restored.release_storage_completion(
@@ -520,8 +528,8 @@ fn cross_device_misdirection_commits_both_devices_or_neither() {
         }),
     );
     ok(source.advance_to(request_icount));
-    assert_ne!(&source.materialize()[0..512], &[0x5a; 512]);
-    assert_eq!(&destination.materialize()[512..1024], &[0x5a; 512]);
+    assert_ne!(&image(&source)[0..512], &[0x5a; 512]);
+    assert_eq!(&image(&destination)[512..1024], &[0x5a; 512]);
     let outcomes = ok(destination.drain_storage_outcomes());
     assert!(outcomes.iter().any(|outcome| matches!(
         outcome,

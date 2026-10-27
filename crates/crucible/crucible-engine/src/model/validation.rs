@@ -729,7 +729,7 @@ pub(super) fn validate_property_node(
 }
 
 pub(super) fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
-    regex::bytes::Regex::new(&regex.pattern)
+    crate::ConsoleAutomaton::compile(&regex.pattern)
         .map(|_| ())
         .map_err(|source| EngineError::PropertyPredicateInvalidRegex {
             pattern: regex.pattern.clone(),

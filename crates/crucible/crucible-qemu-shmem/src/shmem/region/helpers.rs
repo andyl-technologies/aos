@@ -269,6 +269,14 @@ pub(super) fn write_region_header_bytes(
 }
 
 pub(super) fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot) {
+    // Only a completed snapshot reaches serialization. A fresh backing starts
+    // with no host publisher; copying a live/dead claim is rejected beforehand.
+    write_u32_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET,
+        0,
+    );
+
     write_u64_at(
         bytes,
         NODE_SLOT_CURRENT_ICOUNT_OFFSET,

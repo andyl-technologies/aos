@@ -3,12 +3,21 @@
 use super::*;
 
 mod append;
+mod console_folds;
 mod host_oracle;
+mod point_index;
+
+pub(crate) use append::AppendedEntryCheck;
+pub(crate) use console_folds::{ConsoleMatchFolds, ConsoleMatchStateWire};
+pub use console_folds::{
+    UndeclaredConsoleMatcher, event_graph_console_patterns, predicate_console_patterns,
+};
 
 pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
 #[cfg(any(debug_assertions, feature = "test-support"))]
 pub(crate) use host_oracle::unchecked_host_assertion_oracle_for_test;
 pub use host_oracle::*;
+pub(crate) use point_index::{PointObservationIndex, coverage_seen_before, observable_events_at};
 
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -44,6 +53,34 @@ impl ObservableEvent {
                 bytes: bytes.into(),
             },
         }
+    }
+
+    /// Builds one native byte at an explicitly projected evaluation coordinate.
+    ///
+    /// The origin keeps its original emission time. This coordinate is supplied
+    /// by the original scheduler admission owner, never derived from a socket
+    /// read or an implicit backend poll floor. Construction validates shape,
+    /// not native operation custody or deterministic evaluation projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::NativeConsoleOriginError`] for a malformed origin.
+    pub fn native_console_byte(
+        evaluation_at: VirtualTime,
+        node: NodeId,
+        origin: crate::NativeConsoleByteOrigin,
+    ) -> Result<Self, crate::NativeConsoleOriginError> {
+        origin.validate()?;
+        Ok(Self {
+            at: evaluation_at,
+            payload: ObservableEventPayload::NativeConsoleByte { node, origin },
+        })
+    }
+
+    /// Returns the byte view used by console conditions without erasing origin.
+    #[must_use]
+    pub fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        self.payload.console_bytes()
     }
 
     /// Builds a TCG-exec basic-block coverage observation.
@@ -260,7 +297,10 @@ impl ObservableEvent {
         }
     }
 
-    /// Returns the deterministic virtual-time coordinate of the observation.
+    /// Returns the condition-evaluation coordinate of the observation.
+    ///
+    /// A native console byte retains its distinct original emission coordinate
+    /// in the logical origin; this value is its explicit scheduler placement.
     #[must_use]
     pub fn at(&self) -> VirtualTime {
         self.at
@@ -270,6 +310,7 @@ impl ObservableEvent {
     pub(crate) fn backend_node(&self) -> Option<&NodeId> {
         match &self.payload {
             ObservableEventPayload::ConsoleOutput { node, .. }
+            | ObservableEventPayload::NativeConsoleByte { node, .. }
             | ObservableEventPayload::CoverageBlock { node, .. }
             | ObservableEventPayload::CoverageMarker { node, .. }
             | ObservableEventPayload::MemorySample { node, .. }
@@ -421,6 +462,17 @@ pub enum ObservableEventPayload {
         /// Captured console bytes.
         bytes: Vec<u8>,
     },
+    /// One authenticated native architectural byte became evaluable.
+    ///
+    /// Its complete logical origin is distinct from the event's explicitly
+    /// projected condition-evaluation coordinate. Physical transport and
+    /// accepted clamp identities are not canonical payload fields.
+    NativeConsoleByte {
+        /// Stable logical node owning the admitted stream.
+        node: NodeId,
+        /// Original logical byte origin, including its unchanged raw prefix.
+        origin: crate::NativeConsoleByteOrigin,
+    },
     /// A TCG-exec basic-block coverage observation became visible.
     CoverageBlock {
         /// Exact guest instruction count at which the block executed.
@@ -542,12 +594,25 @@ pub enum ObservableEventPayload {
 }
 
 impl ObservableEventPayload {
+    /// Returns the node and bytes of a console payload without erasing origin.
+    pub(crate) fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        match self {
+            Self::ConsoleOutput { node, bytes } => Some((node, bytes)),
+            Self::NativeConsoleByte { node, origin } => {
+                Some((node, std::slice::from_ref(&origin.byte)))
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the required black-box surface category for this payload, if any.
     #[must_use]
     pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
         match self {
             Self::NetworkDelivered { .. } => Some(BlackBoxObservationKind::NetworkTraffic),
-            Self::ConsoleOutput { .. } => Some(BlackBoxObservationKind::ConsoleSerialOutput),
+            Self::ConsoleOutput { .. } | Self::NativeConsoleByte { .. } => {
+                Some(BlackBoxObservationKind::ConsoleSerialOutput)
+            }
             Self::CoverageBlock { .. } => Some(BlackBoxObservationKind::BasicBlockCoverage),
             Self::MemorySample { .. } => Some(BlackBoxObservationKind::ArchitecturalStateSample),
             Self::IoCompletion {
@@ -904,9 +969,45 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
         BTreeMap::new()
     }
 
+    /// Answers `console_match(node, pattern)` from a declared streaming matcher.
+    ///
+    /// Implementations never rescan console history. An implementation whose
+    /// matcher is undeclared answers `false` and records the miss so its
+    /// caller fails closed.
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;
+
+    /// Returns the observable events at the evaluation point's virtual time.
+    ///
+    /// Evaluators backed by a condition prefix answer from its point index,
+    /// so the cost does not grow with the attempt's history.
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        let at = self.evaluation_point().at();
+        Box::new(
+            self.observable_events()
+                .iter()
+                .filter(move |event| event.at() == at),
+        )
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before the
+    /// evaluation point's virtual time.
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        let at = self.evaluation_point().at();
+        self.observable_events().iter().any(|event| {
+            event.at() < at
+                && coverage_event_matches(
+                    event.payload(),
+                    node,
+                    ResolvedCodePoint::guest_address(address),
+                )
+        })
+    }
+
     /// Returns observable event-log entries visible at the evaluation point.
-    fn observable_events(&self) -> &[ObservableEvent] {
-        &[]
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
+        static NONE: std::sync::LazyLock<crate::History<ObservableEvent>> =
+            std::sync::LazyLock::new(crate::History::new);
+        &NONE
     }
 
     /// Returns scheduler-owned quiescence evidence for the evaluation point.
@@ -1074,14 +1175,16 @@ pub struct ConditionEventLogPrefix {
     pub(super) point: EventEvaluationPoint,
     pub(super) base_sequence: u64,
     pub(super) event_log_offset: EventLogOffset,
-    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
-    pub(super) scheduler_entries: Vec<SchedulerEventLogEntry>,
+    pub(super) prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
+    pub(super) scheduler_entries: crate::History<SchedulerEventLogEntry>,
     last_black_box_observation: Option<(u64, VirtualTime)>,
-    pub(super) observable_events: Vec<ObservableEvent>,
+    pub(super) observable_events: crate::History<ObservableEvent>,
+    pub(super) point_events: PointObservationIndex,
     pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
     pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
-    pub(super) ordering_facts: Vec<ObservedOrderingFact>,
+    pub(super) ordering_facts: crate::History<ObservedOrderingFact>,
+    pub(super) console_folds: ConsoleMatchFolds,
 }
 
 impl ConditionEventLogPrefix {
@@ -1092,14 +1195,16 @@ impl ConditionEventLogPrefix {
             point: EventEvaluationPoint::genesis(),
             base_sequence: 0,
             event_log_offset: EventLogOffset::default(),
-            prefix_offsets: BTreeMap::new(),
-            scheduler_entries: Vec::new(),
+            prefix_offsets: std::sync::Arc::default(),
+            scheduler_entries: crate::History::new(),
             last_black_box_observation: None,
-            observable_events: Vec::new(),
+            observable_events: crate::History::new(),
+            point_events: PointObservationIndex::default(),
             black_box_observation_kinds: BTreeSet::new(),
             event_firings: BTreeMap::new(),
             timer_fires: BTreeMap::new(),
-            ordering_facts: Vec::new(),
+            ordering_facts: crate::History::new(),
+            console_folds: ConsoleMatchFolds::default(),
         }
     }
 
@@ -1224,7 +1329,7 @@ impl ConditionEventLogPrefix {
 
     pub(crate) fn with_prefix_offsets(
         mut self,
-        prefix_offsets: BTreeMap<u64, EventLogOffset>,
+        prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
     ) -> Self {
         self.prefix_offsets = prefix_offsets;
         self
@@ -1233,6 +1338,91 @@ impl ConditionEventLogPrefix {
     pub(crate) fn with_point(mut self, point: EventEvaluationPoint) -> Self {
         self.point = point;
         self
+    }
+
+    /// Rebuilds the facts visible at `point`, which precedes this prefix's end.
+    ///
+    /// The result holds the longest run of leading entries at or before
+    /// `point` and is evaluated at `point`. When `observed` is an earlier
+    /// prefix of this same log whose entries all precede `point`, only the
+    /// entries after it are appended to a copy of it (RFC-0020 CMEAS-15);
+    /// otherwise the facts are rebuilt from the retained history.
+    ///
+    /// Returns `None` when a recorded log has no offset for the rebuilt length.
+    pub(crate) fn with_facts_through_point_after(
+        &self,
+        observed: Option<&Self>,
+        point: EventEvaluationPoint,
+    ) -> Option<Self> {
+        match observed.and_then(|observed| self.observed_prefix_through(observed, point)) {
+            Some(prefix) => prefix,
+            None => self.with_facts_through_point(point),
+        }
+    }
+
+    /// Extends `observed` with this prefix's entries through `point`.
+    ///
+    /// The outer `None` means `observed` cannot serve as the base: it is not
+    /// an earlier prefix of this log, it holds an entry after `point`, or it
+    /// declares different console matchers. The inner value is the rebuilt
+    /// prefix, as for [`Self::with_facts_through_point`].
+    fn observed_prefix_through(
+        &self,
+        observed: &Self,
+        point: EventEvaluationPoint,
+    ) -> Option<Option<Self>> {
+        let through = point.at().ticks;
+        let start = observed.scheduler_entries.len();
+        let extends = observed.base_sequence == self.base_sequence
+            && start <= self.scheduler_entries.len()
+            && start.checked_sub(1).is_none_or(|last| {
+                self.scheduler_entries.get(last) == observed.scheduler_entries.last()
+            })
+            && observed
+                .scheduler_entries
+                .last()
+                .is_none_or(|last| last.at().ticks <= through)
+            && observed
+                .console_folds
+                .declares_same_patterns(&self.console_folds);
+        if !extends {
+            return None;
+        }
+
+        // Every observed entry is at or before `point`, so the leading run of
+        // entries through `point` is the observed prefix plus the entries
+        // after it up to the first one past `point`.
+        let tail = self
+            .scheduler_entries
+            .iter_from(start)
+            .take_while(|entry| entry.at().ticks <= through)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut prefix = observed.clone();
+        if !tail.is_empty() {
+            prefix.append_scheduler_entries(tail).ok()?;
+        }
+
+        // Match the offsets a whole rebuild assigns: the recorded offset for
+        // the rebuilt length, else the synthetic offset of a rebuilt prefix.
+        let length = u64::try_from(prefix.scheduler_entries.len()).ok()?;
+        let prefix_events = self.base_sequence.checked_add(length)?;
+        let offset = if !self.prefix_offsets.is_empty() {
+            match self.prefix_offsets.get(&prefix_events) {
+                Some(offset) => *offset,
+                None => return Some(None),
+            }
+        } else if length == 0 {
+            EventLogOffset::default()
+        } else {
+            EventLogOffset::new(ContentHash::default(), 0, prefix_events)
+        };
+        Some(Some(
+            prefix
+                .with_event_log_offset(offset)
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
+                .with_point(point),
+        ))
     }
 
     pub(crate) fn with_facts_through_point(&self, point: EventEvaluationPoint) -> Option<Self> {
@@ -1250,22 +1440,24 @@ impl ConditionEventLogPrefix {
                 let prefix_events = self.base_sequence.checked_add(prefix_len)?;
                 prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
             }
+            prefix.console_folds = self.console_folds.refold(std::iter::empty());
             return Some(
                 prefix
                     .with_base_sequence(self.base_sequence)
-                    .with_prefix_offsets(self.prefix_offsets.clone())
+                    .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
                     .with_point(point),
             );
         }
         let prefix_events = self.base_sequence.checked_add(prefix_len)?;
         let mut prefix =
             Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
+        prefix.console_folds = self.console_folds.refold(prefix.scheduler_entries.iter());
         if !self.prefix_offsets.is_empty() {
             prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
         }
         Some(
             prefix
-                .with_prefix_offsets(self.prefix_offsets.clone())
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
                 .with_point(point),
         )
     }
@@ -1284,8 +1476,15 @@ impl ConditionEventLogPrefix {
 
     /// Returns observable event-log entries visible at [`Self::point`].
     #[must_use]
-    pub fn observable_events(&self) -> &[ObservableEvent] {
+    pub fn observable_events(&self) -> &crate::History<ObservableEvent> {
         &self.observable_events
+    }
+
+    /// Returns the observable events at [`Self::point`]'s virtual time.
+    pub(crate) fn observable_events_at_point(
+        &self,
+    ) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        observable_events_at(&self.point_events, &self.observable_events, self.point.at())
     }
 
     /// Returns the required black-box observation categories present in this prefix.
@@ -1296,7 +1495,7 @@ impl ConditionEventLogPrefix {
 
     /// Returns cross-node ordering facts visible at [`Self::point`].
     #[must_use]
-    pub fn ordering_facts(&self) -> &[ObservedOrderingFact] {
+    pub fn ordering_facts(&self) -> &crate::History<ObservedOrderingFact> {
         &self.ordering_facts
     }
 
@@ -1307,8 +1506,40 @@ impl ConditionEventLogPrefix {
             point: self.point,
             event_log_offset: self.event_log_offset,
             observable_events: &self.observable_events,
+            point_events: &self.point_events,
             ordering_facts: &self.ordering_facts,
         }
+    }
+
+    /// Replaces this prefix's console matchers with `matchers` refolded over
+    /// its console bytes and evaluation boundaries.
+    ///
+    /// The compiled automata are shared, never recompiled. Used where a
+    /// prefix is rebuilt from scratch anyway, so the refold adds no pass over
+    /// history the rebuild did not already make.
+    pub(crate) fn with_console_matchers(mut self, matchers: &ConsoleMatchFolds) -> Self {
+        self.console_folds = matchers.refold(self.scheduler_entries.iter());
+        self
+    }
+
+    /// Declares one console pattern so `console_match` folds it as bytes arrive.
+    ///
+    /// Console bytes and evaluation boundaries already in the prefix are
+    /// folded immediately, so the matcher reaches the state it would have
+    /// reached had it been declared at genesis. Declaring the same node and
+    /// pattern again is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConsolePatternError`] when the pattern cannot become a
+    /// streaming automaton.
+    pub fn declare_console_pattern(
+        &mut self,
+        node: &NodeId,
+        pattern: &str,
+    ) -> Result<(), crate::ConsolePatternError> {
+        self.console_folds
+            .declare(node, pattern, self.scheduler_entries.iter())
     }
 }
 
@@ -1322,8 +1553,9 @@ impl ConditionEventLogPrefix {
 pub struct ObservedState<'log> {
     pub(super) point: EventEvaluationPoint,
     pub(super) event_log_offset: EventLogOffset,
-    pub(super) observable_events: &'log [ObservableEvent],
-    pub(super) ordering_facts: &'log [ObservedOrderingFact],
+    pub(super) observable_events: &'log crate::History<ObservableEvent>,
+    pub(super) point_events: &'log PointObservationIndex,
+    pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
 }
 
 impl<'log> ObservedState<'log> {
@@ -1347,14 +1579,32 @@ impl<'log> ObservedState<'log> {
 
     /// Returns black-box observable events in deterministic log order.
     #[must_use]
-    pub fn observable_events(self) -> &'log [ObservableEvent] {
+    pub fn observable_events(self) -> &'log crate::History<ObservableEvent> {
         self.observable_events
     }
 
     /// Returns scheduler ordering facts in deterministic log order.
     #[must_use]
-    pub fn ordering_facts(self) -> &'log [ObservedOrderingFact] {
+    pub fn ordering_facts(self) -> &'log crate::History<ObservedOrderingFact> {
         self.ordering_facts
+    }
+
+    /// Returns the observable events at this view's virtual time.
+    pub(crate) fn observable_events_at_point(
+        self,
+    ) -> Box<dyn Iterator<Item = &'log ObservableEvent> + 'log> {
+        observable_events_at(self.point_events, self.observable_events, self.at())
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before this point.
+    pub(crate) fn coverage_seen_before(self, node: &NodeId, address: u64) -> bool {
+        coverage_seen_before(
+            self.point_events,
+            self.observable_events,
+            node,
+            address,
+            self.at(),
+        )
     }
 }
 

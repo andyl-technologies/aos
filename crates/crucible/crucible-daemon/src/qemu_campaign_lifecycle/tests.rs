@@ -145,7 +145,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
     };
     let parent = accepted_step(
         &genesis,
-        Decision::RngDraw(RngDecision { stream, value: raw }),
+        Decision::RngDraw(RngDecision::ordinal(stream, 0, raw)),
     );
     let selection = AppRandomSelectable::from_decision(&scenario, &live)
         .expect("app-random request should reconstruct")
@@ -156,8 +156,8 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (scheduler, plugins) =
-        app_random_branch_replay(&target).expect("selected target should derive plans");
+    let (scheduler, plugins) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("selected target should derive plans");
 
     assert_eq!(
         scheduler.get(&parent.id()),
@@ -177,6 +177,13 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
                 && entry.selection_id()
                     == selection.id().expect("selection id").content_id().digest()
     ));
+
+    // A launch restored at the target has already served this request.
+    let (scheduler, plugins) =
+        app_random_branch_replay(&target, AppRandomLaunchWindow::RestoredTarget)
+            .expect("restored target should derive empty plans");
+    assert!(scheduler.is_empty());
+    assert!(plugins.is_empty());
 }
 
 #[test]
@@ -206,20 +213,16 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         .resolve_branch(&selection)
         .expect("candidate should reconstruct");
 
-    let empty = crucible_engine::SignalFaultCampaignReplayPlan::empty(branch.selected().clone());
+    let selected = branch.selected().to_configuration();
+    let empty = crucible_engine::SignalFaultCampaignReplayPlan::empty(selected.clone());
     assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &empty),
+        unsupported_fresh_replay_decision(&selected, &empty),
         Some(1)
     );
-    let plan = crucible_engine::SignalFaultCampaignReplayPlan::new(
-        branch.selected().clone(),
-        vec![branch.clone()],
-    )
-    .expect("typed replay plan");
-    assert_eq!(
-        unsupported_fresh_replay_decision(branch.selected(), &plan),
-        None
-    );
+    let plan =
+        crucible_engine::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
+            .expect("typed replay plan");
+    assert_eq!(unsupported_fresh_replay_decision(&selected, &plan), None);
 }
 
 #[test]
@@ -244,7 +247,7 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
     };
     let parent = accepted_step(
         &genesis,
-        Decision::RngDraw(RngDecision { stream, value: raw }),
+        Decision::RngDraw(RngDecision::ordinal(stream, 0, raw)),
     );
     let selection = AppRandomSelectable::from_decision(&scenario, &live)
         .expect("foreign-domain selectable should remain structurally valid")
@@ -255,8 +258,8 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
         Decision::Selection(SelectionDecision::new(&selection)),
     );
 
-    let (selections, plans) =
-        app_random_branch_replay(&target).expect("foreign producer stays outside this adapter");
+    let (selections, plans) = app_random_branch_replay(&target, AppRandomLaunchWindow::Genesis)
+        .expect("foreign producer stays outside this adapter");
     assert!(selections.is_empty());
     assert!(plans.is_empty());
 }
@@ -710,254 +713,6 @@ fn lifecycle_construction_failure_quarantines_installed_guard() {
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
 
-struct FakeFreshLifecycle {
-    order: Arc<Mutex<Vec<&'static str>>>,
-    completed_quanta: u64,
-    promotion_observations: Option<Arc<Mutex<Vec<bool>>>>,
-    cleanup_error: bool,
-    pending: Vec<crucible_qemu_host::QemuNodeSelectablePendingRequest>,
-    replies: Arc<Mutex<Vec<crucible_qemu_protocol::SelectionReply>>>,
-    signal_fault_branches: VecDeque<crucible_engine::SignalFaultCampaignBranch>,
-    terminal_after_replay: bool,
-    checkpoint_ready: bool,
-    fingerprint_error: bool,
-    fingerprint_node_override: Arc<Mutex<Option<crucible_engine::NodeId>>>,
-}
-
-impl FakeFreshLifecycle {
-    fn complete_quantum(
-        &mut self,
-        outcome: crucible_engine::QuantumOutcome,
-    ) -> Result<crucible_engine::QuantumOutcome, crucible_engine::SchedulerError> {
-        self.completed_quanta = self.completed_quanta.checked_add(1).ok_or_else(|| {
-            crucible_engine::SchedulerError::BoundaryViolation {
-                message: String::from("fake lifecycle quantum coordinate overflowed"),
-            }
-        })?;
-        Ok(outcome)
-    }
-}
-
-impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
-    fn enable_signal_fault_campaign_promotion(&mut self) {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("promotion");
-        if let Some(observations) = &self.promotion_observations {
-            observations
-                .lock()
-                .expect("promotion observations")
-                .push(true);
-        }
-    }
-
-    fn set_attempt_stop_frontier(
-        &mut self,
-        _frontier: Option<crucible_engine::VirtualTime>,
-    ) -> Result<(), SchedulerError> {
-        Ok(())
-    }
-
-    fn drive_quantum(
-        &mut self,
-        request: crucible_engine::QuantumRequest,
-    ) -> Result<crucible_engine::QuantumOutcome, crucible_engine::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("replay");
-        if let Some(branch) = self.signal_fault_branches.front().cloned()
-            && branch.parent() == &request.configuration
-        {
-            self.signal_fault_branches.pop_front();
-            return self.complete_quantum(crucible_engine::QuantumOutcome {
-                configuration: branch.selected().clone(),
-                frontier: branch.frontier(),
-                advanced_node: None,
-                resolved_events: Vec::new(),
-                decisions: branch.decisions().to_vec(),
-                discovered_choices: Vec::new(),
-                event_log_entries: Vec::new(),
-                event_log_segment_bytes: Vec::new(),
-                event_log_segment_text: String::new(),
-                event_log_segment_hash: None,
-                event_log_offset: crucible_engine::EventLogOffset::default(),
-                scheduler_quiescence: None,
-            });
-        }
-        let configuration = accepted_step(
-            &request.configuration,
-            Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            }),
-        );
-        let next_frontier = self.completed_quanta.saturating_add(1);
-        self.complete_quantum(crucible_engine::QuantumOutcome {
-            configuration,
-            frontier: VirtualTime {
-                ticks: next_frontier,
-            },
-            advanced_node: None,
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            discovered_choices: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: crucible_engine::EventLogOffset::default(),
-            scheduler_quiescence: None,
-        })
-    }
-
-    fn completed_quanta(&self) -> u64 {
-        self.completed_quanta
-    }
-
-    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
-        Ok(crucible_engine::EventLogOffset::default())
-    }
-
-    fn terminal_verdict_for_stop(&mut self) -> Option<crucible_engine::QuantumTerminalVerdict> {
-        (self.terminal_after_replay && self.completed_quanta > 0).then(|| {
-            crucible_engine::QuantumTerminalVerdict::Failed(vec![String::from(
-                "selected property was violated",
-            )])
-        })
-    }
-
-    fn prepare_terminal_checkpoint(
-        &mut self,
-        cause: crucible_engine::CheckpointTerminalCause,
-    ) -> Result<(), crucible_engine::SchedulerError> {
-        assert_eq!(
-            cause,
-            crucible_engine::CheckpointTerminalCause::Failed(vec![String::from(
-                "selected property was violated",
-            )])
-        );
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("terminal-cause");
-        Ok(())
-    }
-
-    fn exact_checkpoint_ready(&mut self) -> Result<bool, crucible_engine::SchedulerError> {
-        Ok(self.checkpoint_ready)
-    }
-
-    fn drain_pending_selectable_requests(
-        &mut self,
-    ) -> Result<
-        Vec<crucible_qemu_host::QemuNodeSelectablePendingRequest>,
-        crucible_engine::SchedulerError,
-    > {
-        Ok(std::mem::take(&mut self.pending))
-    }
-
-    fn apply_selectable_reply(
-        &mut self,
-        _parent: &crucible_engine::Configuration,
-        _decision: crucible_engine::SelectionDecision,
-        _selected: &crucible_engine::Configuration,
-        _pending: &crucible_qemu_host::QemuNodeSelectablePendingRequest,
-        reply: &crucible_qemu_protocol::SelectionReply,
-    ) -> Result<Vec<crucible_engine::SchedulerEventLogEntry>, crucible_engine::SchedulerError> {
-        self.replies
-            .lock()
-            .expect("fresh lifecycle replies")
-            .push(reply.clone());
-        Ok(Vec::new())
-    }
-
-    fn capture_attempt_checkpoint(
-        &mut self,
-        _context: &crate::AttemptExecutionContext,
-    ) -> Result<crate::CapturedAttemptCheckpoint, crucible_engine::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("capture");
-        Ok(test_checkpoint_capture())
-    }
-
-    fn replay_launch_profiles(
-        &self,
-    ) -> Result<Vec<ProductionVmNodeReplayLaunchProfile>, crucible_engine::SchedulerError> {
-        Err(crucible_engine::SchedulerError::BoundaryViolation {
-            message: String::from("fake fresh lifecycle has no replay launch profiles"),
-        })
-    }
-
-    fn fault_evidence_snapshot(
-        &self,
-    ) -> Result<ProductionFaultEvidenceSnapshot, crucible_engine::SchedulerError> {
-        Err(crucible_engine::SchedulerError::BoundaryViolation {
-            message: String::from("fake lifecycle has no production fault evidence"),
-        })
-    }
-
-    fn pending_network_output_count(&self) -> usize {
-        0
-    }
-
-    fn sample_fingerprint(
-        &mut self,
-        node: crucible_engine::NodeId,
-    ) -> Result<crucible_engine::FingerprintSample, crucible_engine::SchedulerError> {
-        if self.fingerprint_error {
-            return Err(crucible_engine::SchedulerError::BoundaryViolation {
-                message: format!("injected missing fingerprint node `{}`", node.name),
-            });
-        }
-        Ok(crucible_engine::FingerprintSample {
-            node: self
-                .fingerprint_node_override
-                .lock()
-                .expect("fingerprint node override")
-                .clone()
-                .unwrap_or(node),
-            at: VirtualTime {
-                ticks: self.completed_quanta,
-            },
-            fingerprint: crucible_engine::ExecutionFingerprint {
-                hash: crucible_engine::ContentHash::from_bytes(
-                    &self.completed_quanta.to_le_bytes(),
-                ),
-            },
-        })
-    }
-
-    fn prepare_terminal_fingerprints(&mut self) -> Result<(), crucible_engine::SchedulerError> {
-        Ok(())
-    }
-
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible_engine::SchedulerError> {
-        Ok(Some(b"resolved-effect-test".to_vec()))
-    }
-
-    fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, crucible_engine::SchedulerError> {
-        self.order
-            .lock()
-            .expect("fresh lifecycle order")
-            .push("shutdown");
-        if self.cleanup_error {
-            Err(crucible_engine::SchedulerError::BoundaryViolation {
-                message: String::from("injected fresh lifecycle cleanup failure"),
-            })
-        } else {
-            Ok(vec![SchedulerEventLogEntry::execution_budget_exhausted(
-                7,
-                VirtualTime { ticks: 11 },
-                "final-drain-test",
-            )])
-        }
-    }
-}
-
 #[test]
 fn observed_lifecycle_retains_only_successful_execution_evidence() {
     let scenario = ScenarioDef::from_canonical_material_with_seed(
@@ -976,9 +731,11 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed = QemuObservedFreshAttemptLifecycle::new(
@@ -1010,7 +767,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     assert_eq!(snapshot.frontier(), VirtualTime { ticks: 2 });
     assert_eq!(snapshot.latest_quantum_start_events(), Some(0));
     assert_eq!(snapshot.semantic_stop_events(), Some(0));
-    assert_eq!(snapshot.event_log_entries().len(), 1);
+    assert_eq!(snapshot.event_log_len(), 1);
     assert_eq!(snapshot.execution_fingerprints().len(), 2);
     assert_eq!(snapshot.execution_fingerprints()[0].at.ticks, 0);
     assert_eq!(snapshot.execution_fingerprints()[1].at.ticks, 1);
@@ -1025,7 +782,12 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
     );
     assert_eq!(
         snapshot.resolved_effect_trace(),
-        Some(b"resolved-effect-test".as_slice())
+        Some(
+            &crucible_engine::model::ResolvedEffectTrace::empty(
+                crucible_engine::model::FaultReplayMode::RecomputedCause
+            )
+            .expect("empty effect trace")
+        )
     );
     assert_eq!(
         *order.lock().expect("standalone lifecycle order"),
@@ -1079,9 +841,11 @@ fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::clone(&fingerprint_node_override),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -1129,9 +893,11 @@ fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() 
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
+        network_park: None,
     };
     let evidence = QemuAttemptExecutionEvidence::default();
     let mut observed =
@@ -1253,6 +1019,10 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         self.quanta
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible_engine::QuantumTerminalVerdict> {
         if self.quanta == 0 {
             None
@@ -1366,7 +1136,10 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, crucible_engine::SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, crucible_engine::SchedulerError>
+    {
         Ok(None)
     }
 
@@ -1478,9 +1251,11 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: self.terminal_after_replay,
+            released_host_outcome: None,
             checkpoint_ready: self.checkpoint_ready,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }
@@ -1572,9 +1347,11 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: false,
+            released_host_outcome: None,
             checkpoint_ready: true,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
+            network_park: None,
         })
     }
 }
@@ -1946,6 +1723,7 @@ fn private_fresh_replay_can_preserve_descendant_continuation_controls() {
     let controls = validated_attempt_continuations(&replay)
         .unwrap_or_else(|()| panic!("private replay continuation controls should validate"));
     let actual = controls
+        .controls()
         .iter()
         .map(|control| {
             (
@@ -2091,10 +1869,11 @@ fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
         },
     );
     let input = non_genesis_fresh_runner_input_with_decisions_for_stop(
-        vec![Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        })],
+        vec![Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        ))],
         StopCondition::NextChoice,
     );
 
@@ -2471,7 +2250,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         .start()
         .configuration()
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .cloned()
         .collect();
@@ -2516,7 +2295,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     assert_eq!(evidence.selections(), &[selection]);
     assert_eq!(measurement_replay_evidence.len(), 1);
     assert_eq!(
-        measurement_replay_evidence[0].configuration(),
+        measurement_replay_evidence[0].evidence().configuration(),
         evidence.configuration().configuration()
     );
     let triage = outcome
@@ -2527,8 +2306,8 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
         triage.failure(),
         crucible_engine::FailureClusterReportFailure::Property(_)
     ));
-    assert!(!triage.causal_entries().is_empty());
-    assert!(triage.recorded_event_frames().is_empty());
+    assert!(triage.event_log_manifest().entry_count() > 0);
+    assert!(!triage.referenced_segments().is_empty());
 
     let signature = outcome
         .signature()
@@ -2555,8 +2334,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let minimization_target = signature.clone();
     let prepared =
         crate::crucible_artifact::prepare_automatic_signature_preserving_finding_with_outcomes(
-            PreparedSemanticAttemptResult::new(owned.clone(), Vec::new(), None)
-                .expect("prepared composed observation"),
+            PreparedSemanticAttemptResult::new(
+                owned.clone(),
+                Vec::new(),
+                crate::MemorySegmentStore::default(),
+                None,
+            )
+            .expect("prepared composed observation"),
             crate::crucible_artifact::AutomaticFindingPreparation {
                 signature,
                 finding: &candidate,
@@ -2564,12 +2348,13 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
                 exact_retention: crate::crucible_artifact::test_disabled_finding_exact_retention()
                     .expect("test disabled finding retention"),
                 seed: Seed::from_bytes([0x75; 32]),
+                record_store: crate::ReplayRecordStore::default(),
             },
             |replay_candidate| {
                 let decisions = replay_candidate
                     .artifact
                     .schedule()
-                    .decisions()
+                    .decision_history()
                     .iter()
                     .cloned()
                     .collect::<VecDeque<_>>();
@@ -2606,8 +2391,12 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let durable_bytes = prepared
         .canonical_bytes()
         .expect("encode rich prepared result");
-    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(&durable_bytes)
-        .expect("decode rich prepared result after restart");
+    let decoded = PreparedSemanticAttemptResult::from_canonical_bytes(
+        &durable_bytes,
+        prepared.log_segments().clone(),
+        prepared.replay_record_sources(),
+    )
+    .expect("decode rich prepared result after restart");
     let finding = decoded.finding().expect("decoded rich finding");
     let triage_ids = finding
         .bundle()
@@ -2685,10 +2474,11 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         scenario.clone(),
         StopCondition::ExecutionQuanta(1),
     );
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("supplemental-collision"),
-        value: 1,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("supplemental-collision"),
+        0,
+        1,
+    ));
     let finding_configuration = accepted_step(input.start().configuration(), decision.clone());
     let source = GuardedCampaignFindingOracleSource::new(
         ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes)),
@@ -2889,9 +2679,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         .load_finding_triage_replay_evidence(triage.minimization_original())
         .expect("load supplemental triage evidence");
     let reproduction = finding.original();
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-            .expect("decode supplemental reproduction");
+    let artifact = finding.original_artifact().clone();
     let native_finding = FindingReproductionArtifact {
         discovery_path: FindingDiscoveryPath::StateSpaceSearch,
         finding_fingerprint: crucible_engine::ContentHash {
@@ -2903,9 +2691,22 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         replay: artifact.replay().expect("replay supplemental reproduction"),
         artifact,
     };
+    // The record's log segments are served by the repository, one at a time.
+    let segments = crucible_engine::SharedSegmentStore::new();
+    for (index, segment) in retained.log_segments().iter().enumerate() {
+        let bytes = repository
+            .read_finding_triage_replay_log_segment(
+                triage.minimization_original(),
+                u32::try_from(index).expect("segment index"),
+            )
+            .expect("read supplemental triage log segment");
+        crucible_engine::SegmentSink::put_segment(&segments, segment.content(), &bytes)
+            .expect("hold supplemental triage log segment");
+    }
     let replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         retained.payload(),
+        std::sync::Arc::new(segments),
     )
     .expect("decode supplemental triage payload");
     let crucible_engine::FailureClusterReportFailure::Property(actual) = replay.failure() else {
@@ -2955,10 +2756,11 @@ fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
+            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("fresh-runner-non-genesis"),
+                0,
+                7,
+            ))]),
             terminal_failure: false,
             terminal_marker: None,
         },
@@ -2993,10 +2795,11 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
+            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("fresh-runner-non-genesis"),
+                0,
+                7,
+            ))]),
             terminal_failure: false,
             terminal_marker: None,
         },
@@ -3010,7 +2813,9 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         panic!("execution-bound candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, causal_entries, _, _, _) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let failures = triage.failures;
     let mut timeouts = failures.iter().filter_map(|failure| match failure {
         crucible_engine::FailureClusterReportFailure::Timeout(timeout) => Some(timeout),
         crucible_engine::FailureClusterReportFailure::Property(_)
@@ -3042,10 +2847,11 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
 fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
     let assertion = AssertionId::from_name("coincident-timeout-safety");
     let base = modeled_assertion_candidate_input(assertion.clone(), 2);
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    ));
     let configuration = accepted_step(base.start().configuration(), decision.clone());
     let input = finding_candidate_input_with_configuration_and_stop(
         &base,
@@ -3077,7 +2883,7 @@ fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
         panic!("coincident property and timeout candidate must be observable")
     };
     let (_, _, _, triage) = evidence.into_parts();
-    let (failures, _, _, _, _) = triage.into_parts();
+    let failures = triage.into_parts().failures;
 
     assert!(
         matches!(
@@ -3151,7 +2957,7 @@ fn composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf() 
         .resolve_branch(&selection)
         .expect("signal-fault branch")
         .selected()
-        .clone();
+        .to_configuration();
     let input = finding_candidate_input_with_configuration(&base, configuration);
 
     assert_composed_candidate_replay_retains_choice_and_measurement(
@@ -3205,10 +3011,9 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
 #[test]
 fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 0, 8),
+    ));
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -3239,10 +3044,11 @@ fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
 #[test]
 fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    ));
     let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
@@ -3274,10 +3080,9 @@ fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
 #[test]
 fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 0, 8),
+    ));
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -3366,6 +3171,10 @@ impl CrucibleExecutionRunner for PreparedSemanticResultRunner {
 
 #[path = "tests/continuation_admission.rs"]
 mod continuation_admission;
+
+#[path = "tests/fresh_lifecycle_fake.rs"]
+mod fresh_lifecycle_fake;
+use fresh_lifecycle_fake::FakeFreshLifecycle;
 
 #[path = "tests/fresh_execution.rs"]
 mod fresh_execution;
@@ -3583,10 +3392,11 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     let configuration = base.start().configuration().clone();
     let reached = accepted_step(
         &configuration,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let AttemptStart::Discover {
         configuration: configuration_artifact,
@@ -3676,17 +3486,19 @@ fn selected_after_two_controlled_generations() -> (
     let configuration = base.start().configuration().clone();
     let reached_first = accepted_step(
         &configuration,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let reached_second = accepted_step(
         &reached_first,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let AttemptStart::Discover {
         configuration: configuration_artifact,
@@ -3823,10 +3635,11 @@ fn test_continuation_source_observation_for(bytes: &[u8]) -> crucible_campaign::
 }
 
 fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
-    non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    }))
+    non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    )))
 }
 
 fn modeled_non_genesis_fresh_runner_input_for_stop(
@@ -3836,10 +3649,11 @@ fn modeled_non_genesis_fresh_runner_input_for_stop(
     let scenario = base.scenario().clone();
     let configuration = accepted_step(
         &Configuration::genesis(scenario.scenario_def()),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let scenario_artifact =
         crate::encode_crucible_scenario_artifact(&scenario).expect("modeled scenario artifact");
@@ -3939,3 +3753,18 @@ fn test_checkpoint_capture() -> CapturedAttemptCheckpoint {
 fn test_checkpoint_product() -> AttemptExecutionProduct {
     AttemptExecutionProduct::exact_checkpoint(test_checkpoint_capture())
 }
+
+#[path = "tests/released_publication.rs"]
+mod released_publication;
+
+#[path = "tests/anchor_root.rs"]
+mod anchor_root;
+
+#[path = "tests/network_fault_replay.rs"]
+mod network_fault_replay;
+
+#[path = "tests/replay_limits.rs"]
+mod replay_limits;
+
+#[path = "tests/published_root_retention.rs"]
+mod published_root_retention;

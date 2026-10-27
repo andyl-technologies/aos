@@ -77,7 +77,7 @@ fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
     }
     fs::rename(&unavailable, &packs)?;
 
-    let index = source.objects.join(".packed-admin/index-v1");
+    let index = source.objects.join(".packed-admin/index-v2");
     let original = fs::read(&index)?;
     let mut corrupt = original.clone();
     corrupt[0] ^= 0xff;

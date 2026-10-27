@@ -9,7 +9,7 @@
 use thiserror::Error;
 
 use crucible_qemu_shmem::{
-    AdvanceStopCondition, FrameDeliveryKey, FrameEntry, FutexError, FutexWait, FutexWaitOutcome,
+    FrameDeliveryKey, FrameEntry, FutexError, FutexWait, FutexWaitOutcome, IDLE_WAKE_NONE,
     NodeSlot, NodeSlotError, RegionControlAction, RegionHeader,
 };
 
@@ -37,9 +37,10 @@ pub enum IdleWakeCause {
     /// the node idle-jumps directly to that completion icount.
     DeviceIoCompletion,
     /// Device I/O is in flight with no host-published completion deadline, so
-    /// guest timer deadlines are held and the node freezes to the ceiling.
+    /// guest timer deadlines are held and the node parks without a wake.
     DeviceIoFreeze,
-    /// No local timer or inbound input was pending, so the scheduler ceiling was the bound.
+    /// No local timer or inbound input was pending, so the node parks without
+    /// a wake and the scheduler ceiling only bounds its settlement.
     SchedulerCeiling,
 }
 
@@ -64,6 +65,8 @@ impl IdleWakePlan {
     }
 
     /// Returns the local wake target published in `idle_wake_icount`.
+    ///
+    /// This is [`IDLE_WAKE_NONE`] when the node has no real wake.
     #[must_use]
     pub const fn desired_wake_icount(&self) -> u64 {
         self.desired_wake_icount
@@ -110,9 +113,32 @@ impl IdleWakePlan {
     }
 
     /// Returns whether the current ceiling is still below the desired wake.
+    ///
+    /// A plan without a wake always waits: it parks until a new wake source
+    /// appears and the plan is recomputed.
     #[must_use]
     pub const fn requires_scheduler_wait(&self) -> bool {
         self.ceiling_icount < self.desired_wake_icount
+    }
+
+    /// Returns whether an advance released to `target_icount` fires the
+    /// timer this plan woke for.
+    ///
+    /// Only then may the advance arm QEMU's virtual-timer witness: QEMU
+    /// binds the witness to the advance target and rejects a target that is
+    /// not the timer deadline. A release short of the deadline, for an
+    /// earlier inbound frame or an exact-event ceiling, leaves the timer
+    /// pending for a later plan.
+    #[must_use]
+    pub fn fires_timer_at(&self, target_icount: u64) -> bool {
+        matches!(self.cause, IdleWakeCause::TimerDeadline)
+            && self.timer_deadline_icount == Some(target_icount)
+    }
+
+    /// Returns whether the plan parks without any real wake.
+    #[must_use]
+    pub const fn parks_without_wake(&self) -> bool {
+        self.desired_wake_icount == IDLE_WAKE_NONE
     }
 }
 
@@ -355,7 +381,7 @@ impl PluginIdleHotLoop {
             let (ceiling_icount, stop_condition) =
                 PluginShmemOrdering::load_scheduler_advance(slot)
                     .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
-            if stop_condition == AdvanceStopCondition::Ceiling
+            if stop_condition.authorizes_ceiling()
                 && ceiling_icount >= request.plan.desired_wake_icount
             {
                 if PluginShmemOrdering::observe_control_action(header)
@@ -720,8 +746,7 @@ impl PluginIdleHotLoop {
     ) -> Result<(PluginClockAdvance, PendingIdleAdvance), IdleHotLoopError> {
         let (ceiling_icount, stop_condition) = PluginShmemOrdering::load_scheduler_advance(slot)
             .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
-        if stop_condition != AdvanceStopCondition::Ceiling
-            || ceiling_icount < request.plan.desired_wake_icount
+        if !stop_condition.authorizes_ceiling() || ceiling_icount < request.plan.desired_wake_icount
         {
             return Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: request.plan.desired_wake_icount,
@@ -764,8 +789,7 @@ impl PluginIdleHotLoop {
             .map_err(|source| IdleHotLoopError::QueuedIdleAdvance { source })?;
         let (ceiling_icount, stop_condition) = PluginShmemOrdering::load_scheduler_advance(slot)
             .map_err(|source| IdleHotLoopError::AdvanceStopCondition { source })?;
-        if stop_condition != AdvanceStopCondition::Ceiling
-            || ceiling_icount < request.plan.desired_wake_icount
+        if !stop_condition.authorizes_ceiling() || ceiling_icount < request.plan.desired_wake_icount
         {
             return Err(IdleHotLoopError::WakeNotAuthorized {
                 desired_wake_icount: request.plan.desired_wake_icount,

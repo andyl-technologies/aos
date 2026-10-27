@@ -335,8 +335,8 @@ and how*; the gate names above bind to it.
 in-process unit tests cover the scheduler primitives, decision RNG,
 content-addressed digest helpers, and the engine-owned assertion evaluator.
 Test-only gate labels are in `crucible_test_support::assertion`. Property tests cover:
-decision-RNG stability under entity insertion (the per-entity stream is forked by
-name-hash so adding a node does not perturb others — §4.5), total-order stability
+decision-RNG stability under entity insertion (the per-entity stream is keyed by
+name so adding a node does not perturb others — §4.5), total-order stability
 of the cross-node event keying `(virtual_time, consumer node_id, producer node_id, sequence)`, and ordered
 iteration on every ordering-significant collection. These tests run in
 milliseconds but do not stand in for the canonical production-QEMU
@@ -547,7 +547,7 @@ half of `gate:adversarial-determinism`. Forward ref:
 
 - **[HARN-31]** Fingerprint and injection determinism both rest on the decision
   RNG being **order-independent**: per-entity RNG streams MUST be derived by
-  forking from the seed by entity name-hash (so adding or renaming a node does not
+  keying from the seed by entity name (so adding or renaming a node does not
   perturb other nodes' streams), and this property MUST remain in the
   supplemental L0 unit suite. The canonical `gate:layer0-determinism` result
   comes from the production fingerprint stream. See

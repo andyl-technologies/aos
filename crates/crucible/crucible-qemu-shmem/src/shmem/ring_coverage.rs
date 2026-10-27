@@ -214,6 +214,45 @@ impl RingHeader {
         }
     }
 
+    /// Reserves both admissions of a drained ring for a stopped restore.
+    ///
+    /// This storage reservation does not authenticate a checkpoint or stop.
+    /// Its caller retains the successfully loaded, natively stopped executor
+    /// and joins the captured endpoint to the independently loaded canonical
+    /// prefix. Reservation excludes both ring sides without changing either
+    /// cursor, allowing the original request claim to refuse without mutation.
+    /// Dropping the reservation releases only its own admission barriers.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an admitted operation, an existing barrier, or undrained bytes.
+    /// Refusal preserves both cursors and all preexisting admission state.
+    pub fn prepare_drained_cursor_while_stopped(
+        &self,
+        endpoint: u64,
+    ) -> Result<PreparedStoppedRingCursor<'_>, SpscRingError> {
+        self.consumer_state
+            .compare_exchange(0, RING_ADMISSION_HELD, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| SpscRingError::RestoreCursorBusy)?;
+        let consumer = StoppedCursorAdmission(&self.consumer_state);
+        self.producer_state
+            .compare_exchange(0, RING_ADMISSION_HELD, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| SpscRingError::RestoreCursorBusy)?;
+        let producer = StoppedCursorAdmission(&self.producer_state);
+        let read = self.read_idx.load(Ordering::Acquire);
+        let write = self.write_idx.load(Ordering::Acquire);
+        if read != write {
+            return Err(SpscRingError::RestoreCursorNotDrained { read, write });
+        }
+
+        Ok(PreparedStoppedRingCursor {
+            ring: self,
+            endpoint,
+            _consumer: consumer,
+            _producer: producer,
+        })
+    }
+
     /// Returns the exact number of live frames in this ring.
     ///
     /// # Errors
@@ -972,5 +1011,90 @@ mod admission_barrier_tests {
             .unwrap_or_else(|_panic| panic!("consumer thread should finish"));
         assert!(!admitted);
         assert!(ring.consumer_barrier_snapshot().quiescent());
+    }
+}
+
+/// Holds both ring admissions until the original stopped request transaction.
+///
+/// Its endpoint is a prepared physical cursor, not checkpoint or native phase
+/// authority. Construction validates the drained ring while retaining both
+/// admission barriers; no further fallible storage operation occurs at commit.
+pub struct PreparedStoppedRingCursor<'a> {
+    ring: &'a RingHeader,
+    endpoint: u64,
+    _consumer: StoppedCursorAdmission<'a>,
+    _producer: StoppedCursorAdmission<'a>,
+}
+
+impl PreparedStoppedRingCursor<'_> {
+    /// Commits the captured endpoint while both ring admissions remain held.
+    ///
+    /// The caller invokes this inside its original claimed restore fields
+    /// effect, after every fallible request preflight. This changes only the
+    /// physical cursors; canonical sequences and native permission are separate.
+    pub fn commit(self) {
+        self.ring.read_idx.store(self.endpoint, Ordering::Release);
+        self.ring.write_idx.store(self.endpoint, Ordering::Release);
+    }
+}
+
+// Only a successful zero-to-held claim constructs this guard. A stopped
+// restore never releases a barrier owned by another transaction.
+struct StoppedCursorAdmission<'a>(&'a AtomicU64);
+
+impl Drop for StoppedCursorAdmission<'_> {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod stopped_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_cursor_rebinds_only_a_drained_unowned_ring() -> Result<(), SpscRingError> {
+        let ring = RingHeader::default();
+        let prepared = ring.prepare_drained_cursor_while_stopped(37)?;
+        assert_eq!((ring.read_index(), ring.write_index()), (0, 0));
+        assert!(ring.producer_barrier_snapshot().quiescent());
+        assert!(ring.consumer_barrier_snapshot().quiescent());
+        drop(prepared);
+        assert_eq!((ring.read_index(), ring.write_index()), (0, 0));
+        assert!(!ring.producer_barrier_snapshot().held());
+        assert!(!ring.consumer_barrier_snapshot().held());
+        ring.prepare_drained_cursor_while_stopped(37)?.commit();
+        assert_eq!((ring.read_index(), ring.write_index()), (37, 37));
+        assert_eq!(ring.producer_barrier_snapshot().in_flight(), 0);
+        assert!(!ring.consumer_barrier_snapshot().held());
+        let producer = ring
+            .enter_producer()
+            .unwrap_or_else(|| panic!("producer must be admitted"));
+        assert!(matches!(
+            ring.prepare_drained_cursor_while_stopped(91),
+            Err(SpscRingError::RestoreCursorBusy)
+        ));
+        assert_eq!((ring.read_index(), ring.write_index()), (37, 37));
+        assert!(!ring.consumer_barrier_snapshot().held());
+        drop(producer);
+        assert!(ring.hold_hot_fork_consumers().held());
+        assert!(matches!(
+            ring.prepare_drained_cursor_while_stopped(91),
+            Err(SpscRingError::RestoreCursorBusy)
+        ));
+        assert!(ring.consumer_barrier_snapshot().held());
+        assert!(!ring.release_hot_fork_consumers().held());
+        ring.write_idx.store(38, Ordering::Release);
+        assert!(matches!(
+            ring.prepare_drained_cursor_while_stopped(91),
+            Err(SpscRingError::RestoreCursorNotDrained {
+                read: 37,
+                write: 38
+            })
+        ));
+        assert_eq!((ring.read_index(), ring.write_index()), (37, 38));
+        assert!(!ring.producer_barrier_snapshot().held());
+        assert!(!ring.consumer_barrier_snapshot().held());
+        Ok(())
     }
 }

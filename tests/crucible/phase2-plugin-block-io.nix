@@ -5,8 +5,7 @@
   taskIds ? [],
   openTaskIds ? ["T-PLUG-12"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginBlockIo = builtins.concatStringsSep "\n" [
@@ -163,7 +162,7 @@
       }
       {
         label = "wire version";
-        needle = "BLOCK_WIRE_VERSION";
+        needle = "BLOCK_REQUEST_WIRE_VERSION";
       }
       {
         label = "little-endian request encoding";
@@ -239,7 +238,7 @@
       }
       {
         label = "freeze completion before guest completion";
-        needle = "freeze\n            .complete_request(slot, token.device_token)";
+        needle = "match freeze.complete_request(slot, token.device_token)";
       }
       {
         label = "freeze token failure helper";
@@ -294,8 +293,8 @@
         needle = "block_poll_rejects_wrong_response_source_and_releases_freeze_token";
       }
       {
-        label = "guest completion failure releases test";
-        needle = "block_poll_guest_completion_failure_still_releases_freeze_token";
+        label = "guest completion failure retains custody test";
+        needle = "block_poll_guest_completion_failure_retains_original_head_and_token";
       }
       {
         label = "response wire validation test";
@@ -339,57 +338,21 @@ in
   if failures != []
   then throw "crucible phase2 plugin block-I/O check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-block-io";
-      version = "0";
-      src = crucibleSrc;
 
-      runtimeDeps = [pkgs.sqlite];
-
+      # The plugin's test-only crucible dependency links the campaign
+      # store's SQLite backend, so the lib-test link needs it.
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-block-io";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-plugin-block-io-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               block_ \
               -- --test-threads=1

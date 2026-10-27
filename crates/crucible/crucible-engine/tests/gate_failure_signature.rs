@@ -6,26 +6,28 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::sync::Arc;
 
 use crucible_engine::test_support::condition_observation_entry_for_test;
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration,
-    ContentHash, DagStore, Decision, EngineError, EventLogCausalDivergencePoint, EventLogOffset,
-    EventLogTickStamp, EventLogTime, EventPayload, EventSource, FailureCausalCone,
-    FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
-    FailureClusterReportFailure, FailureClusterReportFormat, FailureClusterReportSet,
-    FailureClusteringResult, FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
-    FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
-    FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
+    AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, AttemptLogManifest,
+    ChoiceTag, Configuration, ContentHash, DagStore, Decision, EngineError,
+    EventLogCausalDivergencePoint, EventLogOffset, EventLogTickStamp, EventLogTime, EventPayload,
+    EventSource, FailureCausalCone, FailureClusterFinding, FailureClusterReport,
+    FailureClusterReportDivergence, FailureClusterReportFailure, FailureClusterReportFormat,
+    FailureClusterReportSet, FailureClusteringResult, FailureFindingsLedger, FailureKind,
+    FailureMinimizationDisposition, FailurePropertyViolationRecord, FailureRecordedEventLog,
+    FailureSignature, FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
     FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
-    FailureTriageReplayEvidence, FailureTriageResult, FailureTriageResultIdentity,
-    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
-    FindingReproductionArtifact, Icount, MarkerId, MemoryDagStore, MinimizationConfig,
-    MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OfflineAssertionChecker,
-    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel,
-    SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    FailureTriageReplayEvidence, FailureTriageReplaySegments, FailureTriageResult,
+    FailureTriageResultIdentity, FailureTriageSignatureSelfCheck,
+    FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath, FindingReproductionArtifact,
+    Icount, MarkerId, MemoryDagStore, MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle,
+    NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint,
+    Seed, SharedSegmentStore, SignaturePolicy, SignaturePolicyLevel, SymmetryClassId,
+    SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode, seal_attempt_log,
 };
 
 #[test]
@@ -148,16 +150,17 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
 
     let mut marker_record = marker_record;
     marker_record.violation.reproduction_artifact = finding.artifact.id();
+    let (manifest, segments) = sealed_log(&entries)?;
     let triage = FailureTriageReplayEvidence::new(
         finding.clone(),
         FailureClusterReportFailure::property(marker_record.clone()),
-        entries.clone(),
+        manifest,
+        segments.clone(),
         finding_hash("host-derived-coverage"),
-        Vec::new(),
     )?;
     let encoded = triage.to_compact_binary()?;
     assert_eq!(
-        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &encoded)?,
+        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &encoded, segments)?,
         triage
     );
 
@@ -341,19 +344,14 @@ fn host_derived_violation_binds_retained_guest_marker_and_terminal_verdict()
     assert_eq!(coincident_record.at_icount, Some(icount(100)));
     coincident_record.reproduction_artifact = finding.artifact.id();
     let coincident_log = recorded_event_log_for_finding(&finding, &coincident_entries)?;
+    // A guest-marker violation is accepted only with exactly one retained
+    // marker witness, whose line the cone hash then binds.
     let coincident_signature = FailureSignature::from_recorded_property_violation(
         &finding,
         &coincident_log,
         &FailurePropertyViolationRecord::new(coincident_record),
     )?;
-    assert!(
-        coincident_signature
-            .causal_cone
-            .as_ref()
-            .ok_or("missing coincident causal cone")?
-            .canonical_material()
-            .contains("guest_marker_witness=")
-    );
+    assert!(coincident_signature.causal_cone.is_some());
 
     Ok(())
 }
@@ -391,35 +389,53 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("replay-evidence"),
     )?;
-    let causal_entries = recorded_event_log(schedule.clone().decisions()[0].clone());
+    let causal_entries = recorded_event_log(schedule.clone().decision_history()[0].clone());
     let coverage_fingerprint = finding_hash("replay-evidence-coverage");
     let failure =
         FailureClusterReportFailure::property(property_violation_record(finding.artifact.id()));
+    let (manifest, segments) = sealed_log(&causal_entries)?;
     let evidence = FailureTriageReplayEvidence::new(
         finding.clone(),
         failure.clone(),
-        causal_entries.clone(),
+        manifest.clone(),
+        segments.clone(),
         coverage_fingerprint,
-        vec![b"retained transport frame".to_vec()],
     )?;
     let bytes = evidence.to_compact_binary()?;
-    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &bytes)?;
+    let decoded = FailureTriageReplayEvidence::from_compact_binary(
+        finding.clone(),
+        &bytes,
+        segments.clone(),
+    )?;
 
     assert_eq!(decoded, evidence);
-    assert_eq!(decoded.schema_version(), 3);
-    assert!(FailureTriageReplayEvidence::supports_schema(3));
-    assert!(!FailureTriageReplayEvidence::supports_schema(2));
+    assert_eq!(decoded.schema_version(), 4);
+    assert!(FailureTriageReplayEvidence::supports_schema(4));
+    assert!(!FailureTriageReplayEvidence::supports_schema(3));
     assert!(!FailureTriageReplayEvidence::supports_schema(1));
     assert_eq!(decoded.to_compact_binary()?, bytes);
     assert_eq!(decoded.finding(), &finding);
     assert_eq!(decoded.failure(), &failure);
-    assert_eq!(decoded.causal_entries(), causal_entries);
-    assert_eq!(decoded.coverage_fingerprint(), coverage_fingerprint);
+    assert_eq!(decoded.event_log_manifest(), &manifest);
+    assert_eq!(decoded.referenced_segments(), manifest.segments());
     assert_eq!(
-        decoded.recorded_event_frames(),
-        [b"retained transport frame".to_vec()]
+        FailureTriageReplayEvidence::referenced_segments_in(&bytes)?,
+        manifest.segments()
     );
+    assert_eq!(decoded.coverage_fingerprint(), coverage_fingerprint);
     assert_eq!(decoded.signature(), evidence.signature());
+
+    // The payload references the log instead of embedding it, so decoding
+    // needs the referenced segments.
+    assert!(
+        FailureTriageReplayEvidence::from_compact_binary(
+            finding.clone(),
+            &bytes,
+            Arc::new(SharedSegmentStore::new()),
+        )
+        .is_err(),
+        "decode must fail when a referenced segment is absent"
+    );
 
     let mut wrong_schema = bytes.clone();
     let schema_index = wrong_schema
@@ -429,7 +445,12 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         + 1;
     wrong_schema[schema_index] = 1;
     assert!(
-        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &wrong_schema).is_err(),
+        FailureTriageReplayEvidence::from_compact_binary(
+            finding.clone(),
+            &wrong_schema,
+            segments.clone()
+        )
+        .is_err(),
         "a noncurrent replay-evidence schema must be rejected"
     );
 
@@ -440,7 +461,8 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         finding_hash("another-replay-evidence"),
     )?;
     assert!(
-        FailureTriageReplayEvidence::from_compact_binary(wrong_finding, &bytes).is_err(),
+        FailureTriageReplayEvidence::from_compact_binary(wrong_finding, &bytes, segments.clone())
+            .is_err(),
         "the payload must bind its exact finding identity"
     );
 
@@ -448,32 +470,13 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
     let last = tampered.last_mut().ok_or("evidence cannot be empty")?;
     *last ^= 1;
     assert!(
-        FailureTriageReplayEvidence::from_compact_binary(finding.clone(), &tampered).is_err(),
+        FailureTriageReplayEvidence::from_compact_binary(
+            finding.clone(),
+            &tampered,
+            segments.clone()
+        )
+        .is_err(),
         "signature-material tampering must be rejected"
-    );
-
-    let too_many_entries = vec![causal_entries[0].clone(); 65_537];
-    assert!(
-        FailureTriageReplayEvidence::new(
-            finding.clone(),
-            failure.clone(),
-            too_many_entries,
-            coverage_fingerprint,
-            Vec::new(),
-        )
-        .is_err(),
-        "causal entry count must be checked before projection"
-    );
-    assert!(
-        FailureTriageReplayEvidence::new(
-            finding.clone(),
-            failure.clone(),
-            causal_entries.clone(),
-            coverage_fingerprint,
-            vec![vec![0; 1024 * 1024 + 1]],
-        )
-        .is_err(),
-        "a retained frame cannot exceed its individual bound"
     );
 
     let mut oversized_failure = property_violation_record(finding.artifact.id());
@@ -482,9 +485,9 @@ fn failure_triage_replay_evidence_round_trips_and_enforces_bounds() -> Result<()
         FailureTriageReplayEvidence::new(
             finding,
             FailureClusterReportFailure::property(oversized_failure),
-            causal_entries,
+            manifest,
+            segments,
             coverage_fingerprint,
-            Vec::new(),
         )
         .is_err(),
         "failure-source material must be bounded before signature construction"
@@ -504,30 +507,37 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("paired-divergence-evidence"),
     )?;
-    let expected = recorded_event_log(schedule.decisions()[0].clone());
+    let expected = recorded_event_log(schedule.decision_history()[0].clone());
     let mut reproduced = expected.clone();
     reproduced.pop();
     let coverage_fingerprint = finding_hash("paired-divergence-coverage");
 
+    let store = Arc::new(SharedSegmentStore::new());
+    let expected_log = seal_attempt_log(&expected, store.as_ref())?;
+    let reproduced_log = seal_attempt_log(&reproduced, store.as_ref())?;
+    let segments: FailureTriageReplaySegments = store;
+
     let evidence = FailureTriageReplayEvidence::new_paired_divergence(
         finding.clone(),
-        expected.clone(),
-        reproduced.clone(),
+        expected_log.clone(),
+        reproduced_log.clone(),
+        segments.clone(),
         coverage_fingerprint,
-        Vec::new(),
     )?;
     let bytes = evidence.to_compact_binary()?;
-    let decoded = FailureTriageReplayEvidence::from_compact_binary(finding, &bytes)?;
+    let decoded =
+        FailureTriageReplayEvidence::from_compact_binary(finding, &bytes, segments.clone())?;
 
-    assert_eq!(decoded.schema_version(), 3);
+    assert_eq!(decoded.schema_version(), 4);
     assert!(matches!(
         decoded.failure(),
         FailureClusterReportFailure::Divergence(_)
     ));
     assert_eq!(
         decoded.paired_divergence_logs(),
-        Some((expected.as_slice(), reproduced.as_slice()))
+        Some((&expected_log, &reproduced_log))
     );
+    assert_eq!(decoded.event_log_manifest(), &expected_log);
     assert_eq!(decoded.to_compact_binary()?, bytes);
     let marker = b"entry.content_hash=";
     let marker_offset = bytes
@@ -540,17 +550,21 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
         .ok_or("paired divergence summary digit")?;
     *digit = if *digit == b'0' { b'1' } else { b'0' };
     assert!(
-        FailureTriageReplayEvidence::from_compact_binary(decoded.finding().clone(), &tampered)
-            .is_err(),
+        FailureTriageReplayEvidence::from_compact_binary(
+            decoded.finding().clone(),
+            &tampered,
+            segments.clone()
+        )
+        .is_err(),
         "decode must reject divergence detail that differs from the paired logs"
     );
     assert!(
         FailureTriageReplayEvidence::new_paired_divergence(
             decoded.finding().clone(),
-            expected.clone(),
-            expected,
+            expected_log.clone(),
+            expected_log,
+            segments,
             coverage_fingerprint,
-            Vec::new(),
         )
         .is_err()
     );
@@ -558,11 +572,90 @@ fn paired_divergence_evidence_retains_both_logs_and_recomputes_mismatch()
     Ok(())
 }
 
+/// Builds `count` observational console entries numbered from `first`.
+fn console_entries(first: u64, count: u64) -> Vec<SchedulerEventLogEntry> {
+    (first..first + count)
+        .map(|sequence| {
+            let mut attributes = BTreeMap::new();
+            attributes.insert(
+                String::from("text"),
+                crucible_engine::EventAttributeValue::String(format!("line {sequence}")),
+            );
+            SchedulerEventLogEntry::from_retained_open_event(
+                sequence,
+                EventLogTime::from_virtual_time(VirtualTime { ticks: 10 }),
+                EventSource::Engine,
+                crucible_engine::EventLevel::Info,
+                SchedulerEventLogClass::Observational,
+                EventPayload::new("console_output", attributes),
+            )
+            .expect("console fixture entry should build")
+        })
+        .collect()
+}
+
+#[test]
+fn replay_evidence_streams_logs_longer_than_the_retired_entry_cap() -> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let schedule = Schedule::from_decisions([override_decision("long-divergence", "fail")]);
+    let finding = finding_artifact(
+        &scenario,
+        schedule.clone(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("long-paired-divergence"),
+    )?;
+
+    // Schema 3 refused more than 65,536 entries. The reproduced log stops
+    // before the expected log's final causal entry, so the first mismatch
+    // sits at the end of a log that spans several segments.
+    const RETIRED_ENTRY_CAP: u64 = 65_536;
+    let mut reproduced = recorded_event_log(schedule.decision_history()[0].clone());
+    let first_console = reproduced.len() as u64;
+    reproduced.extend(console_entries(
+        first_console,
+        RETIRED_ENTRY_CAP + 1 - first_console,
+    ));
+    let mut expected = reproduced.clone();
+    expected.push(
+        crucible_engine::test_support::condition_payload_entry_for_test(
+            expected.len() as u64,
+            VirtualTime { ticks: 20 },
+            SchedulerEventLogPayload::Decision(schedule.decision_history()[0].clone()),
+        ),
+    );
+
+    let store = Arc::new(SharedSegmentStore::new());
+    let expected_log = seal_attempt_log(&expected, store.as_ref())?;
+    let reproduced_log = seal_attempt_log(&reproduced, store.as_ref())?;
+    let segments: FailureTriageReplaySegments = store;
+
+    let evidence = FailureTriageReplayEvidence::new_paired_divergence(
+        finding,
+        expected_log.clone(),
+        reproduced_log,
+        segments,
+        finding_hash("long-paired-divergence-coverage"),
+    )?;
+    let bytes = evidence.to_compact_binary()?;
+
+    assert!(
+        bytes.len() < 64 * 1024,
+        "the payload holds manifests, not entries"
+    );
+    assert!(expected_log.segments().len() > 1);
+    assert_eq!(evidence.event_log_manifest(), &expected_log);
+    assert_eq!(
+        evidence.recorded_event_log().entry_count(),
+        RETIRED_ENTRY_CAP + 2
+    );
+    Ok(())
+}
+
 #[test]
 fn failure_signature_uses_recorded_tuple_not_discovery_campaign() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
-    let coverage_entries = recorded_event_log(schedule.decisions()[0].clone());
+    let coverage_entries = recorded_event_log(schedule.decision_history()[0].clone());
     let first = finding_artifact(
         &scenario,
         schedule.clone(),
@@ -678,7 +771,7 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
         FindingDiscoveryPath::CampaignFork,
         finding_hash("divergence"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let divergence = EventLogCausalDivergencePoint {
         raw_index: 2,
@@ -871,7 +964,7 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("normalization"),
     )?;
-    let base_entries = recorded_event_log(schedule.decisions()[0].clone());
+    let base_entries = recorded_event_log(schedule.decision_history()[0].clone());
     let base_log = recorded_event_log_for_finding(&finding, &base_entries)?;
     let normalization = FailureSignatureNormalization::identity();
     let base_record = property_violation_record(finding.artifact.id());
@@ -905,7 +998,7 @@ fn property_signature_excludes_report_only_icount_but_binds_guest_witness()
     );
 
     let shifted_entries =
-        recorded_event_log_with_assertion_time(schedule.decisions()[0].clone(), 88);
+        recorded_event_log_with_assertion_time(schedule.decision_history()[0].clone(), 88);
     let shifted_log = recorded_event_log_for_finding(&finding, &shifted_entries)?;
     let shifted_record = property_violation_record_at(finding.artifact.id(), 88);
     let shifted_log_signature =
@@ -1021,7 +1114,7 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("signature-policy"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let record = property_violation_record(finding.artifact.id());
     let signature =
@@ -1050,17 +1143,28 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
     let base_exact = signature.signature_key(exact)?;
     assert_ne!(base_coarse.content_hash(), base_default.content_hash());
     assert_eq!(base_default.policy(), default);
+    // Exact keys and report material carry the cone's streamed hash and
+    // event count, never its material, so their size does not grow with the
+    // recorded log.
+    let cone = signature
+        .causal_cone
+        .as_ref()
+        .ok_or("property signature must carry a causal cone")?;
+    assert!(base_exact.canonical_material().contains(&format!(
+        "exact_causal_cone_hash={}",
+        cone.content_hash().to_hex()
+    )));
     assert!(
         base_exact
             .canonical_material()
-            .contains("exact_causal_cone_material_BEGIN")
+            .contains(&format!("exact_causal_cone_events={}", cone.events()))
     );
     assert!(base_exact.canonical_material().contains("at_icount_key=8"));
-    assert!(
-        signature
-            .report_material()
-            .contains("causal_cone_material_BEGIN")
-    );
+    assert!(signature.report_material().contains(&format!(
+        "causal_cone_hash={}",
+        cone.content_hash().to_hex()
+    )));
+    assert!(!signature.report_material().contains("_BEGIN"));
 
     let mut changed_quantifier = signature.clone();
     changed_quantifier
@@ -1108,6 +1212,7 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
     let mut changed_cone_signature = signature.clone();
     changed_cone_signature.causal_cone = Some(FailureCausalCone::from_canonical_material(
         "causal_cone_events=1\nentry.cone_index=0\nentry.kind=exact-only-cone-change",
+        1,
     ));
     assert_eq!(
         changed_cone_signature.signature_key(fine)?.content_hash(),
@@ -1124,16 +1229,14 @@ fn failure_signature_policy_projects_versioned_keys_and_result_identity()
         changed_cone_signature.causal_cone, signature.causal_cone,
         "the regression must mutate only the retained full causal cone"
     );
-    assert!(
-        changed_cone_exact
-            .canonical_material()
-            .contains("exact_causal_cone_material_BEGIN")
-    );
-    assert!(
-        changed_cone_exact
-            .canonical_material()
-            .contains("exact-only-cone-change")
-    );
+    let changed_cone = changed_cone_signature
+        .causal_cone
+        .as_ref()
+        .ok_or("changed signature must carry a causal cone")?;
+    assert!(changed_cone_exact.canonical_material().contains(&format!(
+        "exact_causal_cone_hash={}",
+        changed_cone.content_hash().to_hex()
+    )));
 
     let mut shifted_icount = signature.clone();
     shifted_icount.at_icount_report_only = Some(icount(99));
@@ -1184,7 +1287,7 @@ fn failure_clustering_partitions_and_orders_by_signature_key() -> Result<(), Box
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("cluster-source"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let record = property_violation_record(finding.artifact.id());
     let base_signature =

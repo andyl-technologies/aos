@@ -38,7 +38,7 @@ pub(super) fn ensure_session_replay_evidence_supported(
     }
     if evidence
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .any(|decision| matches!(decision, crucible_engine::Decision::Selection(_)))
     {
@@ -126,7 +126,9 @@ pub(super) fn savepoint_handle_evidence(
             crucible_campaign::CampaignHash::from_bytes(configuration.id().bytes),
         );
         evidence
+            .evidence()
             .replay(
+                evidence.segments(),
                 campaign_scenario,
                 campaign_configuration,
                 scenario_form.measurements(),

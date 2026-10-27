@@ -562,7 +562,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
                 observations:
                     super::super::storage_faults::ProductionFaultObservationJournal::default(),
                 effect_state: overlapping_ledger,
-                campaign_records: Vec::new(),
+                campaign_records: CampaignRecordLogPosition::empty(),
                 campaign_replay_identity: None,
                 campaign_marker_releases: Vec::new(),
             },
@@ -588,7 +588,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
                 observations:
                     super::super::storage_faults::ProductionFaultObservationJournal::default(),
                 effect_state: mismatched_expiry,
-                campaign_records: Vec::new(),
+                campaign_records: CampaignRecordLogPosition::empty(),
                 campaign_replay_identity: None,
                 campaign_marker_releases: Vec::new(),
             },
@@ -615,7 +615,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
                 observations:
                     super::super::storage_faults::ProductionFaultObservationJournal::default(),
                 effect_state: over_byte_capacity,
-                campaign_records: Vec::new(),
+                campaign_records: CampaignRecordLogPosition::empty(),
                 campaign_replay_identity: None,
                 campaign_marker_releases: Vec::new(),
             },
@@ -658,7 +658,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
                 observations:
                     super::super::storage_faults::ProductionFaultObservationJournal::default(),
                 effect_state: over_bundle_capacity,
-                campaign_records: Vec::new(),
+                campaign_records: CampaignRecordLogPosition::empty(),
                 campaign_replay_identity: None,
                 campaign_marker_releases: Vec::new(),
             },
@@ -750,5 +750,7 @@ fn custody_checkpoint_rejects_broken_contact_graph_joins() {
     );
 }
 
+#[path = "custody/contact_expiry.rs"]
+mod contact_expiry;
 #[path = "custody/edge_cases.rs"]
 mod edge_cases;

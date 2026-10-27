@@ -55,7 +55,9 @@ fn apply_entrypoint_action(action: Action) -> (TriggerActionState, Vec<Scheduler
     let mut scheduler =
         SingleScheduler::new(scenario("trigger-verdict")).expect("scheduler should build");
     let mut state = EventGraphState::new();
-    let firings = scheduler.evaluate_event_graph(&graph, &mut state, NoLeaves);
+    let firings = scheduler
+        .evaluate_event_graph(&graph, &mut state, NoLeaves)
+        .expect("console matchers are declared");
     let append = scheduler
         .apply_trigger_firings(&firings)
         .expect("verdict action should apply");

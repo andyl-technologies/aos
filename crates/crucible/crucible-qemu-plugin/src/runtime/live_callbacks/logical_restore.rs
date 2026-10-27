@@ -21,6 +21,18 @@ pub(super) fn raw_icount_publication_is_superseded(
 }
 
 impl LiveVcpuTimeCallbackState {
+    /// Marks the next logical-time restore as a fork child's continuation.
+    ///
+    /// A hot-fork child's console restore binds the template's exact cut into
+    /// a fresh private slot whose restore generation is unrelated to any
+    /// generation the template applied. The child's process memory already
+    /// holds the exact TX sequence, white-box continuations and coverage, so
+    /// that restore adopts its generation without the first-restore reset.
+    pub(in crate::runtime) fn adopt_hot_fork_logical_continuation(&self) {
+        self.hot_fork_logical_continuation_pending
+            .store(true, Ordering::Release);
+    }
+
     /// Reconstructs the plugin-local idle-jump offset after VMState load.
     pub(super) fn restore_logical_time_if_requested(
         &self,
@@ -40,7 +52,13 @@ impl LiveVcpuTimeCallbackState {
         let applied_generation = self
             .logical_restore_continuation_generation
             .load(Ordering::Acquire);
-        if applied_generation != request.generation {
+        let fork_continuation = self
+            .hot_fork_logical_continuation_pending
+            .swap(false, Ordering::AcqRel);
+        if applied_generation != request.generation && fork_continuation {
+            self.logical_restore_continuation_generation
+                .store(request.generation, Ordering::Release);
+        } else if applied_generation != request.generation {
             if applied_generation != 0 {
                 return Err(
                     LiveVcpuTimeCallbackError::LogicalRestoreContinuationReused {
@@ -93,6 +111,9 @@ impl LiveVcpuTimeCallbackState {
                 raw_icount,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            // The restored coordinate answers no advance this process has
+            // seen; a RUN that starts there must publish its own stop.
+            self.zero_length_idle_answer.set(None);
         }
         Ok(())
     }

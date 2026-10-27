@@ -7,9 +7,9 @@
 use std::cell::RefCell;
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, ConditionLeaf,
-    FramePredicate, HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind,
-    HostAssertionPredicate, LintedHostAssertionOracle, ObservableEvent, ObservedState,
+    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, FramePredicate,
+    HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate,
+    LintedHostAssertionOracle, NamedLeaf, NamedPredicateError, ObservableEvent, ObservedBatch,
     OfflineAssertionChecker, Predicate, Properties, Property, RecordedAssertionLog,
     SchedulerEvaluationBoundaryKind, VirtualTime, World,
 };
@@ -40,6 +40,25 @@ fn observable_prefix(
         .expect("observable timing prefix should be checked")
 }
 
+fn boundary_entry(sequence: u64, ticks: u64) -> crucible_engine::SchedulerEventLogEntry {
+    crucible_engine::test_support::condition_boundary_entry_for_test(
+        sequence,
+        time(ticks),
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )
+}
+
+/// Returns the first `len` entries of one growing log as a checked prefix.
+fn log_prefix(
+    entries: &[crucible_engine::SchedulerEventLogEntry],
+    len: usize,
+) -> crucible_engine::ConditionEventLogPrefix {
+    crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+        entries[..len].to_vec(),
+    )
+    .expect("growing timing prefix should be checked")
+}
+
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {
     outcomes
         .iter()
@@ -52,6 +71,38 @@ where
     O: HostAssertionPredicate,
 {
     crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(oracle)
+}
+
+/// Holds for leaf `name` exactly at virtual time `holds_at`.
+///
+/// The state is the latest folded point's time; every leaf answer is recorded
+/// so tests can check where the evaluator asked.
+struct HoldsAtTime<'a> {
+    name: &'static str,
+    holds_at: u64,
+    evaluated_at: &'a RefCell<Vec<u64>>,
+}
+
+impl HostAssertionPredicate for HoldsAtTime<'_> {
+    type State = u64;
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) -> u64 {
+        0
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        _at: &u64,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<u64, NamedPredicateError> {
+        Ok(batch.at().ticks)
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, at: &u64) -> bool {
+        self.evaluated_at.borrow_mut().push(*at);
+        leaf.name() == self.name && leaf.nodes().is_empty() && *at == self.holds_at
+    }
 }
 
 #[test]
@@ -68,22 +119,20 @@ fn eventually_evaluates_deadline_point_between_recorded_prefixes() {
     let trigger = ObservableEvent::network_delivered(time(3), None, b"trigger".to_vec());
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let evaluated_at = RefCell::new(Vec::new());
-    let mut oracle =
-        linted_host_oracle(
-            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { name, nodes } => {
-                    evaluated_at.borrow_mut().push(state.at().ticks);
-                    name == "deadline-point"
-                        && nodes.is_empty()
-                        && state.at() == time(5)
-                        && state.event_log_offset().events == 1
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let mut oracle = linted_host_oracle(HoldsAtTime {
+        name: "deadline-point",
+        holds_at: 5,
+        evaluated_at: &evaluated_at,
+    });
 
-    evaluator.observe_prefix(&observable_prefix(3, vec![trigger.clone()]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(10, vec![trigger]), &mut oracle);
+    let entries = [
+        crucible_engine::test_support::condition_observation_entry_for_test(0, &trigger),
+        boundary_entry(1, 3),
+        boundary_entry(2, 10),
+    ];
+
+    evaluator.observe_prefix(&log_prefix(&entries, 2), &mut oracle);
+    let report = evaluator.finalize_prefix(&log_prefix(&entries, 3), &mut oracle);
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(
@@ -195,21 +244,12 @@ fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
     let recorded_log =
         RecordedAssertionLog::from_segments(vec![event_log[..1].to_vec(), event_log[1..].to_vec()])
             .expect("per-prefix recorded assertion log should fold");
-    let expected_offset = recorded_log
-        .event_log_offset(1)
-        .expect("deadline prefix offset should be retained");
-    let mut oracle =
-        linted_host_oracle(
-            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { name, nodes } => {
-                    name == "deadline-offset"
-                        && nodes.is_empty()
-                        && state.at() == time(5)
-                        && state.event_log_offset() == expected_offset
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let evaluated_at = RefCell::new(Vec::new());
+    let mut oracle = linted_host_oracle(HoldsAtTime {
+        name: "deadline-offset",
+        holds_at: 5,
+        evaluated_at: &evaluated_at,
+    });
 
     let report = OfflineAssertionChecker::new()
         .check_run_with_oracle(&properties, &recorded_log, &mut oracle)
@@ -237,22 +277,23 @@ fn after_quiescence_evaluates_once_at_terminal_prefix() {
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let evaluated_at = RefCell::new(Vec::new());
-    let mut oracle =
-        linted_host_oracle(
-            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { name, nodes } => {
-                    evaluated_at.borrow_mut().push(state.at().ticks);
-                    name == "terminal-only" && nodes.is_empty() && state.at() == time(10)
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let mut oracle = linted_host_oracle(HoldsAtTime {
+        name: "terminal-only",
+        holds_at: 10,
+        evaluated_at: &evaluated_at,
+    });
 
-    evaluator.observe_prefix(&observable_prefix(3, Vec::new()), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(7, Vec::new()), &mut oracle);
+    let entries = [
+        boundary_entry(0, 3),
+        boundary_entry(1, 7),
+        boundary_entry(2, 10),
+    ];
+
+    evaluator.observe_prefix(&log_prefix(&entries, 1), &mut oracle);
+    evaluator.observe_prefix(&log_prefix(&entries, 2), &mut oracle);
     assert!(evaluated_at.borrow().is_empty());
 
-    let report = evaluator.finalize_prefix(&observable_prefix(10, Vec::new()), &mut oracle);
+    let report = evaluator.finalize_prefix(&log_prefix(&entries, 3), &mut oracle);
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(*evaluated_at.borrow(), vec![10]);

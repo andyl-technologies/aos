@@ -2,13 +2,53 @@
 
 use super::*;
 
+/// Even sequence supplied only inside an original scheduler publication writer.
+///
+/// This local transaction receipt identifies ordering, not execution permission
+/// or a native console phase. It is never stored as a Rust object in shared memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerAdvanceSequence(u64);
+
+impl SchedulerAdvanceSequence {
+    /// Returns the exact even sequence released by this publication.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Even request proposed inside its original host publication transaction.
+///
+/// This local value is not yet visible to the node and confers no control or
+/// phase authority. Native fields prepared with it must also match the actual
+/// subsequently acquired request and its complete authenticated binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparedControlBoundaryRequest(u32);
+
+impl PreparedControlBoundaryRequest {
+    /// Returns the exact even successor proposed by this original publisher.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[path = "frame_node/advance_bound_publication.rs"]
+mod advance_bound_publication;
+#[path = "frame_node/contention_backoff.rs"]
+mod contention_backoff;
+#[path = "frame_node/control_boundary_wait.rs"]
+mod control_boundary_wait;
 #[path = "frame_node/frame_entry.rs"]
 mod frame_entry;
 #[path = "frame_node/futex.rs"]
 mod futex;
+#[path = "frame_node/host_publication.rs"]
+mod host_publication;
 #[path = "frame_node/preemption_mailbox.rs"]
 mod preemption_mailbox;
 
+pub use control_boundary_wait::ControlBoundaryWaitOutcome;
 pub use frame_entry::{
     FRAME_DELIVERY_PENDING, FRAME_DELIVERY_RETAINED, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT,
     FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
@@ -20,13 +60,28 @@ pub use frame_entry::{
 pub use futex::{
     FutexError, FutexWait, FutexWaitOutcome, FutexWakeResult, RegionControlError, WakeAction,
 };
+pub use host_publication::HostPublicationWaitOutcome;
 pub use preemption_mailbox::{
     PreemptionMailboxError, PublishedPreemptionCommand, SchedulerPreemptionCommand,
     SchedulerPreemptionKind,
 };
 
+#[path = "frame_node/control_effect.rs"]
+mod control_effect;
+pub use control_effect::{
+    NodeBoundaryPublication, NodeBoundaryPublicationError, SchedulerAdvancePublication,
+};
+
+#[path = "frame_node/control_publication.rs"]
+mod control_publication;
+pub use control_publication::HostControlBoundaryPublication;
+#[cfg(feature = "test-support")]
+pub use control_publication::{ModeledControlBoundaryPublication, ModeledNodeStatePublication};
+
 #[path = "frame_node/layout.rs"]
 mod layout;
+#[path = "frame_node/restore_publication.rs"]
+mod restore_publication;
 #[path = "frame_node/runtime.rs"]
 mod runtime;
 #[path = "frame_node/snapshot.rs"]
@@ -129,6 +184,48 @@ mod advance_publication_tests {
     }
 
     #[test]
+    fn single_attempt_snapshot_requires_both_complete_publications() {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.publish_scheduler_advance(ceiling(100), AdvanceStopCondition::NextAuthenticatedIdle)
+            .unwrap_or_else(|error| panic!("scheduler control should publish: {error}"));
+        slot.publish_idle(10, 20)
+            .unwrap_or_else(|error| panic!("idle control should publish: {error}"));
+        let original = slot.snapshot();
+        assert_eq!(slot.try_snapshot(), Some(original));
+
+        // An unfinished writer may already have changed payload fields. Neither
+        // seqlock permits a host to accept that partial state.
+        slot.publish_gen
+            .store(original.publish_gen + 1, Ordering::Release);
+        slot.current_icount.store(15, Ordering::Release);
+        assert_eq!(slot.try_snapshot(), None);
+        slot.advance_publication_sequence
+            .store(original.advance_publication_sequence + 1, Ordering::Release);
+        slot.publish_gen
+            .store(original.publish_gen + 2, Ordering::Release);
+        assert_eq!(slot.try_snapshot(), None);
+        slot.max_advance_icount.store(80, Ordering::Release);
+        slot.advance_publication_sequence
+            .store(original.advance_publication_sequence + 2, Ordering::Release);
+
+        let accepted = slot
+            .try_snapshot()
+            .unwrap_or_else(|| panic!("completed publications must be readable"));
+        assert_eq!(accepted.current_icount, 15);
+        assert_eq!(accepted.max_advance_icount, 80);
+        assert_eq!(
+            accepted.advance_stop_condition,
+            AdvanceStopCondition::NextAuthenticatedIdle.encode()
+        );
+        assert_eq!(accepted.publish_gen, original.publish_gen + 2);
+        assert_eq!(
+            accepted.advance_publication_sequence,
+            original.advance_publication_sequence + 2
+        );
+        assert_eq!(slot.snapshot(), accepted);
+    }
+
+    #[test]
     fn full_mode_aba_changes_the_publication_sequence() {
         let slot = NodeSlot::new(KIND_VM);
         let before = slot.snapshot();
@@ -218,3 +315,7 @@ mod advance_publication_tests {
         assert!(!slot.is_runnable_after_idle_publish());
     }
 }
+
+#[cfg(test)]
+#[path = "frame_node/advance_effect_tests.rs"]
+mod advance_effect_tests;

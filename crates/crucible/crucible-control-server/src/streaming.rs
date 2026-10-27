@@ -271,10 +271,13 @@ impl InProcessStreamingSession {
             .map(ReproductionCommandRecord::from)
             .filter(|record| record.at_sequence <= attach_tail.next_sequence)
             .collect();
-        let snapshot = AttachSnapshot::from_event_log(
-            self.event_log.snapshot_through(attach_tail),
-            reproduction,
-        );
+        let summary = self
+            .event_log
+            .snapshot_through(attach_tail)
+            .map_err(|error| StreamingApiError::EventLogUnavailable {
+                reason: error.to_string(),
+            })?;
+        let snapshot = AttachSnapshot::from_event_log(summary, reproduction);
         let live = self.live.read();
         state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
@@ -481,6 +484,9 @@ fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
         SessionEventLogStreamError::Lagged { skipped } => {
             StreamingApiError::EventStreamLagged { skipped }
         }
+        SessionEventLogStreamError::Unavailable(error) => StreamingApiError::EventLogUnavailable {
+            reason: error.to_string(),
+        },
     }
 }
 
@@ -641,7 +647,8 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayInitialConfigurationMismatch { .. }
         | SessionError::ControlReplayRecordInvalid { .. }
         | SessionError::ControlReplayTerminalSamplingCleanup { .. }
-        | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
+        | SessionError::DebugRuntimeRepositionMismatch(_)
+        | SessionError::EventLogStore(_) => CommandRejectionKind::Internal,
     }
 }
 
@@ -674,9 +681,9 @@ fn schedule_error_rejection_kind(error: &crucible_engine::ScheduleError) -> Comm
 fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
     match error {
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
-        SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
-            CommandRejectionKind::InvalidArgument
-        }
+        SchedulerError::TimeConversion(_)
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => CommandRejectionKind::InvalidArgument,
         SchedulerError::BoundaryViolation { .. }
         | SchedulerError::OperationalBoundary { .. }
         | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,

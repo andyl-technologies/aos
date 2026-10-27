@@ -327,7 +327,7 @@ fn forced_duplicate_resampling_policy(
                         .ok()?,
                         ObservationId::from_content_id(content_id(
                             ObjectKind::Observation,
-                            14,
+                            16,
                             &format!("forced-observation-{coordinate}"),
                         ))
                         .ok()?,
@@ -540,23 +540,45 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
         .repository
         .project_sequential_monte_carlo_estimate(campaign, fixture.head)
         .expect("project complete SMC estimate");
-    let evidence = fixture
-        .repository
-        .collect_sequential_monte_carlo_evidence(campaign, fixture.head)
-        .expect("collect complete SMC evidence");
+    let evidence = CollectedEvidence::collect(fixture.repository.as_ref(), campaign, fixture.head);
     assert_eq!(
-        crate::verify_sequential_monte_carlo_evidence(&evidence)
-            .expect("verify complete SMC evidence"),
-        report
+        evidence.verify().expect("verify complete SMC evidence"),
+        crate::StatisticalEvidenceReport::SequentialMonteCarlo(report.clone())
     );
     assert_eq!(
-        crate::SequentialMonteCarloEvidence::from_canonical_bytes(&evidence.canonical_bytes())
-            .expect("round-trip complete SMC evidence"),
-        evidence
+        crate::StatisticalEvidenceManifest::from_canonical_bytes(
+            &evidence.manifest.canonical_bytes()
+        )
+        .expect("round-trip SMC evidence manifest"),
+        evidence.manifest
     );
-    let root_lookups = evidence
-        .required_root_lookups()
-        .expect("derive SMC evidence root lookups");
+    let draws = evidence.draws();
+    let transitions = evidence.transitions();
+
+    // Incremental replay keeps at most one stage of sources plus the stage
+    // being recorded, never every completed transition.
+    let particle_count = 2;
+    let manifest = &evidence.manifest;
+    let mut replay =
+        crate::statistics::SmcEvidenceReplay::new(crate::statistics::EvidenceBasis::new(
+            manifest.snapshot(),
+            manifest.planning_view(),
+            manifest.policy(),
+            manifest.lineage(),
+        ))
+        .expect("start incremental SMC replay");
+    for draw in &draws {
+        replay.push_initial_draw(draw).expect("replay initial draw");
+        assert!(replay.retained_source_count() <= particle_count);
+    }
+    for transition in &transitions {
+        replay
+            .push_transition(transition)
+            .expect("replay SMC transition");
+        assert!(replay.retained_source_count() <= 2 * particle_count);
+    }
+    assert_eq!(replay.finish().expect("finish incremental replay"), report);
+    let root_lookups = evidence.root_lookups();
     assert!(!root_lookups.is_empty());
     assert_statistical_evidence_root_lookups(
         fixture.repository.as_ref(),
@@ -564,8 +586,7 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
         &root_lookups,
     );
 
-    let design = evidence
-        .initial()
+    let design = manifest
         .policy()
         .sequential_monte_carlo_design()
         .expect("SMC evidence policy design");
@@ -584,7 +605,7 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
     .expect("structurally valid corrupted selector");
     assert!(matches!(
         crate::statistics::verify_smc_source_selector(
-            evidence.initial().draws()[0].execution(),
+            draws[0].execution(),
             &corrupted_selector,
             distribution,
         ),
@@ -593,7 +614,7 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
         })
     ));
 
-    let first_transition = &evidence.transitions()[0];
+    let first_transition = &transitions[0];
     let execution = first_transition.execution();
     let original = execution.request_opportunity();
     let corrupted_opportunity = ChoiceOpportunity::new(
@@ -610,19 +631,21 @@ fn two_stage_smc_executes_and_replays_the_same_estimate_after_restart() {
         original.declaration().clone(),
         original.domain().clone(),
     );
-    let mut corrupted_transitions = evidence.transitions().to_vec();
-    corrupted_transitions[0] = crate::SmcTransitionEvidence::new(
-        first_transition.stage(),
-        first_transition.slot(),
-        statistical_execution_with_request_opportunity(execution, corrupted_closure),
-    );
-    let corrupted =
-        crate::SequentialMonteCarloEvidence::new(evidence.initial().clone(), corrupted_transitions);
-    assert!(crate::verify_sequential_monte_carlo_evidence(&corrupted).is_err());
+    let mut corrupted_items = evidence.items();
+    corrupted_items[draws.len()] =
+        crate::StatisticalEvidenceItem::Transition(crate::SmcTransitionEvidence::new(
+            first_transition.stage(),
+            first_transition.slot(),
+            statistical_execution_with_request_opportunity(execution, corrupted_closure),
+        ));
+    assert!(evidence.verify_items(corrupted_items).is_err());
 
     assert_eq!(report.snapshot(), fixture.head);
     assert_eq!(report.generations().len(), 2);
-    assert_eq!(report.generations()[0], generation);
+    assert_eq!(
+        report.generations()[0],
+        crate::StatisticalGenerationSummary::from_generation(&generation)
+    );
     assert_eq!(report.generations()[1].completed_stage(), 1);
     assert_eq!(report.generations()[1].next_stage(), 2);
     assert_eq!(report.final_particles().len(), 2);
@@ -827,24 +850,49 @@ fn forced_resampling_executes_duplicate_ancestry_and_replays_after_restart() {
     };
     assert_eq!(report.normalization_product(), stage_one_weight);
     assert_eq!(report.generations().len(), 2);
-    assert_eq!(report.generations()[0], initial_generation);
+    assert_eq!(
+        report.generations()[0],
+        crate::StatisticalGenerationSummary::from_generation(&initial_generation)
+    );
     assert!(report.generations()[1].resampled());
     assert_eq!(
         report.generations()[1].normalization_factor(),
         stage_one_weight
     );
+
+    // The summary omits slots, so check the resampled duplicate ancestry
+    // through the stage-two requests that consumed the second generation.
+    let evidence = CollectedEvidence::collect(fixture.repository.as_ref(), campaign, fixture.head);
     assert_eq!(
-        report.generations()[1].slots()[0].observation(),
-        report.generations()[1].slots()[1].observation()
+        evidence
+            .verify()
+            .expect("verify forced-resampling evidence"),
+        crate::StatisticalEvidenceReport::SequentialMonteCarlo(report.clone())
     );
-    assert_eq!(
-        report.generations()[1].slots()[0].attempt(),
-        report.generations()[1].slots()[1].attempt()
+    let stage_two = evidence
+        .transitions()
+        .iter()
+        .filter(|transition| transition.stage() == 2)
+        .map(|transition| {
+            let CandidateSource::StatisticalSmc(source) = transition.execution().request().source()
+            else {
+                panic!("stage-two request is not an SMC transition");
+            };
+            (
+                source.generation(),
+                source.input_particle(),
+                transition.execution().parent().id().expect("parent ID"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(stage_two.len(), 2);
+    assert!(
+        stage_two
+            .iter()
+            .all(|(generation, _, _)| *generation == report.generations()[1].id())
     );
-    assert_ne!(
-        report.generations()[1].slots()[0].parent(),
-        report.generations()[1].slots()[1].parent()
-    );
+    assert_eq!(stage_two[0].2, stage_two[1].2);
+    assert_ne!(stage_two[0].1, stage_two[1].1);
     assert_eq!(report.final_particles().len(), 2);
     assert_eq!(
         report

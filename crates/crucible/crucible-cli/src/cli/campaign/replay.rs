@@ -61,7 +61,7 @@ where
         crucible_campaign::CampaignFindingObjectKind::Reproduction
     };
     let request = crucible_campaign::GetCampaignFindingObjectRequest::new(
-        principal,
+        principal.clone(),
         campaign.clone(),
         snapshot,
         finding,
@@ -81,10 +81,32 @@ where
         }
     };
 
-    replay_finding_object(&campaign, snapshot, finding, args.minimized, reproduction)
+    let scope = crate::cli_triage_debug::campaign_evidence::CampaignFindingCaptureScope {
+        principal,
+        campaign: campaign.clone(),
+        snapshot,
+        finding,
+    };
+    let artifact = crate::cli_triage_debug::campaign_evidence::fetch_campaign_reproduction(
+        client,
+        &scope,
+        args.minimized,
+        reproduction,
+    )?;
+    replay_finding_object(
+        &campaign,
+        snapshot,
+        finding,
+        args.minimized,
+        reproduction,
+        &artifact,
+    )
 }
 
 /// Replays one authenticated reproduction and constructs its CLI report.
+///
+/// `artifact` is the Crucible artifact decoded from the reproduction's
+/// authenticated payload segments.
 ///
 /// # Errors
 ///
@@ -95,8 +117,9 @@ pub(super) fn replay_finding_object(
     finding: crucible_campaign::FindingId,
     minimized: bool,
     reproduction: &crucible_campaign::ReproductionArtifact,
+    artifact: &crucible_engine::ReproductionArtifact,
 ) -> Result<CampaignReplayReport, CliError> {
-    let replayed = authenticate_and_replay(reproduction)?;
+    let replayed = authenticate_and_replay(reproduction, artifact)?;
     let reproduction_id = reproduction.id().map_err(|error| {
         backend_error(format!(
             "campaign reproduction identity is invalid after replay: {error}"
@@ -126,21 +149,19 @@ struct AuthenticatedCampaignReplay {
     replayed_state: String,
 }
 
+/// Replays `artifact` and checks it against the campaign record's bindings.
+///
+/// The artifact must re-derive the record's exact payload, so it is the one
+/// the record names and not merely a semantically equal reproduction.
 fn authenticate_and_replay(
     reproduction: &crucible_campaign::ReproductionArtifact,
+    artifact: &crucible_engine::ReproductionArtifact,
 ) -> Result<AuthenticatedCampaignReplay, CliError> {
-    if reproduction.payload_schema() != crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 {
+    if reproduction.payload_schema() != crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5 {
         return Err(backend_error(
             "campaign reproduction payload uses an unsupported schema",
         ));
     }
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-            .map_err(|error| {
-                backend_error(format!(
-                    "campaign reproduction payload is not a current replay artifact: {error}"
-                ))
-            })?;
     let replay = artifact
         .replay()
         .map_err(|error| backend_error(format!("campaign reproduction replay failed: {error}")))?;
@@ -152,10 +173,11 @@ fn authenticate_and_replay(
     }
     .id()
     .to_hex();
+    let payload_matches = crucible_daemon::crucible_reproduction_payload(artifact)
+        .is_ok_and(|payload| &payload == reproduction.reproduction_payload());
     if scenario != reproduction.scenario().to_hex()
         || reproduced_configuration != configuration
-        || artifact.id().to_hex()
-            != crucible_engine::ContentHash::from_bytes(reproduction.payload()).to_hex()
+        || !payload_matches
     {
         return Err(backend_error(
             "campaign reproduction payload disagrees with its authenticated semantic binding",
@@ -225,6 +247,7 @@ mod tests {
             &crucible_engine::Schedule::empty(),
         )?;
         let replay = artifact.replay()?;
+        let payload = crucible_daemon::crucible_reproduction_payload(&artifact)?;
         let scenario_id = crucible_campaign::ScenarioDefId::parse(&scenario.id().to_hex())?;
         let configuration = crucible_engine::Configuration {
             def: artifact.scenario_def(),
@@ -257,11 +280,10 @@ mod tests {
                     b"campaign replay finding",
                 ),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-            artifact.to_compact_binary(),
+            payload.clone(),
         )?;
 
-        let authenticated = authenticate_and_replay(&reproduction)?;
+        let authenticated = authenticate_and_replay(&reproduction, &artifact)?;
         assert_eq!(authenticated.artifact, artifact.id().to_hex());
         assert_eq!(authenticated.configuration, configuration.id().to_hex());
         assert_eq!(authenticated.replayed_state, replay.state.to_hex());
@@ -279,10 +301,9 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-            artifact.to_compact_binary(),
+            payload.clone(),
         )?;
-        let error = authenticate_and_replay(&mismatched)
+        let error = authenticate_and_replay(&mismatched, &artifact)
             .err()
             .ok_or("mismatched campaign replay unexpectedly authenticated")?;
         assert!(error.to_string().contains("semantic binding"));
@@ -300,10 +321,9 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-            artifact.to_compact_binary(),
+            payload.clone(),
         )?;
-        let error = authenticate_and_replay(&mismatched_scenario)
+        let error = authenticate_and_replay(&mismatched_scenario, &artifact)
             .err()
             .ok_or("scenario-mismatched campaign replay unexpectedly authenticated")?;
         assert!(error.to_string().contains("semantic binding"));
@@ -316,10 +336,13 @@ mod tests {
                 reproduction.configuration_artifact(),
                 reproduction.finding_fingerprint(),
             ),
-            crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4 + 1,
-            artifact.to_compact_binary(),
+            crucible_campaign::ReproductionPayload::new(
+                crucible_daemon::CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5 + 1,
+                payload.bytes().to_vec(),
+                payload.segments().to_vec(),
+            )?,
         )?;
-        let error = authenticate_and_replay(&wrong_schema)
+        let error = authenticate_and_replay(&wrong_schema, &artifact)
             .err()
             .ok_or("wrong-schema campaign replay unexpectedly authenticated")?;
         assert!(error.to_string().contains("unsupported schema"));

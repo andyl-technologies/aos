@@ -482,7 +482,7 @@ impl CampaignRepository {
         );
         let minimization = FindingMinimizationEvidence::new(
             reproduction,
-            3,
+            4,
             b"campaign test minimization policy".to_vec(),
             Vec::new(),
             replayed_state,
@@ -493,8 +493,7 @@ impl CampaignRepository {
             original.configuration(),
             original.configuration_artifact(),
             original.finding_fingerprint(),
-            original.payload_schema(),
-            original.payload().to_vec(),
+            original.reproduction_payload().clone(),
             minimization.clone(),
         )?;
         let signature_minimization = FindingSignatureMinimizationEvidence::new(
@@ -998,109 +997,6 @@ fn branch_attempt(
     (selection, path, attempt)
 }
 
-#[test]
-fn selection_batch_resolution_shares_dependencies_and_bounds_records() {
-    let (repository, lineage, _, blobs) = counted_fixture();
-    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1).expect("boolean domain"));
-    let declaration = SelectableDeclaration::new(
-        "product.test.selection-batch",
-        ChoiceSource::Workload {
-            producer: "selection-batch".to_owned(),
-        },
-        domain.clone(),
-        ChoiceValue::Boolean(false),
-        ChoiceClassContext::new(BTreeSet::new()).expect("choice class"),
-        BTreeSet::new(),
-        true,
-    )
-    .expect("declaration");
-    repository
-        .publish_choice_domain(&domain)
-        .expect("publish domain");
-    repository
-        .publish_selectable(&declaration)
-        .expect("publish declaration");
-
-    let mut ids = Vec::new();
-    for ordinal in 0u16..256 {
-        let material = ordinal.to_le_bytes();
-        let opportunity = ChoiceOpportunity::new(
-            lineage.scenario(),
-            &declaration,
-            &domain,
-            ChoiceCoordinate {
-                scheduler: CampaignHash::derive("test.selection-batch", &material),
-                producer: CampaignHash::derive("test", b"selection-batch"),
-            },
-            format!("selection-{ordinal}"),
-            None,
-        )
-        .expect("opportunity");
-        repository
-            .publish_choice_opportunity(&opportunity)
-            .expect("publish opportunity");
-        let selection = Selection::new(
-            &opportunity,
-            &domain,
-            ChoiceValue::Boolean(false),
-            crate::SelectionOrigin::Default,
-        )
-        .expect("selection");
-        ids.push(
-            repository
-                .publish_selection(&selection)
-                .expect("publish selection"),
-        );
-    }
-
-    let resolved = repository
-        .resolve_selections(&ids)
-        .expect("resolve shared selection dependencies");
-    assert_eq!(resolved.len(), ids.len());
-    assert!(
-        resolved
-            .iter()
-            .all(|selection| std::ptr::eq(selection.domain(), resolved[0].domain()))
-    );
-    let target_logical_length = blobs
-        .read(ids[0].content_id(), None)
-        .expect("selection record")
-        .logical_length();
-    let open_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let bounded_repository = CampaignRepository::new(
-        Arc::new(FailOnOpenBlobBackend {
-            inner: blobs,
-            target: ids[0].content_id(),
-            target_logical_length,
-            open_calls: open_calls.clone(),
-        }),
-        repository.refs.clone(),
-    );
-    let undersized_limit = usize::try_from(target_logical_length)
-        .expect("selection record length")
-        .checked_sub(1)
-        .expect("nonempty selection record");
-
-    assert!(matches!(
-        bounded_repository
-            .resolve_selections_with_canonical_byte_limit(&ids[..1], undersized_limit),
-        Err(CampaignRepositoryError::SelectionResolutionBudgetExceeded {
-            maximum_canonical_bytes
-        }) if maximum_canonical_bytes == undersized_limit
-    ));
-    assert_eq!(open_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    let oversized = vec![ids[0]; MAX_SELECTION_RESOLUTION_RECORDS + 1];
-    assert!(matches!(
-        repository.resolve_selections(&oversized),
-        Err(CampaignRepositoryError::Codec(
-            CampaignCodecError::InvalidValue {
-                reason: "selection resolution batch exceeds record limit"
-            }
-        ))
-    ));
-}
-
 fn admitted_observation_fixture(
     repository: &CampaignRepository,
     lineage: &CampaignLineage,
@@ -1213,6 +1109,12 @@ fn admitted_observation_fixture_with_stop(
     let coverage_id = repository
         .publish_coverage_projection(&coverage)
         .expect("publish coverage");
+    let discovered = if discovered_choice {
+        BTreeSet::from([request.opportunity()])
+    } else {
+        BTreeSet::new()
+    };
+    let discovered = stored_choice_set(repository, discovered);
     let observation = Observation::new(
         admitted.attempt,
         Observation::outcome(
@@ -1224,14 +1126,58 @@ fn admitted_observation_fixture_with_stop(
             property_id,
             coverage_id,
         ),
-        if discovered_choice {
-            BTreeSet::from([request.opportunity()])
-        } else {
-            BTreeSet::new()
-        },
+        discovered,
     )
     .expect("observation");
     (genesis.snapshot_id(), admitted, observation)
+}
+
+/// Stores the paged discovered-choice set an executor candidate would publish.
+///
+/// Fixtures that publish an observation directly, without its candidate,
+/// must make the set's nodes available exactly as candidate publication does.
+fn stored_choice_set(
+    repository: &CampaignRepository,
+    discovered: BTreeSet<ChoiceOpportunityId>,
+) -> BTreeSet<ChoiceOpportunityId> {
+    repository
+        .merkle
+        .build_from_sorted(
+            discovered
+                .iter()
+                .map(|opportunity| (choice_set_key(*opportunity), opportunity.content_id())),
+        )
+        .expect("store discovered choice set");
+    discovered
+}
+
+/// Returns the opportunity identities an unpublished candidate carries.
+fn candidate_discovered_ids(candidate: &ObservationCandidate) -> BTreeSet<ChoiceOpportunityId> {
+    candidate
+        .discovered_choices()
+        .iter()
+        .map(|discovery| {
+            discovery
+                .opportunity()
+                .id()
+                .expect("discovered opportunity id")
+        })
+        .collect()
+}
+
+/// Reads an observation's discovered opportunities from its stored paged set.
+fn discovered_choice_ids(
+    repository: &CampaignRepository,
+    observation: &Observation,
+) -> BTreeSet<ChoiceOpportunityId> {
+    let mut discovered = BTreeSet::new();
+    repository
+        .for_each_discovered_choice(observation, |opportunity| {
+            discovered.insert(opportunity);
+            Ok(())
+        })
+        .expect("read discovered choice set");
+    discovered
 }
 
 fn choice_discovery_fixture(
@@ -1373,10 +1319,12 @@ mod destructive_recovery;
 mod discovery;
 mod execution;
 mod planner_scan_index;
+mod planner_validation;
 mod proposal_head;
 mod request_budget_scale;
 mod savepoint;
 mod scenario_default;
+mod selection_resolver;
 mod statistics;
 mod transfer;
 mod validation;

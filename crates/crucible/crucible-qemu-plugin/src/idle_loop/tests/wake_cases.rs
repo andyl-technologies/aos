@@ -42,7 +42,8 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
     assert_eq!(inbound_wins.cause(), IdleWakeCause::InboundFrame);
     assert!(inbound_wins.requires_scheduler_wait());
 
-    let ceiling_wins = match compute_idle_wake_plan(
+    // The ceiling bounds the node but never wakes it (RFC-0010 SCHED-28).
+    let parked = match compute_idle_wake_plan(
         10,
         ExactDeadlineReport::NoArmedTimer,
         None,
@@ -51,10 +52,12 @@ fn idle_loop_computes_wake_from_timer_inbound_and_ceiling() {
         None,
     ) {
         Ok(plan) => plan,
-        Err(error) => panic!("ceiling wake plan should compute: {error}"),
+        Err(error) => panic!("parked wake plan should compute: {error}"),
     };
-    assert_eq!(ceiling_wins.desired_wake_icount(), 64);
-    assert_eq!(ceiling_wins.cause(), IdleWakeCause::SchedulerCeiling);
+    assert_eq!(parked.desired_wake_icount(), IDLE_WAKE_NONE);
+    assert!(parked.parks_without_wake());
+    assert!(parked.requires_scheduler_wait());
+    assert_eq!(parked.cause(), IdleWakeCause::SchedulerCeiling);
 }
 
 /// A published device-I/O completion deadline pulls the wake down to the
@@ -115,10 +118,10 @@ fn idle_loop_device_completion_merges_with_timer_by_min() {
     assert_eq!(device_first.cause(), IdleWakeCause::DeviceIoCompletion);
 }
 
-/// A zero (retracted) completion deadline leaves the node frozen to the
-/// ceiling with timer deadlines held, the pre-fix device-I/O behavior.
+/// A zero (retracted) completion deadline holds timer deadlines and parks the
+/// node without a wake; the ceiling is never a target.
 #[test]
-fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
+fn idle_loop_retracted_device_completion_parks_without_wake() {
     let plan = match compute_idle_wake_plan(
         10,
         ExactDeadlineReport::Armed { deadline_ps: 40 },
@@ -132,7 +135,7 @@ fn idle_loop_retracted_device_completion_freezes_to_ceiling() {
     };
     assert_eq!(plan.timer_deadline_icount(), Some(40));
     assert_eq!(plan.device_completion_deadline_tick(), None);
-    assert_eq!(plan.desired_wake_icount(), 1_000);
+    assert_eq!(plan.desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(plan.cause(), IdleWakeCause::DeviceIoFreeze);
 }
 
@@ -201,9 +204,9 @@ fn idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake() {
 
     assert_eq!(request.plan().timer_deadline_icount(), Some(20));
     assert!(request.plan().device_io_holding_ticks());
-    assert_eq!(request.plan().desired_wake_icount(), 50);
+    assert_eq!(request.plan().desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
-    assert_eq!(slot.snapshot().idle_wake_icount, 50);
+    assert_eq!(slot.snapshot().idle_wake_icount, IDLE_WAKE_NONE);
 }
 
 #[test]
@@ -233,7 +236,7 @@ fn idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale() {
 
     assert_eq!(request.plan().timer_deadline_icount(), Some(20));
     assert!(request.plan().device_io_holding_ticks());
-    assert_eq!(request.plan().desired_wake_icount(), 50);
+    assert_eq!(request.plan().desired_wake_icount(), IDLE_WAKE_NONE);
     assert_eq!(request.plan().cause(), IdleWakeCause::DeviceIoFreeze);
 }
 
@@ -467,4 +470,46 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
     );
     assert_eq!(clock.current_icount(), 20);
     assert_eq!(slot.snapshot().status, STATUS_RUNNING);
+}
+
+#[test]
+fn a_timer_plan_fires_its_timer_only_when_released_to_the_deadline() {
+    let plan = match compute_idle_wake_plan(
+        10,
+        ExactDeadlineReport::Armed { deadline_ps: 40 },
+        None,
+        SchedulerCeiling::new(20),
+        false,
+        None,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => panic!("timer wake plan should compute: {error}"),
+    };
+    assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
+
+    assert!(plan.fires_timer_at(40));
+
+    // A frame that arrives while the node parks, or an exact-event ceiling,
+    // can release the node short of its timer. That advance never reaches
+    // the deadline, so QEMU must not be asked to witness the timer firing.
+    assert!(!plan.fires_timer_at(25));
+}
+
+#[test]
+fn a_plan_woken_by_another_source_never_fires_its_timer() {
+    let plan = match compute_idle_wake_plan(
+        10,
+        ExactDeadlineReport::Armed { deadline_ps: 80 },
+        Some(30),
+        SchedulerCeiling::new(50),
+        false,
+        None,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => panic!("inbound wake plan should compute: {error}"),
+    };
+    assert_eq!(plan.cause(), IdleWakeCause::InboundFrame);
+
+    assert!(!plan.fires_timer_at(30));
+    assert!(!plan.fires_timer_at(80));
 }

@@ -5,13 +5,14 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, CodePoint, ConditionLeaf,
-    Decision, DeliveryOrderDecision, EventKey, FramePredicate, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate, Icount,
-    LintedHostAssertionOracle, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, ObservedState,
+    AssertionDef, AssertionId, AssertionRunVerdict, BlackBoxHostOracle, CodePoint, Decision,
+    DeliveryOrderDecision, EventKey, FramePredicate, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionPredicate, Icount, LintedHostAssertionOracle, NamedLeaf,
+    NamedPredicateError, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, ObservedBatch,
     Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint,
-    RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId,
-    SchedulingNodeKind, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, VirtualTime, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 fn node(name: &str) -> NodeId {
@@ -77,12 +78,44 @@ fn named_properties(assertions: Vec<AssertionDef>) -> Properties {
         .expect("named host-side assertion properties should validate")
 }
 
-fn observable_prefix(
-    ticks: u64,
-    events: Vec<ObservableEvent>,
-) -> crucible_engine::ConditionEventLogPrefix {
-    crucible_engine::test_support::condition_prefix_from_observable_events_for_test(ticks, events)
-        .expect("observable test prefix should be checked")
+/// One run's log, grown a quantum at a time so each prefix extends the last.
+#[derive(Default)]
+struct GrowingLog {
+    entries: Vec<SchedulerEventLogEntry>,
+}
+
+impl GrowingLog {
+    /// Appends `events` and the boundary closing the quantum at `ticks`.
+    fn quantum(
+        &mut self,
+        ticks: u64,
+        events: Vec<ObservableEvent>,
+    ) -> crucible_engine::ConditionEventLogPrefix {
+        for event in &events {
+            let sequence = self.next_sequence();
+            self.entries.push(
+                crucible_engine::test_support::condition_observation_entry_for_test(
+                    sequence, event,
+                ),
+            );
+        }
+        let sequence = self.next_sequence();
+        self.entries.push(
+            crucible_engine::test_support::condition_boundary_entry_for_test(
+                sequence,
+                time(ticks),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        );
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            self.entries.clone(),
+        )
+        .expect("growing test log should form a checked prefix")
+    }
+
+    fn next_sequence(&self) -> u64 {
+        u64::try_from(self.entries.len()).expect("test log length fits u64")
+    }
 }
 
 fn payload_prefix(
@@ -186,12 +219,11 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle);
-    evaluator.observe_prefix(&observable_prefix(10, vec![request.clone()]), &mut oracle);
-    let satisfied = evaluator.observe_prefix(
-        &observable_prefix(12, vec![request.clone(), ack.clone()]),
-        &mut oracle,
-    );
+    let mut log = GrowingLog::default();
+
+    evaluator.observe_prefix(&log.quantum(1, Vec::new()), &mut oracle);
+    evaluator.observe_prefix(&log.quantum(10, vec![request]), &mut oracle);
+    let satisfied = evaluator.observe_prefix(&log.quantum(12, vec![ack]), &mut oracle);
     assert_outcome(
         &satisfied,
         "sometimes-ack",
@@ -202,14 +234,8 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
         "eventually-request-acks",
         HostAssertionOutcomeKind::Satisfied,
     );
-    evaluator.observe_prefix(
-        &observable_prefix(15, vec![request.clone(), ack.clone(), coverage.clone()]),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(
-        &observable_prefix(20, vec![request, ack, coverage, exited]),
-        &mut oracle,
-    );
+    evaluator.observe_prefix(&log.quantum(15, vec![coverage]), &mut oracle);
+    let report = evaluator.finalize_prefix(&log.quantum(20, vec![exited]), &mut oracle);
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 5);
@@ -264,8 +290,9 @@ fn host_side_assertions_preserve_once_latches_across_prefixes() {
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(12, vec![ack.clone()]), &mut oracle);
-    let report = evaluator.finalize_prefix(&observable_prefix(20, vec![ack, exited]), &mut oracle);
+    let mut log = GrowingLog::default();
+    evaluator.observe_prefix(&log.quantum(12, vec![ack]), &mut oracle);
+    let report = evaluator.finalize_prefix(&log.quantum(20, vec![exited]), &mut oracle);
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_outcome(
@@ -378,26 +405,12 @@ fn host_side_assertions_report_failures_and_warnings_without_guest_cooperation()
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = BlackBoxHostOracle;
 
-    evaluator.observe_prefix(&observable_prefix(2, vec![forbidden.clone()]), &mut oracle);
-    evaluator.observe_prefix(
-        &observable_prefix(3, vec![forbidden.clone(), request.clone()]),
-        &mut oracle,
-    );
-    evaluator.observe_prefix(
-        &observable_prefix(
-            4,
-            vec![
-                forbidden.clone(),
-                request.clone(),
-                forbidden_coverage.clone(),
-            ],
-        ),
-        &mut oracle,
-    );
-    let report = evaluator.finalize_prefix(
-        &observable_prefix(10, vec![forbidden, request, forbidden_coverage]),
-        &mut oracle,
-    );
+    let mut log = GrowingLog::default();
+
+    evaluator.observe_prefix(&log.quantum(2, vec![forbidden]), &mut oracle);
+    evaluator.observe_prefix(&log.quantum(3, vec![request]), &mut oracle);
+    evaluator.observe_prefix(&log.quantum(4, vec![forbidden_coverage]), &mut oracle);
+    let report = evaluator.finalize_prefix(&log.quantum(10, Vec::new()), &mut oracle);
 
     assert!(report.verdict().is_failed());
     assert_eq!(report.verdict().failures().len(), 6);
@@ -479,21 +492,37 @@ fn host_named_predicates_receive_read_only_observed_state() {
         })),
     );
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle =
-        linted_host_oracle(
-            |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { name, nodes } => {
-                    name == "saw-ordering" && nodes.is_empty() && !state.ordering_facts().is_empty()
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let mut oracle = linted_host_oracle(SawOrdering);
 
     let outcomes = evaluator.observe_prefix(&prefix, &mut oracle);
 
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].assertion.name, "named-ordering");
     assert_eq!(outcomes[0].kind, HostAssertionOutcomeKind::Satisfied);
+}
+
+/// Latches once any cross-node ordering fact has been folded.
+struct SawOrdering;
+
+impl HostAssertionPredicate for SawOrdering {
+    type State = bool;
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) -> bool {
+        false
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        saw: &bool,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<bool, NamedPredicateError> {
+        Ok(*saw || !batch.ordering_facts().is_empty())
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, saw: &bool) -> bool {
+        leaf.name() == "saw-ordering" && leaf.nodes().is_empty() && *saw
+    }
 }
 
 #[test]

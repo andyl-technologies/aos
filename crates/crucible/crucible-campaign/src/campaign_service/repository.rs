@@ -33,11 +33,35 @@ impl CampaignServiceFailureSource for RepositoryCampaignServiceError {
             Self::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         }
     }
+
+    fn campaign_service_failure_category(&self) -> Option<CampaignServiceFailureCategory> {
+        match self {
+            Self::Repository(error) => repository_failure_category(error),
+            Self::Authorization(_) | Self::Codec(_) => None,
+        }
+    }
 }
 
 impl CampaignServiceFailureSource for CampaignRepositoryError {
     fn campaign_service_failure(&self) -> CampaignServiceFailure {
         repository_service_failure(self)
+    }
+}
+
+fn repository_failure_category(
+    error: &CampaignRepositoryError,
+) -> Option<CampaignServiceFailureCategory> {
+    let store = match error {
+        CampaignRepositoryError::Store(error)
+        | CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => error,
+        _ => return None,
+    };
+    match store {
+        StoreError::NotFound { .. } => Some(CampaignServiceFailureCategory::Missing),
+        StoreError::Unavailable => Some(CampaignServiceFailureCategory::Unavailable),
+        StoreError::Io { .. } => Some(CampaignServiceFailureCategory::Io),
+        StoreError::StreamIo { .. } => Some(CampaignServiceFailureCategory::StreamIo),
+        _ => None,
     }
 }
 
@@ -69,6 +93,7 @@ pub(super) fn repository_service_failure(
             CampaignServiceFailure::InvalidTransition { state: *state }
         }
         CampaignRepositoryError::Poisoned => CampaignServiceFailure::IntegrityFailure,
+        CampaignRepositoryError::Scratch { .. } => CampaignServiceFailure::Unavailable,
     }
 }
 
@@ -661,6 +686,33 @@ where
                         .read_reproduction_artifact(minimized.content_id())?,
                 )
             }
+            CampaignFindingObjectKind::ReproductionPayloadSegment { minimized, index } => {
+                let reproduction = if minimized {
+                    finding
+                        .minimized()
+                        .ok_or(CampaignRepositoryError::InvalidRequest {
+                            reason: "campaign-finding-has-no-minimized-reproduction",
+                        })?
+                } else {
+                    finding.reproduction()
+                };
+                let record = self
+                    .repository
+                    .read_reproduction_artifact(reproduction.content_id())?;
+                let segment = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| record.payload_segments().get(index))
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-finding-reproduction-segment-index",
+                    })?;
+                CampaignFindingObject::ReproductionPayloadSegment {
+                    minimized,
+                    index,
+                    bytes: self
+                        .repository
+                        .read_reproduction_payload_segment(reproduction, segment.content())?,
+                }
+            }
         };
         Ok(GetCampaignFindingObjectResponse::new(
             request,
@@ -1002,31 +1054,57 @@ where
         let (measurement_set, trace) = match request.kind() {
             CampaignTraceKind::ResolvedEffect => (
                 None,
-                observation.resolved_effect_trace().ok_or(
-                    CampaignRepositoryError::InvalidRequest {
+                observation
+                    .resolved_effect_trace()
+                    .ok_or(CampaignRepositoryError::InvalidRequest {
                         reason: "campaign-observation-has-no-resolved-effect-trace",
-                    },
-                )?,
+                    })?
+                    .manifest(),
             ),
+            CampaignTraceKind::ResolvedEffectSegment(segment) => {
+                if !observation
+                    .resolved_effect_trace()
+                    .is_some_and(|trace| trace.contains_segment(segment))
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-resolved-effect-trace-segment-is-not-owned",
+                    }
+                    .into());
+                }
+                (None, segment)
+            }
             CampaignTraceKind::MeasurementEventLog => {
                 let measurements = self
                     .repository
                     .load_measurement_set(observation.measurements())?;
-                let evidence = measurements.evaluation().evidence();
-                let trace = evidence
-                    .iter()
-                    .next()
-                    .copied()
-                    .filter(|_| evidence.len() == 1)
-                    .ok_or(CampaignRepositoryError::InvalidRequest {
+                let trace = super::trace::measurement_replay_leaf(&measurements).ok_or(
+                    CampaignRepositoryError::InvalidRequest {
                         reason: "campaign-measurement-event-log-is-not-unique",
-                    })?;
+                    },
+                )?;
                 (Some(measurements), trace)
             }
+            CampaignTraceKind::MeasurementEventLogSegment(segment) => {
+                let measurements = self
+                    .repository
+                    .load_measurement_set(observation.measurements())?;
+                if segment.schema_version() != super::trace::MEASUREMENT_EVENT_LOG_SEGMENT_SCHEMA
+                    || !measurements.evaluation().evidence().contains(&segment)
+                {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "campaign-measurement-event-log-segment-is-not-owned",
+                    }
+                    .into());
+                }
+                (Some(measurements), segment)
+            }
         };
-        let (total_bytes, chunk) =
-            self.repository
-                .load_trace_chunk(trace, request.offset(), request.limit())?;
+        let (total_bytes, chunk) = self.repository.load_trace_chunk(
+            trace,
+            request.offset(),
+            request.limit(),
+            request.kind().max_leaf_bytes(),
+        )?;
         Ok(GetCampaignTraceChunkResponse::new(
             request,
             head.snapshot().clone(),
@@ -1227,3 +1305,59 @@ where
 }
 
 mod occurrences;
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use crucible_store::content_store::{ContentId, ObjectKind};
+
+    use super::*;
+
+    #[test]
+    fn original_store_categories_preserve_public_unavailable_mapping() {
+        let cases = [
+            (
+                StoreError::NotFound {
+                    id: ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"missing"),
+                },
+                CampaignServiceFailureCategory::Missing,
+            ),
+            (
+                StoreError::Unavailable,
+                CampaignServiceFailureCategory::Unavailable,
+            ),
+            (
+                StoreError::Io {
+                    operation: "read",
+                    path: std::path::PathBuf::from("private-backend-path"),
+                    source: std::io::ErrorKind::PermissionDenied.into(),
+                },
+                CampaignServiceFailureCategory::Io,
+            ),
+            (
+                StoreError::StreamIo {
+                    operation: "read-stream",
+                    source: std::io::ErrorKind::BrokenPipe.into(),
+                },
+                CampaignServiceFailureCategory::StreamIo,
+            ),
+        ];
+
+        for (store, category) in cases {
+            let error =
+                RepositoryCampaignServiceError::Repository(CampaignRepositoryError::Store(store));
+
+            assert_eq!(
+                error.campaign_service_failure(),
+                CampaignServiceFailure::Unavailable
+            );
+            assert_eq!(error.campaign_service_failure_category(), Some(category));
+        }
+        let missing_campaign =
+            RepositoryCampaignServiceError::Repository(CampaignRepositoryError::NotFound);
+        assert_eq!(
+            missing_campaign.campaign_service_failure(),
+            CampaignServiceFailure::NotFound
+        );
+        assert_eq!(missing_campaign.campaign_service_failure_category(), None);
+    }
+}

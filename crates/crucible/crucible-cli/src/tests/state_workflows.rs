@@ -515,7 +515,8 @@ pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
     };
     let source_checkpoint =
         checkpoint_for_resume_configuration(&source_configuration, VirtualTime { ticks: 1 })?;
-    let replay_closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")?;
+    let replay_closure =
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty();
     let evidence = ResumeHandleEvidence {
         scenario_form: form,
         scenario: scenario.clone(),

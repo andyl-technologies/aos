@@ -117,7 +117,7 @@ fn verified_crucible_aggregate_drives_exact_campaign_objective() {
     };
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive("test", b"scenario"));
     let configuration = ConfigurationId::from_hash(CampaignHash::derive("configuration", b"child"));
-    let publication = evaluate_crucible_measurement_publication(
+    let (publication, segments) = crate::crucible_measurement::test_measurement_publication(
         scenario,
         configuration,
         &definitions,
@@ -129,6 +129,7 @@ fn verified_crucible_aggregate_drives_exact_campaign_objective() {
     let evaluation = verify_crucible_measurement_publication(
         publication.measurement_set(),
         publication.evidence(),
+        &segments,
         scenario,
         configuration,
         &definitions,

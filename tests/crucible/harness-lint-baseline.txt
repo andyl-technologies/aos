@@ -35,7 +35,7 @@ confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler
 confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1
 confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	fn		7
 confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	struct		3
-error-logging	crates/crucible/crucible-control-server/src/server.rs	stringly error	Result<_, String>		32
+error-logging	crates/crucible/crucible-control-server/src/server.rs	stringly error	Result<_, String>		26
 error-logging	crates/crucible/crucible-control-server/src/server/debug_reposition.rs	stringly error	Result<_, String>		4
 error-logging	crates/crucible/crucible-control-server/src/server/debug_wire.rs	stringly error	Result<_, String>		10
 error-logging	crates/crucible/crucible-control-server/src/server/query_wire.rs	stringly error	Result<_, String>		1

@@ -16,14 +16,17 @@ use publication::StagedEvaluationPublication;
 mod reservation;
 
 impl ProductionFaultRuntime {
+    /// Returns the event-record capacity left for staged QEMU occurrences.
+    ///
+    /// `referenced` is the cumulative referenced-event charge, including any
+    /// batch staged but not yet published.
     pub(super) fn event_staging_capacity(
         &self,
-        additional_emitted_events: &[ReferencedSignalEvent],
+        referenced: ReferencedEventUsage,
         staged_ledger: Option<&StagedQemuActionLedger>,
     ) -> Result<usize, ProductionFaultRuntimeError> {
         let (event_state_records, _bytes) = production_event_state_usage(
-            &self.emitted_events,
-            additional_emitted_events,
+            referenced,
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,
@@ -76,10 +79,10 @@ impl ProductionFaultRuntime {
     fn apply_event_staging_capacity(
         &self,
         nodes: &mut QemuNodeSet,
-        additional_emitted_events: &[ReferencedSignalEvent],
+        referenced: ReferencedEventUsage,
         staged_ledger: Option<&StagedQemuActionLedger>,
     ) -> Result<usize, ProductionFaultRuntimeError> {
-        let remaining = self.event_staging_capacity(additional_emitted_events, staged_ledger)?;
+        let remaining = self.event_staging_capacity(referenced, staged_ledger)?;
         let staged = nodes.staged_fault_event_count()?;
         let current = self
             .resource_limits
@@ -120,7 +123,7 @@ impl ProductionFaultRuntime {
         same_coordinate_sequence: u64,
         nodes: &mut QemuNodeSet,
     ) -> Result<BindingEvaluation, ProductionFaultRuntimeError> {
-        self.apply_event_staging_capacity(nodes, &[], None)?;
+        self.apply_event_staging_capacity(nodes, self.referenced_events.usage(), None)?;
         let Some(runtime) = self.runtime.as_ref() else {
             self.drain_qemu_observations(nodes, coordinate, 0)?;
             if self.pending_qemu_observations.is_empty() {
@@ -133,19 +136,22 @@ impl ProductionFaultRuntime {
         };
         let mut preview = runtime.preview_boundary(coordinate, same_coordinate_sequence)?;
         self.drain_qemu_observations(nodes, coordinate, 0)?;
+        let referenced = self
+            .referenced_events
+            .charge(&preview.emitted_events, self.resource_limits)?;
         validate_production_event_state(
-            &self.emitted_events,
-            &preview.emitted_events,
+            referenced.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,
             self.resource_limits,
         )?;
         let staged_qemu_ledger = self.stage_qemu_action_ledger(&preview.actions)?;
-        let publication = StagedEvaluationPublication::stage(self, coordinate, &mut preview)?;
+        let publication =
+            StagedEvaluationPublication::stage(self, coordinate, &mut preview, referenced)?;
         let maximum_event_records = self.apply_event_staging_capacity(
             nodes,
-            publication.emitted_events(),
+            publication.referenced_usage(),
             Some(&staged_qemu_ledger),
         )?;
         let mut sink = ProductionFaultActionSink::new_with_event_limit(
@@ -165,7 +171,7 @@ impl ProductionFaultRuntime {
         )?;
         let qemu_commits = sink.take_qemu_commit_evidence();
         if evaluation.actions != preview.actions
-            || evaluation.emitted_events != publication.emitted_events()
+            || !publication.matches_emitted_events(&evaluation.emitted_events)
             || evaluation.state_machine_events != preview.state_machine_events
             || evaluation.search_choices != publication.search_choices()
             || evaluation.observations.len() != publication.expected_observations()
@@ -213,7 +219,7 @@ impl ProductionFaultRuntime {
                 value: self.resource_limits.event_records,
             })?;
         let mut canonical_current = usize::try_from(production_record_state_usage(
-            &self.emitted_events,
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &self.pending_qemu_events,
             &self.qemu_issued_actions,
@@ -271,8 +277,7 @@ impl ProductionFaultRuntime {
                 .map_err(map_fault_event_drain_error)
         })?;
         validate_production_event_state(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,
@@ -443,8 +448,7 @@ impl ProductionFaultRuntime {
             }
         }
         validate_production_event_state(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &observations,
             &PendingQemuEventMap::new(),

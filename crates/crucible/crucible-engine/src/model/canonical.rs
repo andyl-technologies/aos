@@ -3,8 +3,8 @@
 use super::{
     Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
     EventLogOffset, EventSequenceState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
-    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
+    RngDrawAddress, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
+    SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -46,12 +46,170 @@ pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     }
 }
 
+/// Computes [`configuration_hash`] for the first `len` decisions of `schedule`.
+///
+/// The canonical encoding writes the decision count before the decisions, so
+/// one prefix identity cannot be extended into another; each costs one pass
+/// over its own decisions. Nothing is copied. Returns `None` when `len`
+/// exceeds the schedule.
+pub(super) fn configuration_prefix_hash(
+    def: &ScenarioDef,
+    schedule: &Schedule,
+    len: usize,
+) -> Option<ContentHash> {
+    if len > schedule.len() {
+        return None;
+    }
+
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.configuration.v2");
+    write_content_hash(&mut hasher, &def.id());
+    write_seed(&mut hasher, def.seed());
+    hasher.write_u64(len as u64);
+    for decision in schedule.decision_history().iter().take(len) {
+        write_decision(&mut hasher, decision);
+    }
+    Some(ContentHash {
+        bytes: hasher.finish(),
+    })
+}
+
+/// Extends a schedule's running decision chain by one decision.
+///
+/// The chain commits to every decision in order, so a chain value together
+/// with the decision count identifies one exact schedule.
+pub(super) fn decision_chain_step(previous: &ContentHash, decision: &Decision) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.schedule.decision-chain.v1");
+    write_content_hash(&mut hasher, previous);
+    write_decision(&mut hasher, decision);
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
+/// Binds a configuration's definition and exact schedule in constant time.
+///
+/// Unlike [`configuration_hash`], this reads the schedule's maintained decision
+/// chain instead of rehashing every decision.
+pub(super) fn configuration_admission_digest(configuration: &Configuration) -> ContentHash {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.configuration.admission.v1");
+    write_content_hash(&mut hasher, &configuration.def.id());
+    write_seed(&mut hasher, configuration.def.seed());
+    hasher.write_u64(configuration.schedule.len() as u64);
+    write_content_hash(&mut hasher, &configuration.schedule.decision_chain());
+    ContentHash {
+        bytes: hasher.finish(),
+    }
+}
+
 pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
     hasher.write_bytes(b"crucible.schedule.v2");
     write_schedule(&mut hasher, schedule);
     ContentHash {
         bytes: hasher.finish(),
+    }
+}
+
+/// Computes [`schedule_hash`] for decisions supplied by an iterator.
+///
+/// The canonical encoding writes the decision count before the decisions, so
+/// the caller declares it up front. Returns `None` when the iterator yields a
+/// different number of decisions, which leaves no partial identity behind.
+pub(super) fn schedule_hash_from_decisions<'a>(
+    len: usize,
+    decisions: impl IntoIterator<Item = &'a Decision>,
+) -> Option<ContentHash> {
+    let mut hasher = MaterialHasher::new();
+    hasher.write_bytes(b"crucible.schedule.v2");
+    hasher.write_u64(len as u64);
+
+    let mut written = 0_usize;
+    for decision in decisions {
+        write_decision(&mut hasher, decision);
+        written = written.saturating_add(1);
+    }
+
+    (written == len).then(|| ContentHash {
+        bytes: hasher.finish(),
+    })
+}
+
+/// Incremental form of [`content_hash_from_canonical_material_bytes`].
+///
+/// The material hash commits to the material length before its bytes, so the
+/// stream takes the exact length when it starts. Bytes may then arrive in
+/// arbitrarily sized pieces; the result is identical to hashing their
+/// concatenation in one call, without ever holding that concatenation.
+pub(super) struct CanonicalMaterialStream {
+    hasher: MaterialHasher,
+    declared_len: u64,
+    written_len: u64,
+    // Bytes of the next little-endian word that have not been mixed yet.
+    pending: [u8; 8],
+    pending_len: usize,
+}
+
+impl CanonicalMaterialStream {
+    /// Starts a material hash in `domain` for exactly `material_len` bytes.
+    pub(super) fn new(domain: &str, material_len: u64) -> Self {
+        let mut hasher = MaterialHasher::new();
+        hasher.write_bytes(b"crucible.content-hash.v1");
+        hasher.write_bytes(domain.as_bytes());
+        hasher.write_u64(material_len);
+        Self {
+            hasher,
+            declared_len: material_len,
+            written_len: 0,
+            pending: [0; 8],
+            pending_len: 0,
+        }
+    }
+
+    /// Appends the next piece of material.
+    pub(super) fn write(&mut self, mut bytes: &[u8]) {
+        self.written_len = self.written_len.wrapping_add(bytes.len() as u64);
+
+        // Complete a partially filled word before mixing whole words.
+        if self.pending_len != 0 {
+            let take = bytes.len().min(self.pending.len() - self.pending_len);
+            let (head, rest) = bytes.split_at(take);
+            self.pending[self.pending_len..self.pending_len + take].copy_from_slice(head);
+            self.pending_len += take;
+            bytes = rest;
+            if self.pending_len < self.pending.len() {
+                return;
+            }
+            self.hasher.mix_word(u64::from_le_bytes(self.pending));
+            self.pending_len = 0;
+        }
+
+        let (words, remainder) = bytes.as_chunks::<8>();
+        for word in words {
+            self.hasher.mix_word(u64::from_le_bytes(*word));
+        }
+        self.pending[..remainder.len()].copy_from_slice(remainder);
+        self.pending_len = remainder.len();
+    }
+
+    /// Finishes the hash, or returns `None` when the written length differs
+    /// from the declared length.
+    pub(super) fn finish(mut self) -> Option<ContentHash> {
+        if self.written_len != self.declared_len {
+            return None;
+        }
+
+        // The one-shot encoding zero-pads the final partial word.
+        if self.pending_len != 0 {
+            self.pending[self.pending_len..].fill(0);
+            self.hasher.mix_word(u64::from_le_bytes(self.pending));
+        }
+        self.hasher.bytes_written = self.hasher.bytes_written.wrapping_add(self.declared_len);
+        Some(ContentHash {
+            bytes: self.hasher.finish(),
+        })
     }
 }
 
@@ -86,8 +244,8 @@ pub(super) fn materialized_state_hash(
 }
 
 fn write_schedule(hasher: &mut MaterialHasher, schedule: &Schedule) {
-    hasher.write_u64(schedule.decisions().len() as u64);
-    for decision in schedule.decisions() {
+    hasher.write_u64(schedule.decision_history().len() as u64);
+    for decision in schedule.decision_history() {
         write_decision(hasher, decision);
     }
 }
@@ -108,6 +266,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         Decision::RngDraw(draw) => {
             hasher.write_u64(1);
             write_rng_stream_id(hasher, &draw.stream);
+            write_rng_draw_address(hasher, draw.address);
             hasher.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
@@ -344,6 +503,25 @@ fn write_rng_stream_id(hasher: &mut MaterialHasher, stream: &RngStreamId) {
     hasher.write_bytes(stream.name.as_bytes());
 }
 
+fn write_rng_draw_address(hasher: &mut MaterialHasher, address: RngDrawAddress) {
+    match address {
+        RngDrawAddress::Ordinal { ordinal } => {
+            hasher.write_u64(0);
+            hasher.write_u64(ordinal);
+        }
+        RngDrawAddress::LinkFrame {
+            direction,
+            producer_sequence,
+            role,
+        } => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(direction.code()));
+            hasher.write_u64(producer_sequence);
+            hasher.write_u64(role);
+        }
+    }
+}
+
 fn write_rng_stream_position(hasher: &mut MaterialHasher, position: RngStreamPosition) {
     hasher.write_u64(position.draws);
 }
@@ -547,5 +725,63 @@ mod tests {
                 content_hash_from_canonical_material("crucible.test.hex-stream.v1", &encoded)
             );
         }
+    }
+
+    #[test]
+    fn streamed_material_hash_matches_one_shot_material_for_every_split() {
+        let material = b"seed=00ff\nartifact=abcdef\nkept_schedule=0123\nremoved=1,22,333";
+        let expected =
+            content_hash_from_canonical_material_bytes("crucible.test.stream.v1", material);
+
+        for piece_len in 1..=material.len() {
+            let mut stream =
+                CanonicalMaterialStream::new("crucible.test.stream.v1", material.len() as u64);
+            for piece in material.chunks(piece_len) {
+                stream.write(piece);
+            }
+
+            assert_eq!(stream.finish(), Some(expected), "piece length {piece_len}");
+        }
+
+        let empty = CanonicalMaterialStream::new("crucible.test.stream.v1", 0);
+        assert_eq!(
+            empty.finish(),
+            Some(content_hash_from_canonical_material(
+                "crucible.test.stream.v1",
+                ""
+            ))
+        );
+    }
+
+    #[test]
+    fn streamed_material_hash_rejects_a_length_other_than_declared() {
+        let mut short = CanonicalMaterialStream::new("crucible.test.stream.v1", 4);
+        short.write(b"abc");
+        assert_eq!(short.finish(), None);
+
+        let mut long = CanonicalMaterialStream::new("crucible.test.stream.v1", 2);
+        long.write(b"abc");
+        assert_eq!(long.finish(), None);
+    }
+
+    #[test]
+    fn streamed_schedule_hash_matches_schedule_identity_and_checks_count() {
+        let decisions = (0..3)
+            .map(|value| {
+                Decision::RngDraw(super::super::RngDecision::ordinal(
+                    RngStreamId::from_name("canonical-stream-test"),
+                    0,
+                    value,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let schedule = Schedule::from_decisions(decisions.clone());
+
+        assert_eq!(
+            schedule_hash_from_decisions(decisions.len(), &decisions),
+            Some(schedule_hash(&schedule))
+        );
+        assert_eq!(schedule_hash_from_decisions(2, &decisions), None);
+        assert_eq!(schedule_hash_from_decisions(4, &decisions), None);
     }
 }

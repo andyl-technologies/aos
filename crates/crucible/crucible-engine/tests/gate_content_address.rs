@@ -48,19 +48,19 @@ fn gate_content_address_keeps_fixed_vectors_stable() {
         expected_vectors([
             (
                 "scenario",
-                "10999eb4e514503faa0ed63c2d63906ea2ab683c54679e151e50d2f3ea9f1f1f"
+                "6ed785f8d9660998477189deb1e98a1875638b4c14c7ac38b70ac5bb627fd032"
             ),
             (
                 "schedule",
-                "099aacadd178c9915bd35a0ea1a4e32833768309b7b1a04360a70647575f734a"
+                "beb4b64896d598c121e57352d5e017540ca6a8423d13bf4528c72286d4af1b76"
             ),
             (
                 "configuration",
-                "6ea358e477c6b7592e5c8f4ecf9759bdd497a164d5bd39e66592a6694c854238",
+                "161e37d13287fd4072a764dad4c18032f79c03d09f5c0af8f393e5bfd95e74ce",
             ),
             (
                 "state",
-                "a5d0eac54b0e64831513bf1f9660b96080e726f0e23731fc4551088a0c788f24"
+                "dd8154b83aef680f07ab7e9e9a39ec16d49b22b3b72c852f63116a93685421d5"
             ),
             (
                 "world-component",
@@ -129,17 +129,19 @@ fn gate_content_address_changes_on_single_byte_mutations() {
     let base = Configuration::genesis(scenario.clone());
     let first = accepted_step!(
         &base,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("node-a/fault"),
-            value: 1,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("node-a/fault"),
+            0,
+            1
+        )),
     );
     let changed = accepted_step!(
         &base,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("node-a/fault"),
-            value: 2,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("node-a/fault"),
+            0,
+            2
+        )),
     );
 
     assert_ne!(
@@ -156,10 +158,11 @@ fn gate_content_address_changes_on_single_byte_mutations() {
 #[test]
 fn gate_content_address_is_sensitive_to_schedule_order() {
     let scenario = scenario("scenario=order\nnodes=a,b\nseed=13");
-    let draw = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("scheduler/order"),
-        value: 9,
-    });
+    let draw = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("scheduler/order"),
+        0,
+        9,
+    ));
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: 3 },
         order: vec![event_key(3, 1)],
@@ -193,10 +196,11 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
     let configuration = accepted_step!(
         &Configuration::genesis(scenario.clone()),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("disk-delay"),
-            value: 1,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("disk-delay"),
+            0,
+            1
+        )),
     );
     let id = configuration.content_hash();
     let thin = Checkpoint::new(id, id, CheckpointKind::Thin);
@@ -1703,10 +1707,8 @@ fn gate_content_address_temporal_graph_partial_order_reduction_explores_when_dep
     let first = preemption_decision("node-a", 31);
     let frontier = accepted_step!(&genesis, first.clone());
     let same_node = preemption_decision("node-a", 32);
-    let global_rng_draw = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("global"),
-        value: 9,
-    });
+    let global_rng_draw =
+        Decision::RngDraw(RngDecision::ordinal(RngStreamId::from_name("global"), 0, 9));
     let dependent_proofs = PartialOrderReductionPolicy::new()
         .with_independent_pair(&first, &same_node)
         .with_independent_pair(&first, &global_rng_draw);

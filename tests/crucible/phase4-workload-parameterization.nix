@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.workloadParameterization",
   taskIds ? ["T-WL-6"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -242,47 +241,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-workload-parameterization";
-      version = "0";
-      src = crucibleSrc;
-      runtimeDeps = [pkgs.sqlite];
-
-      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-workload-parameterization";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -291,11 +257,7 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-parameterization-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_parameterization \
               -- --list > "$TMPDIR/workload-parameterization-tests"
@@ -317,11 +279,7 @@ in
             require_listed \
               "$TMPDIR/workload-parameterization-tests" \
               "workload_parameterization_rejects_malformed_toml_and_binary_forms"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-parameterization-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_parameterization \
               -- --test-threads=1

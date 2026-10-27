@@ -26,6 +26,104 @@ pub(super) fn exact_checkpoint_fault_object_identity(
     Ok(ContentHash::from_bytes(&bytes))
 }
 
+/// Copies the sealed trace segments a fault continuation references.
+///
+/// The closure keys each segment by its plain content hash, as it keys every
+/// other closure object; restore recomputes the trace identity from the bytes.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the continuation's
+/// references do not decode, or a referenced segment is unreadable or does
+/// not authenticate.
+pub(super) fn capture_fault_trace_objects(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+    segments: &dyn SegmentSink,
+) -> Result<BTreeMap<ContentHash, Vec<u8>>, SchedulerError> {
+    let mut objects = BTreeMap::new();
+    for id in network_faults::fault_trace_segment_dependencies(checkpoint)? {
+        let bytes = segments
+            .segment(id)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("read trace segment {}: {error}", id.encode()),
+            })?;
+        if !id.authenticates(&bytes) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "trace segment {} failed content authentication",
+                    id.encode()
+                ),
+            });
+        }
+        objects.insert(ContentHash::from_bytes(&bytes), bytes);
+    }
+    Ok(objects)
+}
+
+/// Checks that restored trace segments are exactly those a continuation names.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when an object fails content
+/// authentication, or the closure omits a referenced segment or carries an
+/// unreferenced one.
+pub(super) fn validate_fault_trace_objects(
+    checkpoint: Option<&ProductionFaultRuntimeCheckpoint>,
+    objects: &BTreeMap<ContentHash, Vec<u8>>,
+) -> Result<(), SchedulerError> {
+    let expected = match checkpoint {
+        Some(checkpoint) => network_faults::fault_trace_segment_dependencies(checkpoint)?,
+        None => BTreeSet::new(),
+    };
+
+    let mut actual = BTreeSet::new();
+    for (identity, bytes) in objects {
+        if ContentHash::from_bytes(bytes) != *identity {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "exact checkpoint trace segment failed content authentication",
+                ),
+            });
+        }
+        actual.insert(crucible_engine::model::resolved_effect_trace_segment_id(
+            bytes,
+        ));
+    }
+
+    if actual != expected {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "exact checkpoint trace-segment closure is incomplete or contains unreferenced objects",
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Installs a checkpoint's trace segments into the execution's segment sink.
+///
+/// Restore runs this before the fault runtime or the campaign effect log
+/// reads a sealed segment, so a fresh process resumes on the same segments.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the sink refuses a
+/// segment.
+pub(super) fn hydrate_fault_trace_segments(
+    objects: &BTreeMap<ContentHash, Vec<u8>>,
+    segments: &dyn SegmentSink,
+) -> Result<(), SchedulerError> {
+    for bytes in objects.values() {
+        let id = crucible_engine::model::resolved_effect_trace_segment_id(bytes);
+        segments
+            .put_segment(id, bytes)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("hydrate trace segment {}: {error}", id.encode()),
+            })?;
+    }
+    Ok(())
+}
+
 pub(super) fn exact_checkpoint_snapshot_object_identity(
     snapshot: &ExactSnapshotHandle,
     limits: FaultResourceLimits,
@@ -337,7 +435,7 @@ pub(super) fn production_app_random_checkpoint_config(
             message: format!("decode scheduler checkpoint configuration: {error}"),
         }
     })?;
-    let decisions = configuration.schedule.decisions();
+    let decisions = configuration.schedule.decision_history();
     let streams = decisions
         .iter()
         .enumerate()
@@ -372,7 +470,7 @@ pub(super) fn production_app_random_checkpoint_config(
 }
 
 fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64 {
-    let decisions = configuration.schedule.decisions();
+    let decisions = configuration.schedule.decision_history();
     decisions
         .iter()
         .enumerate()
@@ -381,7 +479,7 @@ fn app_random_request_count(configuration: &Configuration, node: &NodeId) -> u64
 }
 
 fn app_random_request_stream<'a>(
-    decisions: &'a [Decision],
+    decisions: &'a crucible_engine::History<Decision>,
     index: usize,
     node: &NodeId,
 ) -> Option<&'a crucible_engine::RngStreamId> {

@@ -248,9 +248,10 @@ impl Schedule {
 
 - **[EXEC-9]** Adding, removing, or renaming a node in the `World` MUST NOT
   perturb the decision-RNG streams of unrelated nodes: per-entity RNG streams are
-  forked by name-hash (file 04). A `Decision::RngDraw` MUST record its
+  keyed by domain and name (file 04). A `Decision::RngDraw` MUST record its
   `RngStreamId` so a schedule remains interpretable after the def changes only in
-  unrelated parts. *Spec:* §3; cross-ref file 04 (Decision RNG).
+  unrelated parts, and its draw address so replay checks which draw was taken
+  ([DET-26]). *Spec:* §3; cross-ref file 04 (Decision RNG).
 
 ### `step`: append one decision
 

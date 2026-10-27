@@ -1,7 +1,9 @@
 //! RNG, materialized scheduler state, checkpoints, and checkpoint policy.
 
 use super::*;
+mod rng_draw;
 mod seed;
+pub use rng_draw::{RngDecision, RngDrawAddress};
 pub use seed::{Seed, SeededRngStream};
 
 /// A deterministic decision-stream identifier.
@@ -16,7 +18,7 @@ pub struct RngStreamId {
 }
 
 impl RngStreamId {
-    /// Builds a stream id in the default decision-RNG name-hash domain.
+    /// Builds a stream id in the default decision-RNG name domain.
     #[must_use]
     pub fn from_name(name: impl Into<String>) -> Self {
         Self::new(DECISION_RNG_NAME_HASH_DOMAIN, name)
@@ -43,7 +45,7 @@ impl RngStreamId {
     /// Builds a device-scoped stream id ([IO-21]).
     ///
     /// Devices (block / 9p / network sub-nodes) fork their probabilistic-fault
-    /// RNG from this domain by name-hash, keeping device streams independent of
+    /// RNG from this domain by name, keeping device streams independent of
     /// same-named node and link streams ([DET-25]).
     #[must_use]
     pub fn for_device(name: impl Into<String>) -> Self {
@@ -85,15 +87,6 @@ pub struct DeliveryOrderDecision {
     pub at: VirtualTime,
     /// The ordered event keys.
     pub order: Vec<EventKey>,
-}
-
-/// A decision-stream draw payload.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct RngDecision {
-    /// The stream that produced the value.
-    pub stream: RngStreamId,
-    /// The drawn value.
-    pub value: u64,
 }
 
 /// A search or fuzzing override payload.
@@ -575,12 +568,12 @@ impl SchedulerState {
     #[must_use]
     pub fn from_schedule(schedule: &Schedule) -> Self {
         let mut state = Self::empty();
-        state.apply_decisions(schedule.decisions());
+        state.apply_decisions(schedule.decision_history());
         state
     }
 
     /// Applies causal decisions that mutate materialized scheduler state.
-    pub fn apply_decisions(&mut self, decisions: &[Decision]) {
+    pub fn apply_decisions<'a>(&mut self, decisions: impl IntoIterator<Item = &'a Decision>) {
         for decision in decisions {
             self.apply_decision(decision);
         }
@@ -1120,7 +1113,7 @@ impl Checkpoint {
     /// Serializes this checkpoint as compact canonical bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V6);
+        let mut writer = ScenarioBinaryWriter::new(CHECKPOINT_BINARY_MAGIC_V7);
         write_checkpoint_binary(self, &mut writer);
         writer.finish()
     }
@@ -1134,7 +1127,7 @@ impl Checkpoint {
     /// match their decoded components, or when the outer checkpoint shape is
     /// internally inconsistent.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC_V6)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, CHECKPOINT_BINARY_MAGIC_V7)?;
         let checkpoint = read_checkpoint_binary(&mut reader)?;
         validate_checkpoint_binary_shape(&checkpoint)?;
         reader.finish()?;

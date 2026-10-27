@@ -20,6 +20,13 @@ use crucible_campaign::{
     ConfigurationId, ExecutionRetentionIntent, ObservationCondition, PropertyVerdict,
     ScenarioDefId, SelectableDeclaration, StopCondition, StopOutcome,
 };
+
+/// Retains `entries` as a genesis attempt log under the default bound.
+fn retained_log(entries: Vec<SchedulerEventLogEntry>) -> RetainedAttemptLog {
+    RetainedAttemptLog::from_entries(DEFAULT_MAXIMUM_EVENT_LOG_BYTES, entries)
+        .expect("test log is dense from genesis")
+}
+
 use crucible_engine::model::{
     Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
     MeasurementId, MetricDefinition, MetricId, MetricSource, MetricValueType, UnitId,
@@ -40,8 +47,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
+mod capture_refusal;
+mod envoy_boot_eligibility;
 mod guest_marker_boundary;
+mod held_source;
 mod network_boundary;
+mod selection_scan;
 
 #[test]
 fn envoy_boot_arms_only_from_the_authenticated_west_semantic_marker() {
@@ -78,14 +89,14 @@ fn prepared_semantic_observation(product: AttemptExecutionProduct) -> Observatio
     let AttemptExecutionProduct::PreparedSemantic(result) = product else {
         panic!("modeled driver must return a prepared semantic result")
     };
-    result.into_parts().0
+    result.into_parts().observation
 }
 
 fn evaluate_test_measurements(
     definitions: &MeasurementDefinitions,
     entries: Vec<SchedulerEventLogEntry>,
 ) -> Result<crate::CrucibleMeasurementPublication, CrucibleMeasurementError> {
-    evaluate_crucible_measurement_publication(
+    crate::crucible_measurement::test_measurement_publication(
         ScenarioDefId::from_hash(CampaignHash::derive(
             "test",
             b"qemu-driver-measurement-scenario",
@@ -102,8 +113,9 @@ fn evaluate_test_measurements(
             node_icounts: BTreeMap::new(),
             scheduler_quiescent: true,
         },
-        MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
+        observation_candidate::MAX_MEASUREMENT_EVIDENCE_LEAF_BYTES,
     )
+    .map(|(publication, _segments)| publication)
 }
 
 struct FakeLifecycle {
@@ -301,6 +313,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         self.initial_quanta + self.drives
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         self.terminal.clone()
     }
@@ -376,7 +392,9 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -427,6 +445,10 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
 
     fn completed_quanta(&self) -> u64 {
         self.completed_quanta
+    }
+
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -512,7 +534,9 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -738,7 +762,7 @@ fn terminal_verdict_wins_over_a_coincident_checkpoint_request() {
                 &input,
                 &context,
                 QemuFreshStartMaterialization::from_test_parts(
-                    Vec::new(),
+                    retained_log(Vec::new()),
                     VirtualTime::default(),
                     None,
                     Some(QuantumTerminalVerdict::Passed),
@@ -799,7 +823,7 @@ fn event_count_seals_final_drain_coverage_into_exact_candidate() {
                 &input,
                 &context(),
                 QemuFreshStartMaterialization::from_test_parts(
-                    prefix.entries.clone(),
+                    retained_log(prefix.entries.clone()),
                     VirtualTime::default(),
                     None,
                     None,
@@ -941,7 +965,7 @@ fn guest_measurement_messages_normalize_against_the_exact_scenario_contract() {
 
     assert!(payload.contains("\"driver-window\""));
     assert!(payload.contains("\"healthy-peers\""));
-    assert!(payload.contains("\"sequence\":1"));
+    assert!(payload.contains("\"samples\":1"));
     assert!(payload.contains("\"value\":3"));
 }
 
@@ -1271,13 +1295,14 @@ fn policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 10);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 1,
         completed_quanta: 2,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(matches!(
@@ -1327,10 +1352,17 @@ fn policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker() {
     assert_eq!(timeout.budget_kind, FailureTimeoutBudgetKind::VirtualTime);
     assert_eq!(timeout.configured_limit, Some(1));
     assert_eq!(timeout.at_virtual_time.ticks, 1);
-    assert!(pending.event_log.iter().any(|entry| {
-        entry.event_payload().kind() == "execution_budget_exhausted"
-            && entry.event_payload().string("budget_kind") == Some("virtual-time")
-    }));
+    assert!(
+        pending
+            .event_log
+            .materialize()
+            .expect("readable log")
+            .iter()
+            .any(|entry| {
+                entry.event_payload().kind() == "execution_budget_exhausted"
+                    && entry.event_payload().string("budget_kind") == Some("virtual-time")
+            })
+    );
 
     let candidate = prepared_semantic_observation(
         QemuFreshModeledDriver::new()
@@ -1359,13 +1391,14 @@ fn bounded_primary_retains_its_exact_predeadline_coordinate() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 0,
         completed_quanta: 1,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(matches!(
@@ -1389,13 +1422,14 @@ fn bounded_next_choice_intrinsic_fallback_is_not_a_choice() {
     let outcome = outcome(configuration, Vec::new(), EventLogOffset::default(), 4);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 0,
         completed_quanta: 1,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(matches!(
@@ -1422,13 +1456,14 @@ fn bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback() {
         .push(choice_discovery(input.lineage().scenario()));
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 0,
         completed_quanta: 1,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(matches!(
@@ -1470,13 +1505,14 @@ fn bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice() {
         .push(choice_discovery(input.lineage().scenario()));
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 1,
         completed_quanta: 2,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(matches!(
@@ -1508,13 +1544,14 @@ fn next_choice_ignores_a_discovery_defaulted_in_the_same_quantum() {
     outcome.discovered_choices.push(discovery);
     let discoveries = BTreeMap::new();
     let evidence = QuantumStopEvidence {
+        world: input.scenario().world(),
         properties: input.scenario().properties(),
         outcome: &outcome,
         observed_event_count: 0,
         quantum_start_completed_quanta: 0,
         completed_quanta: 1,
         discoveries: &discoveries,
-        prior_entries: &[],
+        prior: &retained_log(Vec::new()),
     };
 
     assert!(
@@ -1577,8 +1614,7 @@ fn restored_start_at_intrinsic_choice_fallback_seals_exact_timeout() {
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
                     input.start().configuration().clone(),
-                    Vec::new(),
-                    0,
+                    retained_log(Vec::new()),
                     7,
                     VirtualTime::default(),
                     SchedulerQuiescence::default(),
@@ -1620,8 +1656,7 @@ fn restored_start_past_intrinsic_choice_fallback_fails_before_sealing() {
         &context(),
         QemuFreshStartMaterialization::from_resume_parts(
             input.start().configuration().clone(),
-            Vec::new(),
-            0,
+            retained_log(Vec::new()),
             10,
             VirtualTime::default(),
             SchedulerQuiescence::default(),
@@ -1661,8 +1696,7 @@ fn continued_origin_past_intrinsic_choice_fallback_fails_before_sealing() {
         &input,
         &context(),
         QemuFreshStartMaterialization::from_origin_parts(
-            Vec::new(),
-            0,
+            retained_log(Vec::new()),
             10,
             VirtualTime::default(),
             Some(SchedulerQuiescence::default()),
@@ -1704,8 +1738,7 @@ fn reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start() {
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
                     input.start().configuration().clone(),
-                    Vec::new(),
-                    0,
+                    retained_log(Vec::new()),
                     10,
                     VirtualTime::default(),
                     SchedulerQuiescence::default(),
@@ -1752,8 +1785,7 @@ fn restored_terminal_verdict_wins_past_intrinsic_choice_fallback() {
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
                     input.start().configuration().clone(),
-                    Vec::new(),
-                    0,
+                    retained_log(Vec::new()),
                     10,
                     VirtualTime::default(),
                     SchedulerQuiescence::default(),
@@ -1779,11 +1811,6 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
             MarkerId::from_name("earlier-than-restored-frontier"),
         )])
         .expect("restored event prefix");
-    let prefix_bytes = prefix
-        .entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::new(),
         terminal: None,
@@ -1800,8 +1827,7 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
                     input.start().configuration().clone(),
-                    prefix.entries.clone(),
-                    prefix_bytes,
+                    retained_log(prefix.entries.clone()),
                     3,
                     VirtualTime { ticks: 9 },
                     SchedulerQuiescence::default(),
@@ -1812,7 +1838,10 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
     );
 
     assert_eq!(owner.drives, 0);
-    assert_eq!(pending.event_log, prefix.entries);
+    assert_eq!(
+        pending.event_log.materialize().expect("readable log"),
+        prefix.entries
+    );
     assert_eq!(pending.terminal_at, VirtualTime { ticks: 9 });
     assert!(matches!(
         pending.stop,
@@ -1825,14 +1854,16 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
 fn resumed_driver_starts_from_the_actual_restored_configuration() {
     let input = input(StopCondition::ExecutionQuanta(2));
     let original = input.start().configuration().clone();
-    let prior_decision = crucible_engine::Decision::RngDraw(crucible_engine::RngDecision {
-        stream: crucible_engine::RngStreamId::from_name("prior-resumed-decision"),
-        value: 11,
-    });
-    let next_decision = crucible_engine::Decision::RngDraw(crucible_engine::RngDecision {
-        stream: crucible_engine::RngStreamId::from_name("next-resumed-decision"),
-        value: 12,
-    });
+    let prior_decision = crucible_engine::Decision::RngDraw(crucible_engine::RngDecision::ordinal(
+        crucible_engine::RngStreamId::from_name("prior-resumed-decision"),
+        0,
+        11,
+    ));
+    let next_decision = crucible_engine::Decision::RngDraw(crucible_engine::RngDecision::ordinal(
+        crucible_engine::RngStreamId::from_name("next-resumed-decision"),
+        0,
+        12,
+    ));
     let restored = accepted_step(&original, prior_decision);
     let continued = accepted_step(&restored, next_decision.clone());
     let mut lifecycle = RestoredFrontierLifecycle {
@@ -1862,8 +1893,7 @@ fn resumed_driver_starts_from_the_actual_restored_configuration() {
             &context(),
             QemuFreshStartMaterialization::from_resume_parts(
                 restored.clone(),
-                Vec::new(),
-                0,
+                retained_log(Vec::new()),
                 1,
                 VirtualTime { ticks: 1 },
                 SchedulerQuiescence::default(),
@@ -1999,10 +2029,6 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
         .take(usize::try_from(checkpoint_quanta).expect("checkpoint coordinate"))
         .flat_map(|segment| segment.entries.iter().cloned())
         .collect::<Vec<_>>();
-    let prefix_bytes = prefix
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let mut resumed_owner = FakeLifecycle {
         outcomes: (usize::try_from(checkpoint_quanta).expect("checkpoint coordinate")
             ..usize::try_from(stop_quanta).expect("stop coordinate"))
@@ -2023,8 +2049,7 @@ fn execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evi
                     &context(),
                     QemuFreshStartMaterialization::from_resume_parts(
                         input.start().configuration().clone(),
-                        prefix,
-                        prefix_bytes,
+                        retained_log(prefix),
                         checkpoint_quanta,
                         VirtualTime {
                             ticks: checkpoint_quanta,
@@ -2090,10 +2115,6 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
         .iter()
         .flat_map(|segment| segment.entries.iter().cloned())
         .collect::<Vec<_>>();
-    let origin_bytes = origin_entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let attempt_outcome = |attempt_index: usize| {
         let segment = &segments[origin_quanta as usize + attempt_index];
         outcome(
@@ -2122,8 +2143,7 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
                     &input,
                     &context(),
                     QemuFreshStartMaterialization::from_origin_parts(
-                        origin_entries.clone(),
-                        origin_bytes,
+                        retained_log(origin_entries.clone()),
                         origin_quanta,
                         VirtualTime {
                             ticks: origin_quanta,
@@ -2146,10 +2166,6 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
         .into_iter()
         .chain(attempt_prefix)
         .collect::<Vec<_>>();
-    let resumed_bytes = resumed_entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let resumed_quanta =
         origin_quanta + u64::try_from(checkpoint_attempt_events).expect("checkpoint event count");
     let mut resumed_owner = FakeLifecycle {
@@ -2171,8 +2187,7 @@ fn event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix(
                     &context(),
                     QemuFreshStartMaterialization::from_resume_parts(
                         configuration,
-                        resumed_entries,
-                        resumed_bytes,
+                        retained_log(resumed_entries),
                         resumed_quanta,
                         VirtualTime {
                             ticks: resumed_quanta,
@@ -2270,10 +2285,7 @@ fn next_choice_retains_the_complete_discovery_bundle() {
         candidate.observation().stop(),
         &StopOutcome::Reached(StopCondition::NextChoice)
     );
-    assert_eq!(
-        candidate.observation().discovered_choices(),
-        &BTreeSet::from([opportunity])
-    );
+    assert_eq!(candidate.discovered_opportunities(), &[opportunity]);
     assert_eq!(candidate.discovered_choices().len(), 1);
 }
 
@@ -2354,12 +2366,7 @@ fn next_choice_does_not_republish_a_selection_in_its_authenticated_start() {
     );
     assert!(candidate.produced_selections().is_empty());
     assert_eq!(candidate.discovered_choices().len(), 2);
-    assert!(
-        candidate
-            .observation()
-            .discovered_choices()
-            .contains(&next_choice.opportunity().id().expect("next choice id"))
-    );
+    assert!(candidate.discovers(next_choice.opportunity().id().expect("next choice id")));
 }
 
 #[test]
@@ -2421,12 +2428,7 @@ fn next_choice_preserves_settled_defaults_before_the_unresolved_choice() {
             .iter()
             .all(|selection| selection.opportunity() != unresolved_opportunity)
     );
-    assert!(
-        candidate
-            .observation()
-            .discovered_choices()
-            .contains(&unresolved_opportunity)
-    );
+    assert!(candidate.discovers(unresolved_opportunity));
 }
 
 #[test]
@@ -2527,10 +2529,7 @@ fn next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent() {
         candidate.observation().stop(),
         &StopOutcome::Reached(StopCondition::NextChoice)
     );
-    assert_eq!(
-        candidate.observation().discovered_choices(),
-        &BTreeSet::from([opportunity])
-    );
+    assert_eq!(candidate.discovered_opportunities(), &[opportunity]);
     let [discovery] = candidate.discovered_choices() else {
         panic!("exactly one signal-fault choice must be published")
     };
@@ -2740,7 +2739,7 @@ fn pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum()
         ModeledStop::Reached(StopCondition::EventCount(1))
     ));
 
-    let target_proof = QemuSavepointReplayProof::from_reached_boundary(
+    let target_proof = QemuSavepointReplayProof::from_retained_boundary(
         &pending.configuration,
         pending.completed_quanta,
         pending.terminal_at,
@@ -2961,7 +2960,7 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
     let decision = pending
         .configuration
         .schedule
-        .decisions()
+        .decision_history()
         .last()
         .expect("default selection decision");
     let Decision::Selection(decision) = decision else {
@@ -3007,7 +3006,6 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         configuration: nondefault_configuration,
         stop: ModeledStop::Reached(input.attempt().stop().clone()),
         event_log: pending.event_log.clone(),
-        event_log_bytes: pending.event_log_bytes,
         discoveries: pending.discoveries.clone(),
         preselection: None,
         terminal_quiescence: pending.terminal_quiescence.clone(),
@@ -3235,7 +3233,7 @@ fn named_assertion_observation_rejects_an_undeclared_event() {
             &quantum,
             0,
             1,
-            &[],
+            &retained_log(Vec::new()),
         )
         .expect("structural proof evaluation")
         .is_none()
@@ -3267,7 +3265,7 @@ fn scheduler_quiescence_observation_is_post_source_and_evidence_backed() {
                 &input,
                 &context(),
                 QemuFreshStartMaterialization::from_test_parts(
-                    Vec::new(),
+                    retained_log(Vec::new()),
                     VirtualTime::default(),
                     Some(SchedulerQuiescence::default()),
                     None,
@@ -3412,11 +3410,6 @@ fn restored_violation_does_not_fake_a_new_assertion_transition() {
             AssertionPhase::Violated,
         )])
         .expect("post-source matching segment");
-    let inherited_bytes = inherited
-        .entries
-        .iter()
-        .map(SchedulerEventLogEntry::canonical_material_len)
-        .sum();
     let mut owner = FakeLifecycle {
         outcomes: VecDeque::from([
             Ok(outcome(
@@ -3446,8 +3439,7 @@ fn restored_violation_does_not_fake_a_new_assertion_transition() {
                 &context(),
                 QemuFreshStartMaterialization::from_resume_parts(
                     configuration,
-                    inherited.entries,
-                    inherited_bytes,
+                    retained_log(inherited.entries),
                     3,
                     VirtualTime { ticks: 1 },
                     SchedulerQuiescence::default(),

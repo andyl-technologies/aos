@@ -21,8 +21,7 @@ pub struct FaultExecutionRuntime<'a> {
     scenario_seed: ContentHash,
     binding_runtime: FaultBindingRuntime<'a>,
     adapters: TransactionalFaultAdapters,
-    replay: Option<ResolvedEffectTrace>,
-    recorded_work_items: Vec<ResolvedReplayWorkItem>,
+    trace: FaultTraceState,
     retained_effects: BTreeSet<ContentHash>,
     branch_parent: Option<ContentHash>,
 }
@@ -66,6 +65,32 @@ impl<'a> FaultExecutionRuntime<'a> {
         manifests: FaultAdapterManifests,
         search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
     ) -> Result<Self, FaultExecutionError> {
+        Self::new_with_storage(
+            plan,
+            artifacts,
+            boundary,
+            scenario_seed,
+            manifests,
+            search_overrides,
+            &FaultTraceStorage::default(),
+        )
+    }
+
+    /// Admits live capabilities and records its trace into `storage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] under the same conditions as
+    /// [`Self::new_with_search_overrides`].
+    pub fn new_with_storage(
+        plan: &'a FaultSignalPlan,
+        artifacts: &'a dyn SignalArtifactProvider,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+        search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+        storage: &FaultTraceStorage,
+    ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
         let resource_limits = plan.resource_limits();
         admit_manifests(plan.bindings(), &manifests)?;
@@ -88,8 +113,7 @@ impl<'a> FaultExecutionRuntime<'a> {
             scenario_seed,
             binding_runtime,
             adapters,
-            replay: None,
-            recorded_work_items: Vec::new(),
+            trace: FaultTraceState::new(storage, resource_limits),
             retained_effects: BTreeSet::new(),
             branch_parent: None,
         })
@@ -97,16 +121,38 @@ impl<'a> FaultExecutionRuntime<'a> {
 
     /// Restores one authenticated evaluator-and-adapter continuation.
     ///
+    /// The checkpoint's recorded segments must be readable from `storage`'s
+    /// recording sink, and an installed replay's segments from its replay
+    /// sources.
+    ///
     /// # Errors
     ///
     /// Returns [`FaultExecutionError`] if identities, capabilities, canonical
-    /// bytes, or the duplicated binding/adapter contribution views disagree.
+    /// bytes, or the duplicated binding/adapter contribution views disagree,
+    /// or the replay segment under the cursor cannot be read.
     pub fn restore(
         plan: &'a FaultSignalPlan,
         artifacts: &'a dyn SignalArtifactProvider,
         scenario_seed: ContentHash,
         manifests: FaultAdapterManifests,
         checkpoint: &FaultRuntimeCheckpoint,
+        storage: &FaultTraceStorage,
+    ) -> Result<Self, FaultExecutionError> {
+        let trace = FaultTraceState::restore(storage, checkpoint)?;
+        Self::restore_with_trace(plan, artifacts, scenario_seed, manifests, checkpoint, trace)
+    }
+
+    /// Restores the bounded state of `checkpoint` around live trace state.
+    ///
+    /// The checkpoint's own recording position and replay cursor are ignored;
+    /// `trace` is the continuation's authoritative trace state.
+    pub(crate) fn restore_with_trace(
+        plan: &'a FaultSignalPlan,
+        artifacts: &'a dyn SignalArtifactProvider,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+        checkpoint: &FaultRuntimeCheckpoint,
+        trace: FaultTraceState,
     ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
         checkpoint.validate(plan, scenario_seed)?;
@@ -137,8 +183,7 @@ impl<'a> FaultExecutionRuntime<'a> {
             scenario_seed,
             binding_runtime,
             adapters,
-            replay: checkpoint.replay.clone(),
-            recorded_work_items: checkpoint.recorded_work_items.clone(),
+            trace,
             retained_effects: checkpoint.retained_effects.clone(),
             branch_parent: checkpoint.branch_parent,
         })
@@ -159,8 +204,8 @@ impl<'a> FaultExecutionRuntime<'a> {
             coordinate,
             same_coordinate_sequence,
             &mut self.adapters,
-            self.replay.as_mut(),
-            &mut self.recorded_work_items,
+            self.trace.replay.as_mut(),
+            &mut self.trace.recorded,
         )?)
     }
 
@@ -188,8 +233,8 @@ impl<'a> FaultExecutionRuntime<'a> {
             coordinate,
             same_coordinate_sequence,
             &mut sink,
-            self.replay.as_mut(),
-            &mut self.recorded_work_items,
+            self.trace.replay.as_mut(),
+            &mut self.trace.recorded,
         )?)
     }
 
@@ -208,8 +253,8 @@ impl<'a> FaultExecutionRuntime<'a> {
             opportunity,
             same_coordinate_sequence,
             &mut self.adapters,
-            self.replay.as_mut(),
-            &mut self.recorded_work_items,
+            self.trace.replay.as_mut(),
+            &mut self.trace.recorded,
         )?)
     }
 
@@ -234,8 +279,8 @@ impl<'a> FaultExecutionRuntime<'a> {
             opportunity,
             same_coordinate_sequence,
             &mut sink,
-            self.replay.as_mut(),
-            &mut self.recorded_work_items,
+            self.trace.replay.as_mut(),
+            &mut self.trace.recorded,
         )?)
     }
 
@@ -248,7 +293,7 @@ impl<'a> FaultExecutionRuntime<'a> {
             coordinate,
             same_coordinate_sequence,
             &mut self.adapters,
-            self.replay.as_mut(),
+            self.trace.replay.as_mut(),
         )?)
     }
 
@@ -261,27 +306,28 @@ impl<'a> FaultExecutionRuntime<'a> {
             opportunity,
             same_coordinate_sequence,
             &mut self.adapters,
-            self.replay.as_mut(),
+            self.trace.replay.as_mut(),
         )?)
     }
 
     /// Installs an unconsumed authoritative replay trace.
     ///
+    /// The reader keeps the trace's segment stores and decodes one segment at
+    /// a time; the checkpoint records only the trace manifest and cursor.
+    ///
     /// # Errors
     ///
-    /// Returns [`FaultExecutionError`] when the trace is malformed, oversized,
-    /// already consumed, or incompatible with outcome-only network replay.
+    /// Returns [`FaultExecutionError`] when the trace exceeds the scenario's
+    /// replay counters, its first segment cannot be read, or the checkpoint
+    /// carrying its cursor exceeds the checkpoint byte limit.
     pub fn install_replay(
         &mut self,
         trace: ResolvedEffectTrace,
     ) -> Result<(), FaultExecutionError> {
-        trace.validate(self.resource_limits)?;
-        if trace.cursor != 0 {
-            return Err(FaultRuntimeError::InvalidReplayTrace.into());
-        }
-        let previous = self.replay.replace(trace);
+        let reader = ResolvedEffectTraceReader::new(trace, self.resource_limits)?;
+        let previous = self.trace.replay.replace(reader);
         if let Err(error) = self.checkpoint() {
-            self.replay = previous;
+            self.trace.replay = previous;
             return Err(error);
         }
         Ok(())
@@ -293,7 +339,8 @@ impl<'a> FaultExecutionRuntime<'a> {
     ///
     /// Returns [`FaultExecutionError`] when no replay is installed or records remain.
     pub fn verify_replay_exhausted(&self) -> Result<(), FaultExecutionError> {
-        self.replay
+        self.trace
+            .replay
             .as_ref()
             .ok_or(FaultRuntimeError::InvalidReplayTrace)?
             .require_exhausted()
@@ -302,32 +349,19 @@ impl<'a> FaultExecutionRuntime<'a> {
 
     /// Returns every committed effect as a fresh replay trace.
     ///
+    /// The open tail is stored as the trace's final segment without moving
+    /// any later seal point, so a mid-execution export does not change the
+    /// trace the execution eventually publishes.
+    ///
     /// # Errors
     ///
-    /// Returns [`FaultExecutionError`] if the retained recording violates the
-    /// selected replay mode or the plan's resolved-record limit.
+    /// Returns [`FaultExecutionError`] if a segment cannot be stored or read,
+    /// or the recording violates the selected replay mode.
     pub fn recorded_trace(
         &self,
         mode: FaultReplayMode,
     ) -> Result<ResolvedEffectTrace, FaultExecutionError> {
-        let work_items = match mode {
-            FaultReplayMode::OutcomeOnlyNetwork(_) => self
-                .recorded_work_items
-                .iter()
-                .filter(|item| item.network_frame_key.is_some())
-                .cloned()
-                .collect(),
-            FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
-                self.recorded_work_items.clone()
-            }
-        };
-        let trace = ResolvedEffectTrace {
-            mode,
-            work_items,
-            cursor: 0,
-        };
-        trace.validate(self.resource_limits)?;
-        Ok(trace)
+        Ok(self.trace.recorded_trace(mode)?)
     }
 
     /// Replaces one-boundary-delayed production telemetry.
@@ -357,20 +391,39 @@ impl<'a> FaultExecutionRuntime<'a> {
     /// Returns [`FaultExecutionError`] if canonical state cannot be encoded or
     /// if a transaction is still in flight.
     pub fn checkpoint(&self) -> Result<FaultRuntimeCheckpoint, FaultExecutionError> {
-        let checkpoint = FaultRuntimeCheckpoint {
+        let mut checkpoint = self.bounded_checkpoint()?;
+        self.trace.fill(&mut checkpoint);
+        let _ = checkpoint.canonical_bytes()?;
+        Ok(checkpoint)
+    }
+
+    /// Captures every checkpoint field except the trace position and cursor.
+    ///
+    /// The result is not size-checked; it is the per-evaluation state of an
+    /// owner that keeps the trace state separately.
+    pub(crate) fn bounded_checkpoint(&self) -> Result<FaultRuntimeCheckpoint, FaultExecutionError> {
+        Ok(FaultRuntimeCheckpoint {
             semantic_version: FAULT_RUNTIME_STATE_VERSION,
             signal_plan: self.signal_plan,
             resource_limits: self.resource_limits,
             binding_runtime: self.binding_runtime.checkpoint()?,
             adapters: self.adapters.checkpoints()?,
-            replay: self.replay.clone(),
-            recorded_work_items: self.recorded_work_items.clone(),
+            replay: None,
+            recorded: ResolvedEffectTracePosition::empty(),
             retained_effects: self.retained_effects.clone(),
             branch_parent: self.branch_parent,
             poisoned: false,
-        };
-        let _ = checkpoint.canonical_bytes()?;
-        Ok(checkpoint)
+        })
+    }
+
+    /// Releases the live trace state.
+    pub(crate) fn into_trace(self) -> FaultTraceState {
+        self.trace
+    }
+
+    /// Installs live trace state, returning the state it replaces.
+    pub(crate) fn replace_trace(&mut self, trace: FaultTraceState) -> FaultTraceState {
+        std::mem::replace(&mut self.trace, trace)
     }
 
     /// Returns the exact program identity owned by this continuation.
@@ -405,8 +458,11 @@ impl<'a> FaultExecutionRuntime<'a> {
 
 mod capacity_preflight;
 mod owned;
+mod trace_state;
 
 pub use owned::OwnedFaultExecutionRuntime;
+pub(crate) use trace_state::FaultTraceState;
+pub use trace_state::FaultTraceStorage;
 
 fn sole_program(plan: &FaultSignalPlan) -> Result<&SignalProgram, FaultExecutionError> {
     match plan.programs() {

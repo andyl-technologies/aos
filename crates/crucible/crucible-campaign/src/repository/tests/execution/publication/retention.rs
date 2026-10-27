@@ -18,14 +18,18 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified original reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified original reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish original reproduction");
     let final_state = CampaignHash::derive("test-finding", b"minimized final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"seeded shortest-first; candidates=4096; bytes=134217728".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -45,8 +49,12 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified minimized reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified minimized reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish minimized reproduction");
@@ -71,13 +79,13 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
     );
     let missing_original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
         ObjectKind::Finding,
-        2,
+        3,
         b"missing original reproduction",
     ))
     .expect("missing reproduction id");
     let invalid_trace = FindingMinimizationEvidence::new(
         missing_original,
-        3,
+        4,
         b"same minimization policy".to_vec(),
         Vec::new(),
         final_state,
@@ -91,8 +99,12 @@ fn minimized_finding_retains_trace_and_complete_observation_evidence() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"unpublishable minimized reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"unpublishable minimized reproduction".to_vec(),
+                Vec::new()
+            )
+            .expect("reproduction payload"),
             invalid_trace,
         ),
         Err(CampaignRepositoryError::Store(StoreError::NotFound { .. }))
@@ -284,14 +296,14 @@ fn exact_retention_rejects_source_snapshot_and_campaign_lineage_substitution() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"snapshot-bound original".to_vec(),
+            crate::ReproductionPayload::new(1, b"snapshot-bound original".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish original reproduction");
     let final_state = CampaignHash::derive("test-finding", b"snapshot-bound final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"snapshot-bound minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -311,8 +323,8 @@ fn exact_retention_rejects_source_snapshot_and_campaign_lineage_substitution() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"snapshot-bound minimized".to_vec(),
+            crate::ReproductionPayload::new(1, b"snapshot-bound minimized".to_vec(), Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish minimized reproduction");

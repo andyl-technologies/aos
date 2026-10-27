@@ -955,6 +955,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # Earlier trees can contain CMake directories whose modes defeat the
       # inherited ACL. Start a fresh tree when introducing exit-time repair.
       cachePermissionsVersion = 1;
+      # Version 1 trees recorded source hashes after the build phase, so a
+      # check or post-build failure could leave stale test binaries marked
+      # fresh. Start fresh trees under the exit-time freshness commit.
+      sourceFreshnessVersion = 2;
       inherit cargoArtifactContract;
       cargoDeps = toString args.cargoDeps;
       cargoRoot = args.cargoRoot or ".";

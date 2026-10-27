@@ -11,7 +11,6 @@ use std::os::fd::OwnedFd;
 use thiserror::Error;
 
 use super::*;
-use crate::console_observation::QemuConsoleObservationSpool;
 
 /// Exact QMP command failure classification across the process-creation boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -39,6 +38,23 @@ pub struct QemuHotForkChildProcessBasis {
 }
 
 impl QemuHotForkChildProcessBasis {
+    /// Constructs an explicitly modeled process basis for ownership tests.
+    ///
+    /// This does not authenticate a process, source response, or fork request.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn from_unvalidated_test_process_ids(
+        source_process_id: u32,
+        child_process_id: u32,
+    ) -> Self {
+        let request =
+            crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
+        Self {
+            source_process_id,
+            child_process_id,
+            request,
+        }
+    }
+
     /// Returns the source template process identifier.
     #[must_use]
     pub const fn source_process_id(self) -> u32 {
@@ -99,8 +115,8 @@ pub struct QemuHotForkHostContinuation {
     pub(super) shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
     pub(super) host_io_binding: crucible_engine::model::ContentHash,
     pub(super) host_io_runtime: Box<dyn QemuHostIoRuntime>,
-    pub(super) console_spool: Option<QemuConsoleObservationSpool>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
+    pub(super) authenticated_launch: Option<crate::QemuLaunchArtifactIdentity>,
     pub(super) checkpoint_cancellation: OwnedFd,
 }
 
@@ -226,12 +242,11 @@ fn hot_fork_host_io_binding(
     ring: crucible_qemu_shmem::SetupRegionBackingIdentity,
 ) -> crucible_engine::model::ContentHash {
     let material = format!(
-        "template={};private-ring={};diagnostic={};qmp={};console={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};async-worker-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};child-files={};ring-device={};ring-inode={};ring-length={}",
+        "template={};private-ring={};diagnostic={};qmp={};monitor={};plugin-endpoint={};plugin-barrier={};rcu-barrier={};async-worker-barrier={};block-barrier={};parent-process={};child-process={};child-contract={};child-files={};ring-device={};ring-inode={};ring-length={}",
         request.template_generation(),
         request.private_ring_generation(),
         request.diagnostic_generation(),
         request.qmp_generation(),
-        request.console_generation(),
         request.monitor_generation(),
         request.plugin_endpoint_generation(),
         request.plugin_barrier_generation(),
@@ -257,7 +272,6 @@ struct QemuHotForkRetainedState {
     private_ring: crate::QmpHotForkPrivateRingState,
     diagnostics: crate::QmpHotForkChildDiagnosticState,
     child_qmp: crate::QmpHotForkChildQmpState,
-    child_console: crate::QmpHotForkChildConsoleState,
     process_contract: crate::QmpHotForkChildProcessContractState,
     child_files: crate::QmpHotForkChildFilesState,
 }

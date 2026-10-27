@@ -202,6 +202,15 @@ pub enum SchedulerQuiescenceBlocker {
         /// The VM node that still owes the completion.
         target: NodeId,
     },
+    /// A World network link still carries a frame toward a VM.
+    ///
+    /// The frame is checkpointed link state rather than device work. A
+    /// network fault boundary may admit it while every VM is parked; any
+    /// other quiescence decision treats it as a future happening.
+    NetworkFrameInFlight {
+        /// The VM that will receive the frame.
+        target: NodeId,
+    },
 }
 
 /// Error returned while instantiating a production scheduler from a [`World`].
@@ -381,11 +390,16 @@ impl WorldNetworkLinkRuntime {
         frame: &crucible_device::Frame,
         policy: crucible_device::PastDeliveryPolicy,
     ) -> Result<crate::LinkEmitDecisionRecord, crucible_device::DeviceError> {
-        crate::device::emit_link_frame_with_recorded_stream_at_position(
+        // A directed link has one producer, so the frame id it stamped is
+        // that producer's own sequence and names the frame's draws.
+        crate::device::emit_link_frame_with_keyed_draws(
             seed,
-            &self.rng_stream,
-            &self.fault_id,
-            rng_position,
+            crate::LinkFrameDrawSite {
+                stream: &self.rng_stream,
+                direction: self.direction,
+                producer_sequence: u64::from(frame.frame_id),
+                rng_position,
+            },
             &mut self.link,
             frame,
             policy,
@@ -399,10 +413,14 @@ impl WorldNetworkLinkRuntime {
         draws: crucible_device::FrameDraws,
         policy: crucible_device::PastDeliveryPolicy,
     ) -> Result<crate::LinkEmitDecisionRecord, crucible_device::DeviceError> {
+        // The injected draws replace the seeded ones at the same addresses.
         crate::device::emit_link_frame_with_injected_draws_at_position(
-            &self.rng_stream,
-            &self.fault_id,
-            rng_position,
+            crate::LinkFrameDrawSite {
+                stream: &self.rng_stream,
+                direction: self.direction,
+                producer_sequence: u64::from(frame.frame_id),
+                rng_position,
+            },
             &mut self.link,
             frame,
             draws,
@@ -427,11 +445,11 @@ pub struct SingleScheduler {
     pub(super) nodes: Vec<RuntimeSchedulerNode>,
     pub(super) topology_changes: Vec<SchedulerTopologyChange>,
     pub(super) run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
-    pub(super) run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
+    pub(super) run_subdivision_records: crate::History<SchedulerRunSubdivisionRecord>,
     pub(super) preemption_requests: Vec<PreemptionDecision>,
-    pub(super) preemption_applications: Vec<SchedulerPreemptionApplication>,
+    pub(super) preemption_applications: crate::History<SchedulerPreemptionApplication>,
     pub(super) control_admissions: Vec<SchedulerControlAdmission>,
-    pub(super) control_applications: Vec<SchedulerControlApplication>,
+    pub(super) control_applications: crate::History<SchedulerControlApplication>,
     pub(super) pending_events: Vec<ScheduledEvent>,
     /// Physical queue origins and canonical publication history retained for replay.
     pub(super) imported_io: BTreeMap<NodeId, super::io_inventory::ImportedIoNode>,
@@ -513,8 +531,18 @@ pub struct SingleScheduler {
     /// The parent includes the seeded raw RNG draw. A selection is removed only
     /// after the live guest request and selected value validate successfully.
     pub(super) app_random_branch_selections: BTreeMap<ContentHash, SelectionDecision>,
-    /// Live World-network frontiers captured in execution order.
+    /// Search frontiers retained at the current admission boundary, in
+    /// execution order.
+    ///
+    /// A frontier whose virtual time precedes the scheduler frontier can never
+    /// again authenticate a campaign branch or become a discovery, so it is
+    /// retired from the front when the next frontier is recorded.
     pub(super) search_frontiers: Vec<SearchRuntimeFrontier>,
+    /// Number of frontiers retired from the front of `search_frontiers`.
+    ///
+    /// Together with the retained length it numbers every frontier ever
+    /// recorded, so callers can name the frontiers first seen by one quantum.
+    pub(super) retired_search_frontiers: u64,
     pub(super) event_log: EventLog,
     pub(super) trigger_actions: TriggerActionState,
     pub(super) trigger_static_topology: Option<WorldStaticTopology>,
@@ -524,11 +552,35 @@ pub struct SingleScheduler {
     pub(super) frontier: VirtualTime,
     pub(super) quanta: u64,
     pub(super) topology_epoch: u64,
-    pub(super) topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
-    pub(super) rendezvous_records: Vec<SchedulerRendezvousRecord>,
+    pub(super) topology_change_applications: crate::History<SchedulerTopologyChangeApplication>,
+    pub(super) rendezvous_records: crate::History<SchedulerRendezvousRecord>,
     pub(super) boundary_yields: u64,
-    pub(super) ceiling_publications: Vec<SchedulerRunCeilingPublication>,
+    pub(super) ceiling_publications: crate::History<SchedulerRunCeilingPublication>,
     pub(super) lock_held: bool,
     pub(super) last_advance: Option<NodeAdvance>,
     pub(super) last_topology_recompute: bool,
+    /// Evidence of host RUNs held outside this staged scheduler.
+    ///
+    /// Only a publishing host-concurrent RUN set fills this, and it is empty
+    /// again before the scheduler is published. It is never checkpointed.
+    pub(super) held_peer_evidence: BTreeMap<NodeId, HeldPeerEvidence>,
+    /// Whether completed RUNs are held and published in canonical key order.
+    ///
+    /// The backend loop's host-concurrent publisher sets this before it plans:
+    /// it holds each completed RUN and publishes RESOLVE and EMIT in time order
+    /// across clocks, so nodes may run to their own graph horizons. A scheduler
+    /// driven directly commits each RUN as it completes, so it keeps the
+    /// lockstep admission (global-minimum target at the shared frontier, own
+    /// clock plus lookahead) that commits in time order by construction. It is
+    /// never checkpointed.
+    pub(super) held_run_publication: bool,
+}
+
+/// What a held, not yet published host RUN proves about its node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HeldPeerEvidence {
+    /// The node emits nothing at or before this time.
+    pub(super) emission_floor: SimInstant,
+    /// The physical VM has executed through this time.
+    pub(super) executed_through: SimInstant,
 }

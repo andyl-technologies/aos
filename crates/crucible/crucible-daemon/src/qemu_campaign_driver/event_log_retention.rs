@@ -1,10 +1,9 @@
-//! Bounded event-log and choice-discovery retention for modeled attempts.
+//! Quantum retention into the attempt log, and bounded choice discoveries.
 
 use super::*;
 
 pub(super) fn append_quantum(
-    event_log: &mut Vec<SchedulerEventLogEntry>,
-    event_log_bytes: &mut usize,
+    event_log: &mut RetainedAttemptLog,
     discoveries: &mut RetainedChoiceDiscoveries,
     terminal_quiescence: &mut Option<SchedulerQuiescence>,
     terminal_at: &mut VirtualTime,
@@ -19,7 +18,8 @@ pub(super) fn append_quantum(
         frontier,
         ..
     } = outcome;
-    append_event_entries(event_log, event_log_bytes, event_log_entries)
+    event_log
+        .append(event_log_entries)
         .map_err(AttemptWorkerFailure::Terminal)?;
     for discovery in discovered_choices {
         if is_environment_fault_discovery(&discovery) && !retain_environment_fault_discoveries {
@@ -41,43 +41,6 @@ fn is_environment_fault_discovery(discovery: &ChoiceDiscovery) -> bool {
             if adapter == crucible_engine::SIGNAL_FAULT_CAMPAIGN_ADAPTER
                 || adapter == crucible_engine::NETWORK_FAULT_CAMPAIGN_ADAPTER
     )
-}
-
-pub(super) fn append_event_entries(
-    event_log: &mut Vec<SchedulerEventLogEntry>,
-    retained_bytes: &mut usize,
-    entries: Vec<SchedulerEventLogEntry>,
-) -> Result<(), QemuFreshModeledDriverError> {
-    let total = event_log.len().checked_add(entries.len()).ok_or(
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-entry-count",
-        },
-    )?;
-    if total > MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES {
-        return Err(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-entry-count",
-        });
-    }
-    let added_bytes = entries.iter().try_fold(0usize, |total, entry| {
-        total.checked_add(entry.canonical_material_len()).ok_or(
-            QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-event-log-bytes",
-            },
-        )
-    })?;
-    let total_bytes = retained_bytes.checked_add(added_bytes).ok_or(
-        QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes",
-        },
-    )?;
-    if total_bytes > MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES {
-        return Err(QemuFreshModeledDriverError::LimitExceeded {
-            limit: "fresh-campaign-event-log-bytes",
-        });
-    }
-    event_log.extend(entries);
-    *retained_bytes = total_bytes;
-    Ok(())
 }
 
 #[derive(Default)]
@@ -126,11 +89,6 @@ impl RetainedChoiceDiscoveries {
                 return Err(QemuFreshModeledDriverError::ConflictingChoice(opportunity));
             }
             return Ok(());
-        }
-        if self.discoveries.len() == MAX_OBSERVATION_CHOICE_DISCOVERIES {
-            return Err(QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-discovered-choice-count",
-            });
         }
         self.charge(
             opportunity.content_id(),

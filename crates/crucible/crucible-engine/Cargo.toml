@@ -23,6 +23,8 @@ crucible-device = { path = "../crucible-device" }
 crucible-qemu-shmem = { path = "../crucible-qemu-shmem", optional = true }
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 regex = { workspace = true }
+regex-automata = { workspace = true }
+regex-syntax = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

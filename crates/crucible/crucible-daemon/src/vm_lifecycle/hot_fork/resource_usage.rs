@@ -9,9 +9,10 @@ impl ProductionVmHotForkSourceWorld {
     /// Measures the stopped source world's retained QEMU process footprint.
     ///
     /// The measurement authenticates every prepared process incarnation, then
-    /// accounts its total resident process memory, full configured guest-memory
-    /// dirty budget in addition to current private dirties, open descriptors,
-    /// vCPUs, and writable overlays. Daemon-side continuation allocations are
+    /// accounts its total resident process memory, the bound on what one
+    /// forked child can newly dirty (see
+    /// [`SourceMemoryRegions::child_dirty_budget`]), open descriptors, vCPUs,
+    /// and writable overlays. Daemon-side continuation allocations are
     /// outside this process profile. The result is an operational admission
     /// input and never enters campaign evidence.
     ///
@@ -43,14 +44,15 @@ impl ProductionVmHotForkSourceWorld {
             let resident_bytes = required_proc_status_kib(&status, "VmRSS:")?
                 .checked_mul(1024)
                 .ok_or_else(|| loop_factory_error("source resident-byte accounting overflowed"))?;
-            let rollup = fs::read_to_string(process.join("smaps_rollup")).map_err(|error| {
-                loop_factory_error(format!(
-                    "read prepared source process memory rollup: {error}"
-                ))
+            let resources = prepared.launch_resources();
+            let smaps = fs::read_to_string(process.join("smaps")).map_err(|error| {
+                loop_factory_error(format!("read prepared source process mappings: {error}"))
             })?;
-            let private_dirty_bytes = required_proc_status_kib(&rollup, "Private_Dirty:")?
-                .checked_mul(1024)
-                .ok_or_else(|| loop_factory_error("source dirty-byte accounting overflowed"))?;
+            let regions = SourceMemoryRegions::from_smaps(&smaps, resources.guest_memory_bytes())?;
+            usage.regions = usage
+                .regions
+                .checked_add(regions)
+                .ok_or_else(|| loop_factory_error("source memory-region accounting overflowed"))?;
             let descriptor_count = fs::read_dir(process.join("fd"))
                 .map_err(|error| {
                     loop_factory_error(format!("read prepared source descriptors: {error}"))
@@ -64,13 +66,14 @@ impl ProductionVmHotForkSourceWorld {
                         .ok_or_else(|| loop_factory_error("source descriptor count overflowed"))
                 })?;
 
-            let resources = prepared.launch_resources();
             usage.template_bytes = usage
                 .template_bytes
                 .checked_add(resident_bytes.max(resources.guest_memory_bytes()))
                 .ok_or_else(|| loop_factory_error("source template-byte accounting overflowed"))?;
-            let dirty_budget = private_dirty_bytes
-                .checked_add(resources.guest_memory_bytes())
+            // The source's own private dirty bytes are already in the
+            // template; a child is charged only what it can newly dirty.
+            let dirty_budget = regions
+                .child_dirty_budget(resources.guest_memory_bytes())
                 .ok_or_else(|| loop_factory_error("source dirty-byte accounting overflowed"))?;
             usage.expected_private_dirty_bytes = usage
                 .expected_private_dirty_bytes
@@ -94,6 +97,48 @@ impl ProductionVmHotForkSourceWorld {
                 .ok_or_else(|| loop_factory_error("source overlay count overflowed"))?;
         }
         Ok(usage)
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Measures every live QEMU node's memory by region class.
+    ///
+    /// A hot-fork child calls this before shutdown so its actual private
+    /// dirty bytes can be checked against the budget its lease reserved.
+    /// Nodes that already exited are skipped. The result is operational
+    /// evidence only and never enters campaign evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when a live node's `/proc` mappings
+    /// cannot be read or accounting overflows.
+    pub fn measure_live_node_memory(&self) -> Result<SourceMemoryRegions, LifecycleApiError> {
+        let mut total = SourceMemoryRegions::default();
+        for vm in self.source.world().vm_nodes() {
+            let backend = self.inner.backend();
+            if !backend.contains(&vm.id) {
+                continue;
+            }
+            let Ok(process_id) = backend.process_id(&vm.id) else {
+                continue;
+            };
+            let smaps = fs::read_to_string(
+                PathBuf::from("/proc")
+                    .join(process_id.to_string())
+                    .join("smaps"),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!("read live node `{}` mappings: {error}", vm.id.name))
+            })?;
+            let guest_memory_bytes = u64::from(vm.memory_mib)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| loop_factory_error("live node guest memory overflowed"))?;
+            let regions = SourceMemoryRegions::from_smaps(&smaps, guest_memory_bytes)?;
+            total = total
+                .checked_add(regions)
+                .ok_or_else(|| loop_factory_error("live node memory accounting overflowed"))?;
+        }
+        Ok(total)
     }
 }
 
@@ -129,6 +174,7 @@ pub struct ProductionVmHotForkSourceWorldResourceUsage {
     virtual_cpu_count: u32,
     descriptor_count: u32,
     overlay_count: u32,
+    regions: SourceMemoryRegions,
 }
 
 impl ProductionVmHotForkSourceWorldResourceUsage {
@@ -138,7 +184,7 @@ impl ProductionVmHotForkSourceWorldResourceUsage {
         self.template_bytes
     }
 
-    /// Returns the conservative private-dirty byte budget.
+    /// Returns the private-dirty bytes one forked child may newly write.
     #[must_use]
     pub const fn expected_private_dirty_bytes(self) -> u64 {
         self.expected_private_dirty_bytes
@@ -167,6 +213,199 @@ impl ProductionVmHotForkSourceWorldResourceUsage {
     pub const fn overlay_count(self) -> u32 {
         self.overlay_count
     }
+
+    /// Returns the measured memory breakdown by QEMU region class.
+    #[must_use]
+    pub const fn regions(self) -> SourceMemoryRegions {
+        self.regions
+    }
+}
+
+/// Retained QEMU memory split into guest RAM, TCG code buffer, and the rest.
+///
+/// Sums cover every prepared process of one source world. Guest RAM is each
+/// private anonymous writable mapping at least as large as the configured
+/// guest memory; the TCG code buffer is the executable anonymous or JIT memfd
+/// mapping. Everything else is QEMU and plugin state. Resident and dirty
+/// figures come from `/proc/<pid>/smaps`; proportional bytes divide pages
+/// still shared with an ancestor template among its sharers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceMemoryRegions {
+    /// Total resident bytes.
+    pub resident_bytes: u64,
+    /// Total proportional-set bytes.
+    pub proportional_bytes: u64,
+    /// Total private dirty bytes.
+    pub private_dirty_bytes: u64,
+    /// Resident bytes of guest RAM mappings.
+    pub guest_resident_bytes: u64,
+    /// Private dirty bytes of guest RAM mappings.
+    pub guest_private_dirty_bytes: u64,
+    /// Mapped size of the TCG code buffer.
+    pub code_buffer_bytes: u64,
+    /// Resident bytes of the TCG code buffer.
+    pub code_resident_bytes: u64,
+    /// Private dirty bytes of the TCG code buffer.
+    pub code_private_dirty_bytes: u64,
+}
+
+impl SourceMemoryRegions {
+    /// Classifies one process's `smaps` text.
+    fn from_smaps(smaps: &str, guest_memory_bytes: u64) -> Result<Self, LifecycleApiError> {
+        let mut regions = Self::default();
+        let mut class = RegionClass::Other;
+        for line in smaps.lines() {
+            if let Some(header) = SmapsHeader::parse(line) {
+                class = header.class(guest_memory_bytes);
+                continue;
+            }
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let field = match key {
+                "Size" | "Rss" | "Pss" | "Private_Dirty" => key,
+                _ => continue,
+            };
+            let bytes =
+                required_proc_status_kib(&format!("{field}:{value}"), &format!("{field}:"))?
+                    .checked_mul(1024)
+                    .ok_or_else(|| loop_factory_error("source mapping accounting overflowed"))?;
+            regions
+                .record(class, field, bytes)
+                .ok_or_else(|| loop_factory_error("source mapping accounting overflowed"))?;
+        }
+        Ok(regions)
+    }
+
+    fn record(&mut self, class: RegionClass, field: &str, bytes: u64) -> Option<()> {
+        let add = |total: &mut u64| -> Option<()> {
+            *total = total.checked_add(bytes)?;
+            Some(())
+        };
+        match (field, class) {
+            ("Size", RegionClass::Code) => add(&mut self.code_buffer_bytes),
+            ("Size", _) => Some(()),
+            ("Rss", class) => {
+                add(&mut self.resident_bytes)?;
+                match class {
+                    RegionClass::Guest => add(&mut self.guest_resident_bytes),
+                    RegionClass::Code => add(&mut self.code_resident_bytes),
+                    RegionClass::Other => Some(()),
+                }
+            }
+            ("Pss", _) => add(&mut self.proportional_bytes),
+            ("Private_Dirty", class) => {
+                add(&mut self.private_dirty_bytes)?;
+                match class {
+                    RegionClass::Guest => add(&mut self.guest_private_dirty_bytes),
+                    RegionClass::Code => add(&mut self.code_private_dirty_bytes),
+                    RegionClass::Other => Some(()),
+                }
+            }
+            _ => Some(()),
+        }
+    }
+
+    /// Bounds what one child forked from these processes can newly dirty.
+    ///
+    /// A forked child shares every source page copy-on-write, so its private
+    /// dirty bytes are pages it writes after the fork. It can write each
+    /// guest RAM page and each code-buffer page at most once, so both are
+    /// charged at their full mapped size. Other QEMU and plugin state is
+    /// charged twice its measured private dirty size: once for rewriting
+    /// the inherited pages and once as growth headroom of the same size.
+    /// Hot-fork children report their measured dirty bytes against this
+    /// bound, so an exceeded prediction is visible.
+    #[must_use]
+    pub fn child_dirty_budget(self, guest_memory_bytes: u64) -> Option<u64> {
+        let other = self
+            .private_dirty_bytes
+            .checked_sub(self.guest_private_dirty_bytes)?
+            .checked_sub(self.code_private_dirty_bytes)?;
+        guest_memory_bytes
+            .max(self.guest_resident_bytes)
+            .checked_add(self.code_buffer_bytes)?
+            .checked_add(other.checked_mul(2)?)
+    }
+
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            resident_bytes: self.resident_bytes.checked_add(other.resident_bytes)?,
+            proportional_bytes: self
+                .proportional_bytes
+                .checked_add(other.proportional_bytes)?,
+            private_dirty_bytes: self
+                .private_dirty_bytes
+                .checked_add(other.private_dirty_bytes)?,
+            guest_resident_bytes: self
+                .guest_resident_bytes
+                .checked_add(other.guest_resident_bytes)?,
+            guest_private_dirty_bytes: self
+                .guest_private_dirty_bytes
+                .checked_add(other.guest_private_dirty_bytes)?,
+            code_buffer_bytes: self
+                .code_buffer_bytes
+                .checked_add(other.code_buffer_bytes)?,
+            code_resident_bytes: self
+                .code_resident_bytes
+                .checked_add(other.code_resident_bytes)?,
+            code_private_dirty_bytes: self
+                .code_private_dirty_bytes
+                .checked_add(other.code_private_dirty_bytes)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegionClass {
+    Guest,
+    Code,
+    Other,
+}
+
+/// One `smaps` mapping header: `start-end perms offset dev inode [path]`.
+struct SmapsHeader<'a> {
+    size: u64,
+    perms: &'a str,
+    inode: &'a str,
+    path: &'a str,
+}
+
+impl<'a> SmapsHeader<'a> {
+    fn parse(line: &'a str) -> Option<Self> {
+        let mut fields = line.split_whitespace();
+        let (start, end) = fields.next()?.split_once('-')?;
+        let start = u64::from_str_radix(start, 16).ok()?;
+        let end = u64::from_str_radix(end, 16).ok()?;
+        let perms = fields.next()?;
+        if perms.len() != 4 {
+            return None;
+        }
+        let _offset = fields.next()?;
+        let _device = fields.next()?;
+        let inode = fields.next()?;
+        let path = fields.next().unwrap_or("");
+        Some(Self {
+            size: end.checked_sub(start)?,
+            perms,
+            inode,
+            path,
+        })
+    }
+
+    fn class(&self, guest_memory_bytes: u64) -> RegionClass {
+        let anonymous =
+            self.inode == "0" && (self.path.is_empty() || self.path.starts_with("[anon"));
+        // Split-W^X code buffers alias one JIT memfd; otherwise TCG maps its
+        // buffer as one private executable anonymous region.
+        if self.path.contains("tcg-jit") || (anonymous && self.perms == "rwxp") {
+            return RegionClass::Code;
+        }
+        if anonymous && self.perms == "rw-p" && self.size >= guest_memory_bytes {
+            return RegionClass::Guest;
+        }
+        RegionClass::Other
+    }
 }
 
 #[cfg(test)]
@@ -184,5 +423,104 @@ mod tests {
         assert!(required_proc_status_kib("VmRSS:\tunknown kB\n", "VmRSS:").is_err());
         assert!(required_proc_status_kib("VmRSS:\t1234 bytes\n", "VmRSS:").is_err());
         assert!(required_proc_status_kib("VmRSS:\t1234 kB trailing\n", "VmRSS:").is_err());
+    }
+
+    #[test]
+    fn smaps_regions_split_guest_ram_code_buffer_and_the_rest() {
+        let mebibyte = 1024 * 1024;
+        // Guest RAM (512 MiB rw-p anonymous), an executable code buffer, a
+        // smaller anonymous heap, and a file mapping.
+        let smaps = "\
+7f0000000000-7f0020000000 rw-p 00000000 00:00 0 \n\
+Size:             524288 kB\n\
+Rss:              204800 kB\n\
+Pss:              102400 kB\n\
+Private_Dirty:     51200 kB\n\
+7f0040000000-7f0050000000 rwxp 00000000 00:00 0 \n\
+Size:             262144 kB\n\
+Rss:               65536 kB\n\
+Pss:               65536 kB\n\
+Private_Dirty:     65536 kB\n\
+55aa00000000-55aa04000000 rw-p 00000000 00:00 0                          [heap]\n\
+Size:              65536 kB\n\
+Rss:               10240 kB\n\
+Pss:               10240 kB\n\
+Private_Dirty:     10240 kB\n\
+55ab00000000-55ab00100000 r-xp 00000000 08:01 1234                       /qemu\n\
+Size:               1024 kB\n\
+Rss:                1024 kB\n\
+Pss:                 512 kB\n\
+Private_Dirty:         0 kB\n";
+
+        let regions = SourceMemoryRegions::from_smaps(smaps, 512 * mebibyte)
+            .unwrap_or_else(|error| panic!("well-formed smaps: {error}"));
+
+        assert_eq!(regions.guest_resident_bytes, 200 * mebibyte);
+        assert_eq!(regions.guest_private_dirty_bytes, 50 * mebibyte);
+        assert_eq!(regions.code_buffer_bytes, 256 * mebibyte);
+        assert_eq!(regions.code_resident_bytes, 64 * mebibyte);
+        assert_eq!(regions.code_private_dirty_bytes, 64 * mebibyte);
+        assert_eq!(regions.resident_bytes, (200 + 64 + 10 + 1) * mebibyte);
+        assert_eq!(regions.private_dirty_bytes, (50 + 64 + 10) * mebibyte);
+        assert_eq!(
+            regions.proportional_bytes,
+            (100 + 64 + 10) * mebibyte + mebibyte / 2
+        );
+    }
+
+    #[test]
+    fn child_budget_charges_guest_and_code_once_and_other_state_twice() {
+        let mebibyte = 1024 * 1024;
+        let regions = SourceMemoryRegions {
+            resident_bytes: 900 * mebibyte,
+            proportional_bytes: 400 * mebibyte,
+            private_dirty_bytes: 300 * mebibyte,
+            guest_resident_bytes: 400 * mebibyte,
+            guest_private_dirty_bytes: 150 * mebibyte,
+            code_buffer_bytes: 128 * mebibyte,
+            code_resident_bytes: 100 * mebibyte,
+            code_private_dirty_bytes: 100 * mebibyte,
+        };
+
+        // 512 guest + 128 code + 2 * (300 - 150 - 100) other.
+        assert_eq!(
+            regions.child_dirty_budget(512 * mebibyte),
+            Some((512 + 128 + 100) * mebibyte)
+        );
+
+        // Already-dirtied guest pages are not charged again.
+        let dirtier = SourceMemoryRegions {
+            private_dirty_bytes: 650 * mebibyte,
+            guest_private_dirty_bytes: 500 * mebibyte,
+            ..regions
+        };
+        assert_eq!(
+            dirtier.child_dirty_budget(512 * mebibyte),
+            Some((512 + 128 + 100) * mebibyte)
+        );
+
+        // Classified bytes can never exceed the total.
+        let inconsistent = SourceMemoryRegions {
+            private_dirty_bytes: 10 * mebibyte,
+            ..regions
+        };
+        assert_eq!(inconsistent.child_dirty_budget(512 * mebibyte), None);
+    }
+
+    #[test]
+    fn smaps_regions_count_a_split_jit_memfd_as_code() {
+        let smaps = "\
+7f0040000000-7f0041000000 rw-s 00000000 00:01 77                         /memfd:tcg-jit (deleted)\n\
+Size:              16384 kB\n\
+Rss:                4096 kB\n\
+Pss:                4096 kB\n\
+Private_Dirty:         0 kB\n";
+
+        let regions = SourceMemoryRegions::from_smaps(smaps, 512 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("well-formed smaps: {error}"));
+
+        assert_eq!(regions.code_buffer_bytes, 16 * 1024 * 1024);
+        assert_eq!(regions.code_resident_bytes, 4 * 1024 * 1024);
+        assert_eq!(regions.guest_resident_bytes, 0);
     }
 }

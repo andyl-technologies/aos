@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::error::Error;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(feature = "test-double")]
@@ -13,9 +14,7 @@ const BACKEND_HELP: &str = "--backend <auto|qemu>";
 
 #[test]
 fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .arg("--help")
-        .output()?;
+    let output = Command::new(crucible_executable()).arg("--help").output()?;
     assert!(
         output.status.success(),
         "crucible --help should exit 0; stdout=`{}` stderr=`{}`",
@@ -69,7 +68,7 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
 #[cfg(not(feature = "test-double"))]
 #[test]
 fn cli_production_build_rejects_the_test_double_backend() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["--backend", "double", "run", "scenario.toml"])
         .output()?;
 
@@ -84,7 +83,7 @@ fn cli_production_build_rejects_the_test_double_backend() -> Result<(), Box<dyn 
 #[cfg(not(feature = "test-double"))]
 #[test]
 fn cli_production_build_rejects_the_mock_failure_gate_flag() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["run", "scenario.toml", "--emit-mock-failure-artifact"])
         .output()?;
 
@@ -98,7 +97,7 @@ fn cli_production_build_rejects_the_mock_failure_gate_flag() -> Result<(), Box<d
 
 #[test]
 fn cli_run_help_describes_guarded_campaign_deployment() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["run", "--help"])
         .output()?;
 
@@ -114,7 +113,7 @@ fn cli_run_help_describes_guarded_campaign_deployment() -> Result<(), Box<dyn Er
 #[cfg(not(feature = "test-double"))]
 #[test]
 fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["selftest", "--help"])
         .output()?;
 
@@ -134,9 +133,7 @@ fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box
 #[test]
 fn cli_help_process_version_exits_zero() -> Result<(), Box<dyn Error>> {
     for flag in ["--version", "-V"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-            .arg(flag)
-            .output()?;
+        let output = Command::new(crucible_executable()).arg(flag).output()?;
         assert!(
             output.status.success(),
             "crucible {flag} should exit 0; stdout=`{}` stderr=`{}`",
@@ -167,7 +164,7 @@ fn cli_completions_process_emits_every_supported_shell_script() -> Result<(), Bo
         ("powershell", "Register-ArgumentCompleter"),
         ("zsh", "#compdef crucible"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        let output = Command::new(crucible_executable())
             .args(["completions", shell])
             .output()?;
         assert!(
@@ -205,7 +202,7 @@ fn cli_help_process_outputs_every_normative_subcommand_surface() -> Result<(), B
         ("fuzz", "<FAMILY|--family <path|hash>>"),
         ("serve", "--listen <addr>"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        let output = Command::new(crucible_executable())
             .args([subcommand, "--help"])
             .output()?;
         assert!(
@@ -226,7 +223,7 @@ fn cli_help_process_outputs_every_normative_subcommand_surface() -> Result<(), B
 
 #[test]
 fn cli_replay_help_exposes_bounded_scheduler_preemption() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["replay", "--help"])
         .output()?;
 
@@ -243,7 +240,7 @@ fn cli_replay_help_exposes_bounded_scheduler_preemption() -> Result<(), Box<dyn 
 
 #[test]
 fn cli_help_process_hides_gate_only_flags() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["run", "--help"])
         .output()?;
 
@@ -268,7 +265,7 @@ fn cli_help_process_hides_gate_only_flags() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn cli_completions_process_rejects_missing_shell() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .arg("completions")
         .output()?;
     assert_eq!(
@@ -350,9 +347,7 @@ fn cli_process_rejects_every_missing_normative_input() -> Result<(), Box<dyn Err
             "<ARTIFACT|SAVEPOINT|--session <SESSION>>",
         ),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-            .args(args)
-            .output()?;
+        let output = Command::new(crucible_executable()).args(args).output()?;
         assert_eq!(
             output.status.code(),
             Some(64),
@@ -391,9 +386,7 @@ fn cli_process_rejects_normative_conflicts_and_incomplete_alternatives()
             &["fuzz", "family.toml", "--family", "blake3:family"][..],
         ),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-            .args(args)
-            .output()?;
+        let output = Command::new(crucible_executable()).args(args).output()?;
         assert_eq!(
             output.status.code(),
             Some(64),
@@ -409,4 +402,16 @@ fn cli_process_rejects_normative_conflicts_and_incomplete_alternatives()
         );
     }
     Ok(())
+}
+
+/// Returns the `crucible` executable under test.
+///
+/// Cargo records the executable path at compile time. A prebuilt test binary
+/// that runs outside its Cargo target directory receives the relocated path
+/// through the same variable at run time, following the cargo-nextest
+/// archive convention.
+fn crucible_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_crucible")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_crucible")))
 }

@@ -202,7 +202,7 @@ impl QuiescentLifecycleLoop {
 
 use crucible_control_api::lifecycle::{
     inline_scenario_form, resume_observation_source_identity, resume_replay_closure_identity,
-    scenario_form_white_box_policies,
+    scenario_form_white_box_policies, validate_resume_replay_closure_frames,
 };
 
 /// Source-aware loop factory used by the lifecycle control plane.
@@ -1457,7 +1457,7 @@ fn validate_resume_replay_closure_binding(
         &request.schedule,
         &request.checkpoint,
         closure.schema_version(),
-        closure.payload(),
+        closure.frames(),
     );
     if closure.identity() != expected {
         return Err(LifecycleApiError::ResumeReplayClosure {
@@ -1498,7 +1498,7 @@ fn validate_resume_replay_closure_presence(
 ) -> Result<(), LifecycleApiError> {
     let requires_closure = has_validator
         || schedule
-            .decisions()
+            .decision_history()
             .iter()
             .any(|decision| matches!(decision, Decision::Selection(_)));
     let Some(closure) = closure else {
@@ -1512,14 +1512,7 @@ fn validate_resume_replay_closure_presence(
             Ok(())
         };
     };
-    if closure.payload_len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
-        return Err(LifecycleApiError::ResumeReplayClosure {
-            message: format!(
-                "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
-                closure.payload_len()
-            ),
-        });
-    }
+    validate_resume_replay_closure_frames(closure.frames())?;
     if !has_validator {
         return Err(LifecycleApiError::ResumeReplayClosure {
             message: String::from(

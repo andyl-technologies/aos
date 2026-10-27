@@ -22,7 +22,7 @@ use super::bounded_cbor::{
 mod resource;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v6\0";
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v7\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 

@@ -1089,7 +1089,7 @@ mod tests {
                 .expect("proposal ID"),
             AttemptId::from_content_id(id("attempt", ObjectKind::CampaignFact, 9))
                 .expect("attempt ID"),
-            crate::ObservationId::from_content_id(id("observation", ObjectKind::Observation, 14))
+            crate::ObservationId::from_content_id(id("observation", ObjectKind::Observation, 16))
                 .expect("observation ID"),
             BranchPathId::from_content_id(id("path", ObjectKind::CampaignFact, 2))
                 .expect("path ID"),

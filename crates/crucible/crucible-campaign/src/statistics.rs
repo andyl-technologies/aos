@@ -19,21 +19,24 @@ use super::{
 mod evidence;
 mod smc;
 
-pub(crate) use evidence::verify_initial_smc_statistical_evidence;
 #[cfg(test)]
 pub(crate) use evidence::verify_smc_source_selector;
+pub(crate) use evidence::{
+    EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay, statistical_evidence_item_count,
+};
 pub use evidence::{
-    FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
-    SequentialMonteCarloEvidence, SmcTransitionEvidence, StatisticalChoiceEvidence,
-    StatisticalDrawEvidence, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
+    MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_CHUNKS,
+    MAX_STATISTICAL_EVIDENCE_ITEMS, SmcTransitionEvidence, StatisticalChoiceEvidence,
+    StatisticalDrawEvidence, StatisticalEvidenceChunk, StatisticalEvidenceChunkDescriptor,
+    StatisticalEvidenceItem, StatisticalEvidenceManifest, StatisticalEvidenceReport,
+    StatisticalEvidenceVerifier, StatisticalExecutionBasisEvidence, StatisticalExecutionEvidence,
     StatisticalOpportunityEvidence, StatisticalRoot, StatisticalRootLookup,
-    verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence,
 };
 
 pub use smc::{
     SequentialMonteCarloEstimateReport, SmcEstimateLabel, SmcSupportValidation,
-    SmcUncertaintyStatement, StatisticalGeneration, StatisticalParticleOutcome,
-    StatisticalParticleSlot,
+    SmcUncertaintyStatement, StatisticalGeneration, StatisticalGenerationSummary,
+    StatisticalParticleOutcome, StatisticalParticleSlot,
 };
 
 /// A reduced nonnegative rational represented with bounded exact integers.

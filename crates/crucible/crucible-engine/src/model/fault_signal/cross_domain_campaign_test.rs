@@ -60,10 +60,11 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
 
     let original_schedule = Schedule::from_decisions([
         noise_override("fleet-search-guard-left"),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fleet-search-noise"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fleet-search-noise"),
+            0,
+            7,
+        )),
         Decision::Override(failing_decision.clone()),
         noise_override("fleet-search-guard-right"),
     ]);
@@ -94,7 +95,7 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
     assert_eq!(minimized.accepted_attempts(), 1);
     assert!(minimized.attempts.iter().any(|attempt| !attempt.accepted));
     assert_eq!(
-        minimized.minimized.artifact.schedule().decisions(),
+        minimized.minimized.artifact.schedule().decision_history(),
         &[Decision::Override(failing_decision)]
     );
 
@@ -121,9 +122,12 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
     let trace = recorder
         .recorded_trace(FaultReplayMode::LockedEffect)
         .unwrap_or_else(|error| panic!("cross-domain locked trace: {error}"));
-    assert_eq!(trace.work_items.len(), 1);
-    assert_eq!(trace.work_items[0].records.len(), expected_effects().len());
-    let expected_work_items = trace.work_items.clone();
+    let expected_work_items = trace_items(&trace);
+    assert_eq!(expected_work_items.len(), 1);
+    assert_eq!(
+        expected_work_items[0].records.len(),
+        expected_effects().len()
+    );
 
     // The minimized ordinary schedule selected the exact effect retained in
     // the locked trace. This fresh runtime receives only that trace: no
@@ -146,10 +150,11 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
         .verify_replay_exhausted()
         .unwrap_or_else(|error| panic!("cross-domain replay exhaustion: {error}"));
     assert_eq!(
-        replay
-            .recorded_trace(FaultReplayMode::LockedEffect)
-            .unwrap_or_else(|error| panic!("replayed cross-domain trace: {error}"))
-            .work_items,
+        trace_items(
+            &replay
+                .recorded_trace(FaultReplayMode::LockedEffect)
+                .unwrap_or_else(|error| panic!("replayed cross-domain trace: {error}"))
+        ),
         expected_work_items
     );
 
@@ -207,7 +212,7 @@ fn search_overrides_from_schedule(
     expected_parent: Option<ContentHash>,
 ) -> Result<BTreeMap<SearchChoiceId, SearchOverride>, EngineError> {
     let mut overrides = BTreeMap::new();
-    for decision in schedule.decisions() {
+    for decision in schedule.decision_history() {
         let Decision::Override(decision) = decision else {
             continue;
         };

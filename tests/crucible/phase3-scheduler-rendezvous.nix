@@ -4,13 +4,17 @@
   attrPath ? "checks.crucible.phase3.schedulerRendezvous",
   taskIds ? ["T-SCHED-7"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   rendezvousTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs;
   livenessTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs;
+  # Bounded ceilings (RFC-0010 SCHED-12) must not move guest events: a costed
+  # double proves it for the scheduler, and the live flight's partition probe
+  # proves it on the production QEMU path.
+  frequencyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_frequency_independence.rs;
+  partitionProbe = builtins.readFile ../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/partition_probe.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -102,6 +106,46 @@
         needle = "vec![(12, vec![77])]";
       }
     ]
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_frequency_independence.rs" frequencyTest [
+      {
+        label = "costed bounded-ceiling trajectory test";
+        needle = "bounded_ceilings_leave_every_guest_event_independent_of_the_schedule";
+      }
+      {
+        label = "legacy ceiling credit negative control";
+        needle = "legacy_ceiling_credit_is_detected_as_schedule_dependent";
+      }
+      {
+        label = "seeded ceiling schedule property";
+        needle = "seeded_random_ceiling_schedules_match_the_unconstrained_baseline";
+      }
+      {
+        label = "topology swap exact only for affected nodes";
+        needle = "a_link_fault_is_an_exact_event_only_for_the_nodes_whose_link_it_changes";
+      }
+      {
+        label = "exact topology swap schedule independence";
+        needle = "an_exact_topology_swap_is_independent_of_the_ceiling_schedule";
+      }
+      {
+        label = "settlement below an exact topology swap refused";
+        needle = "settling_below_an_exact_topology_swap_is_refused";
+      }
+    ]
+    ++ failuresFor "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/partition_probe.rs" partitionProbe [
+      {
+        label = "production alternating rendezvous bounds";
+        needle = "PartitionSchedule::AlternatingRendezvous";
+      }
+      {
+        label = "production seeded odd-picosecond bounds";
+        needle = "PartitionSchedule::SeededOdd";
+      }
+      {
+        label = "production frequency-independence evidence";
+        needle = "bound_frequency_independent=true";
+      }
+    ]
     ++ failuresFor "crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs" livenessTest [
       {
         label = "liveness no per-quantum decision assumption";
@@ -119,65 +163,36 @@
         label = "phase3 exposes scheduler rendezvous check";
         needle = "schedulerRendezvous = import ./phase3-scheduler-rendezvous.nix";
       }
+      {
+        label = "phase4 exposes the production bounded-ceiling flight";
+        needle = "schedulerBoundFrequencyQemuVm = phase7.productionRustPluginFlight.rawGate.partitionDiagnostic;";
+      }
     ];
 in
   if failures != []
   then throw "crucible phase3 scheduler rendezvous check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-rendezvous";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sqlite
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-scheduler-rendezvous";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-rendezvous-target" \
+            crucible-cargo test \
               -p crucible-engine \
               --test scheduler_rendezvous \
+              --test scheduler_frequency_independence \
               -- --test-threads=1
           '';
         }
@@ -194,6 +209,9 @@ in
             rendezvous=exact-shared-horizon-cap
             ordering_exactness=frequency-independent
             empty_rendezvous_quantum=no-canonical-decision
+            bounded_ceilings=guest-trajectory-frequency-independent
+            topology_swap=exact-event-for-affected-nodes-only
+            production_path=checks.crucible.phase4.schedulerBoundFrequencyQemuVm
             RESULT
           '';
         }

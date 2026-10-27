@@ -9,21 +9,63 @@
 use std::collections::BTreeMap;
 
 use crucible_device::{
-    DeviceError, DeviceRng, Frame, FrameDraws, NetLink, PastDeliveryPolicy, ResolveOutcome,
+    DeviceError, DeviceRng, Frame, FrameDraws, LinkFrameDrawKey, NetLink, PastDeliveryPolicy,
+    ResolveOutcome,
 };
 
 use crate::{
-    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, RngDecision, RngStreamId,
-    RngStreamPosition, Seed,
+    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, RngDecision, RngDrawAddress,
+    RngStreamId, RngStreamPosition, Seed,
 };
 
 /// The orientation of one directed runtime link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum NetworkLinkDirection {
     /// The link carries frames from endpoint A to endpoint B.
     EndpointAToEndpointB,
     /// The link carries frames from endpoint B to endpoint A.
     EndpointBToEndpointA,
+}
+
+impl NetworkLinkDirection {
+    /// Returns the stable wire code: `0` for A to B, `1` for B to A.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::EndpointAToEndpointB => 0,
+            Self::EndpointBToEndpointA => 1,
+        }
+    }
+
+    /// Returns the direction for a stable wire code.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::EndpointAToEndpointB),
+            1 => Some(Self::EndpointBToEndpointA),
+            _ => None,
+        }
+    }
+
+    /// Returns the stable textual label used in canonical material.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::EndpointAToEndpointB => "a-to-b",
+            Self::EndpointBToEndpointA => "b-to-a",
+        }
+    }
+
+    /// Returns the event-key draw identity of frame `producer_sequence` in this direction.
+    #[must_use]
+    pub fn frame_draw_key(self, producer_sequence: u64) -> LinkFrameDrawKey {
+        LinkFrameDrawKey {
+            direction: self.code(),
+            producer_sequence,
+        }
+    }
 }
 
 /// The deterministic result of emitting one network frame.
@@ -37,15 +79,25 @@ pub struct LinkEmitDecisionRecord {
     pub decisions: Vec<Decision>,
 }
 
-fn link_rng_draw_decisions(stream: &RngStreamId, draws: &FrameDraws) -> Vec<Decision> {
+/// Records a frame's draws in their fixed order, each at its role index.
+///
+/// The role index is the draw's position in [`FrameDraws`] order, which is the
+/// event-stream position the keyed derivation consumed ([SCHED-50]).
+fn link_rng_draw_decisions(site: LinkFrameDrawSite<'_>, draws: &FrameDraws) -> Vec<Decision> {
     [draws.jitter, draws.reorder, draws.loss]
         .into_iter()
         .chain(draws.additional_loss.iter().copied())
         .chain([draws.duplicate, draws.corrupt])
         .chain(draws.corruption_selectors.iter().copied())
-        .map(|value| {
+        .zip(0_u64..)
+        .map(|(value, role)| {
             Decision::RngDraw(RngDecision {
-                stream: stream.clone(),
+                stream: site.stream.clone(),
+                address: RngDrawAddress::LinkFrame {
+                    direction: site.direction,
+                    producer_sequence: site.producer_sequence,
+                    role,
+                },
                 value,
             })
         })

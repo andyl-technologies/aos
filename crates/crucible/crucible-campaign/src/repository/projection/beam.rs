@@ -1,379 +1,504 @@
-//! Owner-replayed Beam membership over immutable producing-request cohorts.
+//! Page-scoped Beam membership over immutable producing-request cohorts.
+//!
+//! A Beam planner page carries one candidate per `Ready` scan position. Each
+//! candidate depends only on its own request, the canonical observation that
+//! discovered the request's `(parent, opportunity)` pair, and the cohort of that
+//! observation's producing request or standalone attempt (its *barrier*). The
+//! owner therefore recomputes exactly the served page from snapshot indexes:
+//!
+//! 1. the observation-root choice-source index names the earliest canonical
+//!    discovering observation of each position;
+//! 2. the producing request's dense proposal-ordinal index, the
+//!    proposal-admission index, and `observations.attempt` enumerate the
+//!    cohort's attempts, yielding both modeled members and closure counts in one
+//!    walk;
+//! 3. a settled cohort decodes only its own members' observations, coverage
+//!    projections, and objective evaluations.
+//!
+//! No owner retains campaign-wide decoded observations. One page's work is
+//! bounded by the page size and its cohorts' proposal budgets, not by campaign
+//! history, and every survivor decision charges its own evidence bounds.
 //!
 //! The novelty reserve counts coverage identities present in exactly one
 //! canonical configuration representative inside the closed cohort. It never
 //! consults the later global coverage union, so a settled survivor decision is
 //! stable as unrelated campaign observations arrive.
 
+use std::collections::btree_map::Entry;
+
 use super::*;
 
-const MAX_BEAM_FRONTIER_POSITIONS: usize = 65_536;
-const MAX_BEAM_OBSERVATION_ROOT_ENTRIES: usize = 262_144;
+// Page-wide bounds on the cohort walks. A page holds at most
+// `MAX_PLANNER_SCAN_PAGE_ITEMS` positions, so these scale with the page and the
+// producing requests' proposal budgets rather than with campaign history.
 const MAX_BEAM_TARGET_COHORT_ATTEMPTS: usize = 262_144;
 const MAX_BEAM_TARGET_PROPOSAL_VISITS: usize = 262_144;
-const BEAM_FRONTIER_SCAN_PAGE_ITEMS: u32 = MAX_PLANNER_SCAN_PAGE_ITEMS - 1;
-const MAX_BEAM_OBSERVATION_BYTES: usize = 256 * 1024 * 1024;
-const MAX_BEAM_DISCOVERED_CHOICE_VISITS: usize = 1_000_000;
-const MAX_BEAM_EVALUATION_BYTES: usize = 256 * 1024 * 1024;
-const MAX_BEAM_COVERAGE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_BEAM_COVERAGE_IDENTITY_VISITS: usize = 4_000_000;
-const MAX_BEAM_RETAINED_PROJECTION_BYTES: usize = 256 * 1024 * 1024;
-const MAX_BEAM_CACHE_DELTA_SNAPSHOTS: usize = 10_000;
+// One cohort's novelty scoring needs every representative's coverage at once to
+// compute cohort-local frequencies. Both counters reset for each cohort.
+const MAX_BEAM_COHORT_COVERAGE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_BEAM_COHORT_COVERAGE_IDENTITY_VISITS: usize = 4_000_000;
+// Candidates and survivor bundles built for one page, charged as they are
+// produced so a page of many settled cohorts stays bounded while it is built.
+const MAX_BEAM_PAGE_PROJECTION_BYTES: usize = 256 * 1024 * 1024;
 
-#[derive(Clone)]
+/// Beam candidates and survivor bundles projected for one planner page.
 pub(in crate::repository) struct BeamPlannerProjection {
     pub(in crate::repository) candidates:
         BTreeMap<PlanningScanPosition, crate::PlannerBeamCandidate>,
     pub(in crate::repository) selections: BTreeMap<SurvivorSelectionId, SurvivorSelectionBundle>,
 }
 
-pub(in crate::repository) struct BeamProjectionCacheEntry {
-    snapshot: CampaignSnapshotId,
-    policy: CampaignPolicyId,
-    view: CampaignViewId,
-    observations: Vec<BeamObservation>,
-    observation_ids: BTreeSet<ContentId>,
-    source_observations: BTreeMap<(ConfigurationArtifactId, ChoiceOpportunityId), usize>,
-    observations_by_barrier: BTreeMap<crate::PlannerBeamBarrier, Vec<usize>>,
-    observation_bytes: usize,
-    discovered_choice_visits: usize,
-    projection: Option<Arc<BeamPlannerProjection>>,
-    #[cfg(test)]
-    pub(in crate::repository) full_observation_root_visits: usize,
-    #[cfg(test)]
-    pub(in crate::repository) delta_snapshot_visits: usize,
-    #[cfg(test)]
-    pub(in crate::repository) target_attempt_visits: usize,
+/// Work charged while projecting one page.
+#[derive(Default)]
+pub(in crate::repository) struct BeamPageWork {
+    proposal_visits: usize,
+    cohort_attempts: usize,
+    projection_bytes: usize,
+    /// Observation bodies decoded for sources and settled cohort members.
+    pub(in crate::repository) decoded_observations: usize,
 }
 
-#[derive(Clone)]
-struct BeamObservation {
-    observation: Observation,
-    ordinal: AdmissionOrdinal,
+/// Work charged for one cohort's survivor decision.
+#[derive(Default)]
+struct BeamCohortWork {
+    coverage_bytes: usize,
+    coverage_identity_visits: usize,
+    evidence_bytes: usize,
+}
+
+/// Canonical discovering observation of one position and its barrier.
+#[derive(Clone, Copy)]
+struct BeamSource {
+    observation: ContentId,
+    configuration: ConfigurationId,
     barrier: crate::PlannerBeamBarrier,
+}
+
+/// One modeled cohort attempt, resolved from accounting before its
+/// observation body is decoded.
+struct BeamCohortMember {
+    attempt: AttemptId,
+    observation: ContentId,
+    ordinal: AdmissionOrdinal,
     cause: BranchRequestCause,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct BeamAttemptClosure {
     pending: u64,
     closed: crate::PlannerBeamClosureSummary,
 }
 
+/// Modeled members and non-modeled closure counts of one barrier.
 #[derive(Default)]
-struct BeamProjectionWork {
-    observation_bytes: usize,
-    discovered_choice_visits: usize,
-    evaluation_bytes: usize,
-    coverage_bytes: usize,
-    coverage_identity_visits: usize,
-    #[cfg(test)]
-    full_observation_root_visits: usize,
-    #[cfg(test)]
-    delta_snapshot_visits: usize,
-    #[cfg(test)]
-    target_attempt_visits: usize,
+struct BeamCohort {
+    /// Continuation state of the producing request; `None` for a standalone
+    /// attempt, which has no request to close.
+    request_state: Option<crate::ContinuationState>,
+    members: Vec<BeamCohortMember>,
+    closure: BeamAttemptClosure,
+}
+
+/// Objective evidence of one closed cohort.
+enum BeamCohortEvidence {
+    /// Every eligible member is evaluated; one representative per configuration.
+    Complete(BTreeMap<ConfigurationId, BeamRepresentative>),
+    /// The number of eligible members still lacking an evaluation.
+    AwaitingEvaluations(u64),
+}
+
+/// Earliest admitted modeled observation of one configuration in a cohort.
+struct BeamRepresentative {
+    ordinal: AdmissionOrdinal,
+    observation: ObservationId,
+    evaluation: ObjectiveEvaluation,
+    coverage: CoverageProjection,
 }
 
 impl CampaignRepository {
-    pub(in crate::repository) fn project_beam_planner(
+    /// Projects Beam candidates for the `Ready` positions of one served page.
+    ///
+    /// Positions that are not `Ready` produce no candidate. Every candidate is
+    /// a pure function of its own position and barrier, so projecting a page
+    /// yields the same candidate bytes as any other page containing that
+    /// position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when the policy is not a valid Beam policy,
+    /// the page exceeds `MAX_PLANNER_SCAN_PAGE_ITEMS`, a source observation or
+    /// cohort index is missing or inconsistent, or a page or cohort work bound
+    /// is exceeded. Store and codec errors propagate from record reads.
+    pub(in crate::repository) fn project_beam_page(
         &self,
         snapshot: &LoadedSnapshot,
         policy: &CampaignPolicy,
-    ) -> Result<Arc<BeamPlannerProjection>, CampaignRepositoryError> {
-        let crate::ExplorerPolicy::Beam {
-            width,
-            novelty_reserve,
-        } = policy.explorer()
-        else {
-            return Err(integrity("beam-projection-requires-beam-policy"));
-        };
-        let keep = u32::try_from(*width)
-            .map_err(|_| integrity("beam-survivor-width-exceeds-owner-limit"))?;
-        let novelty = u32::try_from(*novelty_reserve)
-            .map_err(|_| integrity("beam-novelty-reserve-exceeds-owner-limit"))?;
-        if keep as usize > crate::MAX_SURVIVOR_CANDIDATES {
-            return Err(integrity("beam-survivor-width-exceeds-owner-limit"));
-        }
-        let rule = crate::SurvivorRule::new(crate::RankingMethod::ParetoTopK, keep, novelty, 0)?;
+        positions: &[PlanningScanPosition],
+    ) -> Result<BeamPlannerProjection, CampaignRepositoryError> {
+        self.project_beam_page_measured(snapshot, policy, positions, &mut BeamPageWork::default())
+    }
 
-        let view = snapshot.snapshot.planning_view();
-        let input_view = view.id()?;
+    /// Projects one page like [`Self::project_beam_page`] and reports its work.
+    pub(in crate::repository) fn project_beam_page_measured(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+        positions: &[PlanningScanPosition],
+        work: &mut BeamPageWork,
+    ) -> Result<BeamPlannerProjection, CampaignRepositoryError> {
+        let rule = beam_survivor_rule(policy)?;
+        let page_limit = usize::try_from(MAX_PLANNER_SCAN_PAGE_ITEMS)
+            .map_err(|_| integrity("beam-page-position-count"))?;
+        if positions.len() > page_limit {
+            return Err(integrity("beam-page-position-count"));
+        }
+        let input_view = snapshot.snapshot.planning_view().id()?;
         let policy_id = policy.id()?;
-        let snapshot_id = snapshot.snapshot.id()?;
-        let mut cache = self
-            .beam_projection_cache
-            .lock()
-            .map_err(|_| CampaignRepositoryError::Poisoned)?;
-        if let Some(entry) = cache.as_ref()
-            && entry.view == input_view
-            && entry.policy == policy_id
-            && let Some(projection) = &entry.projection
-        {
-            return Ok(Arc::clone(projection));
-        }
 
-        let mut work = BeamProjectionWork::default();
-        let mut cache_entry = match cache.take() {
-            Some(mut entry) if entry.policy == policy_id => {
-                match self.beam_observation_delta(
-                    snapshot,
-                    entry.snapshot,
-                    &entry.observation_ids,
-                    &mut work,
-                )? {
-                    Some(delta) => {
-                        let first_new = entry.observations.len();
-                        first_new
-                            .checked_add(delta.len())
-                            .filter(|count| *count <= MAX_BEAM_OBSERVATION_ROOT_ENTRIES)
-                            .ok_or_else(|| integrity("beam-observation-cache-count"))?;
-                        charge_beam_limit(
-                            &mut entry.observation_bytes,
-                            work.observation_bytes,
-                            MAX_BEAM_OBSERVATION_BYTES,
-                            "beam-observation-byte-limit",
-                        )?;
-                        for observation in &delta {
-                            entry
-                                .observation_ids
-                                .insert(observation.observation.id()?.content_id());
-                        }
-                        entry.observations.extend(delta);
-                        let prior_visits = work.discovered_choice_visits;
-                        index_beam_observations(
-                            &entry.observations,
-                            first_new,
-                            &mut entry.source_observations,
-                            &mut entry.observations_by_barrier,
-                            &mut work,
-                        )?;
-                        charge_beam_limit(
-                            &mut entry.discovered_choice_visits,
-                            work.discovered_choice_visits - prior_visits,
-                            MAX_BEAM_DISCOVERED_CHOICE_VISITS,
-                            "beam-discovered-choice-visit-limit",
-                        )?;
-                    }
-                    None => {
-                        work = BeamProjectionWork::default();
-                        entry.observations = self.beam_observations(snapshot, &mut work)?;
-                        entry.observation_ids = entry
-                            .observations
-                            .iter()
-                            .map(|observation| {
-                                observation.observation.id().map(|id| id.content_id())
-                            })
-                            .collect::<Result<_, _>>()?;
-                        entry.source_observations.clear();
-                        entry.observations_by_barrier.clear();
-                        index_beam_observations(
-                            &entry.observations,
-                            0,
-                            &mut entry.source_observations,
-                            &mut entry.observations_by_barrier,
-                            &mut work,
-                        )?;
-                        entry.observation_bytes = work.observation_bytes;
-                        entry.discovered_choice_visits = work.discovered_choice_visits;
-                    }
-                }
-                entry.snapshot = snapshot_id;
-                entry.view = input_view;
-                entry.projection = None;
-                entry
-            }
-            _ => {
-                let observations = self.beam_observations(snapshot, &mut work)?;
-                let observation_ids = observations
-                    .iter()
-                    .map(|observation| observation.observation.id().map(|id| id.content_id()))
-                    .collect::<Result<_, _>>()?;
-                let mut source_observations = BTreeMap::new();
-                let mut observations_by_barrier = BTreeMap::new();
-                index_beam_observations(
-                    &observations,
-                    0,
-                    &mut source_observations,
-                    &mut observations_by_barrier,
-                    &mut work,
-                )?;
-                BeamProjectionCacheEntry {
-                    snapshot: snapshot_id,
-                    policy: policy_id,
-                    view: input_view,
-                    observations,
-                    observation_ids,
-                    source_observations,
-                    observations_by_barrier,
-                    observation_bytes: work.observation_bytes,
-                    discovered_choice_visits: work.discovered_choice_visits,
-                    projection: None,
-                    #[cfg(test)]
-                    full_observation_root_visits: 0,
-                    #[cfg(test)]
-                    delta_snapshot_visits: 0,
-                    #[cfg(test)]
-                    target_attempt_visits: 0,
-                }
-            }
-        };
-
-        let frontier_positions = self.beam_frontier_positions(&view)?;
-        let mut positions = Vec::new();
-        for position in frontier_positions {
-            let continuation = self.planner_continuation_projection(snapshot, position)?;
-            if continuation.state() == crate::ContinuationState::Ready {
-                positions.push(position);
-            }
-        }
-        let mut requests = BTreeMap::new();
-        let mut source_keys = BTreeSet::new();
-        for position in &positions {
-            let request = self.read_branch_request(position.source().content_id())?;
-            source_keys.insert((request.parent(), request.opportunity()));
-            requests.insert(*position, request);
-        }
-
-        let sources = beam_source_observations(&cache_entry, &source_keys)?;
+        let mut sources = BTreeMap::new();
         let mut candidate_bases = BTreeMap::new();
-        let mut target_barriers = BTreeSet::new();
-        for (position, request) in &requests {
-            let source = sources
-                .get(&(request.parent(), request.opportunity()))
-                .ok_or_else(|| integrity("beam-frontier-source-observation-is-missing"))?;
+        for position in positions {
+            let continuation = self.planner_continuation_projection(snapshot, *position)?;
+            if continuation.state() != crate::ContinuationState::Ready {
+                continue;
+            }
+            let request = self.read_branch_request(position.source().content_id())?;
+            let source = match sources.entry((request.parent(), request.opportunity())) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => *entry.insert(self.beam_source(
+                    snapshot,
+                    request.parent(),
+                    request.opportunity(),
+                    work,
+                )?),
+            };
             let parent = self.read_configuration_artifact(request.parent().content_id())?;
-            if source.observation.child_content() != request.parent()
-                || source.observation.child() != parent.configuration()
-            {
+            if source.configuration != parent.configuration() {
                 return Err(integrity("beam-frontier-parent-observation-mismatch"));
             }
-            target_barriers.insert(source.barrier);
             candidate_bases.insert(
                 *position,
-                (request.parent(), parent.configuration(), source.barrier),
+                (request.parent(), parent.configuration(), source),
             );
         }
 
-        let request_barriers = target_barriers
-            .iter()
-            .filter_map(|barrier| match barrier {
-                crate::PlannerBeamBarrier::Request { request } => Some(*request),
-                crate::PlannerBeamBarrier::Standalone { .. } => None,
-            })
-            .collect::<BTreeSet<_>>();
-        let attempt_closures =
-            self.beam_request_attempt_closures(snapshot, &request_barriers, &mut work)?;
-
-        let candidates_by_barrier = target_barriers
-            .iter()
-            .copied()
-            .map(|barrier| {
-                let candidates = cache_entry
-                    .observations_by_barrier
-                    .get(&barrier)
-                    .into_iter()
-                    .flatten()
-                    .map(|index| {
-                        cache_entry
-                            .observations
-                            .get(*index)
-                            .ok_or_else(|| integrity("beam-barrier-observation-cache-index"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok((barrier, candidates))
-            })
-            .collect::<Result<
-                BTreeMap<crate::PlannerBeamBarrier, Vec<&BeamObservation>>,
-                CampaignRepositoryError,
-            >>()?;
+        let mut cohort_sources = BTreeMap::<crate::PlannerBeamBarrier, BTreeSet<ContentId>>::new();
+        for (_, _, source) in candidate_bases.values() {
+            cohort_sources
+                .entry(source.barrier)
+                .or_default()
+                .insert(source.observation);
+        }
 
         let mut selections = BTreeMap::new();
-        let mut state_by_barrier = BTreeMap::new();
-        let mut closure_by_barrier = BTreeMap::new();
-        for (barrier, candidates) in candidates_by_barrier {
-            let closure = match barrier {
-                crate::PlannerBeamBarrier::Standalone { .. } => BeamAttemptClosure::default(),
-                crate::PlannerBeamBarrier::Request { request } => {
-                    attempt_closures.get(&request).cloned().unwrap_or_default()
-                }
+        let mut cohort_states = BTreeMap::new();
+        for (barrier, source_observations) in cohort_sources {
+            let cohort = self.beam_cohort(snapshot, barrier, work)?;
+            let members = cohort
+                .members
+                .iter()
+                .map(|member| member.observation)
+                .collect::<BTreeSet<_>>();
+            if !source_observations.is_subset(&members) {
+                return Err(integrity("beam-source-observation-is-outside-its-cohort"));
+            }
+            let state =
+                self.beam_cohort_state(snapshot, policy, rule, &cohort, &mut selections, work)?;
+            cohort_states.insert(barrier, (state, cohort.closure.closed));
+        }
+
+        let mut candidates = BTreeMap::new();
+        for (position, (parent, configuration, source)) in candidate_bases {
+            let (state, closed) = cohort_states
+                .get(&source.barrier)
+                .ok_or_else(|| integrity("beam-page-cohort-state-is-missing"))?;
+            let candidate = crate::PlannerBeamCandidate::new(
+                input_view,
+                policy_id,
+                position,
+                parent,
+                configuration,
+                source.barrier,
+                state.clone(),
+                *closed,
+            )?;
+            charge_beam_limit(
+                &mut work.projection_bytes,
+                candidate.canonical_bytes().len(),
+                MAX_BEAM_PAGE_PROJECTION_BYTES,
+                "beam-page-projection-byte-limit",
+            )?;
+            candidates.insert(position, candidate);
+        }
+
+        Ok(BeamPlannerProjection {
+            candidates,
+            selections,
+        })
+    }
+
+    /// Resolves the earliest canonical observation that discovered one pair.
+    fn beam_source(
+        &self,
+        snapshot: &LoadedSnapshot,
+        parent: ConfigurationArtifactId,
+        opportunity: ChoiceOpportunityId,
+        work: &mut BeamPageWork,
+    ) -> Result<BeamSource, CampaignRepositoryError> {
+        let roots = snapshot.snapshot.roots();
+        let content = self
+            .choice_source_observation(roots.observations, parent, opportunity)?
+            .ok_or_else(|| integrity("beam-frontier-source-observation-is-missing"))?;
+
+        charge_beam_decoded_observation(work)?;
+        let observation = self.decode_observation(content)?;
+        if self.merkle.get(
+            roots.observations,
+            attempt_observation_key(observation.attempt()),
+        )? != Some(content)
+        {
+            return Err(integrity("beam-source-observation-is-not-canonical"));
+        }
+        if observation.child_content() != parent
+            || !self.observation_discovers(&observation, opportunity)?
+        {
+            return Err(integrity("beam-frontier-parent-observation-mismatch"));
+        }
+
+        Ok(BeamSource {
+            observation: content,
+            configuration: observation.child(),
+            barrier: self.beam_observation_barrier(snapshot, &observation)?,
+        })
+    }
+
+    fn beam_observation_barrier(
+        &self,
+        snapshot: &LoadedSnapshot,
+        observation: &Observation,
+    ) -> Result<crate::PlannerBeamBarrier, CampaignRepositoryError> {
+        let basis_content = self
+            .merkle
+            .get(
+                snapshot.snapshot.roots().accounting,
+                attempt_execution_basis_key(observation.attempt()),
+            )?
+            .ok_or_else(|| integrity("beam-observation-execution-basis-is-missing"))?;
+        let admission = self.read_attempt_admission(basis_content)?;
+        let AttemptAdmissionRole::ExecutionBasis { proposal, .. } = admission.role() else {
+            return Err(integrity("beam-observation-execution-basis-role"));
+        };
+        if admission.attempt() != observation.attempt() {
+            return Err(integrity("beam-observation-execution-basis-mismatch"));
+        }
+        match proposal {
+            Some(proposal) => Ok(crate::PlannerBeamBarrier::request(
+                self.read_proposal(proposal.content_id())?.request(),
+            )),
+            None => Ok(crate::PlannerBeamBarrier::standalone(observation.attempt())),
+        }
+    }
+
+    fn beam_cohort(
+        &self,
+        snapshot: &LoadedSnapshot,
+        barrier: crate::PlannerBeamBarrier,
+        work: &mut BeamPageWork,
+    ) -> Result<BeamCohort, CampaignRepositoryError> {
+        match barrier {
+            crate::PlannerBeamBarrier::Standalone { attempt } => {
+                self.standalone_beam_cohort(snapshot, attempt)
+            }
+            crate::PlannerBeamBarrier::Request { request } => {
+                self.request_beam_cohort(snapshot, request, work)
+            }
+        }
+    }
+
+    /// Returns the single modeled member of a proposal-less attempt.
+    fn standalone_beam_cohort(
+        &self,
+        snapshot: &LoadedSnapshot,
+        attempt: AttemptId,
+    ) -> Result<BeamCohort, CampaignRepositoryError> {
+        let roots = snapshot.snapshot.roots();
+        let observation = self
+            .merkle
+            .get(roots.observations, attempt_observation_key(attempt))?
+            .ok_or_else(|| integrity("beam-standalone-cohort-observation-is-missing"))?;
+        let basis_content = self
+            .merkle
+            .get(roots.accounting, attempt_execution_basis_key(attempt))?
+            .ok_or_else(|| integrity("beam-observation-execution-basis-is-missing"))?;
+        let admission = self.read_attempt_admission(basis_content)?;
+        let AttemptAdmissionRole::ExecutionBasis {
+            proposal: None,
+            cause,
+            admission_ordinal,
+        } = admission.role()
+        else {
+            return Err(integrity("beam-standalone-cohort-execution-basis-role"));
+        };
+        if admission.attempt() != attempt {
+            return Err(integrity("beam-observation-execution-basis-mismatch"));
+        }
+
+        Ok(BeamCohort {
+            request_state: None,
+            members: vec![BeamCohortMember {
+                attempt,
+                observation,
+                ordinal: admission_ordinal,
+                cause,
+            }],
+            closure: BeamAttemptClosure::default(),
+        })
+    }
+
+    /// Walks one producing request's proposals into members and closure counts.
+    ///
+    /// Membership is defined in the attempt-to-request direction: an
+    /// observation belongs to request `R` when its attempt's execution basis
+    /// names a proposal of `R`. Walking `R`'s dense proposal ordinals reaches
+    /// the same set because each proposal has at most one admission and each
+    /// attempt exactly one execution basis; the walk checks the latter so a
+    /// divergent index fails closed instead of changing the cohort.
+    fn request_beam_cohort(
+        &self,
+        snapshot: &LoadedSnapshot,
+        request_id: BranchRequestId,
+        work: &mut BeamPageWork,
+    ) -> Result<BeamCohort, CampaignRepositoryError> {
+        let roots = snapshot.snapshot.roots();
+        let request = self.read_branch_request(request_id.content_id())?;
+        let request_position = PlanningScanPosition::new(request.branch_point(), request_id);
+        let mut cohort = BeamCohort {
+            request_state: Some(
+                self.planner_continuation_projection(snapshot, request_position)?
+                    .state(),
+            ),
+            ..BeamCohort::default()
+        };
+        for ordinal in 1..=request.budget().maximum_proposals() {
+            charge_beam_target_proposal_visit(&mut work.proposal_visits)?;
+            let Some(proposal_content) = self
+                .merkle
+                .get(roots.exploration, proposal_ordinal_key(request_id, ordinal))?
+            else {
+                break;
             };
-            let request_state = match barrier {
-                crate::PlannerBeamBarrier::Standalone { .. } => None,
-                crate::PlannerBeamBarrier::Request { request } => {
-                    let request_value = self.read_branch_request(request.content_id())?;
-                    let position = PlanningScanPosition::new(request_value.branch_point(), request);
-                    Some(
-                        self.planner_continuation_projection(snapshot, position)?
-                            .state(),
-                    )
-                }
+            let proposal = self.read_proposal(proposal_content)?;
+            if proposal.request() != request_id || proposal.ordinal() != ordinal {
+                return Err(integrity("beam-cohort-proposal-index-mismatch"));
+            }
+            let Some(admission_content) = self.merkle.get(
+                roots.accounting,
+                map_key_content("accounting.proposal-admission", proposal_content),
+            )?
+            else {
+                continue;
             };
-            let state = match request_state {
-                Some(
-                    state @ (crate::ContinuationState::Open
-                    | crate::ContinuationState::Ready
-                    | crate::ContinuationState::WaitingForFeedback(_)),
-                ) => crate::PlannerBeamCohortState::AwaitingRequestClosure(state),
-                Some(crate::ContinuationState::Exhausted | crate::ContinuationState::Closed)
-                | None
-                    if closure.pending != 0 =>
-                {
-                    crate::PlannerBeamCohortState::AwaitingAttempts(closure.pending)
+
+            // A deduplicated proposal converged on an attempt whose execution
+            // basis, and therefore cohort, belongs to the earlier proposal.
+            let admission = self.read_attempt_admission(admission_content)?;
+            let AttemptAdmissionRole::ExecutionBasis {
+                proposal: Some(admitted_proposal),
+                cause,
+                admission_ordinal,
+            } = admission.role()
+            else {
+                continue;
+            };
+            if admitted_proposal.content_id() != proposal_content {
+                return Err(integrity("beam-cohort-proposal-admission-mismatch"));
+            }
+            let attempt = admission.attempt();
+            if self
+                .merkle
+                .get(roots.accounting, attempt_execution_basis_key(attempt))?
+                != Some(admission_content)
+            {
+                return Err(integrity("beam-cohort-attempt-execution-basis-mismatch"));
+            }
+            charge_beam_limit(
+                &mut work.cohort_attempts,
+                1,
+                MAX_BEAM_TARGET_COHORT_ATTEMPTS,
+                "beam-target-cohort-attempt-count",
+            )?;
+
+            if let Some(observation) = self
+                .merkle
+                .get(roots.observations, attempt_observation_key(attempt))?
+            {
+                cohort.members.push(BeamCohortMember {
+                    attempt,
+                    observation,
+                    ordinal: admission_ordinal,
+                    cause,
+                });
+            } else if let Some(fact) = self
+                .merkle
+                .get(roots.accounting, non_modeled_attempt_key(attempt))?
+            {
+                let CampaignFact::AttemptClosed {
+                    attempt: closed_attempt,
+                    disposition,
+                    ..
+                } = self.read_fact(fact)?
+                else {
+                    return Err(integrity("beam-attempt-closure-index-type-mismatch"));
+                };
+                if closed_attempt != attempt {
+                    return Err(integrity("beam-attempt-closure-basis-mismatch"));
                 }
-                Some(crate::ContinuationState::Exhausted | crate::ContinuationState::Closed)
-                | None => self.settled_beam_cohort_state(
+                cohort.closure.closed.record(disposition)?;
+            } else {
+                cohort.closure.pending = cohort
+                    .closure
+                    .pending
+                    .checked_add(1)
+                    .ok_or_else(|| integrity("beam-pending-attempt-count-overflow"))?;
+            }
+        }
+        Ok(cohort)
+    }
+
+    /// Settles a cohort only once its request and every attempt are closed.
+    fn beam_cohort_state(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+        rule: crate::SurvivorRule,
+        cohort: &BeamCohort,
+        selections: &mut BTreeMap<SurvivorSelectionId, SurvivorSelectionBundle>,
+        work: &mut BeamPageWork,
+    ) -> Result<crate::PlannerBeamCohortState, CampaignRepositoryError> {
+        match cohort.request_state {
+            Some(
+                state @ (crate::ContinuationState::Open
+                | crate::ContinuationState::Ready
+                | crate::ContinuationState::WaitingForFeedback(_)),
+            ) => Ok(crate::PlannerBeamCohortState::AwaitingRequestClosure(state)),
+            Some(crate::ContinuationState::Exhausted | crate::ContinuationState::Closed) | None
+                if cohort.closure.pending != 0 =>
+            {
+                Ok(crate::PlannerBeamCohortState::AwaitingAttempts(
+                    cohort.closure.pending,
+                ))
+            }
+            Some(crate::ContinuationState::Exhausted | crate::ContinuationState::Closed) | None => {
+                self.settled_beam_cohort_state(
                     snapshot,
                     policy,
                     rule,
-                    candidates,
-                    &mut selections,
-                    &mut work,
-                )?,
-            };
-            closure_by_barrier.insert(barrier, closure.closed);
-            state_by_barrier.insert(barrier, state);
-        }
-
-        let candidates = candidate_bases
-            .into_iter()
-            .map(|(position, (parent, configuration, barrier))| {
-                crate::PlannerBeamCandidate::new(
-                    input_view,
-                    policy_id,
-                    position,
-                    parent,
-                    configuration,
-                    barrier,
-                    state_by_barrier[&barrier].clone(),
-                    closure_by_barrier[&barrier],
+                    &cohort.members,
+                    selections,
+                    work,
                 )
-                .map(|candidate| (position, candidate))
-            })
-            .collect::<Result<_, _>>()?;
-        let projection = Arc::new(BeamPlannerProjection {
-            candidates,
-            selections,
-        });
-        validate_retained_beam_projection_size(&projection)?;
-        #[cfg(test)]
-        {
-            cache_entry.full_observation_root_visits = cache_entry
-                .full_observation_root_visits
-                .checked_add(work.full_observation_root_visits)
-                .ok_or_else(|| integrity("beam-test-observation-root-visit-overflow"))?;
-            cache_entry.delta_snapshot_visits = cache_entry
-                .delta_snapshot_visits
-                .checked_add(work.delta_snapshot_visits)
-                .ok_or_else(|| integrity("beam-test-delta-snapshot-visit-overflow"))?;
-            cache_entry.target_attempt_visits = cache_entry
-                .target_attempt_visits
-                .checked_add(work.target_attempt_visits)
-                .ok_or_else(|| integrity("beam-test-target-attempt-visit-overflow"))?;
+            }
         }
-        cache_entry.projection = Some(Arc::clone(&projection));
-        *cache = Some(cache_entry);
-        Ok(projection)
     }
 
     fn settled_beam_cohort_state(
@@ -381,113 +506,69 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         policy: &CampaignPolicy,
         rule: crate::SurvivorRule,
-        candidates: Vec<&BeamObservation>,
+        members: &[BeamCohortMember],
         selections: &mut BTreeMap<SurvivorSelectionId, SurvivorSelectionBundle>,
-        work: &mut BeamProjectionWork,
+        work: &mut BeamPageWork,
     ) -> Result<crate::PlannerBeamCohortState, CampaignRepositoryError> {
-        if candidates.is_empty() {
+        if members.is_empty() {
             return Err(integrity("beam-frontier-cohort-has-no-modeled-observation"));
         }
         let mut intervention_exclusions = 0_u64;
-        let mut eligible_candidates = Vec::with_capacity(candidates.len());
-        for observation in candidates {
-            if execution_basis_is_guidance_eligible(policy, observation.cause) {
-                eligible_candidates.push(observation);
+        let mut eligible = Vec::with_capacity(members.len());
+        for member in members {
+            if execution_basis_is_guidance_eligible(policy, member.cause) {
+                eligible.push(member);
             } else {
                 intervention_exclusions = intervention_exclusions
                     .checked_add(1)
                     .ok_or_else(|| integrity("beam-intervention-exclusion-count-overflow"))?;
             }
         }
-        let candidates = eligible_candidates;
-        if candidates.is_empty() {
+        if eligible.is_empty() {
             return Ok(crate::PlannerBeamCohortState::InterventionExcluded(
                 intervention_exclusions,
             ));
         }
-        let candidate_count = u64::try_from(candidates.len())
+        let candidate_count = u64::try_from(eligible.len())
             .map_err(|_| integrity("beam-cohort-candidate-count-overflow"))?;
-        if candidates.len() > crate::MAX_SURVIVOR_CANDIDATES {
+        if eligible.len() > crate::MAX_SURVIVOR_CANDIDATES {
             return Ok(crate::PlannerBeamCohortState::CohortLimitExceeded(
                 candidate_count,
             ));
         }
 
-        let mut missing = 0_u64;
-        let mut representatives = BTreeMap::<
-            ConfigurationId,
-            (&BeamObservation, ObjectiveEvaluation, CoverageProjection),
-        >::new();
-        for observation in candidates {
-            let observation_id = observation.observation.id()?;
-            let coverage =
-                self.read_coverage_projection(observation.observation.coverage().content_id())?;
-            charge_beam_limit(
-                &mut work.coverage_bytes,
-                coverage.canonical_bytes().len(),
-                MAX_BEAM_COVERAGE_BYTES,
-                "beam-coverage-projection-byte-limit",
-            )?;
-            let evaluation = self
-                .merkle
-                .get(
-                    snapshot.snapshot.roots().observations,
-                    objective_evaluation_key(policy.id()?, observation_id),
-                )?
-                .map(|content| self.read_objective_evaluation(content))
-                .transpose()?;
-            let Some(evaluation) = evaluation else {
-                missing = missing
-                    .checked_add(1)
-                    .ok_or_else(|| integrity("beam-missing-evaluation-count-overflow"))?;
-                continue;
-            };
-            charge_beam_limit(
-                &mut work.evaluation_bytes,
-                evaluation.canonical_bytes().len(),
-                MAX_BEAM_EVALUATION_BYTES,
-                "beam-objective-evaluation-byte-limit",
-            )?;
-            if evaluation.configuration() != observation.observation.child()
-                || evaluation.observation() != observation_id
-                || evaluation.policy() != policy.id()?
-            {
-                return Err(integrity("beam-objective-evaluation-basis-mismatch"));
-            }
-            let configuration = observation.observation.child();
-            let replace = match representatives.get(&configuration) {
-                Some((current, _, _)) => {
-                    (observation.ordinal, observation_id)
-                        < (current.ordinal, current.observation.id()?)
+        let mut cohort_work = BeamCohortWork::default();
+        let representatives =
+            match self.beam_cohort_evidence(snapshot, policy, &eligible, &mut cohort_work, work)? {
+                BeamCohortEvidence::Complete(representatives) => representatives,
+                BeamCohortEvidence::AwaitingEvaluations(missing) => {
+                    return Ok(crate::PlannerBeamCohortState::AwaitingEvaluations(missing));
                 }
-                None => true,
             };
-            if replace {
-                representatives.insert(configuration, (observation, evaluation, coverage));
-            }
-        }
-        if missing != 0 {
-            return Ok(crate::PlannerBeamCohortState::AwaitingEvaluations(missing));
-        }
-
         let novelty_scores = beam_cohort_novelty_scores(
             representatives
                 .iter()
-                .map(|(configuration, (_, _, coverage))| (*configuration, coverage)),
-            work,
+                .map(|(configuration, representative)| (*configuration, &representative.coverage)),
+            &mut cohort_work,
         )?;
         let mut ranking = Vec::with_capacity(representatives.len());
-        for (configuration, (observation, evaluation, _)) in representatives {
+        for (configuration, representative) in representatives {
+            let novelty = novelty_scores
+                .get(&configuration)
+                .copied()
+                .ok_or_else(|| integrity("beam-novelty-score-is-missing"))?;
             ranking.push(crate::RankingCandidate::new(
-                evaluation,
-                novelty_scores[&configuration],
-                observation.ordinal.value(),
+                representative.evaluation,
+                novelty,
+                representative.ordinal.value(),
             ));
         }
 
         let bundle = crate::rank_survivors(policy, rule, ranking)?;
+        charge_beam_bundle_bytes(&mut work.projection_bytes, &bundle)?;
         let selection_id = bundle.selection().id()?;
         selections.insert(selection_id, bundle);
+
         if intervention_exclusions == 0 {
             Ok(crate::PlannerBeamCohortState::Settled(selection_id))
         } else {
@@ -500,379 +581,131 @@ impl CampaignRepository {
         }
     }
 
-    fn beam_frontier_positions(
-        &self,
-        view: &CampaignPlanningView,
-    ) -> Result<Vec<PlanningScanPosition>, CampaignRepositoryError> {
-        let mut positions = Vec::new();
-        let mut after = None;
-        loop {
-            let page = self.planner_scan_page(view, after, BEAM_FRONTIER_SCAN_PAGE_ITEMS)?;
-            positions.extend_from_slice(page.positions());
-            if positions.len() > MAX_BEAM_FRONTIER_POSITIONS {
-                return Err(integrity("beam-frontier-position-count"));
-            }
-            if page.complete() {
-                return Ok(positions);
-            }
-            after = page.last();
-        }
-    }
-
-    fn beam_observations(
+    /// Loads one closed cohort's objective evidence and representatives.
+    ///
+    /// Each configuration is represented by its earliest admitted modeled
+    /// observation. Once any evaluation is missing the decision cannot settle,
+    /// so later members are only counted and their bodies are not loaded.
+    fn beam_cohort_evidence(
         &self,
         snapshot: &LoadedSnapshot,
-        work: &mut BeamProjectionWork,
-    ) -> Result<Vec<BeamObservation>, CampaignRepositoryError> {
-        let mut observations = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut scanned = 0_usize;
-        let mut after = None;
-        loop {
-            let page = self.merkle.scan(
+        policy: &CampaignPolicy,
+        members: &[&BeamCohortMember],
+        cohort_work: &mut BeamCohortWork,
+        work: &mut BeamPageWork,
+    ) -> Result<BeamCohortEvidence, CampaignRepositoryError> {
+        let policy_id = policy.id()?;
+        let mut missing = 0_u64;
+        let mut representatives = BTreeMap::<ConfigurationId, BeamRepresentative>::new();
+        for member in members {
+            let observation_id = ObservationId::from_content_id(member.observation)?;
+            let Some(evaluation_content) = self.merkle.get(
                 snapshot.snapshot.roots().observations,
-                after,
-                PROJECTION_SCAN_PAGE_ITEMS,
-            )?;
-            for (_, content) in page.entries() {
-                scanned = scanned
-                    .checked_add(1)
-                    .ok_or_else(|| integrity("beam-observation-root-scan-count"))?;
-                #[cfg(test)]
-                {
-                    work.full_observation_root_visits = work
-                        .full_observation_root_visits
-                        .checked_add(1)
-                        .ok_or_else(|| integrity("beam-test-observation-root-visit-overflow"))?;
-                }
-                if scanned > MAX_BEAM_OBSERVATION_ROOT_ENTRIES {
-                    return Err(integrity("beam-observation-root-scan-count"));
-                }
-                if !seen.insert(*content) {
-                    continue;
-                }
-                if content.kind() != ObjectKind::Observation {
-                    continue;
-                }
-                if let Some(observation) = self.beam_observation(snapshot, *content, work)? {
-                    observations.push(observation);
-                }
-            }
-            let Some(next) = page.next_after() else {
-                break;
-            };
-            after = Some(next);
-        }
-        Ok(observations)
-    }
-
-    fn beam_observation_delta(
-        &self,
-        snapshot: &LoadedSnapshot,
-        cached_snapshot: CampaignSnapshotId,
-        known: &BTreeSet<ContentId>,
-        work: &mut BeamProjectionWork,
-    ) -> Result<Option<Vec<BeamObservation>>, CampaignRepositoryError> {
-        let mut current = snapshot.snapshot.clone();
-        let mut content = BTreeSet::new();
-        for _ in 0..MAX_BEAM_CACHE_DELTA_SNAPSHOTS {
-            #[cfg(test)]
-            {
-                work.delta_snapshot_visits = work
-                    .delta_snapshot_visits
-                    .checked_add(1)
-                    .ok_or_else(|| integrity("beam-test-delta-snapshot-visit-overflow"))?;
-            }
-            if current.id()? == cached_snapshot {
-                let mut observations = Vec::with_capacity(content.len());
-                for content in content {
-                    if let Some(observation) = self.beam_observation(snapshot, content, work)? {
-                        observations.push(observation);
-                    }
-                }
-                return Ok(Some(observations));
-            }
-            let Some(parent) = current.parent() else {
-                return Ok(None);
-            };
-            if let Some(transition) = current.transition()
-                && let CampaignFact::ObservationCredited(observation) =
-                    self.read_fact(transition.content_id())?
-                && !known.contains(&observation.content_id())
-            {
-                content.insert(observation.content_id());
-            }
-            current = self.read_snapshot(parent.content_id())?.snapshot;
-        }
-
-        Err(integrity("beam-projection-cache-snapshot-delta-limit"))
-    }
-
-    fn beam_observation(
-        &self,
-        snapshot: &LoadedSnapshot,
-        content: ContentId,
-        work: &mut BeamProjectionWork,
-    ) -> Result<Option<BeamObservation>, CampaignRepositoryError> {
-        let envelope = self.read_envelope(content)?;
-        if envelope.record_kind() != crate::CampaignRecordKind::Observation {
-            return Ok(None);
-        }
-        charge_beam_limit(
-            &mut work.observation_bytes,
-            envelope.body().len(),
-            MAX_BEAM_OBSERVATION_BYTES,
-            "beam-observation-byte-limit",
-        )?;
-        let observation = Observation::from_canonical_bytes(envelope.body())?;
-        if observation.id()?.content_id() != content {
-            return Err(integrity("beam-source-observation-envelope-shape"));
-        }
-        if self.merkle.get(
-            snapshot.snapshot.roots().observations,
-            map_key_content("observations.attempt", observation.attempt().content_id()),
-        )? != Some(content)
-        {
-            return Ok(None);
-        }
-        let (_, ordinal) =
-            self.observation_execution_basis(snapshot.snapshot.roots().accounting, &observation)?;
-        let (barrier, cause) = self.beam_observation_barrier(snapshot, &observation)?;
-        Ok(Some(BeamObservation {
-            observation,
-            ordinal,
-            barrier,
-            cause,
-        }))
-    }
-
-    fn beam_observation_barrier(
-        &self,
-        snapshot: &LoadedSnapshot,
-        observation: &Observation,
-    ) -> Result<(crate::PlannerBeamBarrier, BranchRequestCause), CampaignRepositoryError> {
-        let basis_content = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().accounting,
-                map_key_content(
-                    "accounting.attempt-execution-basis",
-                    observation.attempt().content_id(),
-                ),
+                objective_evaluation_key(policy_id, observation_id),
             )?
-            .ok_or_else(|| integrity("beam-observation-execution-basis-is-missing"))?;
-        let admission = self.read_attempt_admission(basis_content)?;
-        let AttemptAdmissionRole::ExecutionBasis {
-            proposal, cause, ..
-        } = admission.role()
-        else {
-            return Err(integrity("beam-observation-execution-basis-role"));
-        };
-        if admission.attempt() != observation.attempt() {
-            return Err(integrity("beam-observation-execution-basis-mismatch"));
-        }
-        match proposal {
-            Some(proposal) => Ok((
-                crate::PlannerBeamBarrier::request(
-                    self.read_proposal(proposal.content_id())?.request(),
-                ),
-                cause,
-            )),
-            None => Ok((
-                crate::PlannerBeamBarrier::standalone(observation.attempt()),
-                cause,
-            )),
-        }
-    }
-
-    fn beam_request_attempt_closures(
-        &self,
-        snapshot: &LoadedSnapshot,
-        requests: &BTreeSet<BranchRequestId>,
-        _work: &mut BeamProjectionWork,
-    ) -> Result<BTreeMap<BranchRequestId, BeamAttemptClosure>, CampaignRepositoryError> {
-        let roots = snapshot.snapshot.roots();
-        let mut closures = BTreeMap::new();
-        let mut visited_attempts = 0_usize;
-        let mut visited_proposals = 0_usize;
-        for request_id in requests {
-            let request = self.read_branch_request(request_id.content_id())?;
-            let mut closure = BeamAttemptClosure::default();
-            for ordinal in 1..=request.budget().maximum_proposals() {
-                charge_beam_target_proposal_visit(&mut visited_proposals)?;
-                let Some(proposal_content) = self.merkle.get(
-                    roots.exploration,
-                    proposal_ordinal_key(*request_id, ordinal),
-                )?
-                else {
-                    break;
-                };
-                let proposal = self.read_proposal(proposal_content)?;
-                if proposal.request() != *request_id || proposal.ordinal() != ordinal {
-                    return Err(integrity("beam-cohort-proposal-index-mismatch"));
-                }
-                let Some(admission_content) = self.merkle.get(
-                    roots.accounting,
-                    map_key_content("accounting.proposal-admission", proposal_content),
-                )?
-                else {
-                    continue;
-                };
-                let admission = self.read_attempt_admission(admission_content)?;
-                let AttemptAdmissionRole::ExecutionBasis {
-                    proposal: Some(admitted_proposal),
-                    ..
-                } = admission.role()
-                else {
-                    continue;
-                };
-                if admitted_proposal.content_id() != proposal_content {
-                    return Err(integrity("beam-cohort-proposal-admission-mismatch"));
-                }
-                visited_attempts = visited_attempts
+            else {
+                missing = missing
                     .checked_add(1)
-                    .filter(|visited| *visited <= MAX_BEAM_TARGET_COHORT_ATTEMPTS)
-                    .ok_or_else(|| integrity("beam-target-cohort-attempt-count"))?;
-                #[cfg(test)]
-                {
-                    _work.target_attempt_visits = _work
-                        .target_attempt_visits
-                        .checked_add(1)
-                        .ok_or_else(|| integrity("beam-test-target-attempt-visit-overflow"))?;
-                }
-                let attempt = admission.attempt();
-                if self
-                    .merkle
-                    .get(
-                        roots.observations,
-                        map_key_content("observations.attempt", attempt.content_id()),
-                    )?
-                    .is_some()
-                {
-                    continue;
-                }
-                if let Some(fact) = self
-                    .merkle
-                    .get(roots.accounting, non_modeled_attempt_key(attempt))?
-                {
-                    let fact = self.read_fact(fact)?;
-                    let CampaignFact::AttemptClosed {
-                        attempt: closed_attempt,
-                        disposition,
-                        ..
-                    } = fact
-                    else {
-                        return Err(integrity("beam-attempt-closure-index-type-mismatch"));
-                    };
-                    if closed_attempt != attempt {
-                        return Err(integrity("beam-attempt-closure-basis-mismatch"));
-                    }
-                    closure.closed.record(disposition)?;
-                } else {
-                    closure.pending = closure
-                        .pending
-                        .checked_add(1)
-                        .ok_or_else(|| integrity("beam-pending-attempt-count-overflow"))?;
-                }
-            }
-            closures.insert(*request_id, closure);
-        }
-        Ok(closures)
-    }
-}
-
-fn beam_source_observations<'a>(
-    cache: &'a BeamProjectionCacheEntry,
-    targets: &BTreeSet<(ConfigurationArtifactId, ChoiceOpportunityId)>,
-) -> Result<
-    BTreeMap<(ConfigurationArtifactId, ChoiceOpportunityId), &'a BeamObservation>,
-    CampaignRepositoryError,
-> {
-    targets
-        .iter()
-        .map(|target| {
-            let index = cache
-                .source_observations
-                .get(target)
-                .ok_or_else(|| integrity("beam-frontier-source-observation-is-missing"))?;
-            let observation = cache
-                .observations
-                .get(*index)
-                .ok_or_else(|| integrity("beam-source-observation-cache-index"))?;
-            Ok((*target, observation))
-        })
-        .collect()
-}
-
-fn index_beam_observations(
-    observations: &[BeamObservation],
-    first_new: usize,
-    sources: &mut BTreeMap<(ConfigurationArtifactId, ChoiceOpportunityId), usize>,
-    barriers: &mut BTreeMap<crate::PlannerBeamBarrier, Vec<usize>>,
-    work: &mut BeamProjectionWork,
-) -> Result<(), CampaignRepositoryError> {
-    for (index, observation) in observations.iter().enumerate().skip(first_new) {
-        barriers.entry(observation.barrier).or_default().push(index);
-        for opportunity in observation.observation.discovered_choices() {
-            charge_beam_limit(
-                &mut work.discovered_choice_visits,
-                1,
-                MAX_BEAM_DISCOVERED_CHOICE_VISITS,
-                "beam-discovered-choice-visit-limit",
-            )?;
-            let key = (observation.observation.child_content(), *opportunity);
-            let replace = match sources.get(&key) {
-                Some(current) => {
-                    let current = observations
-                        .get(*current)
-                        .ok_or_else(|| integrity("beam-source-observation-cache-index"))?;
-                    (observation.ordinal, observation.observation.id()?)
-                        < (current.ordinal, current.observation.id()?)
-                }
-                None => true,
+                    .ok_or_else(|| integrity("beam-missing-evaluation-count-overflow"))?;
+                continue;
             };
-            if replace {
-                sources.insert(key, index);
+            if missing != 0 {
+                continue;
+            }
+
+            let evaluation = self.read_objective_evaluation(evaluation_content)?;
+            crate::objective::charge_survivor_evidence_bytes(
+                &mut cohort_work.evidence_bytes,
+                evaluation.canonical_bytes().len(),
+            )?;
+            charge_beam_decoded_observation(work)?;
+            let observation = self.decode_observation(member.observation)?;
+            if observation.attempt() != member.attempt {
+                return Err(integrity("beam-cohort-observation-attempt-mismatch"));
+            }
+            let configuration = observation.child();
+            if evaluation.configuration() != configuration
+                || evaluation.observation() != observation_id
+                || evaluation.policy() != policy_id
+            {
+                return Err(integrity("beam-objective-evaluation-basis-mismatch"));
+            }
+            let coverage = self.read_coverage_projection(observation.coverage().content_id())?;
+            charge_beam_limit(
+                &mut cohort_work.coverage_bytes,
+                coverage.canonical_bytes().len(),
+                MAX_BEAM_COHORT_COVERAGE_BYTES,
+                "beam-coverage-projection-byte-limit",
+            )?;
+
+            let replaces = representatives.get(&configuration).is_none_or(|current| {
+                (member.ordinal, observation_id) < (current.ordinal, current.observation)
+            });
+            if replaces {
+                representatives.insert(
+                    configuration,
+                    BeamRepresentative {
+                        ordinal: member.ordinal,
+                        observation: observation_id,
+                        evaluation,
+                        coverage,
+                    },
+                );
             }
         }
+
+        if missing == 0 {
+            Ok(BeamCohortEvidence::Complete(representatives))
+        } else {
+            Ok(BeamCohortEvidence::AwaitingEvaluations(missing))
+        }
     }
-    Ok(())
 }
 
-fn validate_retained_beam_projection_size(
-    projection: &BeamPlannerProjection,
-) -> Result<(), CampaignRepositoryError> {
-    let mut retained_bytes = 0_usize;
-    for candidate in projection.candidates.values() {
-        charge_beam_limit(
-            &mut retained_bytes,
-            candidate.canonical_bytes().len(),
-            MAX_BEAM_RETAINED_PROJECTION_BYTES,
-            "beam-retained-projection-byte-limit",
-        )?;
+fn beam_survivor_rule(
+    policy: &CampaignPolicy,
+) -> Result<crate::SurvivorRule, CampaignRepositoryError> {
+    let crate::ExplorerPolicy::Beam {
+        width,
+        novelty_reserve,
+    } = policy.explorer()
+    else {
+        return Err(integrity("beam-projection-requires-beam-policy"));
+    };
+    let keep =
+        u32::try_from(*width).map_err(|_| integrity("beam-survivor-width-exceeds-owner-limit"))?;
+    let novelty = u32::try_from(*novelty_reserve)
+        .map_err(|_| integrity("beam-novelty-reserve-exceeds-owner-limit"))?;
+    if keep as usize > crate::MAX_SURVIVOR_CANDIDATES {
+        return Err(integrity("beam-survivor-width-exceeds-owner-limit"));
     }
-    for bundle in projection.selections.values() {
-        for evaluation in bundle.evaluations().values() {
-            charge_beam_limit(
-                &mut retained_bytes,
-                evaluation.canonical_bytes().len(),
-                MAX_BEAM_RETAINED_PROJECTION_BYTES,
-                "beam-retained-projection-byte-limit",
-            )?;
-        }
-        for explanation in bundle.explanations().values() {
-            charge_beam_limit(
-                &mut retained_bytes,
-                explanation.canonical_bytes().len(),
-                MAX_BEAM_RETAINED_PROJECTION_BYTES,
-                "beam-retained-projection-byte-limit",
-            )?;
-        }
+    Ok(crate::SurvivorRule::new(
+        crate::RankingMethod::ParetoTopK,
+        keep,
+        novelty,
+        0,
+    )?)
+}
+
+fn charge_beam_bundle_bytes(
+    projection_bytes: &mut usize,
+    bundle: &SurvivorSelectionBundle,
+) -> Result<(), CampaignRepositoryError> {
+    let evaluations = bundle
+        .evaluations()
+        .values()
+        .map(|evaluation| evaluation.canonical_bytes().len());
+    let explanations = bundle
+        .explanations()
+        .values()
+        .map(|explanation| explanation.canonical_bytes().len());
+    let selection = std::iter::once(bundle.selection().canonical_bytes().len());
+    for bytes in evaluations.chain(explanations).chain(selection) {
         charge_beam_limit(
-            &mut retained_bytes,
-            bundle.selection().canonical_bytes().len(),
-            MAX_BEAM_RETAINED_PROJECTION_BYTES,
-            "beam-retained-projection-byte-limit",
+            projection_bytes,
+            bytes,
+            MAX_BEAM_PAGE_PROJECTION_BYTES,
+            "beam-page-projection-byte-limit",
         )?;
     }
     Ok(())
@@ -880,18 +713,13 @@ fn validate_retained_beam_projection_size(
 
 fn beam_cohort_novelty_scores<'a>(
     coverages: impl IntoIterator<Item = (ConfigurationId, &'a CoverageProjection)>,
-    work: &mut BeamProjectionWork,
+    work: &mut BeamCohortWork,
 ) -> Result<BTreeMap<ConfigurationId, u64>, CampaignRepositoryError> {
     let coverages = coverages.into_iter().collect::<Vec<_>>();
     let mut frequencies = BTreeMap::<CampaignHash, u64>::new();
     for (_, coverage) in &coverages {
         for identity in coverage.identities() {
-            charge_beam_limit(
-                &mut work.coverage_identity_visits,
-                1,
-                MAX_BEAM_COVERAGE_IDENTITY_VISITS,
-                "beam-coverage-identity-visit-limit",
-            )?;
+            charge_beam_coverage_identity_visit(work)?;
             let frequency = frequencies.entry(*identity).or_default();
             *frequency = frequency
                 .checked_add(1)
@@ -903,12 +731,7 @@ fn beam_cohort_novelty_scores<'a>(
     for (configuration, coverage) in coverages {
         let mut score = 0_u64;
         for identity in coverage.identities() {
-            charge_beam_limit(
-                &mut work.coverage_identity_visits,
-                1,
-                MAX_BEAM_COVERAGE_IDENTITY_VISITS,
-                "beam-coverage-identity-visit-limit",
-            )?;
+            charge_beam_coverage_identity_visit(work)?;
             if frequencies.get(identity) == Some(&1) {
                 score = score
                     .checked_add(1)
@@ -918,6 +741,25 @@ fn beam_cohort_novelty_scores<'a>(
         scores.insert(configuration, score);
     }
     Ok(scores)
+}
+
+fn charge_beam_coverage_identity_visit(
+    work: &mut BeamCohortWork,
+) -> Result<(), CampaignRepositoryError> {
+    charge_beam_limit(
+        &mut work.coverage_identity_visits,
+        1,
+        MAX_BEAM_COHORT_COVERAGE_IDENTITY_VISITS,
+        "beam-coverage-identity-visit-limit",
+    )
+}
+
+fn charge_beam_decoded_observation(work: &mut BeamPageWork) -> Result<(), CampaignRepositoryError> {
+    work.decoded_observations = work
+        .decoded_observations
+        .checked_add(1)
+        .ok_or_else(|| integrity("beam-decoded-observation-count-overflow"))?;
+    Ok(())
 }
 
 fn charge_beam_limit(
@@ -934,11 +776,40 @@ fn charge_beam_limit(
 }
 
 fn charge_beam_target_proposal_visit(visited: &mut usize) -> Result<(), CampaignRepositoryError> {
-    *visited = visited
-        .checked_add(1)
-        .filter(|visited| *visited <= MAX_BEAM_TARGET_PROPOSAL_VISITS)
-        .ok_or_else(|| integrity("beam-target-proposal-visit-count"))?;
-    Ok(())
+    charge_beam_limit(
+        visited,
+        1,
+        MAX_BEAM_TARGET_PROPOSAL_VISITS,
+        "beam-target-proposal-visit-count",
+    )
+}
+
+#[cfg(test)]
+impl CampaignRepository {
+    /// Projects every page of one snapshot's planning frontier and merges the
+    /// results, for tests that assert outcomes across the whole frontier.
+    pub(in crate::repository) fn project_beam_frontier(
+        &self,
+        snapshot: &LoadedSnapshot,
+        policy: &CampaignPolicy,
+    ) -> Result<BeamPlannerProjection, CampaignRepositoryError> {
+        let view = snapshot.snapshot.planning_view();
+        let mut merged = BeamPlannerProjection {
+            candidates: BTreeMap::new(),
+            selections: BTreeMap::new(),
+        };
+        let mut after = None;
+        loop {
+            let page = self.planner_scan_page(&view, after, MAX_PLANNER_SCAN_PAGE_ITEMS - 1)?;
+            let projection = self.project_beam_page(snapshot, policy, page.positions())?;
+            merged.candidates.extend(projection.candidates);
+            merged.selections.extend(projection.selections);
+            if page.complete() {
+                return Ok(merged);
+            }
+            after = page.last();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1002,7 +873,7 @@ mod tests {
         let first = ConfigurationId::from_hash(CampaignHash::derive("beam-config", b"first"));
         let second = ConfigurationId::from_hash(CampaignHash::derive("beam-config", b"second"));
         let third = ConfigurationId::from_hash(CampaignHash::derive("beam-config", b"third"));
-        let mut work = BeamProjectionWork::default();
+        let mut work = BeamCohortWork::default();
 
         let scores = beam_cohort_novelty_scores(
             [

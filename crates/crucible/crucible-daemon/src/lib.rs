@@ -58,7 +58,9 @@
 //! [`crucible_artifact`] strictly
 //! translates opaque campaign payloads into Crucible execution-model values;
 //! [`prepared_result_journal`] retains a complete semantic result across
-//! crash-safe publication retries;
+//! crash-safe publication retries; `attempt_event_log` retains an attempt's
+//! scheduler log as sealed, chained segments plus an open tail, and
+//! [`AttemptLogManifest`] names a complete log by its segment references;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
 //! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
@@ -92,6 +94,9 @@
 
 mod anchored_fs;
 pub mod assignment_ledger;
+// crucible-lint: allow rust-allow -- the directory store and chain accessors are unused until sealed segments spill to attempt storage.
+#[allow(dead_code)]
+mod attempt_event_log;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
@@ -173,6 +178,7 @@ mod qemu_hot_fork_world_factory;
 mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
+mod replay_record_store;
 pub mod repository_admission;
 mod supervision;
 
@@ -185,6 +191,14 @@ pub use assignment_ledger::{
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
 };
+pub use attempt_event_log::{
+    ATTEMPT_LOG_SEGMENT_SCHEMA, ATTEMPT_LOG_SEGMENT_TARGET_BYTES, AttemptEventLogError,
+    AttemptEventLogVisitError, AttemptLogEntries, AttemptLogManifest, AttemptLogSegmentRef,
+    AttemptLogSegmentSource, AttemptLogSegmentSources, MAX_ATTEMPT_LOG_ENTRY_BYTES,
+    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS, MAX_ATTEMPT_LOG_SEGMENT_BYTES, MemorySegmentStore,
+    decode_segment,
+};
+pub(crate) use attempt_event_log::{AttemptLogNamespace, AttemptLogStore};
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
@@ -298,7 +312,7 @@ pub use control_responsiveness::{
 };
 pub use crucible_artifact::{
     AutomaticFindingPreparationError, AutomaticFindingReplayOutcome,
-    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
+    CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5, CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5,
     CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleFindingReplayEvidence, CrucibleFindingReplayTranscript,
     FindingProductionReplayMaterialOutcome, FindingReplayIncompatibility,
@@ -306,8 +320,9 @@ pub use crucible_artifact::{
     MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
     MAX_PREPARED_SEMANTIC_RESULT_BYTES, PreparedCrucibleFindingCandidate,
     PreparedSemanticAttemptResult, PreparedSemanticResultCodecError,
+    RepositoryReproductionSegments, crucible_reproduction_payload,
     decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
-    decode_crucible_configuration_artifact_with_signal_fault_replay,
+    decode_crucible_configuration_artifact_with_signal_fault_replay, decode_crucible_reproduction,
     decode_crucible_scenario_artifact, encode_crucible_configuration_artifact,
     encode_crucible_scenario_artifact,
 };
@@ -318,14 +333,16 @@ pub use crucible_execution::{
     decode_crucible_attempt_execution_with_resources,
 };
 pub use crucible_measurement::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
-    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
-    CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
+    CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
+    CrucibleMeasurementError, CrucibleMeasurementEvidenceBundle, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
+    CrucibleObservationBoundaryEvidence, ExecutorTraceSegmentSource,
+    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, MeasurementSetSegmentSource,
+    ObjectiveInputSegmentSource, derive_crucible_measurement_samples,
     evaluate_crucible_measurement_publication, evaluate_crucible_objectives,
-    evaluate_crucible_observation_measurement_publication, project_crucible_objective_values,
-    verify_crucible_measurement_publication,
+    evaluate_crucible_observation_measurement_publication, measurement_replay_leaf_id,
+    project_crucible_objective_values, verify_crucible_measurement_publication,
 };
 pub use crucible_qemu_host::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
@@ -424,8 +441,9 @@ pub use finding_production_replay::{
     FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION, FindingProductionReplayAsset,
     FindingProductionReplayCapture, FindingProductionReplayCaptureError,
     FindingProductionReplayCaptureInput, FindingProductionReplayCaptureLimits,
-    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureOutcome,
-    FindingProductionReplayDeployment, FindingProductionReplayExecutionSide,
+    FindingProductionReplayCaptureMaterial, FindingProductionReplayCaptureObjects,
+    FindingProductionReplayCaptureOutcome, FindingProductionReplayDeployment,
+    FindingProductionReplayEventLog, FindingProductionReplayExecutionSide,
     FindingProductionReplayGuestAssets, FindingProductionReplayIncomplete,
     FindingProductionReplayRecipe, FindingProductionReplayRootImageFormat,
     FindingProductionReplayRuntimeIdentity, FindingProductionReplaySelectedSide,
@@ -435,7 +453,7 @@ pub use finding_production_replay::{
 };
 pub use finding_replay_capture_store::{
     FindingReplayCaptureInput, FindingReplayCaptureStore, FindingReplayCaptureStoreError,
-    LoadedFindingReplayCapture, PreparedFindingReplayCaptureSet,
+    LoadedFindingReplayCapture, LoadedFindingReplayCaptureObjects, PreparedFindingReplayCaptureSet,
 };
 pub use guest_selectable::{
     GuestSelectableBoundaryDiagnosticConfig, GuestSelectableBoundaryDiagnosticConfigError,
@@ -558,21 +576,23 @@ pub(crate) use qemu_baked_genesis::{
 };
 pub(crate) use qemu_campaign_driver::QemuSavepointReplayProbe;
 pub use qemu_campaign_driver::{
-    MAX_QEMU_CAMPAIGN_ASSERTION_EVENT_VISITS, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
+    DEFAULT_MAXIMUM_EVENT_LOG_BYTES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
     QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
+};
+pub(crate) use qemu_campaign_lifecycle::{
+    HotForkRefusal, QemuAnchorRootMaterializer, QemuAnchorRootOutcome,
+    QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuPublishedRootAdmission,
+    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuPublishedRootState,
+    QemuRetainedSourcePreparation, capture_fresh_genesis_checkpoint_candidate,
 };
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
-    QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
+    QemuExactCheckpointRefusal, QemuFinalBoundaryDrain, QemuFreshAttemptDriver,
+    QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshExecutionRunnerError,
+    QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError,
+    QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
-};
-pub(crate) use qemu_campaign_lifecycle::{
-    QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
-    capture_fresh_genesis_checkpoint_candidate,
 };
 #[cfg(test)]
 pub(crate) use qemu_campaign_resume::QemuProductionExactResumeExecutionRunnerError;
@@ -626,6 +646,13 @@ pub use qemu_resource_guard::{
     QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
     QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
 };
+pub use replay_record_store::{
+    MAX_REPLAY_RECORD_BYTES, MemoryReplayRecordStore, ReplayRecordError, ReplayRecordSource,
+    ReplayRecordSources,
+};
+pub(crate) use replay_record_store::{
+    ReplayRecord, ReplayRecordStore, load_replay_record, load_replay_record_by_content,
+};
 pub use repository_admission::RepositoryAttemptAdmission;
 
 #[cfg(target_os = "linux")]
@@ -642,7 +669,8 @@ pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
-    ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
+    ProductionEventLogSegments, ProductionExactCheckpointClosure,
+    ProductionExactCheckpointNotReady, ProductionExactCheckpointObject,
     ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
     ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
     ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
@@ -661,7 +689,7 @@ pub use vm_lifecycle::{
 pub use vm_lifecycle::{
     ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkNodeAdoption,
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
-    ProductionVmHotForkWorldContinuation,
+    ProductionVmHotForkWorldContinuation, SourceMemoryRegions,
     authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };

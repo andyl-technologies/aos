@@ -37,14 +37,21 @@ impl CampaignHash {
     /// Derives a domain-separated identity from canonical object bytes.
     #[must_use]
     pub fn derive(domain: &str, canonical_bytes: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&(CAMPAIGN_HASH_DOMAIN.len() as u64).to_be_bytes());
-        hasher.update(CAMPAIGN_HASH_DOMAIN);
-        hasher.update(&(domain.len() as u64).to_be_bytes());
-        hasher.update(domain.as_bytes());
-        hasher.update(&(canonical_bytes.len() as u64).to_be_bytes());
+        let mut hasher = derivation_hasher(domain, canonical_bytes.len() as u64);
         hasher.update(canonical_bytes);
         Self(*hasher.finalize().as_bytes())
+    }
+
+    /// Starts the same derivation over canonical bytes fed in pieces.
+    ///
+    /// The derivation hashes the canonical length before the bytes, so the
+    /// caller must know `canonical_length` up front; a typical caller measures
+    /// a large sequence in one pass and feeds it in a second.
+    pub(crate) fn derive_streaming(domain: &str, canonical_length: u64) -> StreamingCampaignHash {
+        StreamingCampaignHash {
+            hasher: derivation_hasher(domain, canonical_length),
+            remaining: Some(canonical_length),
+        }
     }
 
     /// Renders 64 lowercase hexadecimal characters.
@@ -80,6 +87,45 @@ impl CampaignHash {
             return Err(CampaignCodecError::InvalidHex);
         }
         Ok(hash)
+    }
+}
+
+/// Domain-separated hasher positioned after the canonical length prefix.
+fn derivation_hasher(domain: &str, canonical_length: u64) -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(CAMPAIGN_HASH_DOMAIN.len() as u64).to_be_bytes());
+    hasher.update(CAMPAIGN_HASH_DOMAIN);
+    hasher.update(&(domain.len() as u64).to_be_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update(&canonical_length.to_be_bytes());
+    hasher
+}
+
+/// Incremental [`CampaignHash::derive`] over canonical bytes of a declared length.
+pub(crate) struct StreamingCampaignHash {
+    hasher: blake3::Hasher,
+    /// Declared bytes not yet fed, or `None` once more bytes than declared arrived.
+    remaining: Option<u64>,
+}
+
+impl StreamingCampaignHash {
+    /// Feeds the next canonical bytes.
+    ///
+    /// Bytes beyond the declared length are not hashed and make
+    /// [`Self::finish`] fail, so an inconsistent second pass cannot yield an
+    /// identity.
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        self.remaining = self
+            .remaining
+            .and_then(|remaining| remaining.checked_sub(bytes.len() as u64));
+        if self.remaining.is_some() {
+            self.hasher.update(bytes);
+        }
+    }
+
+    /// Returns the identity, or `None` unless exactly the declared length was fed.
+    pub(crate) fn finish(self) -> Option<CampaignHash> {
+        (self.remaining == Some(0)).then(|| CampaignHash(*self.hasher.finalize().as_bytes()))
     }
 }
 
@@ -589,7 +635,7 @@ content_object_id!(
 content_object_id!(
     ObservationId,
     ObjectKind::Observation,
-    14,
+    16,
     "crucible.campaign.observation",
     "Identifies one current canonical observation with its stop and produced-selection semantics."
 );
@@ -630,12 +676,13 @@ content_object_id!(
 content_object_id!(
     FindingReplayCaptureEvidenceId,
     ObjectKind::ExactManifest,
+    6,
     "crucible.campaign.finding-replay-capture-evidence",
     "Identifies one manifest-rooted portable production replay capture."
 );
 
 impl FindingReplayCaptureEvidenceId {
-    /// Claims a version-one finding replay capture manifest identity.
+    /// Claims a version-six finding replay capture manifest identity.
     ///
     /// # Errors
     ///
@@ -648,14 +695,14 @@ impl FindingReplayCaptureEvidenceId {
 content_object_id!(
     FindingTriageReplayEvidenceId,
     ObjectKind::Finding,
-    2,
+    3,
     "crucible.campaign.finding-triage-replay-evidence",
-    "Identifies one exact replay and observed signature in either inline or manifest-backed form."
+    "Identifies one exact replay, its observed signature, and the attempt-log segments it names."
 );
 content_object_id!(
     ReproductionArtifactId,
     ObjectKind::Finding,
-    2,
+    3,
     "crucible.campaign.reproduction-artifact",
     "Identifies one verifier-backed self-contained finding reproduction."
 );

@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.protocolCodecFuzz",
   taskIds ? ["T-PROTO-10" "T-HARN-19"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   codecFuzzLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/codec_fuzz.rs;
@@ -173,11 +172,11 @@
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block request encoder public";
-        needle = "pub fn encode(&self, identity: BlockRequestIdentity)";
+        needle = "pub fn encode(&self, stamp: BlockRequestStamp)";
       }
       {
         label = "block request decoder";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestStamp, Self), BlockWireError>";
       }
       {
         label = "block operation typed rejection";
@@ -330,57 +329,21 @@ in
   if failures != []
   then throw "crucible phase2 protocol and I/O wire fuzz check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-protocol-codec-and-io-wire-fuzz";
-      version = "0";
-      src = crucibleSrc;
 
-      runtimeDeps = [pkgs.sqlite];
-
+      # The plugin's test-only crucible dependency links the campaign
+      # store's SQLite backend, so the lib-test link needs it.
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-protocol-codec-fuzz";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-protocol-codec-fuzz-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-protocol \
               --test codec_fuzz \
               -- --test-threads=1
@@ -390,14 +353,7 @@ in
           name = "run-qemu-plugin-io-wire-fuzz";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-qemu-plugin-io-wire-fuzz-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               io_wire_fuzz \
               -- --test-threads=1

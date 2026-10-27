@@ -30,29 +30,34 @@ pub(super) struct TriageRunReport {
     pub(super) report_path: PathBuf,
 }
 
+/// Authenticated campaign findings ledger projected for clustering.
+///
+/// Only the clustering input stays resident. Report evidence and native replays
+/// are fetched from the content-addressed evidence store when a selected member
+/// needs them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LoadedTriageFindings {
     pub(super) ledger: crucible_engine::FailureFindingsLedger,
-    pub(super) evidence: BTreeMap<crucible_engine::ContentHash, TriageFindingEvidence>,
-    pub(super) campaign_evidence: Vec<CampaignTriageFindingEvidence>,
-    pub(super) artifact_bytes: Vec<u8>,
+    pub(super) evidence: crate::cli_triage_debug::campaign_evidence::CampaignTriageEvidence,
 }
 
-/// Authenticated campaign records retained beside one report projection.
+/// Authenticated finding-level campaign records beside one report projection.
+///
+/// Occurrence proofs are not retained; `occurrence_count` is the authenticated
+/// number of candidate occurrences the finding's evidence record lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CampaignTriageFindingEvidence {
     pub(super) campaign: crucible_campaign::CampaignName,
     pub(super) snapshot: crucible_campaign::CampaignSnapshotId,
-    pub(super) membership: CampaignFindingsMembershipProof,
-    pub(super) observation_proof: CampaignFindingObjectProof,
-    pub(super) reproduction_proof: CampaignFindingObjectProof,
-    pub(super) minimized_reproduction_proof: Option<CampaignFindingObjectProof>,
-    pub(super) occurrence_proofs: Vec<CampaignFindingOccurrenceProof>,
     pub(super) finding: crucible_campaign::Finding,
     pub(super) observation: crucible_campaign::Observation,
     pub(super) reproduction: crucible_campaign::ReproductionArtifact,
     pub(super) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    /// Crucible artifact of the minimized reproduction, decoded from its
+    /// authenticated segments. The original's is `report.finding.artifact`.
+    pub(super) minimized_artifact: Option<crucible_engine::ReproductionArtifact>,
     pub(super) report: TriageFindingEvidence,
+    pub(super) occurrence_count: u64,
 }
 
 /// Exact checked service exchange proving final-snapshot Finding membership.
@@ -60,39 +65,6 @@ pub(super) struct CampaignTriageFindingEvidence {
 pub(super) struct CampaignFindingsMembershipProof {
     pub(super) request: crucible_campaign::QueryCampaignFindingsRequest,
     pub(super) response: crucible_campaign::QueryCampaignFindingsResponse,
-}
-
-/// Exact checked service exchange resolving one Finding-owned dependency.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CampaignFindingObjectProof {
-    pub(super) request: crucible_campaign::GetCampaignFindingObjectRequest,
-    pub(super) response: crucible_campaign::GetCampaignFindingObjectResponse,
-}
-
-/// Exact checked service exchange for one page of retained candidate occurrences.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CampaignFindingOccurrencesProof {
-    pub(super) request: crucible_campaign::QueryCampaignFindingOccurrencesRequest,
-    pub(super) response: crucible_campaign::QueryCampaignFindingOccurrencesResponse,
-}
-
-/// Exact checked exchanges resolving one retained candidate occurrence.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CampaignFindingOccurrenceProof {
-    pub(super) page: CampaignFindingOccurrencesProof,
-    pub(super) observation: CampaignFindingOccurrenceObjectProof,
-    pub(super) reproduction: CampaignFindingOccurrenceObjectProof,
-    pub(super) minimized_reproduction: CampaignFindingOccurrenceObjectProof,
-    pub(super) triage_evidence: Option<CampaignFindingOccurrenceTriageProof>,
-}
-
-/// Four independently replayed native signatures retained by a rich candidate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CampaignFindingOccurrenceTriageProof {
-    pub(super) minimization_original: CampaignFindingTriageReplayProof,
-    pub(super) minimization_selected: CampaignFindingTriageReplayProof,
-    pub(super) verification_original: CampaignFindingTriageReplayProof,
-    pub(super) verification_selected: CampaignFindingTriageReplayProof,
 }
 
 /// Complete ordered segment transcript for one candidate triage replay.
@@ -106,13 +78,6 @@ pub(super) struct CampaignFindingTriageReplayProof {
 pub(super) struct CampaignFindingTriageReplaySegmentProof {
     pub(super) request: crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest,
     pub(super) response: crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse,
-}
-
-/// Exact checked service exchange resolving one candidate-owned dependency.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct CampaignFindingOccurrenceObjectProof {
-    pub(super) request: crucible_campaign::GetCampaignFindingOccurrenceObjectRequest,
-    pub(super) response: crucible_campaign::GetCampaignFindingOccurrenceObjectResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

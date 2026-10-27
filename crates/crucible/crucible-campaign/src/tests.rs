@@ -169,13 +169,13 @@ fn content_identities_admit_only_current_registry_versions() {
     assert_current_version!(BranchRequestId, ObjectKind::CampaignFact, 10);
     assert_current_version!(ProposalId, ObjectKind::CampaignFact, 3);
     assert_current_version!(AttemptId, ObjectKind::CampaignFact, 9);
-    assert_current_version!(ObservationId, ObjectKind::Observation, 14);
+    assert_current_version!(ObservationId, ObjectKind::Observation, 16);
     assert_current_version!(ObjectiveEvaluationId, ObjectKind::Observation, 2);
     assert_current_version!(RankingExplanationId, ObjectKind::Projection, 2);
     assert_current_version!(FindingId, ObjectKind::Finding, 4);
     assert_current_version!(FindingCandidateBundleId, ObjectKind::Finding, 7);
-    assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 2);
-    assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 2);
+    assert_current_version!(FindingTriageReplayEvidenceId, ObjectKind::Finding, 3);
+    assert_current_version!(ReproductionArtifactId, ObjectKind::Finding, 3);
     assert_current_version!(PlannerBeamCandidateId, ObjectKind::Projection, 2);
 }
 
@@ -661,7 +661,7 @@ fn command_and_fact_identities_bind_payload_and_admission_order() {
     let credited = CampaignFact::ObservationCredited(stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        14,
+        16,
         "credited-observation"
     ));
     assert_eq!(
@@ -1517,13 +1517,13 @@ fn continuation_inputs_are_canonical_bounded_and_attempt_identifying() {
     let source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        14,
+        16,
         "continuation-input-source-observation"
     );
     let another_source_observation = stored_id!(
         ObservationId,
         ObjectKind::Observation,
-        14,
+        16,
         "continuation-input-another-source-observation"
     );
     let start = AttemptStart::AfterAttempt { origin, reached };
@@ -2455,6 +2455,11 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         coverage
     );
 
+    let discovered_choice = stored_id!(
+        ChoiceOpportunityId,
+        ObjectKind::CampaignFact,
+        "discovered choice"
+    );
     let observation = Observation::new(
         stored_id!(
             AttemptId,
@@ -2480,11 +2485,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             properties.id().expect("property id"),
             coverage.id().expect("coverage id"),
         ),
-        BTreeSet::from([stored_id!(
-            ChoiceOpportunityId,
-            ObjectKind::CampaignFact,
-            "discovered choice"
-        )]),
+        BTreeSet::from([discovered_choice]),
     )
     .expect("observation");
     assert_eq!(
@@ -2494,7 +2495,7 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
     let envelope = ObjectEnvelope::for_record_versioned(
         CampaignRecordKind::Observation,
-        14,
+        16,
         super::object::content_children(observation.content_children())
             .expect("observation children"),
         observation.canonical_bytes(),
@@ -2517,9 +2518,9 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
     );
     let selection_observation = observation
         .clone()
-        .with_produced_selections(BTreeSet::from([produced_selection]))
+        .with_produced_selections(BTreeMap::from([(discovered_choice, produced_selection)]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 14);
+    assert_eq!(selection_observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&selection_observation.canonical_bytes())
             .expect("canonical selection observation"),
@@ -2531,14 +2532,22 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("selection observation id")
             .content_id()
             .schema_version(),
-        14
+        16
     );
+    // The produced set is one paged-set child, not one child per selection.
+    assert!(!selection_observation.produced_selections().is_empty());
     assert!(
         selection_observation
             .content_children()
             .iter()
-            .any(|(role, child)| role == "produced-selection.0000"
-                && *child == produced_selection.content_id())
+            .any(|(role, child)| role == "produced-selections"
+                && *child == selection_observation.produced_selections().content_id())
+    );
+    assert!(
+        !selection_observation
+            .content_children()
+            .iter()
+            .any(|(_, child)| *child == produced_selection.content_id())
     );
 
     let scenario_failure = Observation::new(
@@ -2555,10 +2564,10 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             observation.properties(),
             observation.coverage(),
         ),
-        BTreeSet::new(),
+        BTreeSet::from([discovered_choice]),
     )
     .expect("scenario failure observation");
-    assert_eq!(scenario_failure.schema_version(), 14);
+    assert_eq!(scenario_failure.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&scenario_failure.canonical_bytes())
             .expect("canonical scenario failure observation"),
@@ -2570,13 +2579,13 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("scenario failure observation id")
             .content_id()
             .schema_version(),
-        14
+        16
     );
     let failure_selection_observation = scenario_failure
         .clone()
-        .with_produced_selections(BTreeSet::from([produced_selection]))
+        .with_produced_selections(BTreeMap::from([(discovered_choice, produced_selection)]))
         .expect("scenario failure selection observation");
-    assert_eq!(failure_selection_observation.schema_version(), 14);
+    assert_eq!(failure_selection_observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&failure_selection_observation.canonical_bytes())
             .expect("canonical scenario failure selection observation"),
@@ -2648,7 +2657,9 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
         })
     ));
 
-    let excessive_choices = (0..=crate::observation::MAX_DISCOVERED_CHOICES)
+    // One past the former envelope-child bound: the discovered set is one
+    // paged-set child, so the record keeps the size of a one-choice record.
+    let many_choices = (0_u32..65_530)
         .map(|ordinal| {
             ChoiceOpportunityId::from_content_id(ContentId::for_bytes(
                 ObjectKind::CampaignFact,
@@ -2658,24 +2669,32 @@ fn observation_records_are_canonical_bounded_and_child_bearing() {
             .expect("choice id")
         })
         .collect::<BTreeSet<_>>();
-    assert!(matches!(
-        Observation::new(
-            observation.attempt(),
-            Observation::outcome(
-                observation.child(),
-                observation.child_content(),
-                observation.path(),
-                observation.stop().clone(),
-                observation.measurements(),
-                observation.properties(),
-                observation.coverage(),
-            ),
-            excessive_choices,
+    let many_choice_observation = Observation::new(
+        observation.attempt(),
+        Observation::outcome(
+            observation.child(),
+            observation.child_content(),
+            observation.path(),
+            observation.stop().clone(),
+            observation.measurements(),
+            observation.properties(),
+            observation.coverage(),
         ),
-        Err(CampaignCodecError::LimitExceeded {
-            limit: "observation-discovered-choice-count"
-        })
-    ));
+        many_choices,
+    )
+    .expect("observation beyond the former choice bound");
+    assert_eq!(
+        many_choice_observation.discovered_choices().entry_count(),
+        65_530
+    );
+    assert_eq!(
+        many_choice_observation.canonical_bytes().len(),
+        observation.canonical_bytes().len()
+    );
+    assert_eq!(
+        many_choice_observation.content_children().len(),
+        observation.content_children().len()
+    );
 }
 
 #[test]
@@ -2790,8 +2809,8 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
             configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"self-contained reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"self-contained reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("reproduction");
     let reproduction_id = reproduction.id().expect("reproduction id");
@@ -2813,7 +2832,7 @@ fn finding_and_reproduction_records_round_trip_with_exact_children() {
     .expect("signature");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        14,
+        16,
         b"finding-observation",
     ))
     .expect("observation id");
@@ -2928,12 +2947,12 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
             original_configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"original reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"original reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("original reproduction");
     let original_id = original.id().expect("original reproduction id");
-    assert_eq!(original.schema_version(), 2);
+    assert_eq!(original.schema_version(), 3);
     assert!(original.minimization().is_none());
 
     let minimized_configuration = ConfigurationId::from_hash(hash("finding-current-minimized"));
@@ -2956,11 +2975,11 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
         Some(fingerprint),
         true,
     );
-    let current_policy = b"crucible.finding-minimization-policy.v3\0current-limits".to_vec();
+    let current_policy = b"crucible.finding-minimization-policy.v4\0current-limits".to_vec();
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
-            2,
+            3,
             current_policy.clone(),
             vec![attempt],
             hash("candidate state"),
@@ -2972,7 +2991,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     assert!(matches!(
         FindingMinimizationEvidence::new(
             original_id,
-            3,
+            4,
             current_policy.clone(),
             vec![attempt],
             hash("different final state"),
@@ -2983,7 +3002,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     ));
     let minimization = FindingMinimizationEvidence::new(
         original_id,
-        3,
+        4,
         current_policy.clone(),
         vec![attempt],
         hash("candidate state"),
@@ -2997,21 +3016,21 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
             minimized_configuration_artifact_id,
             fingerprint,
         ),
-        1,
-        b"minimized reproduction".to_vec(),
+        crate::ReproductionPayload::new(1, b"minimized reproduction".to_vec(), Vec::new())
+            .expect("reproduction payload"),
         minimization,
     )
     .expect("minimized reproduction");
     let minimized_id = minimized.id().expect("minimized reproduction id");
-    assert_eq!(minimized.schema_version(), 2);
-    assert_eq!(minimized_id.content_id().schema_version(), 2);
+    assert_eq!(minimized.schema_version(), 3);
+    assert_eq!(minimized_id.content_id().schema_version(), 3);
     let decoded = ReproductionArtifact::from_canonical_bytes(&minimized.canonical_bytes())
         .expect("decode minimized reproduction");
     assert_eq!(decoded, minimized);
     let decoded_minimization = decoded
         .minimization()
         .expect("decode current minimization evidence");
-    assert_eq!(decoded_minimization.policy_schema(), 3);
+    assert_eq!(decoded_minimization.policy_schema(), 4);
     assert_eq!(decoded_minimization.policy(), current_policy);
 
     let checkpoint = |name: &[u8]| {
@@ -3030,7 +3049,7 @@ fn current_finding_retains_minimization_trace_and_role_tagged_exact_pins() {
     .expect("role-tagged pins");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        14,
+        16,
         b"finding-current-observation",
     ))
     .expect("observation id");

@@ -42,9 +42,17 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  # The campaign-mode guest runs the same prebuilt suite as the host gate.
+  vmRuntime = testGate.mkCrucibleVmRuntime {
+    src = crucibleSrc;
+    subset = testGate.mkCrucibleTestSubset {
+      pname = "crucible-perf-bench-tests";
+      requests = ["crucible-test-support"];
+      targets = ["test:gate_perf_bench"];
+    };
+  };
 
   # The perf substrate is split across a `perf/` module directory (each file is
   # kept under the engineering-hygiene soft line limit); concatenate the facade
@@ -93,7 +101,7 @@
       ${restoreLatencyResult} \
       ${segmentReplayResult}; do
       grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} "$result"
-      grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} "$result"
+      grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"} "$result"
       grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} "$result"
     done
   '';
@@ -434,30 +442,10 @@
         needle = "performance benchmark gate is intentionally pending";
       }
     ];
-  configureScript = ''
-    export CARGO_HOME="$TMPDIR/cargo"
-    if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-      cd source
-    fi
-    mkdir -p "$CARGO_HOME" .cargo
-    if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-      sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-        > .cargo/config.toml
-    else
-      printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-        > .cargo/config.toml
-    fi
-  '';
   runPerfScript = ''
     set -eu
-    if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-      cd source
-    fi
     cd crates
-    cargo test \
-      --frozen \
-      --offline \
-      --target-dir "$TMPDIR/crucible-phase7-perf-bench-target" \
+    crucible-cargo test \
       -p crucible-test-support \
       --test gate_perf_bench \
       -- --test-threads=1
@@ -587,8 +575,7 @@ in
       executionFamily = "qemu-runtime";
       name = "perf-bench";
       runtimeInputs =
-        [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed]
-        ++ campaignRustRuntime.runtimeInputs
+        [pkgs.coreutils pkgs.grep pkgs.sed]
         ++ dependencies
         ++ [
           deviceWorkOverlap
@@ -597,13 +584,9 @@ in
           restoreLatency
           segmentReplay
         ];
-      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
-      runtimeClosures = [crucibleSrc cargoDeps];
+      runtimeClosures = vmRuntime.closures;
       runtimeScript = ''
-        cp -R ${crucibleSrc} source
-        chmod -R u+w source
-        cd source
-        ${configureScript}
+        ${vmRuntime.script}
         ${runPerfScript}
         ${writeResultScript}
       '';
@@ -612,15 +595,13 @@ in
       varSizeMiB = 8192;
     }
   else
-    pkgs.mkDerivation {
+    testGate.mkCrucibleTestGate {
       pname = "crucible-phase7-perf-bench";
-      version = "0";
       src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
-          pkgs.rust
           pkgs.sed
         ]
         ++ dependencies
@@ -633,18 +614,6 @@ in
         ];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = configureScript;
-        }
         {
           name = "run-perf-bench";
           script = runPerfScript;

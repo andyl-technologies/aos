@@ -202,13 +202,14 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, samples.clone(), &terminal(40))?;
-    // This binds exact event hashes under the mandatory event-segment v5 codec.
+    // This binds exact boundary event hashes under the entry v6 identity domain
+    // and the v3 evaluation body.
     assert_eq!(
         evaluation.content_hash(),
         ContentHash {
             bytes: [
-                234, 55, 193, 221, 55, 188, 200, 222, 71, 179, 125, 141, 31, 68, 125, 169, 172,
-                245, 125, 97, 176, 17, 128, 139, 211, 241, 36, 71, 61, 239, 27, 57,
+                189, 149, 219, 213, 197, 3, 204, 136, 125, 68, 91, 235, 231, 8, 3, 84, 108, 5, 167,
+                200, 106, 80, 190, 51, 218, 217, 138, 211, 202, 160, 193, 21,
             ],
         }
     );
@@ -222,9 +223,11 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
     assert_eq!(end.sequence(), Some(3));
     assert_eq!(end.events().len(), 2);
     let metric = &outcome.metrics()[&MetricId::parse("samples")?];
-    assert_eq!(metric.samples().len(), 2);
-    assert_eq!(metric.aggregate(), &MeasurementAggregateValue::Unsigned(12));
-    assert_eq!(metric.evidence().len(), 2);
+    assert_eq!(metric.samples(), 2);
+    assert_eq!(
+        metric.aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(12))
+    );
     let verified = verify_measurement_evaluation(
         &definitions,
         &entries,
@@ -353,7 +356,7 @@ fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
         evaluation.outcomes()[&MeasurementId::parse("deadline")?].metrics()
             [&MetricId::parse("count")?]
             .aggregate(),
-        &MeasurementAggregateValue::Unsigned(0)
+        Some(&MeasurementAggregateValue::Unsigned(0))
     );
     Ok(())
 }
@@ -461,8 +464,11 @@ fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn E
         MeasurementWindowOutcome::Completed { .. }
     ));
     let metric = &outcome.metrics()[&MetricId::parse("sum")?];
-    assert_eq!(metric.samples().len(), 1);
-    assert_eq!(metric.aggregate(), &MeasurementAggregateValue::Unsigned(7));
+    assert_eq!(metric.samples(), 1);
+    assert_eq!(
+        metric.aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(7))
+    );
     Ok(())
 }
 
@@ -551,8 +557,8 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
             timeout: None,
             cohort: CohortPolicy::All(vec![server.clone()]),
             metrics: vec![
-                model_metric("virtual-time", "virtual_ticks", MetricSource::VirtualTime)?,
-                model_metric(
+                level_metric("virtual-time", "virtual_ticks", MetricSource::VirtualTime)?,
+                level_metric(
                     "node-icount",
                     "instructions",
                     MetricSource::NodeIcount {
@@ -702,6 +708,17 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
         samples_for_metric(&first, "scheduler-events"),
         vec![1, 1, 1, 1]
     );
+
+    let terminal = terminal(40);
+    let whole = evaluate_measurements(&definitions, &entries, first, &terminal)?;
+    let projector = ModelSampleProjector::new(&definitions);
+    let mut replay = MeasurementReplay::new(&definitions, &terminal)?;
+    for entry in &entries {
+        let mut samples = Vec::new();
+        projector.project(entry, &mut samples)?;
+        replay.observe(entry, samples)?;
+    }
+    assert_eq!(replay.finish()?, whole);
     Ok(())
 }
 
@@ -763,77 +780,6 @@ fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn model_source_projection_rejects_visit_amplification_before_sampling()
--> Result<(), Box<dyn Error>> {
-    let fixture = crate::happy_path_scenario()?;
-    let server = node("server");
-    let definitions = (0..4)
-        .map(|measurement| {
-            let metrics = (0..MAX_METRICS_PER_MEASUREMENT)
-                .map(|metric| {
-                    model_metric(
-                        &format!("scheduler-{metric}"),
-                        "events",
-                        MetricSource::SchedulerEventCount,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(MeasurementDefinition {
-                id: MeasurementId::parse(format!("bounded-{measurement}"))?,
-                begin: BoundarySelector::ScenarioGenesis,
-                end: BoundarySelector::SchedulerQuiescence,
-                timeout: None,
-                cohort: CohortPolicy::All(vec![server.clone()]),
-                metrics,
-            })
-        })
-        .collect::<Result<Vec<_>, MeasurementDefinitionError>>()?;
-    let definitions = MeasurementDefinitions::new(
-        fixture.scenario.world(),
-        fixture.scenario.plan(),
-        fixture.scenario.properties(),
-        definitions,
-    )?;
-    let entries = (0_u64..977)
-        .map(|sequence| {
-            retained_model_event(
-                sequence,
-                sequence,
-                &server,
-                "tick",
-                BTreeMap::from([
-                    (
-                        String::from("icount"),
-                        EventAttributeValue::Icount(Icount { retired: sequence }),
-                    ),
-                    (
-                        String::from("virtual_time"),
-                        EventAttributeValue::VirtualTime(VirtualTime { ticks: sequence }),
-                    ),
-                ]),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    assert_eq!(
-        definitions
-            .definitions()
-            .iter()
-            .map(|definition| definition.metrics.len())
-            .sum::<usize>()
-            * entries.len(),
-        4_001_792
-    );
-    assert!(matches!(
-        derive_model_measurement_samples(&definitions, &entries),
-        Err(MeasurementEvaluationError::LimitExceeded {
-            limit: "model-measurement-event-visits"
-        })
-    ));
-    Ok(())
-}
-
 fn model_metric(
     id: &str,
     unit: &str,
@@ -845,6 +791,18 @@ fn model_metric(
         unit: UnitId::parse(unit)?,
         source,
         aggregation: Aggregation::Sum,
+    })
+}
+
+/// Declares a level source with an aggregation independent of entry count.
+fn level_metric(
+    id: &str,
+    unit: &str,
+    source: MetricSource,
+) -> Result<MetricDefinition, MeasurementDefinitionError> {
+    Ok(MetricDefinition {
+        aggregation: Aggregation::EventDelta,
+        ..model_metric(id, unit, source)?
     })
 }
 
@@ -876,3 +834,100 @@ fn samples_for_metric(samples: &[MeasurementRuntimeSample], metric: &str) -> Vec
         })
         .collect()
 }
+
+fn marker_window(aggregation: Aggregation) -> Result<MeasurementDefinitions, Box<dyn Error>> {
+    let measurement = MeasurementDefinition {
+        id: MeasurementId::parse("recovery")?,
+        begin: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("begin"),
+            instance: None,
+        },
+        end: BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name("end"),
+            instance: None,
+        },
+        timeout: None,
+        cohort: CohortPolicy::Any(vec![node("router-a")]),
+        metrics: vec![metric(
+            "delta",
+            MetricValueType::UnsignedInteger,
+            aggregation,
+        )?],
+    };
+    Ok(MeasurementDefinitions::new(
+        &world()?,
+        &Plan::empty(),
+        &Properties::empty(),
+        vec![measurement],
+    )?)
+}
+
+fn marker_entry(sequence: u64, at: u64, marker: &str) -> SchedulerEventLogEntry {
+    SchedulerEventLogEntry::guest_marker_observation(
+        sequence,
+        Icount { retired: at },
+        node("router-a"),
+        MarkerId::from_name(marker),
+    )
+}
+
+#[test]
+fn uncommitted_windows_report_sample_requiring_aggregates_absent() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::EventDelta)?;
+    let recovery = MeasurementId::parse("recovery")?;
+    let delta = MetricId::parse("delta")?;
+
+    // The attempt stops before the begin marker, so the window never opens.
+    let before_begin = vec![marker_entry(0, 10, "unrelated")];
+    let evaluation = evaluate_measurements(&definitions, &before_begin, Vec::new(), &terminal(10))?;
+    let outcome = &evaluation.outcomes()[&recovery];
+    assert_eq!(outcome.window(), &MeasurementWindowOutcome::NotStarted);
+    assert_eq!(outcome.metrics()[&delta].aggregate(), None);
+
+    // An open window without samples is likewise uncommitted.
+    let open = vec![marker_entry(0, 10, "begin")];
+    let evaluation = evaluate_measurements(&definitions, &open, Vec::new(), &terminal(10))?;
+    let outcome = &evaluation.outcomes()[&recovery];
+    assert!(matches!(
+        outcome.window(),
+        MeasurementWindowOutcome::Open { .. }
+    ));
+    assert_eq!(outcome.metrics()[&delta].aggregate(), None);
+    Ok(())
+}
+
+#[test]
+fn completed_windows_still_require_samples_for_event_delta() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::EventDelta)?;
+    let completed = vec![marker_entry(0, 10, "begin"), marker_entry(1, 20, "end")];
+
+    let Err(error) = evaluate_measurements(&definitions, &completed, Vec::new(), &terminal(20))
+    else {
+        return Err("a committed event-delta window must be measurable".into());
+    };
+
+    assert_eq!(
+        error,
+        MeasurementEvaluationError::EmptySamples {
+            aggregation: "event_delta",
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn uncommitted_windows_keep_empty_tolerant_aggregates() -> Result<(), Box<dyn Error>> {
+    let definitions = marker_window(Aggregation::Count)?;
+    let before_begin = vec![marker_entry(0, 10, "unrelated")];
+
+    let evaluation = evaluate_measurements(&definitions, &before_begin, Vec::new(), &terminal(10))?;
+
+    let outcome = &evaluation.outcomes()[&MeasurementId::parse("recovery")?];
+    assert_eq!(
+        outcome.metrics()[&MetricId::parse("delta")?].aggregate(),
+        Some(&MeasurementAggregateValue::Unsigned(0))
+    );
+    Ok(())
+}
+
+mod streaming;

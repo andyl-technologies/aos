@@ -453,7 +453,7 @@ pub(in crate::tests) fn generated_schedule(seed: u64, len: u64) -> Schedule {
 }
 
 pub(in crate::tests) fn swap_first_two_decisions(schedule: &Schedule) -> Schedule {
-    let decisions = schedule.decisions();
+    let decisions = schedule.decision_history();
     let mut swapped = Schedule::empty();
 
     if decisions.len() < 2 {
@@ -462,7 +462,7 @@ pub(in crate::tests) fn swap_first_two_decisions(schedule: &Schedule) -> Schedul
 
     swapped = swapped.appended(decisions[1].clone());
     swapped = swapped.appended(decisions[0].clone());
-    for decision in &decisions[2..] {
+    for decision in decisions.iter_from(2) {
         swapped = swapped.appended(decision.clone());
     }
 
@@ -592,14 +592,16 @@ pub(in crate::tests) fn generated_decision(seed: u64, index: u64) -> Decision {
                 event_key(seed + index, index + 1),
             ],
         }),
-        1 => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node(format!("node-{seed}/network-{index}")),
-            value: seed.wrapping_mul(0xd6e8_feb8_6659_fd93) ^ index,
-        }),
-        2 => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node(format!("node-{seed}/stream-{index}")),
-            value: seed.rotate_left((index % 31) as u32) ^ index,
-        }),
+        1 => Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node(format!("node-{seed}/network-{index}")),
+            0,
+            seed.wrapping_mul(0xd6e8_feb8_6659_fd93) ^ index,
+        )),
+        2 => Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node(format!("node-{seed}/stream-{index}")),
+            0,
+            seed.rotate_left((index % 31) as u32) ^ index,
+        )),
         3 => Decision::Override(OverrideDecision {
             point: SchedulingPoint {
                 key: format!("point-{seed}-{index}"),
@@ -620,9 +622,10 @@ pub(in crate::tests) fn generated_decision(seed: u64, index: u64) -> Decision {
                 to_vcpu: VcpuId { index: 1 },
             },
         }),
-        _ => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node(format!("app-random-{index}")),
-            value: seed.wrapping_mul(0x9e37_79b9) ^ index,
-        }),
+        _ => Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node(format!("app-random-{index}")),
+            0,
+            seed.wrapping_mul(0x9e37_79b9) ^ index,
+        )),
     }
 }

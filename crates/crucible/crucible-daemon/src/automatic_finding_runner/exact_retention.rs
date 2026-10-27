@@ -1,6 +1,7 @@
 //! Exact-checkpoint retention selection for automatic findings.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use crucible_campaign::{
@@ -17,7 +18,7 @@ use crucible_engine::{AssertionPhase, SchedulerEventLogEntry};
 
 use crate::crucible_artifact::{PreparedFindingExactRetention, PreparedSemanticAttemptResult};
 use crate::crucible_measurement::CrucibleMeasurementStopEvidence;
-use crate::crucible_measurement::verified_assertion_transition;
+use crate::crucible_measurement::{AssertionTransitionScan, ObservationPrefixDigest};
 use crate::exact_checkpoint_store::ExactFindingCheckpointAuthenticator;
 use crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot;
 use crate::{
@@ -25,6 +26,13 @@ use crate::{
     ExactCheckpointStore, ExecutionCancellation,
 };
 
+/// Fixed sanity bound on one finding checkpoint's authenticated metadata.
+///
+/// Metadata is the root envelope, closure manifest, and object-index pages,
+/// never log or RAM content. The index names one object per sealed event-log
+/// segment of up to 8 MiB of entries (RFC-0020 CCOMP-33), so it grows with the
+/// run only by a few dozen bytes per sealed segment, and 64 MiB admits logs
+/// far beyond any operational event-log byte limit.
 const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
 
@@ -392,6 +400,17 @@ pub(super) fn prepare_finding_exact_retention(
         }),
         StopOutcome::AssertionFailure(property) => execution
             .and_then(|execution| assertion_failure_boundary(input, result, execution, property))
+            .map(|boundary| {
+                // The checkpoint authenticator reads the leaf's segments from
+                // the campaign store, so they are published first; they are
+                // immutable content-addressed leaves either way.
+                crate::executor_worker::publish_log_segments(store, result)
+                    .map(|()| boundary)
+                    .map_err(|_| CampaignCodecError::InvalidValue {
+                        reason: "finding assertion log segments could not be published",
+                    })
+            })
+            .transpose()?
             .map(|(witness, bytes)| FindingExactBoundary {
                 failure_events: witness.terminal_events(),
                 measurement_events: Some(witness.quantum_start_events()),
@@ -430,35 +449,68 @@ fn assertion_failure_boundary(
 
     let terminal_events = execution.semantic_stop_events()?;
     let quantum_start_events = execution.latest_quantum_start_events()?;
-    let terminal_len = usize::try_from(terminal_events).ok()?;
-    let entries = execution.event_log_entries().get(..terminal_len)?;
-    if quantum_start_events >= terminal_events {
+    if quantum_start_events >= terminal_events || execution.event_log_len() < terminal_events {
         return None;
     }
 
+    // The observation's measurement set owns exactly one replay leaf; it must
+    // be the campaign-stop leaf whose log equals the execution's.
     let measurement_ids = observation.measurements().evaluation().evidence();
-    let mut matching = result
+    let trace = crate::measurement_replay_leaf_id(measurement_ids)?;
+    let leaf = result
         .measurement_replay_evidence()
         .iter()
-        .filter_map(|leaf| {
-            let id = leaf.id().ok()?;
-            (measurement_ids.contains(&id)
-                && leaf.scenario() == input.lineage().scenario()
-                && leaf.configuration() == observation.child().configuration()
-                && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
-                && leaf.entries() == entries)
-                .then_some((id, leaf))
-        });
-    let (trace, leaf) = matching.next()?;
-    if matching.next().is_some() || measurement_ids.len() != 1 {
+        .find(|leaf| leaf.id().ok() == Some(trace))?;
+    if leaf.evidence_ids().ok().as_ref() != Some(measurement_ids)
+        || leaf.scenario() != input.lineage().scenario()
+        || leaf.configuration() != observation.child().configuration()
+        || leaf.stop() != CrucibleMeasurementStopEvidence::Campaign
+        || leaf.entry_count() != terminal_events
+    {
         return None;
     }
 
-    let transition = verified_assertion_transition(entries, quantum_start_events, property)?;
+    // Both logs are segmented, so they are compared through the boundary's
+    // prefix digest instead of entry by entry. Every entry on both sides must
+    // carry its valid content hash, which makes equal digests equal logs.
+    let mut leaf_prefix = ObservationPrefixDigest::new(terminal_events);
+    leaf.try_for_each_entry(result.log_segments(), |entry| {
+        if entry.has_valid_content_hash() {
+            leaf_prefix.update(entry);
+            Ok(())
+        } else {
+            Err(crate::CrucibleMeasurementError::EvidenceBindingMismatch {
+                binding: "execution-event-log",
+            })
+        }
+    })
+    .ok()?;
+    let leaf_digest = leaf_prefix.finish()?;
+
+    // One pass over the execution's semantic prefix yields its digest and the
+    // violation transition; the shutdown drain after the stop is skipped.
+    let mut execution_prefix = ObservationPrefixDigest::new(terminal_events);
+    let mut scan = AssertionTransitionScan::new(property, quantum_start_events);
+    let mut visited = 0_u64;
+    execution
+        .try_for_each_event_log_entry(|entry| {
+            if visited < terminal_events {
+                execution_prefix.update(entry);
+                scan.observe(entry);
+            }
+            visited += 1;
+            Ok::<(), Infallible>(())
+        })
+        .ok()?;
+    let prefix_digest = execution_prefix.finish()?;
+    if prefix_digest != leaf_digest {
+        return None;
+    }
+    let transition = scan.finish()?;
 
     let boundary = FindingAssertionFailureBoundary::new(
         trace,
-        crate::crucible_measurement::observation_event_prefix_digest(entries),
+        prefix_digest,
         terminal_events,
         quantum_start_events,
         transition.sequence(),
@@ -630,6 +682,7 @@ mod tests {
     use crucible_store::content_store::{ContentId, ObjectKind};
 
     use super::*;
+    use crate::crucible_measurement::verified_assertion_transition;
     use crucible_campaign::{
         AttemptAdmissionId, CampaignHash, CampaignPolicyId, CampaignRepository, CampaignSnapshotId,
     };

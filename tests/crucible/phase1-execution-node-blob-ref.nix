@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase1.executionNodeBlobRef",
   taskIds ? ["T-EXEC-10"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
@@ -128,87 +127,40 @@ in
   if failures != []
   then throw "crucible phase1 execution node-blob-ref check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-execution-node-blob-ref";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sqlite
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-execution-node-blob-ref";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --lib \
               node_blob \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --features test-double \
               --test gate_content_address \
               gate_content_address_excludes_materialization_cache_from_identity \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --features test-double \
               --test gate_replay_oracle \
               gate_replay_oracle_fixed_checkpoint_corpus_matches_thin_reduction \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-node-blob-ref-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-host \
               --lib \
               baked_checkpoint_rejects_unrelated_configuration \

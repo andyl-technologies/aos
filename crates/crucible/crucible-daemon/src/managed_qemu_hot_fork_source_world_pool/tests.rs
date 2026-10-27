@@ -41,8 +41,12 @@ impl HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld> for Reapin
 
 #[path = "tests/admission.rs"]
 mod admission;
+#[path = "tests/ancestors.rs"]
+mod ancestors;
 #[path = "tests/leases.rs"]
 mod leases;
+#[path = "tests/published_roots.rs"]
+mod published_roots;
 
 #[test]
 fn managed_demotion_preserves_the_concrete_source_failure_diagnostic() {

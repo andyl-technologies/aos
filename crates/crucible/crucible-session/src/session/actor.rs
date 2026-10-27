@@ -195,6 +195,9 @@ pub enum SessionError {
     /// The runtime reported success for a different debug target than requested.
     #[error("debug runtime reposition evidence mismatch: {0}")]
     DebugRuntimeRepositionMismatch(Box<DebugRuntimeRepositionEvidenceMismatch>),
+    /// A sealed session event-log segment could not be stored or read back.
+    #[error(transparent)]
+    EventLogStore(#[from] SessionEventLogStoreError),
 }
 
 /// Expected and actual identities from a mismatched runtime replacement report.
@@ -380,8 +383,7 @@ pub struct SessionActor<L> {
     pub(super) state_transitions: SessionStateTransitionBus,
     pub(super) last_published_state: EngineState,
     pub(super) fork_loop_factory: Option<SessionForkLoopFactory<L>>,
-    pub(super) condition_event_log: Vec<SchedulerEventLogEntry>,
-    pub(super) debug_event_coordinates: BTreeMap<u64, Configuration>,
+    pub(super) debug_history: SessionDebugHistory,
     pub(super) debug_history_floor: u64,
     pub(super) debug_index_configuration: Configuration,
     pub(super) commands_applied: u64,
@@ -395,8 +397,15 @@ pub struct SessionActor<L> {
 
 impl<L> SessionActor<L> {
     /// Creates a session actor from an engine and command mailbox.
+    ///
+    /// The actor seals its event-log views into the quantum loop's event-log
+    /// segment store when the loop has one, so they share the scheduler's
+    /// segments; otherwise it seals into process memory.
     #[must_use]
-    pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self {
+    pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self
+    where
+        L: QuantumLoop,
+    {
         Self::new_with_optional_fork_loop_factory(engine, mailbox, None)
     }
 
@@ -412,6 +421,7 @@ impl<L> SessionActor<L> {
         factory: F,
     ) -> Self
     where
+        L: QuantumLoop,
         F: Fn(SessionForkRequest) -> L + Send + Sync + 'static,
     {
         Self::new_with_optional_fork_loop_factory(engine, mailbox, Some(Arc::new(factory)))
@@ -421,22 +431,27 @@ impl<L> SessionActor<L> {
         engine: Engine<L>,
         mailbox: mpsc::Receiver<SessionCommand>,
         fork_loop_factory: Option<SessionForkLoopFactory<L>>,
-    ) -> Self {
+    ) -> Self
+    where
+        L: QuantumLoop,
+    {
         let last_published_state = engine.state().clone();
         let debug_history_floor = u64::try_from(engine.event_log_len()).unwrap_or(u64::MAX);
         let debug_index_configuration = engine.snapshot().configuration;
         let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
+        let segment_store = engine
+            .sealed_event_log_store()
+            .unwrap_or_else(|| Arc::new(crucible_engine::MemoryDagStore::new()));
         Self {
             engine,
             mailbox,
             live,
-            event_log: SessionEventLog::new(),
+            event_log: SessionEventLog::with_segment_store(Arc::clone(&segment_store)),
             reproduction_log: SessionReproductionLog::new(),
             state_transitions: SessionStateTransitionBus::new(),
             last_published_state,
             fork_loop_factory,
-            condition_event_log: Vec::new(),
-            debug_event_coordinates: BTreeMap::new(),
+            debug_history: SessionDebugHistory::new(segment_store),
             debug_history_floor,
             debug_index_configuration,
             commands_applied: 0,
@@ -648,47 +663,35 @@ impl<L> SessionActor<L> {
         preserve_debug_history: bool,
     ) -> Result<(), SessionError> {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
-        self.event_log.truncate_to_len(base_len);
+        self.event_log.truncate_to_len(base_len)?;
         let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
         if !preserve_debug_history && !entries.is_empty() {
-            self.condition_event_log
-                .retain(|entry| entry.sequence() < base_sequence);
-            self.debug_event_coordinates
-                .retain(|sequence, _| *sequence < base_sequence);
+            self.debug_history.truncate(base_sequence)?;
         }
-        self.event_log.append_entries(entries);
+        self.event_log.append_entries(entries)?;
         let current = self.engine.snapshot().configuration;
-        if preserve_debug_history {
-            self.debug_index_configuration = current;
-            return Ok(());
-        }
-        self.condition_event_log.extend(entries.iter().cloned());
-        let mut coordinate = self.debug_index_configuration.clone();
-        for entry in entries {
-            if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
-                && current.schedule.decisions().get(coordinate.schedule.len()) == Some(decision)
-            {
-                coordinate = Configuration {
-                    def: current.def.clone(),
-                    schedule: current
-                        .schedule
-                        .prefix(coordinate.schedule.len().saturating_add(1))
-                        .map_err(EngineError::SchedulePrefix)?,
-                };
-            }
-            if matches!(
-                entry.payload(),
-                SchedulerEventLogPayload::EvaluationBoundary(
-                    SchedulerEvaluationBoundaryKind::Quantum
-                )
-            ) {
-                coordinate = current.clone();
-            }
-            self.debug_event_coordinates
-                .insert(entry.sequence(), coordinate.clone());
+        if !preserve_debug_history {
+            self.debug_history
+                .append(entries, &self.debug_index_configuration, &current)?;
         }
         self.debug_index_configuration = current;
         Ok(())
+    }
+
+    /// Evaluates armed breakpoints over the debug history after a quantum.
+    fn evaluate_breakpoints(&mut self, emitted_event_log_entries: usize) -> Result<(), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        if !self.engine.breakpoints_armed() {
+            self.debug_history.release_condition_prefix();
+            return Ok(());
+        }
+        let patterns = self.engine.breakpoint_console_patterns();
+        let empty_base = usize_to_u64(self.engine.event_log_len());
+        let history = self.debug_history.condition_prefix(&patterns, empty_base)?;
+        self.engine
+            .evaluate_breakpoints(history, emitted_event_log_entries)
     }
 
     pub(super) fn debug_current_event_limit(&self, current: &Configuration) -> Option<u64> {
@@ -698,17 +701,35 @@ impl<L> SessionActor<L> {
             .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
-    fn condition_event_log_prefix(&self) -> Vec<SchedulerEventLogEntry> {
-        self.condition_event_log
-            .iter()
-            .take(self.engine.event_log_len())
-            .cloned()
-            .collect()
+    /// Collects the history through the engine's current event-log position.
+    ///
+    /// Only debugger commands whose engine API takes the complete log pay for
+    /// this; every other command receives an empty slice.
+    fn condition_event_log_prefix(
+        &self,
+        command: &SessionCommand,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SessionError> {
+        if !command_reads_event_log(command) {
+            return Ok(Vec::new());
+        }
+        self.debug_history
+            .entries_through(usize_to_u64(self.engine.event_log_len()))
     }
 
     fn sync_reproduction_log(&self) {
         self.reproduction_log
             .sync_from_boundary_log(self.engine.boundary_control_log());
+    }
+}
+
+/// Returns whether applying `command` reads the complete event-log history.
+fn command_reads_event_log(command: &SessionCommand) -> bool {
+    match command {
+        SessionCommand::Acknowledge { command, .. } => command_reads_event_log(command),
+        SessionCommand::DebugReverseStep { .. }
+        | SessionCommand::DebugReverseContinue { .. }
+        | SessionCommand::DebugForkNonCanonical { .. } => true,
+        _ => false,
     }
 }
 
@@ -878,8 +899,7 @@ where
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
                 self.append_event_log_entries(&entries)?;
-                self.engine
-                    .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                self.evaluate_breakpoints(emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
@@ -945,8 +965,7 @@ where
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
                 self.append_event_log_entries(&entries)?;
-                self.engine
-                    .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
+                self.evaluate_breakpoints(emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
                 self.append_event_log_entries(&breakpoint_entries)?;
@@ -1112,17 +1131,24 @@ where
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
-        let condition_event_log = self.condition_event_log_prefix();
+        let condition_event_log = match self.condition_event_log_prefix(&command) {
+            Ok(entries) => entries,
+            Err(error) => {
+                command.complete_error(error.clone());
+                complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
+                return Err(error);
+            }
+        };
         let mut command = command;
         match &mut command {
             SessionCommand::DebugGoto { request, .. } => {
                 request.current = self.engine.snapshot().configuration;
-                request.event_coordinates = self.debug_event_coordinates.clone();
+                request.event_coordinates = self.debug_history.event_coordinates();
             }
             SessionCommand::DebugReverseStep { request, .. } => {
                 request.current = self.engine.snapshot().configuration;
                 request.event_log.clone_from(&condition_event_log);
-                request.event_coordinates = self.debug_event_coordinates.clone();
+                request.event_coordinates = self.debug_history.event_coordinates();
                 if let Some(sequence) = self.debug_current_event_limit(&request.current) {
                     request.current_event_sequence = Some(sequence);
                 }
@@ -1130,7 +1156,7 @@ where
             SessionCommand::DebugReverseContinue { request, .. } => {
                 request.current = self.engine.snapshot().configuration;
                 request.event_log.clone_from(&condition_event_log);
-                request.event_coordinates = self.debug_event_coordinates.clone();
+                request.event_coordinates = self.debug_history.event_coordinates();
                 if let Some(sequence) = self.debug_current_event_limit(&request.current) {
                     request.current_event_sequence = Some(sequence);
                 }

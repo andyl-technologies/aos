@@ -5,8 +5,7 @@
   taskIds ? [],
   openTaskIds ? ["T-PLUG-24"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/round_robin.rs;
@@ -180,106 +179,30 @@ in
   if failures != []
   then throw "crucible phase2 plugin round-robin check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-round-robin";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-round-robin";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            target_dir="$TMPDIR/crucible-plugin-round-robin-target"
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               round_robin::tests::round_robin_run_uses_fixed_quantum_and_ascending_rotation \
-              round_robin::tests::round_robin_run_uses_fixed_quantum_and_ascending_rotation
-            run_exact_test \
               round_robin::tests::round_robin_rejects_wrong_vcpu_and_quantum_overrun \
-              round_robin::tests::round_robin_rejects_wrong_vcpu_and_quantum_overrun
-            run_exact_test \
               round_robin::tests::halted_current_vcpu_yields_to_next_running_vcpu_without_node_idle \
-              round_robin::tests::halted_current_vcpu_yields_to_next_running_vcpu_without_node_idle
-            run_exact_test \
               round_robin::tests::vcpu_halt_tracker_requires_every_vcpu_before_node_idle \
-              round_robin::tests::vcpu_halt_tracker_requires_every_vcpu_before_node_idle
-            run_exact_test \
               round_robin::tests::all_halted_idle_wake_uses_minimum_per_vcpu_deadline \
-              round_robin::tests::all_halted_idle_wake_uses_minimum_per_vcpu_deadline
-            run_exact_test \
-              round_robin::tests::all_halted_idle_wake_validates_complete_deadline_reports \
               round_robin::tests::all_halted_idle_wake_validates_complete_deadline_reports
           '';
         }

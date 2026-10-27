@@ -6,11 +6,20 @@
 //! may build a tentative retention plan while visiting records, but must
 //! discard partial output if the method returns an error and must revalidate
 //! the snapshot before applying any later physical-store mutation.
+//!
+//! A caller that must act on pins between reads instead pages the same
+//! inventory with [`CampaignRepository::pin_retention_page_at`]. Each page
+//! returns at most a fixed number of projection entries and an opaque cursor
+//! bound to the immutable snapshot, so work between pages never holds the
+//! whole projection in memory.
 
 use super::*;
-use crate::{PinRetention, ScenarioArtifactId};
+use crate::{CampaignRoots, PinRetention, ScenarioArtifactId};
 
 const RETENTION_SCAN_PAGE_ITEMS: usize = 10_000;
+
+/// Maximum projection entries one [`CampaignPinRetentionPage`] may scan.
+pub const MAX_PIN_RETENTION_PAGE_ENTRIES: usize = RETENTION_SCAN_PAGE_ITEMS;
 
 /// One authenticated live semantic pin and its thin replay roots.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +112,48 @@ impl CampaignPinRetentionSummary {
     }
 }
 
+/// Exclusive resume position in one snapshot's pin-retention projection.
+///
+/// The cursor is meaningful only for the immutable snapshot that produced it;
+/// [`CampaignRepository::pin_retention_page_at`] rejects it for any other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampaignPinRetentionCursor {
+    snapshot: CampaignSnapshotId,
+    after: CampaignHash,
+}
+
+impl CampaignPinRetentionCursor {
+    /// Returns the immutable snapshot whose projection this cursor resumes.
+    #[must_use]
+    pub const fn snapshot(self) -> CampaignSnapshotId {
+        self.snapshot
+    }
+}
+
+/// One bounded page of authenticated live pins from one exact snapshot.
+///
+/// Tombstones advance the cursor but are not returned, so a page may hold
+/// fewer records than the entries it scanned, including none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignPinRetentionPage {
+    records: Vec<CampaignPinRetentionRecord>,
+    next: Option<CampaignPinRetentionCursor>,
+}
+
+impl CampaignPinRetentionPage {
+    /// Returns the live pins on this page in projection-key order.
+    #[must_use]
+    pub fn records(&self) -> &[CampaignPinRetentionRecord] {
+        &self.records
+    }
+
+    /// Returns the cursor for the following page, or `None` after the last.
+    #[must_use]
+    pub const fn next(&self) -> Option<CampaignPinRetentionCursor> {
+        self.next
+    }
+}
+
 impl CampaignRepository {
     /// Streams the current authenticated semantic pin-retention inventory.
     ///
@@ -154,10 +205,7 @@ impl CampaignRepository {
         snapshot: CampaignSnapshotId,
         visitor: &mut dyn FnMut(CampaignPinRetentionRecord),
     ) -> Result<CampaignPinRetentionSummary, CampaignRepositoryError> {
-        self.validate_complete_head(snapshot.content_id())?;
-        let loaded = self.read_snapshot(snapshot.content_id())?;
-        let roots = loaded.snapshot.roots();
-        let lineage = self.read_retention_lineage(loaded.snapshot.lineage().content_id())?;
+        let (roots, lineage) = self.open_pin_retention_snapshot(snapshot)?;
         let mut after = None;
         let mut entries = 0_u64;
         let mut thin_pins = 0_u64;
@@ -170,47 +218,14 @@ impl CampaignRepository {
                 .scan(roots.pins, after, RETENTION_SCAN_PAGE_ITEMS)?;
             for (key, fact_content) in page.entries() {
                 entries = checked_count(entries, "pin-retention-entry-count-overflow")?;
-                let fact_id = CampaignFactId::from_content_id(*fact_content)?;
-                let request = match self.read_fact(*fact_content)? {
-                    CampaignFact::PinCommandAccepted(request) => request,
-                    CampaignFact::SavepointCaptureRequested(capture) => PinRequest {
-                        command: capture.command,
-                        expected_snapshot: capture.expected_snapshot,
-                        change: capture.pin_change()?,
-                    },
-                    _ => return Err(integrity("pin-retention-value-is-not-retention-command")),
-                };
-                if *key != pin_configuration_key(request.change.configuration()) {
-                    return Err(integrity("pin-retention-key-mismatch"));
-                }
-
-                let Some(retention) = request.change.retention() else {
+                let Some(record) =
+                    self.read_pin_retention_entry(roots.graph, &lineage, *key, *fact_content)?
+                else {
                     tombstones =
                         checked_count(tombstones, "pin-retention-tombstone-count-overflow")?;
                     continue;
                 };
-                let configuration = request.change.configuration();
-                let configuration_content = self
-                    .merkle
-                    .get(
-                        roots.graph,
-                        map_key_hash("graph.configuration", configuration.as_hash()),
-                    )?
-                    .ok_or_else(|| integrity("pin-retention-configuration-not-in-graph"))?;
-                let artifact = self.read_retained_configuration(configuration_content, &lineage)?;
-                if artifact.configuration() != configuration {
-                    return Err(integrity("pin-retention-configuration-index-mismatch"));
-                }
-                let configuration_artifact =
-                    ConfigurationArtifactId::from_content_id(configuration_content)?;
-                let record = CampaignPinRetentionRecord {
-                    fact: fact_id,
-                    request,
-                    retention,
-                    configuration_artifact,
-                    scenario_artifact: artifact.scenario_artifact(),
-                };
-                match retention {
+                match record.retention {
                     PinRetention::Thin => {
                         thin_pins = checked_count(thin_pins, "pin-retention-thin-count-overflow")?;
                     }
@@ -235,6 +250,122 @@ impl CampaignRepository {
             exact_pins,
             tombstones,
         })
+    }
+
+    /// Reads one bounded page of semantic pin-retention roots from one snapshot.
+    ///
+    /// The page scans at most `maximum_entries` projection entries after
+    /// `cursor`, which must be absent for the first page or come from an
+    /// earlier page of the same `snapshot`. Concatenated pages contain exactly
+    /// the live records [`Self::visit_pin_retention_roots_at`] emits, in the
+    /// same order. Each call reauthenticates the snapshot through the cached
+    /// complete-head checkpoint, so a caller may perform unrelated repository
+    /// work between pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError::InvalidRequest`] for a zero or
+    /// oversized page or a cursor from another snapshot, and otherwise the
+    /// same errors as [`Self::visit_pin_retention_roots_at`].
+    pub fn pin_retention_page_at(
+        &self,
+        snapshot: CampaignSnapshotId,
+        cursor: Option<CampaignPinRetentionCursor>,
+        maximum_entries: usize,
+    ) -> Result<CampaignPinRetentionPage, CampaignRepositoryError> {
+        if maximum_entries == 0 || maximum_entries > MAX_PIN_RETENTION_PAGE_ENTRIES {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "pin-retention-page-size",
+            });
+        }
+        if cursor.is_some_and(|cursor| cursor.snapshot != snapshot) {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "pin-retention-cursor-snapshot-mismatch",
+            });
+        }
+
+        let (roots, lineage) = self.open_pin_retention_snapshot(snapshot)?;
+        let page = self.merkle.scan(
+            roots.pins,
+            cursor.map(|cursor| cursor.after),
+            maximum_entries,
+        )?;
+        let mut records = Vec::new();
+        for (key, fact_content) in page.entries() {
+            if let Some(record) =
+                self.read_pin_retention_entry(roots.graph, &lineage, *key, *fact_content)?
+            {
+                records.push(record);
+            }
+        }
+
+        Ok(CampaignPinRetentionPage {
+            records,
+            next: page
+                .next_after()
+                .map(|after| CampaignPinRetentionCursor { snapshot, after }),
+        })
+    }
+
+    /// Authenticates one complete snapshot and returns its roots and lineage.
+    fn open_pin_retention_snapshot(
+        &self,
+        snapshot: CampaignSnapshotId,
+    ) -> Result<(CampaignRoots, CampaignLineage), CampaignRepositoryError> {
+        self.validate_complete_head(snapshot.content_id())?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let roots = loaded.snapshot.roots();
+        let lineage = self.read_retention_lineage(loaded.snapshot.lineage().content_id())?;
+        Ok((roots, lineage))
+    }
+
+    /// Authenticates one projection entry; `None` is an unpin tombstone.
+    fn read_pin_retention_entry(
+        &self,
+        graph: ContentId,
+        lineage: &CampaignLineage,
+        key: CampaignHash,
+        fact_content: ContentId,
+    ) -> Result<Option<CampaignPinRetentionRecord>, CampaignRepositoryError> {
+        let fact_id = CampaignFactId::from_content_id(fact_content)?;
+        let request = match self.read_fact(fact_content)? {
+            CampaignFact::PinCommandAccepted(request) => request,
+            CampaignFact::SavepointCaptureRequested(capture) => PinRequest {
+                command: capture.command,
+                expected_snapshot: capture.expected_snapshot,
+                change: capture.pin_change()?,
+            },
+            _ => return Err(integrity("pin-retention-value-is-not-retention-command")),
+        };
+        if key != pin_configuration_key(request.change.configuration()) {
+            return Err(integrity("pin-retention-key-mismatch"));
+        }
+
+        let Some(retention) = request.change.retention() else {
+            return Ok(None);
+        };
+        let configuration = request.change.configuration();
+        let configuration_content = self
+            .merkle
+            .get(
+                graph,
+                map_key_hash("graph.configuration", configuration.as_hash()),
+            )?
+            .ok_or_else(|| integrity("pin-retention-configuration-not-in-graph"))?;
+        let artifact = self.read_retained_configuration(configuration_content, lineage)?;
+        if artifact.configuration() != configuration {
+            return Err(integrity("pin-retention-configuration-index-mismatch"));
+        }
+
+        Ok(Some(CampaignPinRetentionRecord {
+            fact: fact_id,
+            request,
+            retention,
+            configuration_artifact: ConfigurationArtifactId::from_content_id(
+                configuration_content,
+            )?,
+            scenario_artifact: artifact.scenario_artifact(),
+        }))
     }
 
     fn read_retention_lineage(
@@ -284,3 +415,6 @@ impl CampaignRepository {
 fn checked_count(current: u64, reason: &'static str) -> Result<u64, CampaignRepositoryError> {
     current.checked_add(1).ok_or_else(|| integrity(reason))
 }
+
+#[cfg(test)]
+mod tests;

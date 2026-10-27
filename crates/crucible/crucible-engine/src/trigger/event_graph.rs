@@ -1074,8 +1074,20 @@ where
         self.inner.timer_fires()
     }
 
-    fn observable_events(&self) -> &[ObservableEvent] {
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
         self.inner.observable_events()
+    }
+
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        self.inner.observable_events_at_point()
+    }
+
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        self.inner.coverage_seen_before(node, address)
+    }
+
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool {
+        self.inner.console_match(node, pattern)
     }
 
     fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
@@ -1707,7 +1719,7 @@ pub(super) fn validate_condition_regex(
     event: &Event,
     regex: &RegexProgram,
 ) -> Result<(), EventGraphError> {
-    regex::bytes::Regex::new(&regex.pattern)
+    crate::ConsoleAutomaton::compile(&regex.pattern)
         .map(|_| ())
         .map_err(|source| EventGraphError::InvalidRegex {
             event: event.id.clone(),

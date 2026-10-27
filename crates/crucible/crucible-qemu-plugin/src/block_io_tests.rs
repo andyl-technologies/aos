@@ -10,6 +10,10 @@ mod resource_limits;
 #[path = "block_io_tests/inbound_head.rs"]
 mod inbound_head;
 
+#[path = "block_io_tests/request_stamp.rs"]
+mod request_stamp;
+use request_stamp::stamp;
+
 #[test]
 fn transport_continuation_round_trips_allocator_and_exact_history() {
     let source = PluginBlockIo::new(2, 8, 9);
@@ -114,11 +118,18 @@ fn block_submit_encodes_request_stamps_icount_and_freezes_time() {
         Err(error) => panic!("write request should build: {error}"),
     };
 
-    let submit =
-        match handle_block_submit_callback(&block, &mut freeze, &slot, &mut ring, 77, &request) {
-            Ok(submit) => submit,
-            Err(error) => panic!("block submit should enqueue: {error}"),
-        };
+    let submit = match handle_block_submit_callback(
+        &block,
+        &mut freeze,
+        &slot,
+        &mut ring,
+        77,
+        &request,
+        None,
+    ) {
+        Ok(submit) => submit,
+        Err(error) => panic!("block submit should enqueue: {error}"),
+    };
 
     assert_eq!(submit.ring_index(), 8);
     assert_eq!(submit.submit_icount(), 77);
@@ -132,11 +143,12 @@ fn block_submit_encodes_request_stamps_icount_and_freezes_time() {
     assert_eq!(
         ring.entries[0].payload(),
         Ok(&[
-            1, 4, 0, 0, // type/version/reserved
+            1, 5, 0, 0, // type/version/reserved
             0, 0, 0, 0, 0, 0, 0, 0, // epoch
             0, 0, 0, 0, // request_id
             0, 0x10, 0, 0, 0, 0, 0, 0, // offset
             4, 0, 0, 0, // count
+            0, 0, 0, 0, 0, 0, 0, 0, // oldest_live_epoch
             b'd', b'a', b't', b'a',
         ][..])
     );
@@ -157,7 +169,8 @@ fn block_submit_wrong_ring_does_not_freeze_or_enqueue() {
             &slot,
             &mut ring,
             77,
-            &BlockRequest::read(0, 512)
+            &BlockRequest::read(0, 512),
+            None,
         ),
         Err(BlockIoError::WrongOutboundRing {
             expected_src_slot: 2,
@@ -189,7 +202,7 @@ fn block_submit_rejects_oversized_write_before_copying_payload() {
     };
 
     assert_eq!(
-        block.submit_request(&mut freeze, &slot, &mut ring, 77, &request),
+        block.submit_request(&mut freeze, &slot, &mut ring, 77, &request, None),
         Err(BlockIoError::Wire {
             source: BlockWireError::FramePayload {
                 source: FrameEntryError::PayloadLengthExceedsCapacity {
@@ -221,6 +234,7 @@ fn block_submit_full_ring_releases_freeze_token_loudly() {
         &mut ring,
         77,
         &BlockRequest::read(0, 512),
+        None,
     ) {
         Ok(_) => panic!("full block ring should fail"),
         Err(error) => error,
@@ -720,8 +734,7 @@ fn block_response_decode_rejects_nonzero_reserved_and_trailing_payload() {
 
 #[test]
 fn block_request_decode_rejects_nonzero_reserved_and_trailing_payload() {
-    let Ok(mut reserved) = BlockRequest::read(4096, 512).encode(BlockRequestIdentity::new(0, 7))
-    else {
+    let Ok(mut reserved) = BlockRequest::read(4096, 512).encode(stamp(0, 7, 0)) else {
         panic!("read request should encode");
     };
     reserved[2] = 1;
@@ -730,8 +743,7 @@ fn block_request_decode_rejects_nonzero_reserved_and_trailing_payload() {
         Err(BlockWireError::NonZeroReserved { reserved: 1 })
     );
 
-    let Ok(mut trailing) = BlockRequest::read(4096, 512).encode(BlockRequestIdentity::new(0, 7))
-    else {
+    let Ok(mut trailing) = BlockRequest::read(4096, 512).encode(stamp(0, 7, 0)) else {
         panic!("read request should encode");
     };
     trailing.push(b'!');
@@ -923,6 +935,7 @@ fn submit_read(
         outbound,
         submit_icount,
         &BlockRequest::read(0, 4),
+        None,
     ) {
         Ok(submit) => submit,
         Err(error) => panic!("read submit should succeed: {error}"),

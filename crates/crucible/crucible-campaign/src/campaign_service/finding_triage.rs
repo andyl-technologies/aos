@@ -20,7 +20,7 @@ use super::{
 };
 
 const MAX_STORAGE_DESCRIPTION_BYTES: usize = 16 * 1024;
-const MAX_STORAGE_OBJECT_ORDINAL: u32 = 3;
+const MAX_STORAGE_OBJECT_ORDINAL: u32 = crate::finding_triage_evidence::MAX_PAYLOAD_CHUNKS as u32;
 const MAX_STORAGE_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Closed replay-evidence role addressable through segmented storage reads.

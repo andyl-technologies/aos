@@ -33,7 +33,7 @@ impl CampaignRepository {
         let opportunity = self.read_opportunity(request.opportunity().content_id())?;
         let domain = self.read_choice_domain(request.domain().content_id())?;
         request.validate_resolved(&parent, &opportunity, &domain)?;
-        let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        let mut remaining = MAX_BRANCH_GENERATOR_VALIDATION_OBJECTS;
         self.validate_candidate_source_generator_with_budget(
             request.source(),
             &domain,
@@ -92,7 +92,7 @@ impl CampaignRepository {
         root: CandidateGeneratorSpecId,
         domain: &ChoiceDomain,
     ) -> Result<(), CampaignRepositoryError> {
-        let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        let mut remaining = MAX_BRANCH_GENERATOR_VALIDATION_OBJECTS;
         self.validate_generator_for_domain_with_budget(root, domain, &mut remaining)
     }
 

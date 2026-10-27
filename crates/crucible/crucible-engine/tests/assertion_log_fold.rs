@@ -6,13 +6,13 @@
 
 use crucible_engine::{
     AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, AssertionRunVerdict,
-    BlackBoxHostOracle, ConditionLeaf, FramePredicate, GuestAssertionDetail, GuestAssertionKind,
+    BlackBoxHostOracle, FramePredicate, GuestAssertionDetail, GuestAssertionKind,
     GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOracle, HostAssertionOutcome,
-    HostAssertionOutcomeKind, HostAssertionPredicate, Icount, NodeId, ObservableEvent,
-    ObservableEventPayload, ObservedState, OfflineAssertionChecker, Predicate, Properties,
-    Property, ReachabilityExpectation, ReachableDisposition, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry, VirtualTime,
-    WhiteBoxPolicy, World,
+    HostAssertionOutcomeKind, HostAssertionPredicate, Icount, NamedLeaf, NamedPredicateError,
+    NodeId, ObservableEvent, ObservableEventPayload, ObservedBatch, OfflineAssertionChecker,
+    Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
+    RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    SchedulerEventLogEntry, VirtualTime, WhiteBoxPolicy, World,
 };
 
 fn assertion_id(name: &str) -> AssertionId {
@@ -185,33 +185,62 @@ fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a Hos
 #[derive(Clone, Debug)]
 struct AssertionEvaluatedOracle;
 
+/// Latest folded time and the latest time a matching evaluation was observed.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct EvaluationSeen {
+    latest: u64,
+    matched_at: Option<u64>,
+}
+
 impl HostAssertionPredicate for AssertionEvaluatedOracle {
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                assert!(nodes.is_empty());
-                name == "saw-assertion-evaluated"
-                    && observed.observable_events().iter().any(|event| {
-                        event.at() == observed.at()
-                            && matches!(
-                                event.payload(),
-                                ObservableEventPayload::AssertionEvaluated {
-                                    name,
-                                    flavor: AssertionQuantifierKind::Sometimes,
-                                    condition: true,
-                                    message,
-                                    details,
-                                } if name.name == "inner-evaluated"
-                                    && message == "inner assertion evaluated"
-                                    && details.first().is_some_and(|detail| {
-                                        detail.key == "case" && detail.value == "event-log-fold"
-                                    })
-                            )
-                    })
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        }
+    type State = EvaluationSeen;
+
+    fn initial(&self, leaf: NamedLeaf<'_>) -> EvaluationSeen {
+        assert!(leaf.nodes().is_empty());
+        EvaluationSeen::default()
     }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        seen: &EvaluationSeen,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<EvaluationSeen, NamedPredicateError> {
+        let latest = batch.at().ticks;
+        let matched = batch
+            .observable_events()
+            .iter()
+            .any(|event| event.at() == batch.at() && is_inner_evaluation(event.payload()));
+        Ok(EvaluationSeen {
+            latest,
+            matched_at: if matched {
+                Some(latest)
+            } else {
+                seen.matched_at
+            },
+        })
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, seen: &EvaluationSeen) -> bool {
+        leaf.name() == "saw-assertion-evaluated" && seen.matched_at == Some(seen.latest)
+    }
+}
+
+fn is_inner_evaluation(payload: &ObservableEventPayload) -> bool {
+    matches!(
+        payload,
+        ObservableEventPayload::AssertionEvaluated {
+            name,
+            flavor: AssertionQuantifierKind::Sometimes,
+            condition: true,
+            message,
+            details,
+        } if name.name == "inner-evaluated"
+            && message == "inner assertion evaluated"
+            && details.first().is_some_and(|detail| {
+                detail.key == "case" && detail.value == "event-log-fold"
+            })
+    )
 }
 
 #[test]
@@ -459,6 +488,7 @@ fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
         include_str!("../src/trigger/event_graph.rs"),
         include_str!("../src/trigger/evidence.rs"),
         include_str!("../src/trigger/observability.rs"),
+        include_str!("../src/trigger/streaming_check.rs"),
     );
 
     for required in [
@@ -473,7 +503,7 @@ fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
         "finalize_prefix",
         "ObservableEventPayload::AssertionStateChanged",
         "ObservableEventPayload::GuestAssertionMarker",
-        "condition_prefix_from_recorded_log",
+        "AssertionLogCheck",
     ] {
         assert!(
             trigger.contains(required),

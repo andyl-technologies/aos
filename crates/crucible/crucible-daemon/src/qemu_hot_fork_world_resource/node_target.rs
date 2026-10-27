@@ -84,6 +84,13 @@ where
         }
         state.released.insert(self.identity.clone());
         self.released = true;
+        drop(state);
+
+        // Finish follows exact child reap, so no process can still poll this
+        // node's cancellation eventfd. Every other exit keeps it signaled.
+        if let Some(contract) = self.process_contract.take() {
+            contract.retire_concurrent_node_cancellation_after_reap();
+        }
         Ok(())
     }
 }

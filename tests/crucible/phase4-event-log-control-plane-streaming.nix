@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.eventLogControlPlaneStreaming",
   taskIds ? ["T-OBS-11"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionGate = import ./_rust-module-source.nix {
@@ -80,12 +79,18 @@
         needle = ".take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)";
       }
       {
-        label = "retained replay seeks by cursor";
-        needle = "entries.partition_point(|entry| entry.sequence() < cursor.next_sequence)";
+        label = "retained replay reads a bounded chunk at the cursor";
+        needle = ".chunk_from(cursor.next_sequence, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)";
       }
       {
+        label = "retained replay seeks the sealed segment holding the cursor";
+        needle = "let index = self.sealed.partition_point(|segment| segment.end() <= from);";
+      }
+      {
+        # rustfmt splits the discarded send across lines; matching the whole
+        # statement keeps `let _ =` in the asserted shape.
         label = "broadcast send is non-fatal";
-        needle = "let _ = self.inner.tail.send(frame);";
+        needle = "let _ = self\n                .inner\n                .tail\n                .send(SessionEventLogFrame::new(entry.clone(), generation));";
       }
       {
         label = "actor exposes hub";
@@ -97,7 +102,7 @@
       }
       {
         label = "running quantum publishes entries";
-        needle = "self.event_log.append_entries(entries);";
+        needle = "self.event_log.append_entries(entries)?;";
       }
       {
         label = "actor yields after quantum";
@@ -250,69 +255,26 @@ in
   if failures != []
   then throw "crucible phase4 event-log control-plane streaming check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-event-log-control-plane-streaming";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-event-log-control-plane-streaming";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-event-log-control-plane-streaming-target" \
+            crucible-cargo test \
               -p crucible-session \
               --test gate_control_responsive \
               gate_control_plane_streams_event_log_entries_from_cursor_without_mutation \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-event-log-control-plane-streaming-target" \
+            crucible-cargo test \
               -p crucible-control-server \
               --test gate_control_responsive \
               gate_control_plane_event_log_stream_api_subscribes_without_mutation \

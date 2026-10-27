@@ -7,10 +7,19 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  scheduler = builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop.rs;
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  # The campaign-mode guest runs the same prebuilt test executable as the
+  # host gate; only that executable enters the guest closure.
+  vmRuntime = testGate.mkCrucibleVmRuntime {
+    src = source;
+    subset = testGate.mkCrucibleTestSubset {
+      pname = "crucible-qemu-host-parallel-tests";
+      requests = ["crucible-engine"];
+      targets = ["lib:crucible_engine"];
+    };
+  };
+  scheduler = builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop/host_concurrent.rs;
   lifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
   lifecycleConfig = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/config.rs;
   nodeSet = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_set.rs;
@@ -19,10 +28,16 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
 
   failures =
-    failuresFor "crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop/host_concurrent.rs" scheduler [
       {
-        label = "speculative scheduler preparation";
-        needle = ".prepare_concurrent_quantum(request)?";
+        label = "dispatch-contract-bound speculative scheduler preparation";
+        needle = builtins.concatStringsSep "\n" [
+          ".prepare_host_concurrent_quantum_for_contract("
+          "                request.clone(),"
+          "                maximum_runs,"
+          "                dispatch_contract,"
+          "            )?"
+        ];
       }
       {
         label = "backend completion precedes scheduler commit";
@@ -78,31 +93,21 @@
     grep -Fxq PASS ${productionPluginFlight}/raw-result
     grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
-    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
   '';
   verifyScript = ''
     set -eu
     ${modeDependencyAuthentication}
     live=${lib.escapeShellArg liveLog}
-    export CARGO_HOME="$TMPDIR/cargo"
-    mkdir -p "$CARGO_HOME" .cargo
-    sed "s|@vendor@|${cargoDeps}|g" \
-      "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
     for exact_test in \
       scheduler::tests::concurrent::concurrent_prepare_is_private_until_canonical_commit \
       scheduler::tests::concurrent::concurrent_backend_failure_leaves_scheduler_uncommitted \
       scheduler::tests::concurrent::concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons
     do
-      listing=$(cargo test --frozen --offline \
-        --manifest-path crates/Cargo.toml \
-        --target-dir "$TMPDIR/target" \
-        -p crucible-engine --lib "$exact_test" -- --list)
+      listing=$(crucible-cargo test -p crucible-engine --lib "$exact_test" -- --list)
       test "$(printf '%s\n' "$listing" | grep -Fxc "$exact_test: test")" -eq 1
-      cargo test --frozen --offline \
-        --manifest-path crates/Cargo.toml \
-        --target-dir "$TMPDIR/target" \
-        -p crucible-engine --lib "$exact_test" -- --exact
+      crucible-cargo test -p crucible-engine --lib "$exact_test" -- --exact
     done
 
     grep -Fxq PASS ${lib.escapeShellArg liveResult}
@@ -144,23 +149,12 @@
     recovery=authenticated-exact-checkpoint
     RESULT
   '';
-  authoritativeGate = pkgs.mkDerivation {
+  authoritativeGate = testGate.mkCrucibleTestGate {
     pname = "crucible-qemu-host-parallel";
-    version = "0";
     src = source;
-    runtimeDeps = [pkgs.sqlite];
-
-    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed productionPluginFlight];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed productionPluginFlight];
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
       {
         name = "test";
         script = verifyScript;
@@ -168,9 +162,7 @@
     ];
   };
   modeScript = ''
-    cp -R ${source} source
-    chmod -R u+w source
-    cd source
+    ${vmRuntime.script}
     ${verifyScript}
   '';
 in
@@ -185,9 +177,8 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "qemu-host-parallel";
-      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs;
-      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
-      runtimeClosures = [source cargoDeps productionPluginFlight];
+      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.sed];
+      runtimeClosures = vmRuntime.closures ++ [productionPluginFlight];
       runtimeScript = modeScript;
       timeout = 3600;
       memoryMiB = 4096;

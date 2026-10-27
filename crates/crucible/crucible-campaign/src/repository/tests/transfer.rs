@@ -9,14 +9,48 @@ use crucible_store::content_store::{
 };
 
 use super::*;
+use crate::archive::InventorySummary;
 use crate::{
-    ArchiveInventoryDisposition, CampaignArchiveCheckpointResolver,
-    CampaignArchiveCheckpointSelection, CampaignArchiveInventoryPage, CampaignArchiveManifest,
-    CampaignArchivePolicy, CampaignFactId, ExactCheckpointId, FindingKind, FindingSignature,
-    FindingTarget, ObjectEnvelope, PinChange, PinRequest, PinRetention,
+    ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
+    CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
+    CampaignArchiveManifest, CampaignArchivePlan, CampaignArchivePolicy, CampaignFactId,
+    ExactCheckpointId, FindingKind, FindingSignature, FindingTarget, ObjectEnvelope, PinChange,
+    PinRequest, PinRetention,
 };
 
 struct FixedCheckpoint(ExactCheckpointId);
+
+fn plan_entries(
+    plan: &CampaignArchivePlan,
+    disposition: ArchiveInventoryDisposition,
+) -> Vec<ArchiveObjectEntry> {
+    let mut entries = Vec::new();
+    let collect = |entry| {
+        entries.push(entry);
+        Ok::<(), CampaignRepositoryError>(())
+    };
+    match disposition {
+        ArchiveInventoryDisposition::Selected => plan.visit_selected(collect),
+        ArchiveInventoryDisposition::Omitted => plan.visit_omitted(collect),
+    }
+    .expect("replay planned inventory");
+    entries
+}
+
+fn inspected_entries(
+    repository: &CampaignRepository,
+    inspection: &CampaignArchiveInspection,
+    disposition: ArchiveInventoryDisposition,
+) -> Vec<ArchiveObjectEntry> {
+    let mut entries = Vec::new();
+    repository
+        .visit_campaign_archive_entries(inspection, disposition, |entry| {
+            entries.push(entry);
+            Ok::<(), CampaignRepositoryError>(())
+        })
+        .expect("replay inspected inventory");
+    entries
+}
 
 impl CampaignArchiveCheckpointResolver for FixedCheckpoint {
     fn resolve_checkpoint(
@@ -67,8 +101,8 @@ fn archive_manifest_rejects_duplicate_configuration_pin_pairs() {
             retained_roots: Vec::new(),
             selected_pages: Vec::new(),
             omitted_pages: Vec::new(),
-            selected: &[],
-            omitted: &[],
+            selected: InventorySummary::of(&[]),
+            omitted: InventorySummary::of(&[]),
         }),
         Err(crate::CampaignCodecError::InvalidValue {
             reason: "archive checkpoint selection pair is duplicated"
@@ -90,7 +124,7 @@ fn metadata_archive_inspects_without_becoming_a_campaign_head() {
             None,
         )
         .expect("plan metadata archive");
-    assert!(!plan.omitted().is_empty());
+    assert!(!plan_entries(&plan, ArchiveInventoryDisposition::Omitted).is_empty());
 
     let temporary = tempfile::tempdir().expect("temporary destination");
     let destination = CampaignRepository::new(
@@ -158,8 +192,8 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"representative reproduction".to_vec(),
+            crate::ReproductionPayload::new(1, b"representative reproduction".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish representative reproduction");
     let reproduction_content = reproduction.content_id();
@@ -292,22 +326,31 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             exact_handoff,
             Err(CampaignRepositoryError::InvalidRequest { reason }) if reason == expected_reason
         ));
-        assert_eq!(inspection.selected(), plan.selected());
-        assert_eq!(inspection.omitted(), plan.omitted());
-        assert_eq!(
-            inspection.omitted_inventory_verified(),
-            plan.omitted().is_empty()
+        let selected = inspected_entries(
+            &destination,
+            &inspection,
+            ArchiveInventoryDisposition::Selected,
+        );
+        let omitted = inspected_entries(
+            &destination,
+            &inspection,
+            ArchiveInventoryDisposition::Omitted,
         );
         assert_eq!(
-            inspection
-                .selected()
-                .iter()
-                .any(|entry| entry.id() == mirror_root),
+            selected,
+            plan_entries(&plan, ArchiveInventoryDisposition::Selected)
+        );
+        assert_eq!(
+            omitted,
+            plan_entries(&plan, ArchiveInventoryDisposition::Omitted)
+        );
+        assert_eq!(inspection.omitted_inventory_verified(), omitted.is_empty());
+        assert_eq!(
+            selected.iter().any(|entry| entry.id() == mirror_root),
             archive_policy == CampaignArchivePolicy::Mirror
         );
         assert_eq!(
-            inspection
-                .selected()
+            selected
                 .iter()
                 .any(|entry| entry.id() == checkpoint.content_id()),
             matches!(
@@ -316,8 +359,7 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             )
         );
         assert_eq!(
-            inspection
-                .selected()
+            selected
                 .iter()
                 .any(|entry| entry.id() == reproduction_content),
             archive_policy != CampaignArchivePolicy::Metadata
@@ -422,9 +464,96 @@ fn mirror_rejects_a_nested_partial_archive_without_its_direct_inventory() {
     ));
 }
 
+/// Rewraps a fixture repository's backends with an on-disk scratch directory.
+fn with_scratch(repository: &CampaignRepository, scratch: &std::path::Path) -> CampaignRepository {
+    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
+        .with_scratch_directory(scratch)
+}
+
+fn scratch_entries(scratch: &std::path::Path) -> usize {
+    std::fs::read_dir(scratch)
+        .expect("read scratch directory")
+        .count()
+}
+
+#[test]
+fn archive_spills_live_in_scratch_only_while_an_operation_needs_them() {
+    let (memory, lineage, policy) = fixture();
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let repository = with_scratch(&memory, scratch.path());
+    let head = repository
+        .create("source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source campaign");
+
+    let plan = repository
+        .plan_campaign_archive(head.snapshot_id(), CampaignArchivePolicy::Debug, [], None)
+        .expect("plan debug archive");
+    assert_eq!(
+        scratch_entries(scratch.path()),
+        1,
+        "a live plan keeps only its page spool"
+    );
+    repository
+        .stage_campaign_archive_metadata(&plan)
+        .expect("stage archive metadata");
+    let inspection = repository
+        .inspect_campaign_archive(plan.manifest_id())
+        .expect("inspect staged archive");
+    assert_eq!(scratch_entries(scratch.path()), 1);
+
+    assert_eq!(inspection.manifest_id(), plan.manifest_id());
+    assert_eq!(
+        inspected_entries(
+            &repository,
+            &inspection,
+            ArchiveInventoryDisposition::Selected
+        ),
+        plan_entries(&plan, ArchiveInventoryDisposition::Selected)
+    );
+    drop(plan);
+    assert_eq!(scratch_entries(scratch.path()), 0);
+}
+
+#[test]
+fn streamed_inventory_digest_matches_the_canonical_sequence_digest() {
+    let (repository, lineage, policy) = fixture();
+    let head = repository
+        .create("source", &lineage, &policy, &BTreeMap::new())
+        .expect("create source campaign");
+    let plan = repository
+        .plan_campaign_archive(
+            head.snapshot_id(),
+            CampaignArchivePolicy::Findings,
+            [],
+            None,
+        )
+        .expect("plan findings archive");
+
+    for (disposition, count, digest) in [
+        (
+            ArchiveInventoryDisposition::Selected,
+            plan.manifest().selected_count(),
+            plan.manifest().selected_digest(),
+        ),
+        (
+            ArchiveInventoryDisposition::Omitted,
+            plan.manifest().omitted_count(),
+            plan.manifest().omitted_digest(),
+        ),
+    ] {
+        let entries = plan_entries(&plan, disposition);
+        assert_eq!(
+            InventorySummary::of(&entries),
+            InventorySummary { count, digest }
+        );
+    }
+}
+
 #[test]
 fn archive_with_undeclared_snapshot_children_fails_closed() {
-    let (repository, lineage, policy) = fixture();
+    let (memory, lineage, policy) = fixture();
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let repository = with_scratch(&memory, scratch.path());
     let head = repository
         .create("source", &lineage, &policy, &BTreeMap::new())
         .expect("create source campaign");
@@ -436,9 +565,8 @@ fn archive_with_undeclared_snapshot_children_fails_closed() {
             None,
         )
         .expect("plan metadata archive");
-    let snapshot_entry = *valid
-        .selected()
-        .iter()
+    let snapshot_entry = plan_entries(&valid, ArchiveInventoryDisposition::Selected)
+        .into_iter()
         .find(|entry| entry.id() == head.snapshot_id().content_id())
         .expect("selected source snapshot");
     let page = CampaignArchiveInventoryPage::new(
@@ -460,8 +588,8 @@ fn archive_with_undeclared_snapshot_children_fails_closed() {
         retained_roots: Vec::new(),
         selected_pages: vec![page.id().expect("page ID")],
         omitted_pages: Vec::new(),
-        selected: &selected,
-        omitted: &[],
+        selected: InventorySummary::of(&selected),
+        omitted: InventorySummary::of(&[]),
     })
     .expect("forged manifest");
     let envelope = ObjectEnvelope::for_archive_manifest(&manifest).expect("manifest envelope");
@@ -471,10 +599,16 @@ fn archive_with_undeclared_snapshot_children_fails_closed() {
         .put_envelope(envelope)
         .expect("publish forged manifest");
 
+    drop(valid);
     assert!(matches!(
         repository.inspect_campaign_archive(id),
         Err(CampaignRepositoryError::Integrity {
             reason: "campaign-archive-selected-child-is-undeclared"
         })
     ));
+    assert_eq!(
+        scratch_entries(scratch.path()),
+        0,
+        "a failed inspection removes its spills"
+    );
 }

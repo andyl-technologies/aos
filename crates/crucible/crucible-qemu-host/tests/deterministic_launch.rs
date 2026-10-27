@@ -1736,3 +1736,53 @@ fn virtual_time_floors_only_at_the_guest_nanosecond_boundary() {
     assert_eq!(profile.virtual_ns_from_tick(1_001), 1);
     assert_eq!(profile.virtual_ns_from_tick(u64::MAX), u64::MAX / 1_000);
 }
+
+#[test]
+fn guest_derived_code_buffer_is_recorded_in_argv_and_validates() {
+    let build = |derived: bool| {
+        let builder = QemuLaunchCommandBuilder::new(
+            default_profile(),
+            default_vm_config(),
+            default_qemu_binary(),
+            default_plugin_config(),
+            default_fault_requirement(),
+        );
+        let builder = if derived {
+            builder.with_guest_derived_code_buffer()
+        } else {
+            builder
+        };
+        builder
+            .build()
+            .unwrap_or_else(|error| panic!("launch command should build: {error}"))
+    };
+    let canonical = build(false);
+    let derived = build(true);
+
+    // The default profile's exact argument stays untouched.
+    assert!(
+        canonical
+            .args()
+            .windows(2)
+            .any(|window| window == ["-accel", "sim,thread=single"])
+    );
+
+    // 512 MiB of guest RAM over the divisor of 4 is a 128 MiB code buffer,
+    // visible in argv and therefore in the launch identity material.
+    let accelerator = "sim,thread=single,tb-size=128";
+    assert!(
+        derived
+            .args()
+            .windows(2)
+            .any(|window| window == ["-accel", accelerator])
+    );
+    assert!(
+        derived
+            .command_line_hash_material()
+            .lines()
+            .any(|line| line.ends_with(&format!("]={accelerator}")))
+    );
+    let validation = validate_pre_spawn_qemu_launch_args(derived.args())
+        .unwrap_or_else(|error| panic!("derived launch args should validate: {error}"));
+    assert_eq!(validation.accelerator(), accelerator);
+}

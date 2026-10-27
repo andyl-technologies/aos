@@ -21,7 +21,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
@@ -1474,7 +1474,7 @@
       }
       {
         label = "baseline count field";
-        needle = "crates/crucible/crucible-control-server/src/server.rs\tstringly error\tResult<_, String>\t\t32";
+        needle = "crates/crucible/crucible-control-server/src/server.rs\tstringly error\tResult<_, String>\t\t26";
       }
     ];
     phaseWiringFailures =

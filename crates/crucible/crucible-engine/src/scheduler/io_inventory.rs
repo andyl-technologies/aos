@@ -4,6 +4,13 @@
 //! validates the observation against the immutable World, assigns canonical
 //! event identities once, and retains the original physical keys for replay.
 //! Observation does not consume a response or authorize native publication.
+//!
+//! Each imported node's authenticated stopped tick is also its retired
+//! delivery floor. A new completion must not precede that tick, so a published
+//! delivery below it can never be named again; the ledger drops it on the next
+//! import and a continuation must not retain it. The floor never regresses: an
+//! observation below it is refused, so a replay below the floor cannot pass as
+//! a fresh delivery.
 
 use std::num::NonZeroU64;
 
@@ -14,12 +21,16 @@ use crate::{
     BackendIoComputedReply, BackendIoInventory, BackendIoNativeCap, BackendIoNativeCaps,
     BackendIoQueueSnapshot, IoCompletion,
 };
-use crucible_device::FrameDeliveryKey;
+use delivery_ledger::DeliveryLedger;
+
+mod delivery_ledger;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ImportedIoNode {
     world: ContentHash,
+    // The latest authenticated stopped tick, which is also the floor below
+    // which every queue has dropped its published deliveries.
     observed: NodeCounter,
     generation: NonZeroU64,
     native_caps: BackendIoNativeCaps,
@@ -35,7 +46,8 @@ struct ImportedIoQueue {
     pipeline_revision: Option<NonZeroU64>,
     next_pipeline_boundary: Option<NodeCounter>,
     current: Vec<IoCompletion>,
-    deliveries: BTreeMap<FrameDeliveryKey, ImportedIoDelivery>,
+    // Canonical origins of current and recently published deliveries.
+    deliveries: DeliveryLedger,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,16 +68,40 @@ where
 }
 
 impl SingleScheduler {
+    /// Imports one node's physical inventory as a single actor transaction.
+    ///
+    /// Tests use this form to observe that a refusal leaves the scheduler
+    /// unchanged. Production callers already own a staged copy and import
+    /// into it directly.
+    #[cfg(test)]
     pub(super) fn import_initial_io_inventory(
+        &mut self,
+        inventory: BackendIoInventory,
+    ) -> Result<(), SchedulerError> {
+        // Validation and canonical sequence allocation are one actor transaction.
+        // A refused later queue must not leave the earlier queue's event behind.
+        let mut staged = self.clone();
+        staged.import_initial_io_inventory_into_staged(inventory)?;
+        *self = staged;
+        Ok(())
+    }
+
+    /// Imports one node's physical inventory into a staged scheduler copy.
+    ///
+    /// A refusal can leave this scheduler partially updated, so callers must
+    /// own a staged copy that they discard on error. Validation and canonical
+    /// sequence allocation then remain one actor transaction, and a caller
+    /// importing every node stages that copy once instead of once per node.
+    pub(super) fn import_initial_io_inventory_into_staged(
         &mut self,
         inventory: BackendIoInventory,
     ) -> Result<(), SchedulerError> {
         let node = self.vm_node_index(&inventory.node)?;
         let observed = self.nodes[node].counter;
-        self.import_io_inventory(inventory, observed)
+        self.import_io_inventory_into_staged(inventory, observed)
     }
 
-    fn import_io_inventory(
+    fn import_io_inventory_into_staged(
         &mut self,
         inventory: BackendIoInventory,
         expected: NodeCounter,
@@ -132,42 +168,52 @@ impl SingleScheduler {
             ));
         }
 
-        // Validation and canonical sequence allocation are one actor transaction.
-        // A refused later queue must not leave the earlier queue's event behind.
-        let mut staged = self.clone();
-        let previous = staged.imported_io.remove(&inventory.node);
+        // Validation is complete. Canonical sequence allocation below mutates
+        // this staged copy directly; the caller discards it on refusal, so a
+        // refused later queue never leaves an earlier queue's event behind.
+        let world = world.id();
+        let previous = self.imported_io.remove(&inventory.node);
         if previous
             .as_ref()
-            .is_some_and(|previous| previous.world != world.id())
+            .is_some_and(|previous| previous.world != world)
         {
             return Err(inventory_error(
                 "physical inventory replaced its immutable World",
             ));
         }
+        // The previous stopped tick is the retired delivery floor. Accepting a
+        // lower observation would let a pruned published key return as fresh.
+        if previous
+            .as_ref()
+            .is_some_and(|previous| inventory.observed < previous.observed)
+        {
+            return Err(inventory_error(
+                "physical inventory regressed below its retired delivery floor",
+            ));
+        }
         let mut queues = previous.map_or_else(BTreeMap::new, |previous| previous.queues);
         for queue in inventory.queues {
-            staged.import_io_queue(&inventory.node, &mut queues, queue)?;
+            self.import_io_queue(&inventory.node, inventory.observed, &mut queues, queue)?;
         }
-        staged.imported_io.insert(
+        self.imported_io.insert(
             inventory.node.clone(),
             ImportedIoNode {
-                world: world.id(),
+                world,
                 observed: inventory.observed,
                 generation: inventory.generation,
                 native_caps: inventory.native_caps,
                 queues,
             },
         );
-        staged
-            .pending_events
+        self.pending_events
             .sort_by(|left, right| left.key.cmp(&right.key));
-        *self = staged;
         Ok(())
     }
 
     fn import_io_queue(
         &mut self,
         target: &NodeId,
+        observed: NodeCounter,
         queues: &mut BTreeMap<SchedulerNodeId, ImportedIoQueue>,
         queue: BackendIoQueueSnapshot,
     ) -> Result<(), SchedulerError> {
@@ -191,8 +237,10 @@ impl SingleScheduler {
                 })
             })
             .collect::<Result<Vec<_>, SchedulerError>>()?;
-        let previous = queues.get(&queue.device);
-        if let Some(previous) = previous {
+        // The queue map belongs to the staged copy, so the retained delivery
+        // ledger moves into the replacement queue instead of being copied.
+        let previous = queues.remove(&queue.device);
+        if let Some(previous) = &previous {
             if queue.revision < previous.revision
                 || queue.source_node != previous.source_node
                 || queue.pipeline_revision < previous.pipeline_revision
@@ -223,7 +271,8 @@ impl SingleScheduler {
                 }
             }
         }
-        let mut deliveries = previous.map_or_else(BTreeMap::new, |queue| queue.deliveries.clone());
+        let mut deliveries =
+            previous.map_or_else(DeliveryLedger::default, |queue| queue.deliveries);
         for completion in &completions {
             let at = completion.delivery_tick;
             if let Some(retained) = deliveries.get(&completion.source_delivery) {
@@ -268,7 +317,7 @@ impl SingleScheduler {
                 key: key.clone(),
                 payload: ScheduledEventPayload::IoCompletion(completion.clone()),
             });
-            deliveries.insert(
+            deliveries.insert_live(
                 completion.source_delivery,
                 ImportedIoDelivery {
                     completion: completion.clone(),
@@ -277,6 +326,10 @@ impl SingleScheduler {
                 },
             );
         }
+        // Every completion is at or after `observed`, and so is every
+        // unpublished delivery, which the snapshot still carries. A published
+        // delivery below it is unreachable by any later import.
+        deliveries.prune_retired_below(observed.ticks);
         queues.insert(
             queue.device,
             ImportedIoQueue {
@@ -333,17 +386,32 @@ impl SingleScheduler {
         let Some(node) = self.imported_io.get_mut(&completion.target) else {
             return Ok(());
         };
-        let delivery = node
+        let floor = node.observed;
+        let queue = node
             .queues
             .get_mut(&completion.sub_node)
-            .and_then(|queue| queue.deliveries.get_mut(&completion.source_delivery))
             .ok_or_else(|| inventory_error("published physical delivery lacks its actor origin"))?;
-        if delivery.key != event.key || delivery.completion != *completion || delivery.published {
+        let physical = completion.source_delivery;
+        let unchanged_live = match queue.deliveries.get(&physical) {
+            Some(delivery) => {
+                delivery.key == event.key
+                    && delivery.completion == *completion
+                    && !delivery.published
+            }
+            // Only a published delivery is ever pruned, so a missing key below
+            // the floor is a repeated publication rather than an unknown origin.
+            None if physical.delivery_icount < floor.ticks => false,
+            None => {
+                return Err(inventory_error(
+                    "published physical delivery lacks its actor origin",
+                ));
+            }
+        };
+        if !unchanged_live || !queue.deliveries.retire(&physical) {
             return Err(inventory_error(
                 "published physical delivery changed or reused its identity",
             ));
         }
-        delivery.published = true;
         Ok(())
     }
 
@@ -412,7 +480,14 @@ impl SingleScheduler {
                             .collect(),
                     },
                 )?;
-                for (physical, delivery) in &queue.deliveries {
+                for (physical, delivery) in queue.deliveries.iter() {
+                    // Imports prune published deliveries below the stopped
+                    // tick, so a continuation retaining one is not canonical.
+                    if delivery.published && physical.delivery_icount < node.observed.ticks {
+                        return Err(inventory_error(
+                            "restored physical ledger retains a retired delivery",
+                        ));
+                    }
                     let at = self.vm_delivery_time_for_tick(
                         target,
                         SimInstant {

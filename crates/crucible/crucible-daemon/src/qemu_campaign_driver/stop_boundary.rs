@@ -93,10 +93,8 @@ pub(super) fn reached_requested_stop(
         StopCondition::NamedBoundary(name) => outcome.event_log_entries.iter().any(|entry| {
             matches!(
                 entry.payload(),
-                SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
-                    marker,
-                    ..
-                }) if marker.name == *name
+                SchedulerEventLogPayload::Observable(payload)
+                    if names_boundary(payload, name, evidence.world)
             )
         }),
         StopCondition::VirtualTimePicoseconds(deadline) => outcome.frontier.ticks >= *deadline,
@@ -120,7 +118,7 @@ pub(super) fn reached_requested_stop(
                 evidence.outcome,
                 evidence.quantum_start_completed_quanta,
                 evidence.completed_quanta,
-                evidence.prior_entries,
+                evidence.prior,
             )
             .map(|reached| {
                 reached.map(|(proof, evidence)| ModeledStop::ObservationReached {
@@ -134,6 +132,30 @@ pub(super) fn reached_requested_stop(
         }
     };
     Ok(reached.then(|| ModeledStop::Reached(requested.clone())))
+}
+
+/// Reports whether one observable event is the requested named boundary.
+///
+/// Both guest marker forms name a boundary, as they do for the event-graph
+/// evaluator. A semantic marker follows that evaluator's white-box gate: it
+/// counts only when its source node is a declared World node with white-box
+/// observation enabled. Plain guest markers keep their established admission.
+fn names_boundary(
+    payload: &ObservableEventPayload,
+    name: &str,
+    world: &crucible_engine::World,
+) -> bool {
+    match payload {
+        ObservableEventPayload::GuestMarker { marker, .. } => marker.name == name,
+        ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
+            marker == name
+                && world.vm_nodes().iter().any(|declared| {
+                    declared.id == *node
+                        && declared.white_box == crucible_engine::WhiteBoxPolicy::Enabled
+                })
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn policy_timeout_at(

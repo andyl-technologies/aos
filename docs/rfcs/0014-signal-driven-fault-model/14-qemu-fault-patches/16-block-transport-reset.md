@@ -91,9 +91,27 @@ normal consumer dequeue. A new-epoch reset retires the old epoch with its exact
 queued disposition and typed failure. When each stale frame later reaches the
 ring head, the host applies `fail`, `retry_new_id`, or a one-use
 `retry_preserve_id` authorization at the current service boundary; it never
-schedules a completion in the pre-reset past. Retired epoch rows and live
-preserve-ID authorizations have explicit hard bounds and fail the run before
-overflow.
+schedules a completion in the pre-reset past.
+
+Each request header carries the frontend's oldest live epoch
+([IO-35](../../0010-crucible/15-io-subnodes.md)). The plugin computes it over
+requests awaiting a response and identities answered with `retry_preserve_id`,
+so it covers a pre-reset identity that QEMU resubmits after recovery even when a
+new-epoch request reaches the host first. When a request raises that floor, the
+host drops every retired epoch row and preserve-ID authorization below it; an
+authorization below the floor can no longer be used because the plugin no
+longer holds its identity. A floor above the request epoch or the host's
+transport epoch, or below an already acknowledged floor, fails closed. Retained
+rows therefore cover only the frontend's live epochs. Their explicit hard
+bounds still fail the run before overflow, which also bounds an identity QEMU
+abandons after a failed recovery admission: it keeps the floor low without
+making it unsafe, so no abandon notification exists.
+
+The plugin's completed-identity history is not pruned by this floor. The floor
+describes what the frontend may still submit, while duplicate completions and
+reset events are host-scheduled responses that can arrive after their primary
+completion and after later requests have raised the floor. Retiring that
+history would need a host-side acknowledgment on the response path.
 
 When `reenumerate_declared` is set, QEMU invokes the block graph's frontend-
 resize notification through the coroutine wrapper. A virtio-blk frontend
@@ -151,6 +169,11 @@ or probabilistic membership tests.
   capacity-one output backpressure;
 - reject and wait policies cover the last coordinate before and the exact
   recovery deadline;
+- a new-epoch request names the old epoch as its oldest live epoch while a
+  pre-reset identity is in flight or awaiting its preserved retry, and names the
+  new epoch once that identity completes; the host then drops the retired epoch
+  and any unusable authorization, rejects a regressing floor without mutation,
+  and stays bounded across more resets than the retained-epoch hard limit;
 - malformed headers, reserved bytes, enums, typed results, lengths, epochs, and
   unknown completed identities fail closed without consuming the frame;
 - save/restore preserves allocator, recovery, and duplicate history, rejects

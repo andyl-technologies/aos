@@ -6,7 +6,7 @@ pub(super) fn execute_local_qemu_campaign(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
-) -> Result<GuardedDefaultCampaignRun, CliError> {
+) -> Result<(GuardedDefaultCampaignRun, CampaignRunProgress), CliError> {
     if !batch_campaign_run_eligible(run_plan) {
         return Err(backend_error(
             "the requested run shape does not have an exact batch campaign QEMU adapter",
@@ -17,7 +17,7 @@ pub(super) fn execute_local_qemu_campaign(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -41,13 +41,15 @@ pub(super) fn execute_local_qemu_campaign(
         resources,
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?);
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let request = if run_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
         request
     };
 
-    run_guarded_default_campaign(request)
-        .map_err(|error| campaign_run_error("execute shared campaign owner", error))
+    let mut progress = CampaignRunProgress::default();
+    let campaign = run_guarded_default_campaign_with_sink(request, &mut progress)
+        .map_err(|error| campaign_run_error("execute shared campaign owner", error))?;
+    Ok((campaign, progress))
 }

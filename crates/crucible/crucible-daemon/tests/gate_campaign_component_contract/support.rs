@@ -56,8 +56,13 @@ impl ComponentExecutorService {
             .supervisor_mut()
             .next_queued()
             .expect("semantic execution is queued");
-        let semantic = PreparedSemanticAttemptResult::new(self.candidate.clone(), Vec::new(), None)
-            .expect("prepare semantic result");
+        let semantic = PreparedSemanticAttemptResult::new(
+            self.candidate.clone(),
+            Vec::new(),
+            crucible_daemon::MemorySegmentStore::default(),
+            None,
+        )
+        .expect("prepare semantic result");
         let work = AttemptWorkResult::<()>::new(
             queued,
             Ok(AttemptExecutionProduct::prepared_semantic(semantic)),

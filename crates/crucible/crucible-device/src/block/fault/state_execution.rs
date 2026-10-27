@@ -297,7 +297,7 @@ impl BlockFaultState {
         match self.transport_epoch {
             Some(epoch) if epoch != request.epoch && !preserved_retry => {
                 return self
-                    .dispose_retired_transport_request_if_needed(identity)?
+                    .dispose_retired_transport_request_if_needed(request)?
                     .ok_or(DeviceError::InvalidBlockFaultDirective {
                         reason: "stale block request did not produce a reset disposition",
                     })
@@ -310,6 +310,7 @@ impl BlockFaultState {
             None => observed_set!(self, transport_epoch, Some(request.epoch)),
             Some(_) => {}
         }
+        self.acknowledge_oldest_live_epoch(request)?;
         let mut directive = match self.pending.get(&identity) {
             Some(directive) => directive.clone(),
             None if self.execution_required => {
@@ -480,15 +481,21 @@ impl BlockFaultState {
 
     pub(super) fn dispose_retired_transport_request_if_needed_untracked(
         &mut self,
-        identity: BlockRequestIdentity,
+        request: &BlockRequest,
     ) -> Result<Option<Response>, DeviceError> {
+        let identity = request.identity();
         if self.transport_epoch.is_none()
             || self.transport_epoch == Some(identity.epoch)
             || self.retry_preserve_authorizations.contains(&identity)
         {
             return Ok(None);
         }
-        let policy = self
+
+        // The floor never exceeds the request's own epoch, so acknowledging it
+        // first cannot drop the policy this disposal reads.
+        let mut next = self.clone();
+        next.acknowledge_oldest_live_epoch(request)?;
+        let policy = next
             .retired_transport_epochs
             .get(&identity.epoch)
             .copied()
@@ -496,7 +503,7 @@ impl BlockFaultState {
                 reason: "block request epoch has no retained reset policy",
             })?;
         if policy.queued == BlockTransportPending::RetryPreserveId
-            && self.retry_preserve_authorizations.len() == HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS
+            && next.retry_preserve_authorizations.len() == HARD_BLOCK_RETRY_PRESERVE_AUTHORIZATIONS
         {
             return Err(DeviceError::BlockFaultStateLimit {
                 field: "retry_preserve_authorizations",
@@ -504,7 +511,6 @@ impl BlockFaultState {
             });
         }
 
-        let mut next = self.clone();
         if let Some(removed) = observed_remove!(next, pending, &identity) {
             observed_set!(
                 next,

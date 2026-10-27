@@ -3,8 +3,12 @@
 //! The ordinary gate process exports only canonical reproduction, candidate,
 //! and replay-evidence records. A separately invoked ignored helper starts with
 //! a cleared environment, reads that export, reconstructs all four native
-//! signatures, and checks their active-policy key. Negative exports prove that
-//! missing, corrupt, and cross-record mismatches fail closed.
+//! signatures, and checks their active-policy key. Reproduction records name
+//! their schedule segments and replay-evidence records name the attempt-log
+//! segments their payloads reference, so the export carries each segment as
+//! its own file and the helper authenticates every one before decoding.
+//! Negative exports prove that missing, corrupt, and cross-record mismatches
+//! fail closed.
 
 #![forbid(unsafe_code)]
 
@@ -14,6 +18,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_campaign::{
@@ -22,8 +27,9 @@ use crucible_campaign::{
     FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
     FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
-    FindingTriageEvidenceSet, FindingTriageReplayEvidence, ObservationId,
-    ReproductionArtifact as CampaignReproductionArtifact, ScenarioArtifactId, ScenarioDefId,
+    FindingTriageEvidenceSet, FindingTriageReplayEvidence, FindingTriageReplayLogSegment,
+    ObservationId, ReproductionArtifact as CampaignReproductionArtifact, ReproductionPayload,
+    ReproductionPayloadSegment, ScenarioArtifactId, ScenarioDefId,
 };
 use crucible_engine::test_support::{
     condition_observation_entry_for_test, condition_payload_entry_for_test,
@@ -35,8 +41,9 @@ use crucible_engine::{
     FindingDiscoveryPath, FindingReproductionArtifact, Icount, MarkerId, NodeId, NodeTemplate,
     ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan, Predicate, Properties,
     Property, ReadyPoint, ScenarioDefForm, Schedule, SchedulerEventLogEntry,
-    SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    SchedulerEventLogPayload, SchedulingPoint, Seed, SegmentSink, SegmentSource,
+    SharedSegmentStore, SignaturePolicy, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    seal_attempt_log,
 };
 use crucible_store::content_store::{ContentId, ObjectKind};
 
@@ -49,6 +56,8 @@ const MINIMIZATION_ORIGINAL_FILE: &str = "minimization-original.evidence";
 const MINIMIZATION_SELECTED_FILE: &str = "minimization-selected.evidence";
 const VERIFICATION_ORIGINAL_FILE: &str = "verification-original.evidence";
 const VERIFICATION_SELECTED_FILE: &str = "verification-selected.evidence";
+const SEGMENT_FILE_PREFIX: &str = "reproduction-segment-";
+const LOG_SEGMENT_FILE_PREFIX: &str = "triage-log-segment-";
 
 static NEXT_EXPORT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -62,6 +71,8 @@ enum InvalidExport {
     WrongNativePayload,
     WrongSlotIdentity,
     WrongLedgerKey,
+    CorruptReproductionSegment,
+    CorruptTriageLogSegment,
 }
 
 impl InvalidExport {
@@ -75,6 +86,10 @@ impl InvalidExport {
             Self::WrongNativePayload => "native replay payload is corrupt or mismatched",
             Self::WrongSlotIdentity => "triage evidence differs from authenticated bundle slot",
             Self::WrongLedgerKey => "native replay signature differs from ledger member key",
+            Self::CorruptReproductionSegment => {
+                "campaign reproduction segment is missing or unauthentic"
+            }
+            Self::CorruptTriageLogSegment => "triage log segment is missing or unauthentic",
         }
     }
 }
@@ -89,6 +104,10 @@ struct ReplayExport {
     verification_selected: FindingTriageReplayEvidence,
     alternate_original: FindingTriageReplayEvidence,
     native_key: String,
+    /// Schedule segments both reproductions name, in first-use order.
+    segments: Vec<(ContentId, Vec<u8>)>,
+    /// Attempt-log segments the replay-evidence records name.
+    log_segments: Vec<(ContentId, Vec<u8>)>,
 }
 
 struct ExportDirectory {
@@ -135,6 +154,8 @@ fn offline_rich_finding_replays_without_campaign_store() -> Result<(), Box<dyn E
         ("native-payload", InvalidExport::WrongNativePayload),
         ("slot", InvalidExport::WrongSlotIdentity),
         ("ledger-key", InvalidExport::WrongLedgerKey),
+        ("segment", InvalidExport::CorruptReproductionSegment),
+        ("log-segment", InvalidExport::CorruptTriageLogSegment),
     ] {
         let invalid = ExportDirectory::new(label)?;
         write_export(invalid.path(), &export)?;
@@ -353,9 +374,14 @@ fn consume_export(directory: &Path) -> Result<(), Box<dyn Error>> {
             return Err(invalid("triage evidence names another observed signature").into());
         }
 
-        let finding = campaign_reproduction_to_native(slot.reproduction)?;
-        let native = FailureTriageReplayEvidence::from_compact_binary(finding, record.payload())
-            .map_err(|_| invalid("native replay payload is corrupt or mismatched"))?;
+        let finding = campaign_reproduction_to_native(directory, slot.reproduction)?;
+        let log_segments = triage_log_segments(directory, &record)?;
+        let native = FailureTriageReplayEvidence::from_compact_binary(
+            finding,
+            record.payload(),
+            log_segments,
+        )
+        .map_err(|_| invalid("native replay payload is corrupt or mismatched"))?;
         validate_campaign_signature_binding(&native, slot.reproduction, slot.signature)?;
         let native_key = native
             .signature()
@@ -397,11 +423,42 @@ fn signature_at(
         .ok_or_else(|| invalid("finding signature pass has no selected observation"))
 }
 
+/// Decodes a campaign reproduction from its stored form and exported segments.
+///
+/// The record must name exactly the segments its inline manifest names, and
+/// every exported segment must derive the identity and length the record
+/// declares before any of them is decoded.
 fn campaign_reproduction_to_native(
+    directory: &Path,
     reproduction: &CampaignReproductionArtifact,
 ) -> Result<FindingReproductionArtifact, Box<dyn Error>> {
+    let manifest = crucible_engine::ReproductionArtifact::stored_form_schedule_manifest(
+        reproduction.payload(),
+    )?;
+    let manifest_segments = manifest
+        .segments()
+        .iter()
+        .map(|segment| ReproductionPayloadSegment::new(segment.id, segment.encoded_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    if manifest_segments != reproduction.payload_segments() {
+        return Err(invalid("campaign reproduction segments differ from its manifest").into());
+    }
+
+    let segments = SharedSegmentStore::new();
+    for segment in reproduction.payload_segments() {
+        let bytes = fs::read(directory.join(segment_file(segment.content()))).ok();
+        let authentic = bytes.filter(|bytes| {
+            u64::try_from(bytes.len()).is_ok_and(|length| length == segment.bytes())
+                && segment.content().authenticates(bytes)
+        });
+        let Some(bytes) = authentic else {
+            return Err(invalid("campaign reproduction segment is missing or unauthentic").into());
+        };
+        segments.put_segment(segment.content(), &bytes)?;
+    }
+
     let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+        crucible_engine::ReproductionArtifact::from_stored_form(reproduction.payload(), &segments)?;
     let replay = artifact.replay()?;
     let configuration = Configuration {
         def: artifact.scenario_def(),
@@ -422,6 +479,40 @@ fn campaign_reproduction_to_native(
         return Err(invalid("campaign reproduction semantic identity mismatch").into());
     }
     Ok(finding)
+}
+
+/// Loads the attempt-log segments a replay-evidence record names.
+///
+/// The record must name exactly the segments its payload references, and every
+/// exported segment must derive the identity and length the record declares
+/// before the payload is decoded.
+fn triage_log_segments(
+    directory: &Path,
+    record: &FindingTriageReplayEvidence,
+) -> Result<Arc<dyn SegmentSource + Send + Sync>, Box<dyn Error>> {
+    let referenced = FailureTriageReplayEvidence::referenced_segments_in(record.payload())
+        .map_err(|_| invalid("native replay payload is corrupt or mismatched"))?;
+    let referenced = referenced
+        .iter()
+        .map(|segment| FindingTriageReplayLogSegment::new(segment.id, segment.encoded_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    if referenced != record.log_segments() {
+        return Err(invalid("native replay payload is corrupt or mismatched").into());
+    }
+
+    let segments = SharedSegmentStore::new();
+    for segment in record.log_segments() {
+        let bytes = fs::read(directory.join(log_segment_file(segment.content()))).ok();
+        let authentic = bytes.filter(|bytes| {
+            u64::try_from(bytes.len()).is_ok_and(|length| length == segment.bytes())
+                && segment.content().authenticates(bytes)
+        });
+        let Some(bytes) = authentic else {
+            return Err(invalid("triage log segment is missing or unauthentic").into());
+        };
+        segments.put_segment(segment.content(), &bytes)?;
+    }
+    Ok(Arc::new(segments))
 }
 
 fn validate_campaign_signature_binding(
@@ -496,6 +587,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         b"portable selected configuration",
     )?;
     let campaign_fingerprint = CampaignHash::from_bytes(fingerprint.bytes);
+    let mut segments = Vec::new();
     let original_reproduction = CampaignReproductionArtifact::new(
         crucible_campaign::ReproductionArtifactBasis::new(
             scenario_id,
@@ -504,14 +596,13 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
             original_configuration_artifact,
             campaign_fingerprint,
         ),
-        1,
-        original_finding.artifact.to_compact_binary(),
+        reproduction_payload(&original_finding.artifact, &mut segments)?,
     )?;
     let original_reproduction_id = original_reproduction.id()?;
     let selected_state = CampaignHash::from_bytes(selected_finding.replay.state.bytes);
     let minimization = FindingMinimizationEvidence::new(
         original_reproduction_id,
-        3,
+        4,
         b"portable lexicographic minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -531,8 +622,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
             selected_configuration_artifact,
             campaign_fingerprint,
         ),
-        1,
-        selected_finding.artifact.to_compact_binary(),
+        reproduction_payload(&selected_finding.artifact, &mut segments)?,
         minimization.clone(),
     )?;
     let selected_reproduction_id = selected_reproduction.id()?;
@@ -554,31 +644,51 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         ],
     )?;
 
+    let log_store = Arc::new(SharedSegmentStore::new());
     let minimization_original_payload = native_evidence(
         &original_finding,
         &original_decisions,
-        b"minimization-original",
+        "minimization-original",
+        &log_store,
     )?;
     let minimization_selected_payload = native_evidence(
         &selected_finding,
         &selected_decisions,
-        b"minimization-selected",
+        "minimization-selected",
+        &log_store,
     )?;
     let verification_original_payload = native_evidence(
         &original_finding,
         &original_decisions,
-        b"verification-original",
+        "verification-original",
+        &log_store,
     )?;
     let verification_selected_payload = native_evidence(
         &selected_finding,
         &selected_decisions,
-        b"verification-selected",
+        "verification-selected",
+        &log_store,
     )?;
     let alternate_original_payload = native_evidence(
         &original_finding,
         &original_decisions,
-        b"alternate-original",
+        "alternate-original",
+        &log_store,
     )?;
+    let mut log_segments = Vec::new();
+    for evidence in [
+        &minimization_original_payload,
+        &minimization_selected_payload,
+        &verification_original_payload,
+        &verification_selected_payload,
+        &alternate_original_payload,
+    ] {
+        for segment in evidence.referenced_segments() {
+            if !log_segments.iter().any(|(id, _)| *id == segment.id) {
+                log_segments.push((segment.id, log_store.segment(segment.id)?));
+            }
+        }
+    }
     let native_key = minimization_original_payload
         .signature()
         .signature_key(SignaturePolicy::default_policy())?
@@ -633,7 +743,7 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         verification_selected.id()?,
     );
     let observation =
-        content_id::<ObservationId>(ObjectKind::Observation, 14, b"portable finding observation")?;
+        content_id::<ObservationId>(ObjectKind::Observation, 16, b"portable finding observation")?;
     let bundle = FindingCandidateBundle::new_with_exact_retention(
         FindingCandidateCore::new(
             observation,
@@ -657,7 +767,35 @@ fn replay_export() -> Result<ReplayExport, Box<dyn Error>> {
         verification_selected,
         alternate_original,
         native_key,
+        segments,
+        log_segments,
     })
+}
+
+/// Builds a reproduction's segment-referencing payload and collects its
+/// schedule segments for export.
+///
+/// The payload schema is opaque to this gate; it checks only that the record
+/// and its exported segments reassemble the native artifact.
+fn reproduction_payload(
+    artifact: &crucible_engine::ReproductionArtifact,
+    segments: &mut Vec<(ContentId, Vec<u8>)>,
+) -> Result<ReproductionPayload, Box<dyn Error>> {
+    let (stored, _) = artifact.to_stored_form()?;
+    let mut named = Vec::new();
+    artifact.schedule().try_for_each_segment(|segment, bytes| {
+        named.push(ReproductionPayloadSegment::new(
+            segment.id,
+            segment.encoded_bytes,
+        ));
+        if !segments.iter().any(|(id, _)| *id == segment.id) {
+            segments.push((segment.id, bytes.to_vec()));
+        }
+        Ok(())
+    })?;
+    let named = named.into_iter().collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ReproductionPayload::new(1, stored, named)?)
 }
 
 fn disabled_finding_exact_retention() -> Result<FindingExactRetention, Box<dyn Error>> {
@@ -686,20 +824,33 @@ fn campaign_evidence(
     signature: FindingSignature,
     native: &FailureTriageReplayEvidence,
 ) -> Result<FindingTriageReplayEvidence, Box<dyn Error>> {
-    Ok(FindingTriageReplayEvidence::new(
+    let log_segments = native
+        .referenced_segments()
+        .iter()
+        .map(|segment| FindingTriageReplayLogSegment::new(segment.id, segment.encoded_bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FindingTriageReplayEvidence::new_with_log_segments(
         reproduction,
         signature,
         FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION,
         native.to_compact_binary()?,
+        log_segments,
     )?)
 }
 
+/// Replays `decisions` into a sealed log in `log_store` and builds evidence.
+///
+/// `label` becomes an observational console entry, so evidence for the same
+/// reproduction differs only in its log manifest and every slot shares
+/// one signature key.
 fn native_evidence(
     finding: &FindingReproductionArtifact,
     decisions: &[Decision],
-    frame: &[u8],
+    label: &str,
+    log_store: &Arc<SharedSegmentStore>,
 ) -> Result<FailureTriageReplayEvidence, Box<dyn Error>> {
-    let entries = recorded_entries(decisions);
+    let mut entries = recorded_entries(decisions);
+    entries.push(label_entry(entries.len() as u64, label)?);
     let scenario = finding.artifact.scenario_form();
     let report = OfflineAssertionChecker::new()
         .with_world_white_box_policies(scenario.world())
@@ -713,14 +864,30 @@ fn native_evidence(
     violation.reproduction_artifact = finding.artifact.id();
     let failure =
         FailureClusterReportFailure::property(FailurePropertyViolationRecord::new(violation));
+    let manifest = seal_attempt_log(&entries, log_store.as_ref())?;
     FailureTriageReplayEvidence::new(
         finding.clone(),
         failure,
-        entries,
+        manifest,
+        log_store.clone(),
         hash("portable-coverage"),
-        vec![frame.to_vec()],
     )
     .map_err(Into::into)
+}
+
+fn label_entry(sequence: u64, label: &str) -> Result<SchedulerEventLogEntry, Box<dyn Error>> {
+    let attributes = std::collections::BTreeMap::from([(
+        String::from("text"),
+        crucible_engine::EventAttributeValue::String(label.to_owned()),
+    )]);
+    Ok(SchedulerEventLogEntry::from_retained_open_event(
+        sequence,
+        crucible_engine::EventLogTime::from_virtual_time(VirtualTime { ticks: 9 }),
+        crucible_engine::EventSource::Engine,
+        crucible_engine::EventLevel::Info,
+        crucible_engine::SchedulerEventLogClass::Observational,
+        crucible_engine::EventPayload::new("console_output", attributes),
+    )?)
 }
 
 fn recorded_entries(decisions: &[Decision]) -> Vec<SchedulerEventLogEntry> {
@@ -896,7 +1063,33 @@ fn write_export(directory: &Path, export: &ReplayExport) -> io::Result<()> {
         VERIFICATION_SELECTED_FILE,
         &export.verification_selected.canonical_bytes(),
     )?;
+    for (id, bytes) in &export.segments {
+        write(directory, &segment_file(*id), bytes)?;
+    }
+    for (id, bytes) in &export.log_segments {
+        write(directory, &log_segment_file(*id), bytes)?;
+    }
     write_native_key(directory, &export.native_key)
+}
+
+/// Names the export file holding one schedule segment.
+fn segment_file(id: ContentId) -> String {
+    let digest: String = id
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{SEGMENT_FILE_PREFIX}{digest}")
+}
+
+/// Names the export file holding one attempt-log segment.
+fn log_segment_file(id: ContentId) -> String {
+    let digest: String = id
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{LOG_SEGMENT_FILE_PREFIX}{digest}")
 }
 
 fn invalidate_export(
@@ -977,6 +1170,34 @@ fn invalidate_export(
         }
         InvalidExport::WrongLedgerKey => {
             write_native_key(directory, &"0".repeat(64))?;
+        }
+        InvalidExport::CorruptReproductionSegment => {
+            let segment = export
+                .original_reproduction
+                .payload_segments()
+                .first()
+                .ok_or_else(|| invalid("original reproduction names no schedule segment"))?;
+            let name = segment_file(segment.content());
+            let mut bytes = read(directory, &name)?;
+            let last = bytes
+                .last_mut()
+                .ok_or_else(|| invalid("schedule segment cannot be empty"))?;
+            *last ^= 1;
+            write(directory, &name, &bytes)?;
+        }
+        InvalidExport::CorruptTriageLogSegment => {
+            let segment = export
+                .minimization_original
+                .log_segments()
+                .first()
+                .ok_or_else(|| invalid("replay evidence names no log segment"))?;
+            let name = log_segment_file(segment.content());
+            let mut bytes = read(directory, &name)?;
+            let last = bytes
+                .last_mut()
+                .ok_or_else(|| invalid("log segment cannot be empty"))?;
+            *last ^= 1;
+            write(directory, &name, &bytes)?;
         }
     }
     Ok(())

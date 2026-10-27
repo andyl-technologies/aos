@@ -194,7 +194,21 @@ fn retries_reestablish_durability_after_visible_journal_mutations() {
     )
     .expect("operation");
 
+    // A failed sync before the header is visible leaves no record.
     fail_next_directory_sync();
+    assert!(matches!(
+        journal.begin(operation, TransferJournalRole::Source, &plan),
+        Err(CampaignTransferJournalError::Io { .. })
+    ));
+    assert!(
+        !journal
+            .contains(operation)
+            .expect("no record before the header")
+    );
+
+    // The records and record-directory syncs pass; the sync after the
+    // header rename fails with the record already visible.
+    fail_directory_sync_after(2);
     assert!(matches!(
         journal.begin(operation, TransferJournalRole::Source, &plan),
         Err(CampaignTransferJournalError::Io { .. })
@@ -223,6 +237,173 @@ fn retries_reestablish_durability_after_visible_journal_mutations() {
     journal
         .complete(operation)
         .expect("retry durable record removal");
+}
+
+/// Plans a mirror archive that protects `objects` extra trace leaves.
+fn mirror_plan_with_objects(objects: usize) -> CampaignArchivePlan {
+    let repository = Arc::new(CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "transfer-paging-test",
+            256 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    ));
+    let store = crucible_campaign::CampaignExecutorStore::new(Arc::clone(&repository));
+    let mut roots = BTreeSet::new();
+    for index in 0..objects {
+        let bytes = format!("transfer-paging-leaf-{index}").into_bytes();
+        let id = ContentId::for_bytes(crucible_store::content_store::ObjectKind::Trace, 1, &bytes);
+        store
+            .publish_executor_trace_leaf(id, 1, &bytes)
+            .expect("publish retained leaf");
+        roots.insert(id);
+    }
+    plan_in_repository_with_policy_and_roots(&repository, CampaignArchivePolicy::Mirror, roots)
+}
+
+fn record_operation(plan: &CampaignArchivePlan) -> CampaignTransferOperationId {
+    CampaignTransferOperationId::for_archive(
+        plan.manifest_id(),
+        "destination",
+        "archive",
+        None,
+        DurabilityRequirement::new(1, false).expect("durability"),
+    )
+    .expect("operation")
+}
+
+fn visit_journal_roots(
+    journal: &DirectoryCampaignTransferJournal,
+) -> Result<(Vec<(ContentId, u64)>, CampaignTransferRetentionSummary), CampaignTransferJournalError>
+{
+    let mut fence = journal.acquire_campaign_transfer_retention_fence()?;
+    let mut roots = Vec::new();
+    let summary = fence.visit_roots(&mut |root| {
+        roots.push((root.id(), root.logical_length()));
+        Ok(())
+    })?;
+    Ok((roots, summary))
+}
+
+#[test]
+fn records_page_an_inventory_larger_than_the_former_record_bound() {
+    let plan = mirror_plan_with_objects(2 * record::TRANSFER_PAGE_ENTRIES + 7);
+    let mut expected = Vec::new();
+    plan.visit_transfer_objects(|id, length| {
+        expected.push((id, length));
+        Ok::<(), CampaignRepositoryError>(())
+    })
+    .expect("visit plan objects");
+    let temporary = tempfile::tempdir().expect("temporary journal root");
+    let journal_root = temporary.path().join("journal");
+    let journal = DirectoryCampaignTransferJournal::open(&journal_root).expect("open journal");
+    let operation = record_operation(&plan);
+
+    journal
+        .begin(operation, TransferJournalRole::Destination, &plan)
+        .expect("begin a multi-page transfer");
+    journal
+        .begin(operation, TransferJournalRole::Destination, &plan)
+        .expect("repeat the identical record");
+    let (roots, summary) = visit_journal_roots(&journal).expect("visit paged roots");
+
+    let record = journal_root
+        .join(RECORDS_DIRECTORY)
+        .join(operation.to_hex());
+    let pages = expected.len().div_ceil(record::TRANSFER_PAGE_ENTRIES);
+    assert!(pages >= 3);
+    for index in 0..pages {
+        assert!(record.join(format!("page-{index:08x}")).is_file());
+    }
+    assert!(!record.join(format!("page-{pages:08x}")).exists());
+    assert_eq!(roots, expected);
+    assert_eq!(summary.records(), 1);
+    assert_eq!(summary.roots(), expected.len() as u64);
+    assert!(matches!(
+        journal.begin(operation, TransferJournalRole::Source, &plan),
+        Err(CampaignTransferJournalError::RecordMismatch)
+    ));
+
+    drop(journal);
+    let reopened = DirectoryCampaignTransferJournal::open(&journal_root).expect("reopen journal");
+    let (reopened_roots, reopened_summary) =
+        visit_journal_roots(&reopened).expect("visit reopened roots");
+    assert_eq!(reopened_roots, expected);
+    assert_eq!(reopened_summary, summary);
+    reopened.complete(operation).expect("complete transfer");
+    assert!(!record.exists());
+}
+
+#[test]
+fn a_corrupt_page_fails_the_retention_visit_closed() {
+    let plan = mirror_plan_with_objects(record::TRANSFER_PAGE_ENTRIES + 1);
+    let temporary = tempfile::tempdir().expect("temporary journal root");
+    let journal_root = temporary.path().join("journal");
+    let journal = DirectoryCampaignTransferJournal::open(&journal_root).expect("open journal");
+    let operation = record_operation(&plan);
+    journal
+        .begin(operation, TransferJournalRole::Source, &plan)
+        .expect("begin transfer");
+    let page = journal_root
+        .join(RECORDS_DIRECTORY)
+        .join(operation.to_hex())
+        .join("page-00000001");
+    let mut bytes = fs::read(&page).expect("read last page");
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x01;
+    fs::write(&page, bytes).expect("corrupt last page");
+
+    assert!(matches!(
+        visit_journal_roots(&journal),
+        Err(CampaignTransferJournalError::Corrupt)
+    ));
+    assert!(matches!(
+        journal.begin(operation, TransferJournalRole::Source, &plan),
+        Err(CampaignTransferJournalError::RecordMismatch)
+    ));
+}
+
+#[test]
+fn reopening_removes_a_record_without_its_header() {
+    let plan = archive_plan();
+    let temporary = tempfile::tempdir().expect("temporary journal root");
+    let journal_root = temporary.path().join("journal");
+    let journal = DirectoryCampaignTransferJournal::open(&journal_root).expect("open journal");
+    let operation = record_operation(&plan);
+    journal
+        .begin(operation, TransferJournalRole::Source, &plan)
+        .expect("begin transfer");
+    let record = journal_root
+        .join(RECORDS_DIRECTORY)
+        .join(operation.to_hex());
+    fs::remove_file(record.join(HEADER_FILE)).expect("remove header");
+
+    assert!(!journal.contains(operation).expect("headerless record"));
+    let (roots, summary) = visit_journal_roots(&journal).expect("visit without the record");
+    assert!(roots.is_empty());
+    assert_eq!(summary.records(), 0);
+    drop(journal);
+    DirectoryCampaignTransferJournal::open(&journal_root).expect("reopen journal");
+    assert!(!record.exists());
+}
+
+#[test]
+fn a_former_single_file_record_is_refused() {
+    let temporary = tempfile::tempdir().expect("temporary journal root");
+    let journal_root = temporary.path().join("journal");
+    DirectoryCampaignTransferJournal::open(&journal_root).expect("create journal");
+    fs::write(
+        journal_root
+            .join(RECORDS_DIRECTORY)
+            .join(format!("{}.transfer", "a".repeat(64))),
+        b"version 1 record",
+    )
+    .expect("write former record");
+
+    assert!(matches!(
+        DirectoryCampaignTransferJournal::open(&journal_root),
+        Err(CampaignTransferJournalError::UnexpectedEntry)
+    ));
 }
 
 #[test]
@@ -362,7 +543,9 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
     assert_eq!(retry_transfer.copied_objects, 0);
     assert_eq!(
         retry_transfer.existing_objects,
-        plan.transfer_objects().len() as u64
+        plan.transfer_objects()
+            .expect("replay transfer objects")
+            .len() as u64
     );
     assert_eq!(retry_transfer.minimum_observed_durable_placements, 1);
 }
@@ -532,7 +715,13 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         )),
     );
     let plan = plan_in_repository(&source);
-    let damaged = plan.selected()[0];
+    let mut selected = Vec::new();
+    plan.visit_selected(|entry| {
+        selected.push(entry);
+        Ok::<(), CampaignRepositoryError>(())
+    })
+    .expect("replay selected inventory");
+    let damaged = selected[0];
     let source_handle = source_backend
         .read(damaged.id(), None)
         .expect("source object");

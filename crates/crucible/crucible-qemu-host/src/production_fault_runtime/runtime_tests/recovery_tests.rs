@@ -257,9 +257,15 @@ fn production_checkpoints_referenced_storage_recovery_events() {
         checkpoint,
         test_host_manifests(),
         &mut nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     )
     .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
-    assert_eq!(restored.emitted_events(), runtime.emitted_events());
+    assert_eq!(restored.referenced_events(), runtime.referenced_events());
+    assert_eq!(runtime.referenced_events().emitted(), 1);
+    assert_eq!(
+        runtime.referenced_events().retained()[0].event(),
+        &recovered.emitted_events[0]
+    );
 }
 
 #[test]
@@ -350,8 +356,7 @@ fn production_event_limits_cover_all_retained_event_classes_in_aggregate() {
 
     assert!(
         validate_production_event_state(
-            &[],
-            &[],
+            ReferencedEventUsage::default(),
             &observations,
             &[],
             &PendingQemuEventMap::new(),
@@ -400,7 +405,7 @@ fn qemu_event_staging_uses_remaining_aggregate_ledger_capacity() {
 
     assert_eq!(
         runtime
-            .event_staging_capacity(&[], None)
+            .event_staging_capacity(ReferencedEventUsage::default(), None)
             .unwrap_or_else(|error| panic!("aggregate capacity should be exact: {error}")),
         0
     );

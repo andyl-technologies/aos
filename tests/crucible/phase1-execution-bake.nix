@@ -4,13 +4,12 @@
   attrPath ? "checks.crucible.phase1.executionBake",
   taskIds ? ["T-EXEC-8" "T-PAT-9"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   bakedGenesis = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
-  freshLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+  freshGenesisCapture = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -100,7 +99,7 @@
         needle = "capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;";
       }
     ]
-    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs" freshLifecycle [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs" freshGenesisCapture [
       {
         label = "fresh genesis capture lifecycle entry point";
         needle = "pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(";
@@ -142,69 +141,25 @@ in
   if failures != []
   then throw "crucible phase1 execution bake check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-execution-bake";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-execution-bake";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-bake-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --lib \
               bake \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-execution-bake-daemon-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-daemon \
               --lib \
               baked_catalog_routes_by_the_complete_world_scenario_basis \

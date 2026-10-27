@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.observableConditionLeaves",
   taskIds ? ["T-TRIG-4"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
@@ -148,16 +147,20 @@
         needle = "ObservableEventPayload::NetworkDelivered";
       }
       {
-        label = "regex byte matching";
-        needle = "regex::bytes::Regex::new";
+        label = "streaming console automaton";
+        needle = "pub fn compile(pattern: &str) -> Result<Self, ConsolePatternError>";
       }
       {
-        label = "console stream matcher";
-        needle = "fn console_stream_matches";
+        label = "console match answered by a declared matcher";
+        needle = "fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;";
       }
       {
-        label = "console stream only fires on current chunk";
-        needle = "matched.end() > current_start";
+        label = "console match fires at the point of the batch where it ended";
+        needle = ".map(|fold| fold.last_match_at == Some(at))";
+      }
+      {
+        label = "undeclared console matcher fails closed";
+        needle = "pub struct UndeclaredConsoleMatcher";
       }
       {
         label = "invalid regex event graph error";
@@ -201,7 +204,7 @@
       }
       {
         label = "split console stream test";
-        needle = "console_match_spans_chunks_and_fires_when_match_completes_at_point";
+        needle = "console_match_spans_chunks_and_holds_at_the_boundary_closing_its_batch";
       }
       {
         label = "invalid regex rejection test";
@@ -264,58 +267,24 @@ in
   if failures != []
   then throw "crucible phase4 observable-condition-leaves check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-observable-condition-leaves";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sqlite
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-observable-condition-leaves";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-observable-condition-leaves-target" \
+            crucible-cargo test \
               -p crucible-engine \
               --test observable_condition_leaves \
               -- --test-threads=1

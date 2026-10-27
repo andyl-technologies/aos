@@ -79,6 +79,7 @@ fn evaluate_genesis(
         NoLeaves,
     );
     pass.evaluate_event_graph(graph, &mut state)
+        .expect("console matchers are declared")
 }
 
 #[test]

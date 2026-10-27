@@ -2,15 +2,14 @@
 
 #[path = "hot_fork/image.rs"]
 mod image;
+#[path = "hot_fork/rings.rs"]
+mod rings;
 
 pub use image::{HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkRingImage, HotForkRingImageError};
 
 use super::*;
 use crate::ABI_VERSION;
-use image::{
-    HOT_FORK_RING_IMAGE_SEGMENT_COUNT, HotForkRingImageSegment, canonical_image_len, image_digest,
-    ring_image_ranges,
-};
+use image::{HotForkRingImageSegment, canonical_image_len, image_digest, ring_image_ranges};
 
 /// Exact aggregate state of every ring I/O barrier in one setup region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,7 +306,7 @@ impl MappedSetupRegion {
                 source: MappedSetupRegionAccessError::Header { source },
             })?;
         let ranges = ring_image_ranges(layout)?;
-        let lengths = ranges.map(|(_offset, length)| {
+        let lengths = ranges.iter().map(|&(_offset, length)| {
             usize::try_from(length).map_err(|_error| HotForkRingImageError::LengthOverflow)
         });
         let lengths = lengths.into_iter().collect::<Result<Vec<_>, _>>()?;
@@ -321,10 +320,8 @@ impl MappedSetupRegion {
 
         let mut retained = Vec::new();
         retained
-            .try_reserve_exact(HOT_FORK_RING_IMAGE_SEGMENT_COUNT)
-            .map_err(|_error| HotForkRingImageError::AllocationFailed {
-                len: HOT_FORK_RING_IMAGE_SEGMENT_COUNT,
-            })?;
+            .try_reserve_exact(ranges.len())
+            .map_err(|_error| HotForkRingImageError::AllocationFailed { len: ranges.len() })?;
         for ((offset, _length), length) in ranges.into_iter().zip(lengths) {
             let local_offset =
                 usize::try_from(offset).map_err(|_error| HotForkRingImageError::LengthOverflow)?;
@@ -350,11 +347,7 @@ impl MappedSetupRegion {
             bytes.extend_from_slice(source);
             retained.push(HotForkRingImageSegment { offset, bytes });
         }
-        let segments: [HotForkRingImageSegment; HOT_FORK_RING_IMAGE_SEGMENT_COUNT] = retained
-            .try_into()
-            .map_err(|_segments| HotForkRingImageError::InvalidCanonicalImage {
-                reason: "hot-fork-ring-image-segment-count",
-            })?;
+        let segments = retained;
         let mut image = HotForkRingImage {
             abi_version: ABI_VERSION,
             region_size: layout.region_size,
@@ -471,83 +464,6 @@ impl MappedSetupRegion {
     ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
         self.apply_ring_io_barrier(BarrierAction::Release)
     }
-
-    fn apply_ring_io_barrier(
-        &self,
-        action: BarrierAction,
-    ) -> Result<MappedRingIoBarrierSnapshot, MappedSetupRegionAccessError> {
-        let layout = self
-            .layout()
-            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
-        let segments = ring_header_segments(layout);
-
-        // Validate the complete geometry before mutating the first barrier so
-        // malformed shared header bytes cannot leave a partially held region.
-        for &(segment, count, base) in &segments {
-            if count != 0 {
-                mapped_segment_offset(
-                    segment,
-                    count - 1,
-                    base,
-                    RING_HEADER_SIZE,
-                    RING_HEADER_ALIGN,
-                    self.len,
-                )?;
-            }
-        }
-
-        let mut ring_count = 0_u64;
-        let mut held_rings = 0_u64;
-        let mut producers_in_flight = 0_u64;
-        let mut consumers_in_flight = 0_u64;
-        for &(segment, count, base) in &segments {
-            for index in 0..count {
-                let offset = mapped_segment_offset(
-                    segment,
-                    index,
-                    base,
-                    RING_HEADER_SIZE,
-                    RING_HEADER_ALIGN,
-                    self.len,
-                )?;
-                // SAFETY: the complete segment geometry was validated before
-                // any mutation and this immutable borrow uses only atomics.
-                let ring = unsafe { &*self.base_ptr().add(offset).cast::<RingHeader>() };
-                let (producer, consumer) = match action {
-                    BarrierAction::Hold => (
-                        ring.hold_hot_fork_producers(),
-                        ring.hold_hot_fork_consumers(),
-                    ),
-                    BarrierAction::Query => (
-                        ring.producer_barrier_snapshot(),
-                        ring.consumer_barrier_snapshot(),
-                    ),
-                    BarrierAction::Release => {
-                        // Reopen consumers first so already-queued content can
-                        // drain before producers publish new entries.
-                        let consumer = ring.release_hot_fork_consumers();
-                        let producer = ring.release_hot_fork_producers();
-                        (producer, consumer)
-                    }
-                };
-                ring_count += 1;
-                held_rings += u64::from(producer.held() && consumer.held());
-                producers_in_flight = producers_in_flight
-                    .checked_add(producer.in_flight())
-                    .unwrap_or_else(|| std::process::abort());
-                consumers_in_flight = consumers_in_flight
-                    .checked_add(consumer.in_flight())
-                    .unwrap_or_else(|| std::process::abort());
-            }
-        }
-
-        Ok(MappedRingIoBarrierSnapshot {
-            ring_count,
-            held_rings,
-            producers_in_flight,
-            consumers_in_flight,
-        })
-    }
 }
 
 fn require_quiescent(snapshot: MappedRingIoBarrierSnapshot) -> Result<(), HotForkRingImageError> {
@@ -560,117 +476,4 @@ fn require_quiescent(snapshot: MappedRingIoBarrierSnapshot) -> Result<(), HotFor
         producers_in_flight: snapshot.producers_in_flight(),
         consumers_in_flight: snapshot.consumers_in_flight(),
     })
-}
-
-type RingHeaderSegment = (&'static str, u32, u64);
-
-const fn ring_header_segments(layout: RegionLayout) -> [RingHeaderSegment; 9] {
-    [
-        (
-            "directed ring header",
-            layout.ring_count,
-            layout.ring_hdr_off,
-        ),
-        (
-            "coverage ring header",
-            layout.coverage_ring_count,
-            layout.coverage_ring_hdr_off,
-        ),
-        (
-            "white-box marker ring header",
-            layout.whitebox_marker_ring_count,
-            layout.whitebox_marker_ring_hdr_off,
-        ),
-        (
-            "fault command ring header",
-            layout.fault_command_ring_count,
-            layout.fault_command_ring_hdr_off,
-        ),
-        (
-            "fault result ring header",
-            layout.fault_result_ring_count,
-            layout.fault_result_ring_hdr_off,
-        ),
-        (
-            "fault event ring header",
-            layout.fault_event_ring_count,
-            layout.fault_event_ring_hdr_off,
-        ),
-        (
-            "guest introspection ring header",
-            layout.guest_introspection_ring_count,
-            layout.guest_introspection_ring_hdr_off,
-        ),
-        (
-            "accelerator ring header",
-            layout.accelerator_ring_count,
-            layout.accelerator_ring_hdr_off,
-        ),
-        (
-            "selectable reply ring header",
-            layout.selectable_reply_ring_count,
-            layout.selectable_reply_ring_hdr_off,
-        ),
-    ]
-}
-
-type RingImageHeaderSegment = (&'static str, u32, u64, u32);
-
-const fn ring_image_header_segments(layout: RegionLayout) -> [RingImageHeaderSegment; 9] {
-    [
-        (
-            "directed ring header",
-            layout.ring_count,
-            layout.ring_hdr_off,
-            layout.queue_capacity,
-        ),
-        (
-            "coverage ring header",
-            layout.coverage_ring_count,
-            layout.coverage_ring_hdr_off,
-            layout.coverage_queue_capacity,
-        ),
-        (
-            "white-box marker ring header",
-            layout.whitebox_marker_ring_count,
-            layout.whitebox_marker_ring_hdr_off,
-            layout.whitebox_marker_queue_capacity,
-        ),
-        (
-            "fault command ring header",
-            layout.fault_command_ring_count,
-            layout.fault_command_ring_hdr_off,
-            layout.fault_command_queue_capacity,
-        ),
-        (
-            "fault result ring header",
-            layout.fault_result_ring_count,
-            layout.fault_result_ring_hdr_off,
-            layout.fault_result_queue_capacity,
-        ),
-        (
-            "fault event ring header",
-            layout.fault_event_ring_count,
-            layout.fault_event_ring_hdr_off,
-            layout.fault_event_queue_capacity,
-        ),
-        (
-            "guest introspection ring header",
-            layout.guest_introspection_ring_count,
-            layout.guest_introspection_ring_hdr_off,
-            layout.guest_introspection_queue_capacity,
-        ),
-        (
-            "accelerator ring header",
-            layout.accelerator_ring_count,
-            layout.accelerator_ring_hdr_off,
-            layout.accelerator_queue_capacity,
-        ),
-        (
-            "selectable reply ring header",
-            layout.selectable_reply_ring_count,
-            layout.selectable_reply_ring_hdr_off,
-            layout.selectable_reply_queue_capacity,
-        ),
-    ]
 }

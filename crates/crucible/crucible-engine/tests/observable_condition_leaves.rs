@@ -32,6 +32,17 @@ fn evaluator(ticks: u64, events: Vec<ObservableEvent>) -> ConditionEvaluationPas
     support::evaluation_with_observables(ticks, events, NoNamedLeaves)
 }
 
+/// Builds a pass whose prefix declares `condition`'s console matchers.
+fn console_evaluator(
+    ticks: u64,
+    events: Vec<ObservableEvent>,
+    condition: &Predicate,
+) -> ConditionEvaluationPass<NoNamedLeaves> {
+    let prefix =
+        support::with_console_matchers(support::observable_prefix(ticks, events), [condition]);
+    ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves)
+}
+
 fn assertion(id: &str, predicate: Predicate) -> AssertionDef {
     AssertionDef {
         id: AssertionId::from_name(id),
@@ -111,6 +122,7 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     assert!(
         evaluator(20, vec![wrong_time, wrong_link, matching])
             .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
     );
     let future = ObservableEvent::network_delivered(
         time(20),
@@ -143,7 +155,11 @@ fn network_match_can_observe_any_link() {
         b"raft-append-entries".to_vec(),
     );
 
-    assert!(evaluator(3, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(3, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -163,11 +179,15 @@ fn console_match_uses_host_side_regex_over_captured_console_bytes() {
         b"ready to accept connections\n".to_vec(),
     );
 
-    assert!(evaluator(9, vec![wrong_node, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        console_evaluator(9, vec![wrong_node, event], &condition)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
-fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
+fn console_match_spans_chunks_and_holds_at_the_boundary_closing_its_batch() {
     let condition = Predicate::console_match(
         node("server"),
         RegexProgram::from_pattern("ready to accept"),
@@ -175,11 +195,74 @@ fn console_match_spans_chunks_and_fires_when_match_completes_at_point() {
     let first = ObservableEvent::console_output(time(8), node("server"), b"ready to ".to_vec());
     let second = ObservableEvent::console_output(time(9), node("server"), b"accept\n".to_vec());
 
-    assert!(!evaluator(8, vec![first.clone()]).evaluate_assertion_condition(&condition));
     assert!(
-        evaluator(9, vec![first.clone(), second.clone()]).evaluate_assertion_condition(&condition)
+        !console_evaluator(8, vec![first.clone()], &condition)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
     );
-    assert!(!evaluator(10, vec![first, second]).evaluate_assertion_condition(&condition));
+    assert!(
+        console_evaluator(9, vec![first.clone(), second.clone()], &condition)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    // The match ended in the batch the boundary at tick 10 closes.
+    assert!(
+        console_evaluator(10, vec![first.clone(), second.clone()], &condition)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+
+    // A later batch without a new match leaves the leaf false.
+    let mut prefix = support::with_console_matchers(
+        support::observable_prefix(9, vec![first, second]),
+        [&condition],
+    );
+    prefix
+        .append_entries(vec![
+            crucible_engine::test_support::condition_boundary_entry_for_test(
+                3,
+                time(10),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            ),
+        ])
+        .expect("a later boundary extends the prefix");
+    assert!(
+        !ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+}
+
+#[test]
+fn undeclared_console_matchers_fail_closed_without_changing_trigger_state() {
+    let condition = Predicate::console_match(node("server"), RegexProgram::from_pattern("ready"));
+    let graph = EventGraph::new_for_world(
+        vec![Event::once(
+            crucible_engine::EventId::from_name("on-ready"),
+            Some(condition.clone()),
+            Action::Pass,
+        )],
+        &observable_world(),
+    )
+    .expect("console event graph should build");
+    let events = vec![ObservableEvent::console_output(
+        time(4),
+        node("server"),
+        b"ready\n".to_vec(),
+    )];
+    let mut state = EventGraphState::new();
+    let before = state.to_compact_binary();
+
+    let assertion = evaluator(4, events.clone()).evaluate_assertion_condition(&condition);
+    let trigger = evaluator(4, events).evaluate_event_graph(&graph, &mut state);
+
+    let undeclared = crucible_engine::UndeclaredConsoleMatcher {
+        node: node("server"),
+        pattern: String::from("ready"),
+    };
+    assert_eq!(assertion, Err(undeclared.clone()));
+    assert_eq!(trigger.map(|firings| firings.len()), Err(undeclared));
+    assert_eq!(state.to_compact_binary(), before);
 }
 
 #[test]
@@ -229,7 +312,11 @@ fn io_pattern_observes_deterministic_io_completion_kind() {
         b"ok".to_vec(),
     );
 
-    assert!(evaluator(11, vec![wrong_kind, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(11, vec![wrong_kind, event])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -242,7 +329,11 @@ fn io_pattern_any_matches_any_completion_kind_for_the_node() {
         b"sector=12".to_vec(),
     );
 
-    assert!(evaluator(12, vec![event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(12, vec![event])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -251,7 +342,11 @@ fn node_state_observes_lifecycle_transition() {
     let event = ObservableEvent::node_state(time(14), node("worker"), NodeLifecycle::Exited);
     let earlier = ObservableEvent::node_state(time(13), node("worker"), NodeLifecycle::Exited);
 
-    assert!(evaluator(14, vec![earlier, event]).evaluate_assertion_condition(&condition));
+    assert!(
+        evaluator(14, vec![earlier, event])
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -281,7 +376,15 @@ fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
         b"server listening on 0.0.0.0:8080\n".to_vec(),
     )];
 
-    let firings = support::evaluate_graph(&graph, &mut state, evaluator(33, events));
+    let prefix = support::with_console_matchers(
+        support::observable_prefix(33, events),
+        graph
+            .events()
+            .iter()
+            .filter_map(|event| event.trigger.as_ref()),
+    );
+    let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);
+    let firings = support::evaluate_graph(&graph, &mut state, pass);
 
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-console-ready");

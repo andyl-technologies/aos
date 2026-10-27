@@ -27,7 +27,8 @@ use tokio::task::JoinHandle;
 async fn streaming_cursor_replays_then_live_tails_api_events() {
     let fixture = CursorFixture::spawn_loaded(6100).await;
     let session = fixture.session;
-    append_event_log_entries_for_test(&fixture.event_log_hub, &event_pair(0, 1));
+    append_event_log_entries_for_test(&fixture.event_log_hub, &event_pair(0, 1))
+        .unwrap_or_else(|error| panic!("cursor entries should append: {error}"));
 
     let before_state = fixture.live.read().state_kind;
     let before_len = fixture.event_log_hub.current_cursor().next_sequence;
@@ -94,7 +95,8 @@ async fn streaming_cursor_replays_then_live_tails_api_events() {
         "attach beyond current length should skip historical replay",
     );
 
-    append_event_log_entries_for_test(&fixture.event_log_hub, &event_pair(before_len, 2));
+    append_event_log_entries_for_test(&fixture.event_log_hub, &event_pair(before_len, 2))
+        .unwrap_or_else(|error| panic!("cursor entries should append: {error}"));
 
     let live = recv_event(&mut tail_only).await;
     assert_eq!(live.cursor, EventLogCursor::new(before_len));
@@ -195,10 +197,11 @@ fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> 
     let causal = condition_payload_entry_for_test(
         first_sequence,
         frontier,
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("cursor-{quantum}")),
-            value: quantum,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(format!("cursor-{quantum}")),
+            0,
+            quantum,
+        ))),
     );
 
     let mut details = BTreeMap::new();

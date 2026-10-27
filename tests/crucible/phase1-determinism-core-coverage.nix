@@ -104,6 +104,9 @@
             cd source
           fi
           cd crates
+          # Exception to the prebuilt Crucible test families: coverage needs
+          # every unit compiled with instrumentation flags, a build
+          # configuration no other gate shares, so this gate runs Cargo.
           mkdir -p "$TMPDIR/profraw"
           export LLVM_PROFILE_FILE="$TMPDIR/profraw/%m-%p.profraw"
           export RUSTFLAGS="-C instrument-coverage -C link-dead-code -C codegen-units=1"

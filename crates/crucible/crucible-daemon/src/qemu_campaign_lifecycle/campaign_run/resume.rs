@@ -11,7 +11,7 @@ pub(super) struct GuardedDefaultCampaignResumeSource {
     pub(super) final_stop: StopCondition,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) source_observation_proof: Option<ObservationStopProof>,
-    pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementReplayEvidence>,
+    pub(super) source_observation_evidence: Option<crate::CrucibleMeasurementEvidenceBundle>,
     pub(super) capture_only: bool,
 }
 
@@ -22,6 +22,7 @@ pub struct GuardedDefaultCampaignResumeProof {
     source_configuration: crucible_campaign::ConfigurationId,
     source_frontier: VirtualTime,
     source_observation: ObservationId,
+    source_record: Box<GuardedDefaultCampaignObservation>,
     source_savepoint: Option<GuardedDefaultCampaignSavepoint>,
     ready: Option<CampaignFactId>,
     selection: Option<CampaignFactId>,
@@ -51,6 +52,15 @@ impl GuardedDefaultCampaignResumeProof {
     #[must_use]
     pub const fn source_observation(&self) -> ObservationId {
         self.source_observation
+    }
+
+    /// Returns the accepted source observation itself.
+    ///
+    /// The run streams its observations to a sink, so the proof keeps the
+    /// one observation a resume caller must authenticate against its handle.
+    #[must_use]
+    pub fn source_observation_record(&self) -> &GuardedDefaultCampaignObservation {
+        &self.source_record
     }
 
     /// Returns the exact source capture used by a continuation, if one was needed.
@@ -83,6 +93,7 @@ pub(super) struct DefaultRunResumeProof {
     pub(super) source_configuration: crucible_campaign::ConfigurationId,
     pub(super) source_frontier: VirtualTime,
     pub(super) source_observation: ObservationId,
+    pub(super) source_record: Box<GuardedDefaultCampaignObservation>,
     pub(super) source_evidence: QemuAttemptExecutionEvidenceSnapshot,
     pub(super) source_capture: Option<DefaultRunSavepointCapture>,
     pub(super) ready_snapshot: Option<CampaignSnapshotId>,
@@ -137,7 +148,8 @@ where
         source.source_observation_evidence.as_ref(),
     ) {
         (Some(proof), Some(evidence)) => evidence
-            .verify_observation_stop_proof(proof)
+            .evidence()
+            .verify_observation_stop_proof(evidence.segments(), proof)
             .map_err(GuardedDefaultCampaignRunError::Measurement)?,
         (None, None) => {}
         (Some(_), None) | (None, Some(_)) => {
@@ -148,31 +160,41 @@ where
         .initial_replay_closure
         .as_ref()
         .ok_or(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch)?;
-    if request.initial_schedule.decisions().iter().any(|decision| {
-        !matches!(
-            decision,
-            crucible_engine::Decision::DeliveryOrder(_)
-                | crucible_engine::Decision::RngDraw(_)
-                | crucible_engine::Decision::Preemption(_)
-                | crucible_engine::Decision::Selection(_)
-        )
-    }) {
+    if request
+        .initial_schedule
+        .decision_history()
+        .iter()
+        .any(|decision| {
+            !matches!(
+                decision,
+                crucible_engine::Decision::DeliveryOrder(_)
+                    | crucible_engine::Decision::RngDraw(_)
+                    | crucible_engine::Decision::Preemption(_)
+                    | crucible_engine::Decision::Selection(_)
+            )
+        })
+    {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     closure
         .validate_for_schedule(&request.scenario, &request.initial_schedule)
         .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?;
-    if request.initial_schedule.decisions().iter().any(|decision| {
-        let crucible_engine::Decision::Selection(decision) = decision else {
-            return false;
-        };
-        decision.selection().is_ok_and(|selection| {
-            matches!(
-                selection.origin(),
-                crucible_campaign::SelectionOrigin::ModelSample(_)
-            )
+    if request
+        .initial_schedule
+        .decision_history()
+        .iter()
+        .any(|decision| {
+            let crucible_engine::Decision::Selection(decision) = decision else {
+                return false;
+            };
+            decision.selection().is_ok_and(|selection| {
+                matches!(
+                    selection.origin(),
+                    crucible_campaign::SelectionOrigin::ModelSample(_)
+                )
+            })
         })
-    }) {
+    {
         return Err(GuardedDefaultCampaignInvariantError::ResumeSourceCheckpointMismatch.into());
     }
     if request
@@ -220,7 +242,6 @@ pub(super) struct ResumeProofMaterialization<'a> {
     pub(super) repository: &'a Arc<CampaignRepository>,
     pub(super) final_snapshot: CampaignSnapshotId,
     pub(super) lineage: &'a CampaignLineage,
-    pub(super) observations: &'a [GuardedDefaultCampaignObservation],
     pub(super) terminal: &'a GuardedDefaultCampaignObservation,
     pub(super) terminal_evidence: &'a QemuAttemptExecutionEvidenceSnapshot,
     pub(super) proof: Option<DefaultRunResumeProof>,
@@ -237,7 +258,6 @@ where
         repository,
         final_snapshot,
         lineage,
-        observations,
         terminal,
         terminal_evidence,
         proof,
@@ -251,10 +271,10 @@ where
     let expected_configuration = crucible_campaign::ConfigurationId::from_hash(
         CampaignHash::from_bytes(source.checkpoint.configuration.bytes),
     );
-    let source_observation = observations
-        .iter()
-        .find(|observation| observation.id() == proof.source_observation)
-        .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
+    let source_observation = proof.source_record.as_ref();
+    if source_observation.id() != proof.source_observation {
+        return Err(GuardedDefaultCampaignInvariantError::MissingResumeProof.into());
+    }
     if proof.source_checkpoint != source.checkpoint.id
         || proof.source_configuration != expected_configuration
         || proof.source_frontier != source.checkpoint.virtual_time
@@ -321,6 +341,7 @@ where
             source_configuration: proof.source_configuration,
             source_frontier: proof.source_frontier,
             source_observation: proof.source_observation,
+            source_record: proof.source_record,
             source_savepoint: Some(GuardedDefaultCampaignSavepoint {
                 request: capture.request,
                 attempt: capture.description.attempt,
@@ -447,6 +468,7 @@ where
         source_configuration: proof.source_configuration,
         source_frontier: proof.source_frontier,
         source_observation: proof.source_observation,
+        source_record: proof.source_record,
         source_savepoint,
         ready: proof.ready,
         selection: proof.selection,

@@ -28,9 +28,41 @@ impl CampaignRepository {
             merkle,
             mutation_lock: Mutex::new(()),
             validated_heads: Mutex::new(BTreeMap::new()),
-            beam_projection_cache: Mutex::new(None),
             planner_authority: None,
             debugger_authority: None,
+            scratch_directory: None,
+        }
+    }
+
+    /// Places archive planning and inspection spills under `parent`.
+    ///
+    /// Archive planning and inspection external-sort closure-sized identity
+    /// sets and spool inventory pages. Each operation creates its own
+    /// owner-only directory inside `parent` and removes it when the operation
+    /// finishes or fails. `parent` must be an existing directory on real disk
+    /// beside the repository's durable state, never a memory-backed
+    /// filesystem. Without a scratch directory those spills stay in process
+    /// memory, which suits in-memory repositories and small fixtures.
+    #[must_use]
+    pub fn with_scratch_directory(mut self, parent: impl Into<std::path::PathBuf>) -> Self {
+        self.scratch_directory = Some(parent.into());
+        self
+    }
+
+    /// Opens fresh spill storage for one archive operation.
+    pub(in crate::repository) fn spill_storage(
+        &self,
+    ) -> Result<crate::spill::SpillStorage, CampaignRepositoryError> {
+        match &self.scratch_directory {
+            Some(parent) => {
+                crate::spill::SpillStorage::directory(parent, ".crucible-archive-spill").map_err(
+                    |source| CampaignRepositoryError::Scratch {
+                        operation: "create-archive-spill-directory",
+                        source,
+                    },
+                )
+            }
+            None => Ok(crate::spill::SpillStorage::Memory),
         }
     }
 
@@ -465,7 +497,7 @@ impl CampaignRepository {
         mut current: ContentId,
         requested: CampaignSnapshotId,
     ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             let loaded = self.read_snapshot(current)?;
             if current == requested.content_id() {
                 return Ok(loaded);
@@ -541,6 +573,14 @@ impl CampaignRepository {
             map_key_hash("corpus.configuration", lineage.genesis().as_hash()),
             lineage.genesis_content().content_id(),
         )?;
+        let observations = self
+            .merkle
+            .insert(empty, choice_source_index_anchor_key(), empty)?;
+        let observations = self.merkle.insert(
+            observations.content_id(),
+            direct_selection_index_anchor_key(),
+            empty,
+        )?;
         let exploration = self
             .merkle
             .insert(empty, frontier_index_anchor_key(), frontier_index)?;
@@ -563,7 +603,7 @@ impl CampaignRepository {
             crate::CampaignRoots {
                 graph: graph.content_id(),
                 exploration: exploration.content_id(),
-                observations: empty,
+                observations: observations.content_id(),
                 corpus: corpus.content_id(),
                 coverage: empty,
                 findings: empty,

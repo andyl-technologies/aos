@@ -361,12 +361,29 @@ pub(in crate::model) fn coverage_guided_fuzz_feedback_fingerprint(
     feedback: &[EventLogCoverageFeedback],
     sequence: u64,
 ) -> ContentHash {
-    if feedback.is_empty() {
-        return ContentHash::default();
-    }
+    coverage_guided_fuzz_guidance_index(feedback.len(), sequence)
+        .and_then(|index| feedback.get(index))
+        .map_or_else(ContentHash::default, |feedback| {
+            feedback.fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing)
+        })
+}
 
-    let index = (sequence % feedback.len() as u64) as usize;
-    feedback[index].fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing)
+/// Selects guidance by fingerprint alone, with the same index rule as
+/// [`coverage_guided_fuzz_feedback_fingerprint`].
+pub(in crate::model) fn coverage_guided_fuzz_fingerprint_at(
+    fingerprints: &[ContentHash],
+    sequence: u64,
+) -> ContentHash {
+    coverage_guided_fuzz_guidance_index(fingerprints.len(), sequence)
+        .and_then(|index| fingerprints.get(index))
+        .copied()
+        .unwrap_or_default()
+}
+
+/// Returns the guidance entry consulted for `sequence`, or `None` without guidance.
+fn coverage_guided_fuzz_guidance_index(len: usize, sequence: u64) -> Option<usize> {
+    let len = u64::try_from(len).ok().filter(|len| *len != 0)?;
+    usize::try_from(sequence % len).ok()
 }
 
 pub(in crate::model) fn coverage_guided_fuzz_seed_corpus_entry(

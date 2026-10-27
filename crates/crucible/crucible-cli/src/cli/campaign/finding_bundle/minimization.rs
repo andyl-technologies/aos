@@ -107,8 +107,11 @@ pub(super) fn finding_bundle_minimization_report(
         ));
     }
 
-    let original_schedule = schedule_counts(&finding.reproduction)?;
-    let minimized_schedule = schedule_counts(minimized)?;
+    let minimized_artifact = finding.minimized_artifact.as_ref().ok_or_else(|| {
+        backend_error("retained minimized reproduction has no authenticated artifact")
+    })?;
+    let original_schedule = schedule_counts(&finding.report.finding.artifact);
+    let minimized_schedule = schedule_counts(minimized_artifact);
     let target = finding.finding.signature().fingerprint();
     let attempts = trace
         .attempts()
@@ -186,16 +189,12 @@ pub(super) fn finding_bundle_minimization_report(
     })
 }
 
-fn schedule_counts(
-    reproduction: &crucible_campaign::ReproductionArtifact,
-) -> Result<(usize, usize), CliError> {
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-            .map_err(|error| backend_error(format!("finding schedule is invalid: {error}")))?;
-    let decisions = artifact.schedule().decisions();
+/// Counts a reproduction's schedule decisions and selection decisions.
+fn schedule_counts(artifact: &crucible_engine::ReproductionArtifact) -> (usize, usize) {
+    let decisions = artifact.schedule().decision_history();
     let selections = decisions
         .iter()
         .filter(|decision| matches!(decision, crucible_engine::Decision::Selection(_)))
         .count();
-    Ok((decisions.len(), selections))
+    (decisions.len(), selections)
 }

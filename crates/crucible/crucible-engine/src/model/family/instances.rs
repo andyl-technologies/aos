@@ -119,8 +119,37 @@ impl ScenarioFamily {
         sequence: u64,
         feedback: &[EventLogCoverageFeedback],
     ) -> Result<(u64, PinnedScenario, u64), EngineError> {
-        let cardinality = self.space.cardinality()?;
         let fingerprint = coverage_guided_fuzz_feedback_fingerprint(feedback, sequence);
+        self.sample_coverage_guided_with_fingerprint(config, sequence, fingerprint)
+    }
+
+    /// Selects one pinned family instance from retained coverage fingerprints.
+    ///
+    /// Guidance consults only each feedback's fingerprint, so a caller that
+    /// keeps fingerprints instead of complete coverage projections samples the
+    /// same instance and energy as [`Self::sample_coverage_guided`] given the
+    /// fingerprints of the same feedback in the same order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError`] when the family space or selected instance is invalid.
+    pub fn sample_coverage_guided_by_fingerprint(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        sequence: u64,
+        fingerprints: &[ContentHash],
+    ) -> Result<(u64, PinnedScenario, u64), EngineError> {
+        let fingerprint = coverage_guided_fuzz_fingerprint_at(fingerprints, sequence);
+        self.sample_coverage_guided_with_fingerprint(config, sequence, fingerprint)
+    }
+
+    fn sample_coverage_guided_with_fingerprint(
+        &self,
+        config: CoverageGuidedFuzzConfig,
+        sequence: u64,
+        fingerprint: ContentHash,
+    ) -> Result<(u64, PinnedScenario, u64), EngineError> {
+        let cardinality = self.space.cardinality()?;
         let sample_index =
             coverage_guided_fuzz_sample_index(config, sequence, fingerprint, cardinality);
         let energy = coverage_guided_fuzz_energy(config, sequence, fingerprint);
@@ -291,6 +320,12 @@ impl PinnedConfiguration {
 /// [`ScenarioDefForm`]'s own seed. The artifact carries only the complete
 /// validated scenario form and recorded schedule, so its identity is exactly the
 /// RFC tuple `(seed, scenario, schedule)` without a parent family or host path.
+///
+/// The identity is the BLAKE3 hash of the version 10 transport written by
+/// [`Self::to_compact_binary`]. It is streamed segment by segment, so it is
+/// computed without materializing the schedule's transport. Segment
+/// boundaries are a pure function of the decisions, so the identity is
+/// determined by the scenario and the decision sequence.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionArtifact {
     pub(in crate::model) id: ContentHash,
@@ -314,8 +349,7 @@ impl ReproductionArtifact {
     /// Rebuilds an artifact from already-recorded self-contained parts.
     #[must_use]
     pub fn from_recorded_parts(scenario: ScenarioDefForm, schedule: Schedule) -> Self {
-        let id =
-            ContentHash::from_bytes(&reproduction_artifact_canonical_bytes(&scenario, &schedule));
+        let id = reproduction_artifact_id(&scenario, &schedule);
         Self {
             id,
             scenario,
@@ -323,32 +357,88 @@ impl ReproductionArtifact {
         }
     }
 
-    /// Parses a compact canonical artifact representation.
+    /// Parses the self-contained compact artifact representation.
+    ///
+    /// The schedule is carried in its segmented transport form and decoded
+    /// one segment at a time.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
-    /// scenario, or schedule bytes.
+    /// scenario, or schedule bytes, or any schema other than version 10.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9)?;
-        let scenario_bytes = reader.read_binary_blob_bounded(
-            "reproduction-artifact.scenario",
-            MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
-        )?;
-        let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10)?;
+        let scenario = read_reproduction_scenario(&mut reader)?;
+        // The schedule transport bounds its own manifest and every segment, so
+        // its blob carries no whole-schedule bound of its own.
+        let schedule_len = reader.read_count()?;
+        let schedule_bytes = reader.read_exact(schedule_len)?;
         reader.finish()?;
-        if !scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V9) {
-            return Err(scenario_serialization_error(
-                "reproduction-artifact scenario version does not match its outer version",
-            ));
-        }
-
-        let scenario = ScenarioDefForm::from_compact_binary(scenario_bytes)?;
         let schedule = Schedule::from_compact_binary(schedule_bytes)?;
         Ok(Self::from_recorded_parts(scenario, schedule))
     }
 
-    /// Returns the BLAKE3 content address over this artifact's canonical bytes.
+    /// Returns the stored form and the manifest of the segments it names.
+    ///
+    /// The stored form carries the scenario and the schedule's
+    /// [`ScheduleManifest`]; the owner retains the schedule's segments beside
+    /// it, written by [`Schedule::write_segments`] or visited by
+    /// [`Schedule::try_for_each_segment`], which produce the same segments.
+    ///
+    /// ```text
+    /// "crucible.reproduction-artifact-manifest.v1\0"
+    ///   blob scenario-def-form v9, blob schedule-manifest
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] when the schedule cannot
+    /// be segmented within one manifest's bounds.
+    pub fn to_stored_form(&self) -> Result<(Vec<u8>, ScheduleManifest), EngineError> {
+        let manifest = self.schedule.try_for_each_segment(|_, _| Ok(()))?;
+        let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_STORED_MAGIC_V1);
+        writer.write_binary_blob(&self.scenario.to_compact_binary());
+        writer.write_binary_blob(&manifest.to_bytes());
+        Ok((writer.finish(), manifest))
+    }
+
+    /// Returns the schedule manifest named by a stored form without decoding
+    /// its scenario.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed bytes.
+    pub fn stored_form_schedule_manifest(bytes: &[u8]) -> Result<ScheduleManifest, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_STORED_MAGIC_V1)?;
+        reader.read_binary_blob_bounded(
+            "reproduction-artifact.scenario",
+            MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
+        )?;
+        let manifest = read_stored_schedule_manifest(&mut reader)?;
+        reader.finish()?;
+        Ok(manifest)
+    }
+
+    /// Parses a stored form, reading the schedule's segments from `source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ScenarioSerialization`] for malformed bytes, a
+    /// missing segment, a segment that does not derive its reference, or a
+    /// reassembled schedule that does not derive its recorded identity.
+    pub fn from_stored_form(
+        bytes: &[u8],
+        source: &dyn crate::SegmentSource,
+    ) -> Result<Self, EngineError> {
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_STORED_MAGIC_V1)?;
+        let scenario = read_reproduction_scenario(&mut reader)?;
+        let manifest = read_stored_schedule_manifest(&mut reader)?;
+        reader.finish()?;
+        let schedule = manifest.read_schedule(source)?;
+        Ok(Self::from_recorded_parts(scenario, schedule))
+    }
+
+    /// Returns the BLAKE3 content address of this artifact's compact transport.
     #[must_use]
     pub fn id(&self) -> ContentHash {
         self.id
@@ -378,16 +468,20 @@ impl ReproductionArtifact {
         &self.schedule
     }
 
-    /// Returns the canonical byte serialization hashed by [`Self::id`].
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        reproduction_artifact_canonical_bytes(&self.scenario, &self.schedule)
-    }
-
-    /// Serializes this artifact as compact canonical bytes.
+    /// Serializes this artifact as its self-contained compact transport.
+    ///
+    /// ```text
+    /// "crucible.reproduction-artifact.v10\0"
+    ///   blob scenario-def-form v9, blob schedule v6
+    /// ```
+    ///
+    /// [`Self::id`] is the BLAKE3 hash of these bytes.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        self.canonical_bytes()
+        let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10);
+        writer.write_binary_blob(&self.scenario.to_compact_binary());
+        writer.write_binary_blob(&self.schedule.to_compact_binary());
+        writer.finish()
     }
 
     /// Replays the artifact through producer validation and the reduction oracle.

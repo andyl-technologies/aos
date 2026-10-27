@@ -166,9 +166,14 @@ fn shared_pass_evaluates_assertions_and_triggers_over_one_prefix() {
     let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);
 
     assert_eq!(pass.point(), point);
-    assert!(pass.evaluate_assertion_condition(&condition));
+    assert!(
+        pass.evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 
-    let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut graph_state)
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-when-started");
     assert_eq!(firings[0].at(), time(44));
@@ -187,16 +192,20 @@ fn condition_evaluation_uses_checked_prefix_events_only() {
     let mut evaluation = ConditionEvaluationPass::from_log_prefix(prefix, NoNamedLeaves);
 
     assert!(
-        !evaluation.evaluate_assertion_condition(&Predicate::node_state(
-            node("db-0"),
-            NodeLifecycle::Started,
-        )),
+        !evaluation
+            .evaluate_assertion_condition(&Predicate::node_state(
+                node("db-0"),
+                NodeLifecycle::Started,
+            ))
+            .expect("console matchers are declared"),
         "event-backed leaves fire at the current evaluation point, not earlier prefix entries"
     );
     assert!(
-        evaluation.evaluate_assertion_condition(&Predicate::node_state(
-            node("db-1"),
-            NodeLifecycle::Started,
-        ))
+        evaluation
+            .evaluate_assertion_condition(&Predicate::node_state(
+                node("db-1"),
+                NodeLifecycle::Started,
+            ))
+            .expect("console matchers are declared")
     );
 }

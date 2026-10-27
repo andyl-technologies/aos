@@ -22,9 +22,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
+/// Peak resident canonical bytes of one selected continuation's base and origins.
 const MAX_SELECTED_ORIGIN_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES: u64 = 32 * 1024 * 1024 + 1024;
-const SELECTED_ORIGIN_STRUCTURAL_BYTES: u64 = 4096;
 
 use crate::exact_checkpoint_store::AttemptCheckpointResultState;
 use crate::executor_supervisor::ExecutionCheckpointHandoff;
@@ -45,8 +45,11 @@ use crate::{
     TerminalFailureOutcome,
 };
 
+mod origin_chain;
 mod result;
 
+pub use origin_chain::AttemptOriginChain;
+use origin_chain::resolve_after_attempt_start;
 pub use result::*;
 
 /// Fully authenticated discovery or branch start supplied to an execution model.
@@ -69,7 +72,7 @@ pub enum ResolvedAttemptStart {
         /// Oldest discovery or branch start from which replay begins.
         base: Box<ResolvedAttemptStart>,
         /// Origin attempts and their claimed reached boundaries, oldest first.
-        origins: Box<ResolvedAttemptOrigins>,
+        origins: Box<AttemptOriginChain>,
     },
 }
 
@@ -82,44 +85,6 @@ impl ResolvedAttemptStart {
             Self::Branch { parent, .. } => parent,
             Self::AfterAttempt { origins, .. } => origins.last().reached(),
         }
-    }
-}
-
-/// Nonempty oldest-first selected continuation ancestry.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedAttemptOrigins {
-    first: ResolvedAttemptOrigin,
-    rest: Vec<ResolvedAttemptOrigin>,
-}
-
-impl ResolvedAttemptOrigins {
-    /// Binds one required origin and any later descendants.
-    #[must_use]
-    pub fn new(first: ResolvedAttemptOrigin, rest: Vec<ResolvedAttemptOrigin>) -> Self {
-        Self { first, rest }
-    }
-
-    /// Returns the final origin that establishes the semantic start boundary.
-    #[must_use]
-    pub fn last(&self) -> &ResolvedAttemptOrigin {
-        self.rest.last().unwrap_or(&self.first)
-    }
-
-    /// Iterates through origins from the authenticated base toward the boundary.
-    pub fn iter(&self) -> impl Iterator<Item = &ResolvedAttemptOrigin> {
-        std::iter::once(&self.first).chain(self.rest.iter())
-    }
-
-    /// Returns the number of retained origin attempts.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        1 + self.rest.len()
-    }
-
-    /// Returns false because a selected continuation always has an origin.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        false
     }
 }
 
@@ -155,6 +120,17 @@ impl ResolvedAttemptOrigin {
     #[must_use]
     pub const fn source_stop_bytes(&self) -> u64 {
         self.source_stop_bytes
+    }
+
+    /// Binds an origin without repository resolution, for decode tests.
+    #[cfg(test)]
+    pub(crate) const fn from_test_parts(attempt: Attempt, reached: ConfigurationArtifact) -> Self {
+        Self {
+            attempt,
+            reached,
+            source_stop: None,
+            source_stop_bytes: 0,
+        }
     }
 }
 
@@ -256,11 +232,15 @@ pub fn resolve_attempt_execution_input(
 
 /// Resolves one attempt while charging retained origin artifacts to its memory ceiling.
 ///
+/// A continuation keeps its base and terminal origin resident and reloads
+/// earlier origins one at a time (see [`AttemptOriginChain`]), so the charge is
+/// that peak rather than the sum over the whole ancestry.
+///
 /// # Errors
 ///
 /// Returns the same errors as [`resolve_attempt_execution_input`] and rejects
-/// continuation ancestry whose aggregate payload exceeds the admitted resident
-/// byte limit.
+/// continuation ancestry whose peak resident payload exceeds the admitted
+/// resident byte limit.
 pub fn resolve_attempt_execution_input_with_resources(
     store: &CampaignExecutorStore,
     key: crate::AttemptExecutionKey,
@@ -280,7 +260,7 @@ fn resolve_attempt_execution_input_with_origin_limit(
 ) -> Result<AttemptExecutionInput, CampaignRepositoryError> {
     let lineage = store.load_lineage(key.lineage())?;
     let scenario = store.load_scenario_artifact(lineage.scenario_content())?;
-    let mut attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
+    let attempt_chain = store.load_attempt_origin_chain(key.attempt())?;
     let attempt = attempt_chain
         .first()
         .cloned()
@@ -288,7 +268,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
             reason: "attempt-origin-chain-is-empty",
         })?;
     let path = store.load_branch_path(attempt.path())?;
-    let mut origin_bytes = 0_u64;
     let start = match attempt.start() {
         AttemptStart::Discover { configuration } => {
             let configuration = store.load_configuration_artifact(configuration)?;
@@ -303,94 +282,13 @@ fn resolve_attempt_execution_input_with_origin_limit(
                 selection: Box::new(store.resolve_selection(selection)?),
             }
         }
-        AttemptStart::AfterAttempt { .. } => {
-            let maximum_origin_bytes = maximum_resident_bytes
-                .min(MAX_SELECTED_ORIGIN_ARTIFACT_BYTES)
-                .checked_sub(MAX_CONFIGURATION_ARTIFACT_LOAD_BYTES)
-                .ok_or(CampaignRepositoryError::InvalidRequest {
-                    reason: "selected-origin-resident-limit-cannot-load-one-artifact",
-                })?;
-            let base_attempt = attempt_chain
-                .pop()
-                .ok_or(CampaignRepositoryError::Integrity {
-                    reason: "attempt-origin-chain-is-empty",
-                })?;
-            let base = match base_attempt.start() {
-                AttemptStart::Discover { configuration } => {
-                    let configuration = store.load_configuration_artifact(configuration)?;
-                    account_origin_artifact(
-                        &configuration,
-                        &mut origin_bytes,
-                        maximum_origin_bytes,
-                    )?;
-                    ResolvedAttemptStart::Discover { configuration }
-                }
-                AttemptStart::Branch {
-                    parent, selection, ..
-                } => {
-                    let parent = store.load_configuration_artifact(parent)?;
-                    account_origin_artifact(&parent, &mut origin_bytes, maximum_origin_bytes)?;
-                    ResolvedAttemptStart::Branch {
-                        parent,
-                        selection: Box::new(store.resolve_selection(selection)?),
-                    }
-                }
-                AttemptStart::AfterAttempt { .. } => {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-has-no-base",
-                    });
-                }
-            };
-            let mut origins = Vec::with_capacity(attempt_chain.len());
-            let mut origin_attempt = base_attempt;
-            for descendant in attempt_chain.into_iter().rev() {
-                let AttemptStart::AfterAttempt { origin, reached } = descendant.start() else {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-has-interior-base",
-                    });
-                };
-                if origin_attempt.id()? != origin {
-                    return Err(CampaignRepositoryError::Integrity {
-                        reason: "attempt-origin-chain-link-mismatch",
-                    });
-                }
-                let reached = store.load_configuration_artifact(reached)?;
-                account_origin_artifact(&reached, &mut origin_bytes, maximum_origin_bytes)?;
-                let (source_stop, source_stop_bytes) = match descendant.continuation_input() {
-                    Some(continuation_input) => {
-                        let (stop, bytes) = resolve_continuation_source_stop(
-                            store,
-                            continuation_input,
-                            &origin_attempt,
-                            &reached,
-                        )?;
-                        account_origin_bytes(bytes, &mut origin_bytes, maximum_origin_bytes)?;
-                        let bytes = u64::try_from(bytes).map_err(|_| {
-                            CampaignRepositoryError::Integrity {
-                                reason: "attempt-origin-artifact-byte-count-overflow",
-                            }
-                        })?;
-                        (Some(stop), bytes)
-                    }
-                    None => (None, 0),
-                };
-                origins.push(ResolvedAttemptOrigin {
-                    attempt: origin_attempt,
-                    reached,
-                    source_stop,
-                    source_stop_bytes,
-                });
-                origin_attempt = descendant;
-            }
-            let mut origins = origins.into_iter();
-            let first = origins.next().ok_or(CampaignRepositoryError::Integrity {
-                reason: "attempt-origin-chain-has-no-boundary",
-            })?;
-            ResolvedAttemptStart::AfterAttempt {
-                base: Box::new(base),
-                origins: Box::new(ResolvedAttemptOrigins::new(first, origins.collect())),
-            }
-        }
+        AttemptStart::AfterAttempt { .. } => resolve_after_attempt_start(
+            store,
+            &lineage,
+            attempt.path(),
+            attempt_chain,
+            maximum_resident_bytes,
+        )?,
     };
 
     let starting_configuration = match &start {
@@ -412,7 +310,8 @@ fn resolve_attempt_execution_input_with_origin_limit(
             reason: "attempt-opportunity-lineage-mismatch",
         });
     }
-    if let ResolvedAttemptStart::AfterAttempt { base, origins } = &start {
+    // Every origin's lineage and path were authenticated as it was resolved.
+    if let ResolvedAttemptStart::AfterAttempt { base, .. } = &start {
         let base_selection = match base.as_ref() {
             ResolvedAttemptStart::Branch { selection, .. } => Some(selection),
             ResolvedAttemptStart::Discover { .. } => None,
@@ -424,11 +323,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
         };
         if base_selection
             .is_some_and(|selection| selection.opportunity().scenario() != lineage.scenario())
-            || origins.iter().any(|origin| {
-                origin.reached().scenario() != lineage.scenario()
-                    || origin.reached().scenario_artifact() != lineage.scenario_content()
-                    || origin.attempt().path() != attempt.path()
-            })
         {
             return Err(CampaignRepositoryError::Integrity {
                 reason: "attempt-origin-chain-lineage-mismatch",
@@ -443,90 +337,6 @@ fn resolve_attempt_execution_input_with_origin_limit(
         path,
         start,
     })
-}
-
-fn account_origin_artifact(
-    artifact: &ConfigurationArtifact,
-    total: &mut u64,
-    limit: u64,
-) -> Result<(), CampaignRepositoryError> {
-    let payload_bytes = u64::try_from(artifact.payload().len()).map_err(|_| {
-        CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        }
-    })?;
-    // Decoded schedules and replay-plan prefixes are charged by the typed
-    // Crucible adapter. This phase retains only canonical envelopes and keeps
-    // headroom for one subsequent bounded artifact load.
-    let bytes = payload_bytes
-        .checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    *total = total
-        .checked_add(bytes)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    if *total > limit {
-        return Err(CampaignRepositoryError::InvalidRequest {
-            reason: "attempt-origin-artifacts-exceed-resource-limit",
-        });
-    }
-    Ok(())
-}
-
-fn resolve_continuation_source_stop(
-    store: &CampaignExecutorStore,
-    continuation_input: &AttemptContinuationInput,
-    source_attempt: &Attempt,
-    reached: &ConfigurationArtifact,
-) -> Result<(StopOutcome, usize), CampaignRepositoryError> {
-    let observation = store.load_observation(continuation_input.source_observation())?;
-    if observation.attempt() != source_attempt.id()? {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-origin-mismatch",
-        });
-    }
-    if observation.child_content() != reached.id()?
-        || observation.child() != reached.configuration()
-    {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-reached-mismatch",
-        });
-    }
-    if !observation.stop().reaches(source_attempt.stop()) {
-        return Err(CampaignRepositoryError::Integrity {
-            reason: "attempt-continuation-source-observation-stop-mismatch",
-        });
-    }
-
-    let bytes = observation.canonical_bytes().len();
-    Ok((observation.stop().clone(), bytes))
-}
-
-fn account_origin_bytes(
-    encoded_bytes: usize,
-    total: &mut u64,
-    limit: u64,
-) -> Result<(), CampaignRepositoryError> {
-    let bytes = u64::try_from(encoded_bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_add(SELECTED_ORIGIN_STRUCTURAL_BYTES))
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    *total = total
-        .checked_add(bytes)
-        .ok_or(CampaignRepositoryError::Integrity {
-            reason: "attempt-origin-artifact-byte-count-overflow",
-        })?;
-    if *total > limit {
-        return Err(CampaignRepositoryError::InvalidRequest {
-            reason: "attempt-origin-artifacts-exceed-resource-limit",
-        });
-    }
-    Ok(())
 }
 
 /// Operational limits, control state, and restore root for one guest execution.
@@ -558,6 +368,8 @@ pub struct AttemptExecutionContext {
     host_watchdog: Option<AssignmentHostWatchdog>,
     origin: AttemptExecutionOrigin,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    maximum_event_log_bytes: u64,
+    event_log_namespace: Option<Arc<crate::AttemptLogNamespace>>,
     selected_checkpoint: Mutex<Option<crate::executor_supervisor::SelectedExactCheckpointRoot>>,
 }
 
@@ -578,6 +390,8 @@ impl Clone for AttemptExecutionContext {
             host_watchdog: self.host_watchdog.clone(),
             origin: self.origin,
             guest_selectable_diagnostics: self.guest_selectable_diagnostics.clone(),
+            maximum_event_log_bytes: self.maximum_event_log_bytes,
+            event_log_namespace: self.event_log_namespace.clone(),
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -657,6 +471,8 @@ impl AttemptExecutionContext {
             host_watchdog: None,
             origin: AttemptExecutionOrigin::Initial,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log_namespace: None,
             selected_checkpoint: Mutex::new(None),
         }
     }
@@ -746,7 +562,7 @@ impl AttemptExecutionContext {
             .map(AssignmentHostWatchdog::remaining)
     }
 
-    fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
+    pub(crate) fn with_host_watchdog(mut self, watchdog: AssignmentHostWatchdog) -> Self {
         self.host_watchdog = Some(watchdog);
         self
     }
@@ -786,6 +602,83 @@ impl AttemptExecutionContext {
     ) -> Self {
         self.guest_selectable_diagnostics = diagnostics;
         self
+    }
+
+    /// Applies the deployment's operational bound on one attempt's event log.
+    ///
+    /// The bound is not attempt resource identity (RFC-0020 CCOMP-28).
+    #[must_use]
+    pub(crate) const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    /// Returns the operational bound on one attempt's encoded event log.
+    #[must_use]
+    pub(crate) const fn maximum_event_log_bytes(&self) -> u64 {
+        self.maximum_event_log_bytes
+    }
+
+    /// Seals attempt event logs into directories under `namespace`.
+    #[must_use]
+    pub(crate) fn with_event_log_namespace(
+        mut self,
+        namespace: Option<Arc<crate::AttemptLogNamespace>>,
+    ) -> Self {
+        self.event_log_namespace = namespace;
+        self
+    }
+
+    /// Creates a new directory store for one attempt event log.
+    ///
+    /// Returns `None` when the executor configured no namespace, in which
+    /// case logs stay in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the attempt directory cannot be created.
+    pub(crate) fn create_event_log_store(&self) -> std::io::Result<Option<crate::AttemptLogStore>> {
+        self.event_log_namespace
+            .as_deref()
+            .map(crate::AttemptLogNamespace::create_store)
+            .transpose()
+    }
+
+    /// Creates the sink that receives one attempt's resolved-effect trace segments.
+    ///
+    /// Segments go to a new directory under the event-log namespace and are
+    /// charged against `maximum_event_log_bytes`, like each retained copy of
+    /// the attempt log. Returns `None` when the executor configured no
+    /// namespace, in which case the lifecycle keeps its trace in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the trace directory cannot be created.
+    pub(crate) fn create_fault_trace_sink(
+        &self,
+    ) -> std::io::Result<Option<Arc<dyn crucible_store::segment_store::SegmentSink>>> {
+        let Some(namespace) = self.event_log_namespace.as_deref() else {
+            return Ok(None);
+        };
+        let sink = namespace.create_trace_sink(self.maximum_event_log_bytes)?;
+        Ok(Some(Arc::new(sink)))
+    }
+
+    /// Creates the store that receives one finding preparation's replay records.
+    ///
+    /// Records go to a new directory under the event-log namespace, or stay in
+    /// memory when the executor configured none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the record directory cannot be created.
+    pub(crate) fn create_replay_record_store(&self) -> std::io::Result<crate::ReplayRecordStore> {
+        Ok(match self.event_log_namespace.as_deref() {
+            Some(namespace) => {
+                crate::ReplayRecordStore::directory(namespace.create_directory("records")?)
+            }
+            None => crate::ReplayRecordStore::memory(),
+        })
     }
 
     /// Returns the resource limits available to a newly launched process owner.
@@ -1187,6 +1080,8 @@ pub struct RepositoryAttemptWorker<M> {
     store: CampaignExecutorStore,
     model: M,
     guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder,
+    maximum_event_log_bytes: u64,
+    event_log_namespace: Option<Arc<crate::AttemptLogNamespace>>,
 }
 
 impl<M> RepositoryAttemptWorker<M> {
@@ -1197,7 +1092,26 @@ impl<M> RepositoryAttemptWorker<M> {
             store,
             model,
             guest_selectable_diagnostics: GuestSelectableBoundaryDiagnosticRecorder::default(),
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log_namespace: None,
         }
+    }
+
+    /// Bounds every attempt's encoded event log at `maximum_bytes`.
+    #[must_use]
+    pub(crate) const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    /// Seals every attempt's event log into its own directory under `namespace`.
+    #[must_use]
+    pub(crate) fn with_event_log_namespace(
+        mut self,
+        namespace: Arc<crate::AttemptLogNamespace>,
+    ) -> Self {
+        self.event_log_namespace = Some(namespace);
+        self
     }
 
     #[must_use]
@@ -1287,7 +1201,9 @@ where
         ))
         .with_execution_origin(queued.origin())
         .with_checkpoint_handoff(expected_scenario, queued.checkpoint_handoff().cloned())
-        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone());
+        .with_guest_selectable_boundary_diagnostics(self.guest_selectable_diagnostics.clone())
+        .with_maximum_event_log_bytes(self.maximum_event_log_bytes)
+        .with_event_log_namespace(self.event_log_namespace.clone());
         let mut host_watchdog = host_watchdog_ms
             .map(|milliseconds| {
                 AssignmentHostWatchdogGuard::start(milliseconds, context.cancellation().clone())

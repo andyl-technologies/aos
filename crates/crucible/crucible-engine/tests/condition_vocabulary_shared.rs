@@ -65,9 +65,11 @@ fn trigger_and_assertion_evaluation_use_the_same_predicate_function() {
     )])
     .expect("shared condition event graph should build");
     let mut state = EventGraphState::new();
-    let assertion_truth = evaluator(7, &["quorum-ready"]).evaluate_assertion_condition(
-        assertion_predicate(&assertion).expect("assertion carries predicate"),
-    );
+    let assertion_truth = evaluator(7, &["quorum-ready"])
+        .evaluate_assertion_condition(
+            assertion_predicate(&assertion).expect("assertion carries predicate"),
+        )
+        .expect("console matchers are declared");
     let trigger_firings =
         support::evaluate_graph(&graph, &mut state, evaluator(7, &["quorum-ready"]));
 

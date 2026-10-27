@@ -31,7 +31,8 @@ async fn event_log_stream_does_not_duplicate_replayed_live_frame() {
     crucible_session::test_support::append_event_log_entries_for_test(
         &hub,
         std::slice::from_ref(&entry),
-    );
+    )
+    .expect("test entries should append");
     let frame = stream
         .recv()
         .await
@@ -52,7 +53,8 @@ async fn event_log_stream_does_not_duplicate_replayed_live_frame() {
 async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream() {
     let hub = SessionEventLog::new();
     let entries = (0..10).map(test_event_log_entry).collect::<Vec<_>>();
-    crucible_session::test_support::append_event_log_entries_for_test(&hub, &entries);
+    crucible_session::test_support::append_event_log_entries_for_test(&hub, &entries)
+        .expect("test entries should append");
     let mut stream = hub.subscribe(EventLogCursor::new(0));
 
     for expected in entries.iter().take(2) {
@@ -67,11 +69,13 @@ async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream
     assert_eq!(stream.cursor(), EventLogCursor::new(2));
 
     let replacement = test_event_log_entry(5);
-    crucible_session::test_support::truncate_event_log_for_test(&hub, 5);
+    crucible_session::test_support::truncate_event_log_for_test(&hub, 5)
+        .expect("test log should truncate");
     crucible_session::test_support::append_event_log_entries_for_test(
         &hub,
         std::slice::from_ref(&replacement),
-    );
+    )
+    .expect("test entries should append");
 
     for expected in entries[2..5].iter().chain(std::iter::once(&replacement)) {
         let frame = stream

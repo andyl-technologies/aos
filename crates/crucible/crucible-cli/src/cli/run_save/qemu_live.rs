@@ -35,8 +35,24 @@ pub(crate) const LIVE_FUZZ_RUN_CEILING_TICKS: u64 = 51_000_000;
 /// within 1.5 seconds of virtual time at 1000 logical ticks per nanosecond.
 pub(crate) const LIVE_EXPLORATION_RUN_CEILING_TICKS: u64 = 1_500_000_000_000;
 
-/// Five-second virtual-time ceiling for a production CLI lifecycle session.
+/// Five-second default virtual-time ceiling for a production CLI session.
+///
+/// Interactive runs without an authored `--max-virtual-time` deadline keep
+/// this horizon so an unbounded guest still returns control to the operator.
+/// Packaged campaign attempts take their horizon from the campaign policy.
 pub(crate) const PRODUCTION_CLI_RUN_CEILING_TICKS: u64 = 5_000_000_000_000;
+
+/// Returns the lifecycle ceiling for one interactive CLI run.
+///
+/// An authored virtual-time deadline beyond the default becomes the run's
+/// horizon; otherwise the default remains, so runs that already fit keep
+/// their exact RUN plans and recorded replay contracts.
+pub(crate) const fn interactive_run_ceiling_ticks(max_virtual_time_ticks: Option<u64>) -> u64 {
+    match max_virtual_time_ticks {
+        Some(deadline) if deadline > PRODUCTION_CLI_RUN_CEILING_TICKS => deadline,
+        _ => PRODUCTION_CLI_RUN_CEILING_TICKS,
+    }
+}
 
 /// Scheduler-quantum ceiling for a production CLI lifecycle session.
 pub(crate) const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
@@ -298,6 +314,9 @@ pub(crate) fn run_local_qemu_verify_workflow(
         run_plan.collect_execution_fingerprints = false;
         let (lifecycle, preemption_evidence) =
             verify_qemu_lifecycle_config(backend, reduction.host_profile)?;
+        let lifecycle = lifecycle.with_run_ceiling_ticks(interactive_run_ceiling_ticks(
+            run_plan.max_virtual_time_ticks,
+        ));
         let host_pressure = VerifyQemuHostPressure::start(reduction.host_profile)?;
         let report = run_local_qemu_campaign_with_hostile_deadlines(
             backend,

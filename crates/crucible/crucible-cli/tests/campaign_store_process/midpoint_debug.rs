@@ -593,11 +593,12 @@ fn drive_fast_q7_failure(
         0x63,
     )?;
     let fast_request = guest_choice::accepted_branch_request(&fast_submission)?;
-    let fast_attempt = guest_choice::wait_for_new_completed_attempt(
+    let fast_attempt = guest_choice::wait_for_new_completed_attempt_with_timeout(
         fixture,
         service,
         &known_attempts,
         &fast_request,
+        guest_choice::GUEST_CHOICE_ATTEMPT_WAIT,
     )?;
     known_attempts.insert(fast_attempt);
     let fast = guest_choice::wait_for_attempt_observation(fixture, fast_attempt)?;
@@ -744,14 +745,18 @@ fn exercise_public_exact_pin_gc_flow(
         assert!(
             journal
                 .roots()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|root| root == checkpoint.content_id()),
             "public exact pin did not root its materialized checkpoint"
         );
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == checkpoint.content_id()),
             "public exact pin checkpoint entered the deletion manifest"
         );
@@ -798,14 +803,18 @@ fn exercise_public_exact_pin_gc_flow(
     assert!(
         !journal
             .roots()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|root| root == checkpoint.content_id()),
         "stale exact-pin selection remained a GC root after public unpin"
     );
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == checkpoint.content_id()),
         "unpin did not return the exact checkpoint to the deletion candidates"
     );
@@ -918,8 +927,14 @@ fn validate_replayed_failure_boundary(
     for replay_id in replay_ids {
         let record = repository.load_finding_triage_replay_evidence(replay_id)?;
         let reproduction = repository.load_reproduction_artifact(record.reproduction())?;
-        let artifact =
-            crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+        let artifact = crucible_daemon::decode_crucible_reproduction(
+            &reproduction,
+            &crucible_daemon::RepositoryReproductionSegments::new(
+                &repository,
+                record.reproduction(),
+            ),
+            "retained reproduction",
+        )?;
         let replay = artifact.replay()?;
         let configuration = crucible_engine::Configuration {
             def: artifact.scenario_def(),
@@ -942,9 +957,16 @@ fn validate_replayed_failure_boundary(
             artifact,
             replay,
         };
-        let native_replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
+        // The record's log segments are served by the repository by position.
+        let log_segments = ::crucible_engine::SharedSegmentStore::new();
+        for (index, segment) in (0_u32..).zip(record.log_segments()) {
+            let bytes = repository.read_finding_triage_replay_log_segment(replay_id, index)?;
+            ::crucible_engine::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
+        }
+        let native_replay = ::crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
             native_finding,
             record.payload(),
+            std::sync::Arc::new(log_segments),
         )?;
         if native_replay.schema_version() != record.payload_schema()
             || native_replay
@@ -975,12 +997,14 @@ fn validate_replayed_failure_boundary(
             )
             .into());
         }
-        if native_replay.causal_entries().is_empty() {
+        let replay_entries = native_replay.event_log_manifest().entry_count();
+        if replay_entries == 0 {
             return Err("campaign finding replay retained an empty causal projection".into());
         }
         validate_fast_q7_schedule(native_replay.finding().artifact.schedule())?;
-        causal_entries = causal_entries
-            .checked_add(native_replay.causal_entries().len())
+        causal_entries = usize::try_from(replay_entries)
+            .ok()
+            .and_then(|entries| causal_entries.checked_add(entries))
             .ok_or("campaign replay causal-entry count overflow")?;
     }
 
@@ -993,7 +1017,7 @@ fn validate_replayed_failure_boundary(
 
 fn validate_fast_q7_schedule(schedule: &Schedule) -> Result<(), Box<dyn Error>> {
     let selections = schedule
-        .decisions()
+        .decision_history()
         .iter()
         .filter_map(|decision| match decision {
             Decision::Selection(selection) => Some(selection.selection()),

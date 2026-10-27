@@ -372,6 +372,12 @@ pub enum StreamingApiError {
         /// Number of skipped frames reported by the event-log stream.
         skipped: u64,
     },
+    /// A sealed event-log segment needed for replay could not be read back.
+    #[error("streaming event-log replay is unavailable: {reason}")]
+    EventLogUnavailable {
+        /// Segment-store failure reported by the session event log.
+        reason: String,
+    },
 }
 
 fn require_control_mapping() -> Result<(), StreamingEquivalenceError> {

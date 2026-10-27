@@ -427,6 +427,7 @@ mod tests {
             name: String::from(name),
             directory,
             cancellation_event,
+            cancellation_fanout: Arc::default(),
             cgroup_kill,
             cgroup_events,
             path: path.clone(),

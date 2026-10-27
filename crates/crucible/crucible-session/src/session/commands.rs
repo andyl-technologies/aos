@@ -291,8 +291,16 @@ pub enum QueryKind {
     EventLogLength,
     /// Return scheduler-derived choices available at the current boundary.
     SearchFrontier,
-    /// Return the exact production resolved-effect trace, when present.
+    /// Return the manifest of the exact production resolved-effect trace.
+    ///
+    /// The session retains the exported trace so later
+    /// [`QueryKind::ResolvedEffectTraceSegment`] queries read its segments.
     ResolvedEffectTrace,
+    /// Return one segment of the trace named by the latest manifest query.
+    ResolvedEffectTraceSegment {
+        /// Content identity of the requested segment.
+        segment: crucible_engine::segment_store::ContentId,
+    },
     /// Return one deterministic execution-fingerprint sample for a node.
     ExecutionFingerprint {
         /// Node whose backend fingerprint should be sampled.
@@ -315,13 +323,18 @@ pub enum QueryResult {
     EventLogLength(usize),
     /// Scheduler-derived choices available at the current boundary.
     SearchFrontier {
-        /// Runtime RESOLVE frontiers captured in execution order.
+        /// Runtime RESOLVE frontiers retained at the current boundary, in
+        /// execution order. Frontiers the run has passed are not retained.
         frontiers: Vec<crucible_engine::SearchRuntimeFrontier>,
         /// Explorer-forced choices that have not reached their RESOLVE point.
         pending_branch_choices: usize,
     },
-    /// Exact production resolved-effect trace, or none for an inert plan.
+    /// Canonical manifest of the production resolved-effect trace, or none
+    /// for an inert plan.
     ResolvedEffectTrace(Option<Vec<u8>>),
+    /// Encoded trace segment, or none when the latest manifest does not list
+    /// the requested segment.
+    ResolvedEffectTraceSegment(Option<Vec<u8>>),
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
     /// Attached node and stable operator-facing GDB endpoint, or none before attach.

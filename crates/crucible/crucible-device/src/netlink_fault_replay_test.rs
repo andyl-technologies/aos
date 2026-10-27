@@ -398,6 +398,55 @@ fn drop_inflight_returns_complete_delivery_evidence() {
 }
 
 #[test]
+fn resumed_consumer_receives_missed_frames_at_its_resume_instant() {
+    let mut l = link(LinkFaults::none());
+    for (emit_icount, frame_id) in [(0, 21), (1, 22), (3 * BASE_TICKS, 23)] {
+        ok(l.emit(
+            &Frame::new(emit_icount, frame_id, vec![0; 4]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+    }
+    let resume = BASE_TICKS + 5;
+
+    let retimed = ok(l.resume_consumer_at(resume));
+
+    // Both missed frames wait for the first instant after the resume, in
+    // emission order; the frame still in flight keeps its exact delivery.
+    assert_eq!(retimed, 2);
+    assert_eq!(l.current_icount(), resume);
+    assert_eq!(l.next_exact_local_event(), Some(resume + 1));
+    assert!(ok(l.advance_to(resume)).is_empty());
+    let missed = ok(l.advance_to(resume + 1));
+    assert_eq!(
+        missed
+            .iter()
+            .map(|delivery| delivery.frame_id)
+            .collect::<Vec<_>>(),
+        vec![21, 22]
+    );
+    assert_eq!(l.next_exact_local_event(), Some(4 * BASE_TICKS));
+}
+
+#[test]
+fn resumed_consumer_rejects_a_clock_regression_unchanged() {
+    let mut l = link(LinkFaults::none());
+    ok(l.emit(
+        &Frame::new(0, 31, vec![0; 4]),
+        &FrameDraws::default(),
+        PastDeliveryPolicy::FailLoud,
+    ));
+    assert!(ok(l.advance_to(10)).is_empty());
+    let before = l.snapshot();
+
+    assert!(matches!(
+        l.resume_consumer_at(9),
+        Err(DeviceError::ClockRegression { .. })
+    ));
+    assert_eq!(l.snapshot(), before);
+}
+
+#[test]
 fn link_slot_references_router_constant() {
     assert_eq!(LINK_SLOT, crucible_qemu_shmem::SLOT_NET_ROUTER);
 }

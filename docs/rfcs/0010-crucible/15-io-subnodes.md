@@ -46,7 +46,7 @@ guest instructions. Each I/O sub-node has:
 - a **deterministic completion model** that, given a request emitted at the
   requester's exact logical tick `t`, computes the *exact* tick
   `t + latency_ticks` at which the response becomes visible;
-- a **seeded per-device RNG** (forked by name-hash, [`04-determinism-contract.md`](04-determinism-contract.md))
+- a **seeded per-device RNG** (keyed by name, [`04-determinism-contract.md`](04-determinism-contract.md))
   for any probabilistic behavior, whose position is part of `MaterializedState`
   ([TEMP-7]).
 
@@ -200,13 +200,15 @@ consult the overlay first and fall back to the base image page by page:
       mark page_base dirty
 ```
 
-- **[IO-5]** The block sub-node MUST serve reads from an **in-memory
-  copy-on-write overlay of 4 KiB pages layered over a read-only base image**:
+- **[IO-5]** The block sub-node MUST serve reads from a **copy-on-write
+  overlay of 4 KiB pages layered over a read-only base image**:
   a read resolves each page from the overlay if present, else from the base
   image; a write copies the affected base page into the overlay (if not already
   present) and patches it there. The base image MUST be opened read-only and MUST
   NOT be mutated by any operation ([INV-5], [TEMP-9]). *Gate:* `gate:any-guest`,
   `gate:content-address`. *Spec:* §15.2.1; cross-ref 06, 07.
+  Overlay pages may live in a run-local, disk-backed page store (RFC-0020
+  §15.14); the store never affects a read, snapshot, or replay result.
 
 - **[IO-6]** The block sub-node MUST support the operations **read**, **write**,
   **flush**, and **get-length**: read returns the requested byte range (overlay
@@ -229,23 +231,24 @@ consult the overlay first and fall back to the base image page by page:
 Block requests and responses ride the SPSC frame rings of
 [`13-shmem-abi.md`](13-shmem-abi.md) §13.3.3 between the VM's slot and
 `SLOT_BLK_IO`; the wire payload is carried in a `FrameEntry`'s `data` field
-(sized so a 4 KiB read response plus its header fits without truncation,
-`MAX_FRAME_DATA = 4608`, [SHM-13]). The on-wire layout is a versioned ABI:
+(sized so a 4 KiB read response or write request plus its header fits without
+truncation, `MAX_FRAME_DATA = 4608`, [SHM-13]). The on-wire layout is a versioned ABI:
 
 ```text
-BlockRequest  (VM slot -> SLOT_BLK_IO)
+BlockRequest  (VM slot -> SLOT_BLK_IO), header = 36 bytes
   u8   type        -- 0=read, 1=write, 2=flush, 3=get_length, 4=discard
-  u8   version     -- block wire ABI version (= 4)
+  u8   version     -- block request ABI version (= 5)
   u16  _reserved   -- zero
   u64  epoch       -- transport generation
   u32  request_id  -- correlates response within the epoch
   u64  offset      -- byte offset (read/write/discard)
   u32  count       -- byte count (read/write/discard)
+  u64  oldest_live_epoch -- oldest epoch the frontend may still submit ([IO-35])
   [count bytes]    -- payload, write only
 
-BlockResponse (SLOT_BLK_IO -> VM slot)
+BlockResponse (SLOT_BLK_IO -> VM slot), header = 20 bytes
   u8   status      -- 0=ok, 1=error, 2=reset, 3/4=duplicate, 5/6/7=disposition
-  u8   version     -- block wire ABI version (= 4)
+  u8   version     -- block response ABI version (= 4)
   u16  _reserved   -- zero
   u64  epoch       -- echoes the transport generation
   u32  request_id  -- echoes the epoch-local request ID
@@ -253,17 +256,19 @@ BlockResponse (SLOT_BLK_IO -> VM slot)
   [count bytes]    -- success data; exactly one typed-result byte on error
 ```
 
-Version 4 defines epoch-scoped identities, the closed error payload used by
+Requests and responses carry independent version bytes. Version 4 of both
+messages defined epoch-scoped identities, the closed error payload used by
 signal-driven storage faults, payload-free discard, reset events, and reset
-dispositions. The one-byte error values and their
+dispositions. Request version 5 appends `oldest_live_epoch`. The response
+layout is unchanged at version 4, which QEMU's reset-event decoder also reads. The one-byte error values and their
 guest-visible errno mapping are listed in
 [`14-block-typed-errors.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/14-block-typed-errors.md),
 and discard is specified in
 [`15-block-discard.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/15-block-discard.md).
 Reset transport is specified in
 [`16-block-transport-reset.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
-Every noncurrent version is rejected; there is no alternate decode or silent
-downgrade path.
+Every noncurrent version of either message is rejected; there is no alternate
+decode or silent downgrade path.
 
 - **[IO-8]** The block request/response wire format MUST be a **versioned
   boundary ABI** ([G-8]): every message MUST carry an ABI version byte and a
@@ -283,6 +288,25 @@ downgrade path.
   so deliverability is decided by `delivery_icount <= consumer.current_icount`
   ([SHM-33]). *Gate:* `gate:layer1-injection`, `gate:abi-conformance`. *Spec:*
   §15.2.2; cross-ref 13 §13.9.
+
+- **[IO-35]** Every block request MUST carry `oldest_live_epoch`: the oldest
+  transport epoch that any request the frontend may still submit can carry,
+  including the request itself. The QEMU plugin computes it over requests
+  awaiting a response and identities answered with `retry_preserve_id`, which
+  are the only identities other than the allocator's next one that its submit
+  callback accepts. The value MUST NOT exceed the request's epoch and MUST NOT
+  decrease in ring order; a decoder rejects the first condition as malformed,
+  and the block sub-node fails closed on a floor that regresses or exceeds its
+  transport epoch. On admission the sub-node records the floor and discards the
+  retired reset policy and preserve-ID authorizations of every lower epoch, so
+  retained transport state spans only the frontend's live epochs instead of
+  every reset in the run. An identity QEMU abandons after a `retry_preserve_id`
+  disposition, because recovery admission later fails, remains in the plugin's
+  retry set and keeps the floor low. That is conservative rather than unsafe and
+  is bounded by the retained-epoch hard limit, so no separate abandon
+  notification is needed. *Gate:* `gate:abi-conformance`. *Spec:* §15.2.2;
+  cross-ref
+  [`16-block-transport-reset.md`](../0014-signal-driven-fault-model/14-qemu-fault-patches/16-block-transport-reset.md).
 
 ### 15.2.3 The deterministic completion model
 
@@ -335,6 +359,11 @@ QEMU:
   reproduce a state byte-identical to an uninterrupted run, validated by the
   replay oracle ([INV-2], [TEMP-18]). *Gate:* `gate:replay-oracle`,
   `gate:content-address`. *Spec:* §15.2.4; cross-ref 07 §3, §5, §6.
+  The current encoding realizes the delta through content addressing: a
+  snapshot names every overlay chunk of 1,024 pages by its BLAKE3 identity
+  with present and dirty page bitmaps, so chunks unchanged since the parent
+  resolve to the parent's existing objects and a checkpoint stores only
+  chunks holding pages dirtied since its parent (RFC-0020 §15.14).
 
 - **[IO-12]** The block sub-node MUST support **materialize-to-image**: writing
   the read-only base image followed by every live overlay page on top, producing
@@ -564,7 +593,7 @@ seeded RNG draws)`, and every piece of device state that could influence a futur
 response is part of the checkpoint's `MaterializedState`.
 
 - **[IO-21]** Each I/O sub-node MUST own a **seeded per-device RNG** for any
-  probabilistic behavior, with its stream **forked by name-hash** from the root
+  probabilistic behavior, with its stream **keyed by name** from the root
   seed ([`04-determinism-contract.md`](04-determinism-contract.md)), so adding or
   renaming an unrelated device does not perturb another device's draw sequence.
   Every probabilistic device choice MUST be a draw from this RNG, consumed in a
@@ -737,7 +766,7 @@ net link: latency/jitter/loss/reorder/dup/corrupt/bandwidth as deterministic
         perturbations of delivery icount / payload, seeded (IO-20)
         link = the ONE conservative-uncertainty source; supplies lookahead;
         latency floor + recompute on change; reorder stays in the future (IO-33,34)
-determinism: seeded per-device RNG forked by name-hash; RNG state in
+determinism: seeded per-device RNG keyed by name; RNG state in
         MaterializedState; all times pure fns of request icount + latency (IO-21..24)
 faults: I/O faults are UNIFORM with network faults — perturb the modeled
         completion/response, never host I/O (IO-25,26)
@@ -892,7 +921,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: latency, jitter, reorder, bandwidth, loss, duplicate, and corruption
   are pure modeled perturbations of delivery icount and payload, with no host
   timing, filesystem, or scheduling input.
-- [x] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
+- [x] **T-IO-10** Implement per-device seeded RNG keyed by name, with every
   probabilistic device choice drawn from it in deterministic order and recorded
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
   default hasher on response paths). — satisfies [IO-21], [IO-24]; spec §15.5;
@@ -902,9 +931,9 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   `cargo test --manifest-path crates/Cargo.toml -p crucible`, and
   the focused `crucible-test-support` `harness_lint`
   `reduction_path_sources_have_no_banned_nondeterminism` subtest.
-  `device_rng` forks the per-device stream through the same name-hashed
-  `RngStreamId::for_device` and SplitMix64 cursor convention as the engine
-  decision RNG, `DeviceSchedulingSubNode` records block/9p raw draws followed by
+  `device_rng` opens the per-device stream through the same name-keyed
+  `RngStreamId::for_device` and `keyed-blake3-v2` draw-ordinal convention as
+  the engine decision RNG, `DeviceSchedulingSubNode` records block/9p raw draws followed by
   loss/duplicate/corrupt `FaultFires` decisions, and
   `emit_link_frame_with_recorded_faults` records the network-link jitter,
   reorder, loss, duplicate, corrupt, and corrupt-bit draws consumed by the real
@@ -1034,3 +1063,12 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   and do not restore edges removed by a partition.
   Summary: live link latency changes now flow into scheduler lookahead at the
   quantum boundary; stale sends are frozen until the recompute applies.
+- [x] **T-IO-17** Stamp every block request with the frontend's oldest live
+  transport epoch and prune host block fault state below it: block request ABI
+  version 5 carries `oldest_live_epoch`, both decoders reject a floor above the
+  request epoch, the host rejects a regressing floor or one above its transport
+  epoch, and retired epochs and preserve-ID authorizations below the floor are
+  dropped and checkpointed. — satisfies [IO-35]; spec §15.2.2.
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`,
+  `-p crucible-qemu-plugin`, and `-p crucible-shmem`, including the transport
+  floor and request-stamp tests and the live adapter reset run.

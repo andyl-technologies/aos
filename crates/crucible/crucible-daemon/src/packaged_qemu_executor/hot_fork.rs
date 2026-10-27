@@ -71,6 +71,7 @@ where
                             report_shutdown_cause(&mut stderr, key, depth, current);
                             cause = current.source();
                         }
+                        report_shutdown_leaf(&mut stderr, key, failure);
                     }
                     let _ = writeln!(
                         std::io::stderr().lock(),
@@ -99,6 +100,54 @@ fn report_shutdown_cause(
         output,
         "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} depth={depth} cause_prefix={message:?}"
     );
+}
+
+/// Characters carried by one deepest-cause row.
+const SHUTDOWN_LEAF_PART_CHARACTERS: usize = 512;
+
+/// Most deepest-cause rows written for one failed source.
+const SHUTDOWN_LEAF_PARTS: usize = 16;
+
+/// Writes the deepest cause in bounded parts, which nested prefixes truncate.
+///
+/// Wrapping errors repeat their sources' text, so the bounded prefixes above
+/// can all stop before the innermost reason. The chain walk is bounded, and
+/// a cause longer than every part keeps its first and last halves.
+fn report_shutdown_leaf<E: std::error::Error>(
+    output: &mut impl Write,
+    key: &impl std::fmt::Debug,
+    failure: &E,
+) {
+    let mut message = failure.to_string();
+    let mut depth = 0_usize;
+    let mut cause = failure.source();
+    while let Some(current) = cause {
+        if depth == 32 {
+            break;
+        }
+        message = current.to_string();
+        depth += 1;
+        cause = current.source();
+    }
+
+    let characters = message.chars().collect::<Vec<_>>();
+    let parts = characters
+        .chunks(SHUTDOWN_LEAF_PART_CHARACTERS)
+        .map(|part| part.iter().collect::<String>())
+        .collect::<Vec<_>>();
+    let kept_head = SHUTDOWN_LEAF_PARTS / 2;
+    let tail_start = parts.len().saturating_sub(SHUTDOWN_LEAF_PARTS - kept_head);
+    for (index, part) in parts.iter().enumerate() {
+        if index >= kept_head && index < tail_start {
+            continue;
+        }
+        let _ = writeln!(
+            output,
+            "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} leaf_depth={depth} part={}/{} cause={part:?}",
+            index + 1,
+            parts.len(),
+        );
+    }
 }
 
 impl<D, R> Drop for ConcretePackagedQemuHotForkSourceOwner<D, R>
@@ -224,14 +273,31 @@ where
         {
             Ok(_commit) => self.provider.checkout(key).map_err(Into::into),
             Err(
-                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Poisoned,
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkAdmissionFailure::Poisoned,
             ) => Err(Self::Error::AdmissionPoisoned),
             Err(
-                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkExactAdmissionFailure::Admission(
+                crate::managed_qemu_hot_fork_source_world_pool::SharedManagedQemuHotForkAdmissionFailure::Admission(
                     failure,
                 ),
             ) => self.reconcile_exact_admission_failure(key, checkpoint, failure),
         }
+    }
+
+    fn checkout_ancestor(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        parent: &crucible_engine::Configuration,
+        eligible: &dyn Fn(
+            &crate::qemu_hot_fork_source_capture::QemuPublishedRootProvenance,
+        ) -> bool,
+    ) -> Result<
+        Option<crate::managed_qemu_hot_fork_source_world_pool::QemuHotForkAncestorCheckout>,
+        Self::Error,
+    > {
+        // Ancestors are always live published roots; nothing is demanded.
+        self.provider
+            .checkout_ancestor(key, parent, eligible)
+            .map_err(Into::into)
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
@@ -318,6 +384,7 @@ where
                 ));
             }
             retire_managed_demanded_source(candidate)?;
+            note_hot_fork_decline_with("exact-admission-refused", &error);
             return Ok(None);
         }
 
@@ -462,6 +529,10 @@ pub(super) fn authenticate_packaged_hot_fork_launch(
     profile: &ExecutorCompatibilityProfile,
 ) -> Result<(), PackagedQemuExecutorError> {
     let launch = hot_fork.launch_identity();
+    hot_fork
+        .stopped_restore_ack()
+        .require_launch(launch)
+        .map_err(PackagedQemuExecutorError::StoppedRestoreAck)?;
     if lifecycle.executable() != launch.qemu() || lifecycle.plugin() != launch.plugin() {
         return Err(PackagedQemuExecutorError::HotForkLaunchPathMismatch);
     }
@@ -502,6 +573,7 @@ where
     let source_catalog = catalog;
     let source_bases = basis.sources.values().cloned().collect::<Vec<_>>();
     let hot_fork = config.hot_fork.clone();
+    let project_id_count = config.host.project_id_count();
 
     compose_packaged_qemu_executor_with_builders(
         storage,
@@ -635,6 +707,8 @@ where
             }
 
             let pool = SharedManagedQemuHotForkSourceWorldPool::new(pool);
+            let published_roots =
+                published_root_sink(&hot_fork, &pool, worker_count, project_id_count);
             let owner: Box<dyn PackagedQemuHotForkSourceOwner> =
                 Box::new(ConcretePackagedQemuHotForkSourceOwner {
                     pool: pool.clone(),
@@ -663,6 +737,10 @@ where
                 let fallback =
                     QemuFreshExecutionRunner::new(fallback_lifecycles, QemuFreshModeledDriver)
                         .with_terminal_exact_retention_source(Arc::clone(finding_exact_retention));
+                let fallback = match &published_roots {
+                    Some(sink) => fallback.with_published_root_retention(Arc::clone(sink)),
+                    None => fallback,
+                };
                 let provider = match pool.provider() {
                     Ok(provider) => provider,
                     Err(source) => {
@@ -708,6 +786,7 @@ where
                     hot_fork.shutdown_policy(),
                     hot_fork.async_policy(),
                 )
+                .with_stopped_restore_ack(hot_fork.stopped_restore_ack().clone())
                 .with_terminal_checkpoints(Arc::clone(checkpoints))
                 .with_auxiliary_resources(finding_replay_broker);
                 let hot_factory = PackagedStatusHotForkFactory {
@@ -731,6 +810,46 @@ where
             Ok(PackagedQemuInitialRunnerBuild::hot_fork(runners, owner))
         },
     )
+}
+
+/// Enables thin-attempt root retention when host capacity can hold it.
+///
+/// Every retained source world and every running attempt holds one host
+/// project ID. Retaining roots up to the template limit while each worker runs
+/// an attempt must therefore fit the deployment's project-ID count; otherwise
+/// a retained root could starve later attempts of host resources, so thin
+/// worlds are shut down as before.
+fn published_root_sink<D, R>(
+    hot_fork: &PackagedQemuHotForkConfig,
+    pool: &SharedManagedQemuHotForkSourceWorldPool<D, R>,
+    worker_count: usize,
+    project_id_count: u32,
+) -> Option<Arc<dyn crate::QemuPublishedRootSink>>
+where
+    D: crate::HotCheckpointTemplateDemotionSink<
+            crate::ManagedQemuHotForkSourceWorld,
+            Error = PackagedQemuHotForkDemotionError,
+        > + Send
+        + 'static,
+    R: crate::HotCheckpointFallbackRetentionStore + Send + 'static,
+{
+    let templates = hot_fork.limits().maximum_templates();
+    let fits = templates.checked_add(worker_count).is_some_and(|required| {
+        usize::try_from(project_id_count).is_ok_and(|available| required <= available)
+    });
+    if !fits {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-HOT-FORK-RETENTION-V1 decision=disabled reason=\"maximum_templates={templates} + workers={worker_count} exceeds project_id_count={project_id_count}\""
+        );
+        return None;
+    }
+    Some(Arc::new(
+        crate::managed_qemu_hot_fork_source_world_pool::ManagedQemuPublishedRootSink::new(
+            pool.clone(),
+            hot_fork.initial_signals(),
+        ),
+    ))
 }
 
 fn reconcile_source_admission_failure<D, R>(
@@ -879,3 +998,7 @@ fn cleanup_shared_sources(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "hot_fork_tests.rs"]
+mod tests;

@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.workloadModel",
   taskIds ? ["T-WL-1"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineBackend = builtins.readFile ../../crates/crucible/crucible-engine/src/backend.rs;
@@ -246,47 +245,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-workload-model";
-      version = "0";
-      src = crucibleSrc;
-      runtimeDeps = [pkgs.sqlite];
-
-      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-workload-model";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -295,11 +261,7 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               -- --list > "$TMPDIR/workload-model-tests"
@@ -324,65 +286,37 @@ in
             require_listed \
               "$TMPDIR/workload-model-tests" \
               "backend_and_device_delivery_surfaces_are_documented_as_non_originators"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               workload_model_declares_supported_in_guest_binaries \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               workload_selection_is_a_scenario_cmdline_parameter \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               workload_selection_changes_scenario_identity \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               workload_reserved_parameter_rejects_unknown_and_duplicate_values \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               workload_reserved_parameter_rejects_malformed_toml_and_binary_forms \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               engine_source_has_no_application_traffic_origination_path \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-model-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_model \
               backend_and_device_delivery_surfaces_are_documented_as_non_originators \

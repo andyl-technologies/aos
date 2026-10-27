@@ -177,12 +177,12 @@ Mutation-scale fixtures also create at least 10,000 sequential, uniquely keyed
 branch-request and lifecycle-control mutations in one campaign. A repository
 instance may remember that an immutable snapshot has passed complete ancestry
 and closure validation. The bounded checkpoint carries validated ancestry
-depth, a conservative reachable-object work bound, and projected lifecycle
-state. An exact local owner transaction may prepare its child from that basis
-without walking unchanged history, but promotes the child only after the
-authoritative ref CAS advances. Reaching a conservative work limit falls back
-to complete validation; reaching the canonical ancestry limit rejects locally
-just as restart/import validation would.
+depth, a conservative count of authenticated objects, and projected lifecycle
+state. The count is diagnostic: it is the sum of per-transition closure deltas
+and never triggers revalidation. An exact local owner transaction may prepare
+its child from that basis without walking unchanged history, but promotes the
+child only after the authoritative ref CAS advances. Reaching the canonical
+ancestry limit rejects locally just as restart/import validation would.
 
 Each successor also carries an authenticated coordination locator for its
 parent transition. The current head is its own direct result; every older
@@ -207,6 +207,17 @@ never campaign truth, and may be discarded at any time.
   closure newly reachable relative to those parent anchors, including immutable
   graphs published before but not reachable from the parent, plus a conservative
   bound for newly created owner-index nodes.
+- **[CPERF-11]** Complete cold validation of a head MUST be one inductive walk
+  over its transitions whose resident state is independent of ancestry length.
+  Each step validates the owner transition and authenticates only the objects
+  that the child makes newly reachable relative to its parent: the snapshot
+  envelope, the changed node positions of every changed trie root including the
+  budget ledger's request indexes, and the closures of the transition fact and
+  of every changed leaf value relative to exact parent-owned anchors. Genesis
+  authenticates its own closure. No visited set, snapshot set, command set, or
+  trie-position ledger may span transitions. `gate:campaign-mutation-scaling`
+  MUST show that the largest single-transition walk does not grow with the
+  number of snapshots.
 
 ## 10.7 Correctness gates
 

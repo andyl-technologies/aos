@@ -201,7 +201,7 @@ fn observations_publish_exact_roots_replay_and_retain_determinism_conflicts() {
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &observation),
     )
     .expect("conflicting observation");
     let conflict_id = conflict.id().expect("conflict id");
@@ -263,10 +263,9 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
         repository
             .load_coverage_projection(observation.coverage())
             .expect("candidate coverage"),
-        observation
-            .discovered_choices()
-            .iter()
-            .map(|id| choice_discovery_fixture(&repository, *id))
+        discovered_choice_ids(&repository, &observation)
+            .into_iter()
+            .map(|id| choice_discovery_fixture(&repository, id))
             .collect(),
         observation.clone(),
     )
@@ -292,6 +291,113 @@ fn executor_candidate_publication_is_immutable_and_does_not_advance_the_campaign
         )
         .expect("coordinator incorporates candidate");
     assert_eq!(incorporated.observation, published);
+}
+
+/// Segment source returning fixed bytes, authentic or not, for any identity.
+struct FixedSegmentSource(Vec<u8>);
+
+impl crucible_store::segment_store::SegmentSource for FixedSegmentSource {
+    fn segment(&self, _id: ContentId) -> std::io::Result<Vec<u8>> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn executor_candidate_streams_every_resolved_effect_trace_segment() {
+    use crucible_store::segment_store::{SegmentSink, SegmentSources, SharedSegmentStore};
+
+    let (repository, lineage, policy) = fixture();
+    let (_, _, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "traced-candidate");
+    let store = SharedSegmentStore::new();
+    let segments = (0..3)
+        .map(|index| {
+            let bytes = format!("trace segment {index}").into_bytes();
+            let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+            store.put_segment(id, &bytes).expect("segment fixture");
+            id
+        })
+        .collect::<Vec<_>>();
+    let manifest_bytes = b"opaque segmented trace manifest".to_vec();
+    let manifest = ContentId::for_bytes(ObjectKind::Trace, 4, &manifest_bytes);
+    let traced = observation
+        .clone()
+        .with_resolved_effect_trace(
+            crate::ResolvedEffectTraceRef::new(manifest, segments.clone())
+                .expect("trace reference"),
+        )
+        .expect("traced observation");
+    let candidate = |sources: SegmentSources| {
+        ObservationCandidate::new(
+            repository
+                .load_configuration_artifact(traced.child_content())
+                .expect("candidate child"),
+            repository
+                .load_measurement_set(traced.measurements())
+                .expect("candidate measurements"),
+            repository
+                .load_property_verdict_set(traced.properties())
+                .expect("candidate properties"),
+            repository
+                .load_coverage_projection(traced.coverage())
+                .expect("candidate coverage"),
+            discovered_choice_ids(&repository, &traced)
+                .into_iter()
+                .map(|id| choice_discovery_fixture(&repository, id))
+                .collect(),
+            traced.clone(),
+        )
+        .expect("valid candidate")
+        .with_resolved_effect_trace(manifest_bytes.clone(), sources)
+        .expect("trace attachment")
+    };
+
+    // A segment whose bytes do not derive its listed identity is refused,
+    // and the observation is not published.
+    let forged = candidate(SegmentSources::single(std::sync::Arc::new(
+        FixedSegmentSource(b"forged".to_vec()),
+    )));
+    assert!(repository.publish_observation_candidate(&forged).is_err());
+    assert!(
+        !repository
+            .blobs
+            .contains(traced.id().expect("observation id").content_id())
+            .expect("observation presence")
+    );
+
+    let published = repository
+        .publish_observation_candidate(&candidate(store.clone().into()))
+        .expect("publish traced candidate");
+    assert_eq!(published, traced.id().expect("observation id"));
+    for id in segments.iter().chain([&manifest]) {
+        assert!(repository.blobs.contains(*id).expect("trace leaf presence"));
+    }
+
+    // A manifest that differs from the observation's reference never attaches.
+    assert!(
+        ObservationCandidate::new(
+            repository
+                .load_configuration_artifact(traced.child_content())
+                .expect("candidate child"),
+            repository
+                .load_measurement_set(traced.measurements())
+                .expect("candidate measurements"),
+            repository
+                .load_property_verdict_set(traced.properties())
+                .expect("candidate properties"),
+            repository
+                .load_coverage_projection(traced.coverage())
+                .expect("candidate coverage"),
+            discovered_choice_ids(&repository, &traced)
+                .into_iter()
+                .map(|id| choice_discovery_fixture(&repository, id))
+                .collect(),
+            traced.clone(),
+        )
+        .expect("valid candidate")
+        .with_resolved_effect_trace(b"another manifest".to_vec(), store.into())
+        .is_err()
+    );
 }
 
 #[test]
@@ -327,7 +433,7 @@ fn campaign_report_counts_distinct_findings_from_one_observation() {
             properties,
             base_observation.coverage(),
         ),
-        base_observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base_observation),
     )
     .expect("observation with two failed properties");
     let observed = repository
@@ -342,8 +448,12 @@ fn campaign_report_counts_distinct_findings_from_one_observation() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified two-property reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified two-property reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish reproduction");
     let mut snapshot = observed.new_snapshot;
@@ -438,8 +548,12 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"verified self-contained reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"verified self-contained reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish reproduction");
     let signature = FindingSignature::new(
@@ -560,6 +674,9 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             | CampaignFindingObject::MinimizedReproduction(value) => {
                 value.id().expect("reproduction ID").content_id()
             }
+            CampaignFindingObject::ReproductionPayloadSegment { .. } => {
+                panic!("no payload segment was requested")
+            }
         };
         assert_eq!(actual, expected);
     }
@@ -658,4 +775,5 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
 }
 
 mod candidate;
+mod reproduction_segments;
 mod retention;

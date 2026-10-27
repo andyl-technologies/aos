@@ -121,6 +121,9 @@ pub const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL: &str =
 /// QEMU plugin API symbol used to connect the sim loop to shared-memory time state.
 pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
     "qemu_plugin_register_sim_shmem_dispatch_cb";
+/// QEMU plugin API symbol used to register bounded-ceiling settlement callbacks.
+pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL: &str =
+    "qemu_plugin_register_sim_shmem_settlement_cb";
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ps\0";
@@ -177,6 +180,8 @@ const QEMU_PLUGIN_REGISTER_CONTROL_BOUNDARY_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_control_boundary_cb\0";
 const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_sim_shmem_dispatch_cb\0";
+const QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_sim_shmem_settlement_cb\0";
 const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL_C: &[u8] = b"qemu_plugin_request_time_control\0";
 const QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_single_threaded_rr\0";
 /// QEMU capability required to observe the callback serialization mode.
@@ -611,6 +616,18 @@ pub type QemuRegisterSimShmemDispatchCbFn = extern "C" fn(
     Option<QemuSimShmemPublishIcountCbFn>,
     Option<QemuSimShmemMaxAdvanceIcountCbFn>,
     Option<QemuSimShmemLogicalCeilingCbFn>,
+    *mut c_void,
+);
+/// Sim-loop callback that publishes a raw instruction count together with
+/// QEMU's settlement of the logical ceiling it sampled.
+pub type QemuSimShmemPublishSettledCbFn = extern "C" fn(u64, u64, *mut c_void);
+/// Sim-loop callback that reads the earliest plugin-owned exact event, in
+/// logical ticks, or `u64::MAX` when none is pending.
+pub type QemuSimShmemExactEventCbFn = extern "C" fn(*mut c_void) -> u64;
+/// QEMU registration function for bounded-ceiling settlement callbacks.
+pub type QemuRegisterSimShmemSettlementCbFn = extern "C" fn(
+    Option<QemuSimShmemPublishSettledCbFn>,
+    Option<QemuSimShmemExactEventCbFn>,
     *mut c_void,
 );
 
@@ -1866,6 +1883,39 @@ pub const fn resolve_qemu_register_sim_shmem_dispatch_cb_symbol()
     None
 }
 
+/// Resolves QEMU's bounded-ceiling settlement registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_sim_shmem_settlement_cb_symbol()
+-> Option<QemuRegisterSimShmemSettlementCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The
+    // Crucible patch declares this symbol with the exact callback ABI above.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_SIM_SHMEM_SETTLEMENT_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the exact patched API name establishes the function type.
+        Some(unsafe {
+            std::mem::transmute::<*mut c_void, QemuRegisterSimShmemSettlementCbFn>(symbol)
+        })
+    }
+}
+
+/// Resolves no settlement registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_sim_shmem_settlement_cb_symbol()
+-> Option<QemuRegisterSimShmemSettlementCbFn> {
+    None
+}
+
 /// Resolves QEMU's virtual-time ownership request from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -2051,6 +2101,7 @@ fn install_owned_boundary(
     let register_vcpu_idle_resume = resolve_qemu_register_vcpu_idle_resume_cb_symbol();
     let register_control_boundary = resolve_qemu_register_control_boundary_cb_symbol();
     let register_sim_shmem_dispatch = resolve_qemu_register_sim_shmem_dispatch_cb_symbol();
+    let register_sim_shmem_settlement = resolve_qemu_register_sim_shmem_settlement_cb_symbol();
     let register_net_tx = crate::resolve_qemu_register_net_tx_cb_symbol();
     let net_inject = crate::resolve_qemu_net_inject_symbol();
     let register_block = resolve_qemu_register_blk_cb_symbol();
@@ -2113,6 +2164,7 @@ fn install_owned_boundary(
         register_vcpu_idle_resume,
         register_control_boundary,
         register_sim_shmem_dispatch,
+        register_sim_shmem_settlement,
         register_net_tx,
         net_inject,
         register_block,

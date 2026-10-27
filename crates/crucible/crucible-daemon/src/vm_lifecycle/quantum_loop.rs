@@ -28,7 +28,7 @@ use crucible_engine::BackendRngEvidence;
 use debug_policy::private_gateway_listener_request;
 #[cfg(test)]
 use debug_policy::trusted_debug_listener;
-use host_concurrent::merge_host_concurrent_outcomes;
+pub(in crate::vm_lifecycle) use host_concurrent::merge_host_concurrent_outcomes;
 pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
 
 pub(super) struct PendingHeldHostOutcomes {
@@ -41,12 +41,13 @@ pub(super) struct PendingLiveNetworkPrefix {
     decisions: Vec<Decision>,
     appends: Vec<SchedulerEventLogAppend>,
     pub(super) discoveries: Vec<crucible_engine::campaign::ChoiceDiscovery>,
-    signal_fault_frontier_start: usize,
+    signal_fault_frontier_start: u64,
 }
 pub(in crate::vm_lifecycle) use lifecycle::map_journal_limit;
 pub(super) use lifecycle::{
     DurableRunStateError, LifecycleStatePersistence, PRODUCTION_RUN_STATE_FILE,
     decode_prior_run_state, decode_run_json_bounded, persist_run_state_atomic,
+    truncate_lifecycle_exit_log_tail,
 };
 #[cfg(test)]
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
@@ -137,7 +138,7 @@ impl ProductionVmLifecycleLoop {
                     decisions: Vec::new(),
                     appends: Vec::new(),
                     discoveries: Vec::new(),
-                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontier_count(),
                 };
                 if self.inner.live_network_preselection().is_some() {
                     self.pending_live_network_prefix = Some(prefix);
@@ -177,7 +178,7 @@ impl ProductionVmLifecycleLoop {
             })?;
         let operation = (|| {
             self.reconcile_indeterminate_debug_ownership()?;
-            let signal_fault_frontier_start = self.inner.loop_impl().search_frontiers().len();
+            let signal_fault_frontier_start = self.inner.loop_impl().search_frontier_count();
             let mut pre_quantum_appends = Vec::new();
             if let Some(append) = self.settle_genesis_entrypoints()? {
                 pre_quantum_appends.push(append);
@@ -232,7 +233,7 @@ impl ProductionVmLifecycleLoop {
                     decisions: Vec::new(),
                     appends: pre_quantum_appends.clone(),
                     discoveries: std::mem::take(&mut discoveries),
-                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontier_count(),
                 });
                 prepend_event_log_appends(&mut outcome, pre_quantum_appends);
                 outcome.scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
@@ -266,7 +267,9 @@ impl ProductionVmLifecycleLoop {
                 )?;
             let replaying_current_signal_fault_branch =
                 self.signal_fault_branches.front().is_some_and(|branch| {
-                    branch.parent() == self.inner.loop_impl().configuration()
+                    branch
+                        .parent()
+                        .matches(self.inner.loop_impl().configuration())
                         && branch.frontier() == self.inner.loop_impl().frontier()
                 });
             if !live_signal_fault_discoveries.is_empty() && !replaying_current_signal_fault_branch {
@@ -323,7 +326,7 @@ impl ProductionVmLifecycleLoop {
                 });
             }
             if self.signal_fault_branches.front().is_some_and(|branch| {
-                branch.parent() == &request.configuration && !request.control.is_empty()
+                branch.parent().matches(&request.configuration) && !request.control.is_empty()
             }) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -357,7 +360,8 @@ impl ProductionVmLifecycleLoop {
                         ),
                     });
                 }
-                if frontier == branch.frontier() && request.configuration != *branch.parent() {
+                if frontier == branch.frontier() && !branch.parent().matches(&request.configuration)
+                {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
                             "signal-fault branch reached frontier {} with configuration {}, expected {}",
@@ -367,7 +371,8 @@ impl ProductionVmLifecycleLoop {
                         ),
                     });
                 }
-                if frontier == branch.frontier() && request.configuration == *branch.parent() {
+                if frontier == branch.frontier() && branch.parent().matches(&request.configuration)
+                {
                     if !request.control.is_empty() {
                         return Err(SchedulerError::BoundaryViolation {
                             message: String::from(
@@ -425,9 +430,9 @@ impl ProductionVmLifecycleLoop {
                     self.capture_debug_runtime_evidence()?;
                     return Ok(outcome);
                 }
-                if request.configuration.schedule.len() > branch.parent().schedule.len()
-                    || (request.configuration.schedule.len() == branch.parent().schedule.len()
-                        && request.configuration != *branch.parent())
+                if request.configuration.schedule.len() > branch.parent().len()
+                    || (request.configuration.schedule.len() == branch.parent().len()
+                        && !branch.parent().matches(&request.configuration))
                 {
                     return Err(SchedulerError::BoundaryViolation {
                         message: format!(
@@ -902,7 +907,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.loop_impl().pending_branch_effect_choice_count()
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         let runtime = self
             .fault_runtime
             .lock()
@@ -922,22 +929,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 });
             }
         };
+        drop(runtime);
         let network = self.inner.network_output_interceptor();
-        let combined = super::network_faults::trace_with_campaign_network_records(
+        super::network_faults::trace_with_campaign_network_records(
             recorded,
-            network.campaign_effect_records(),
-            network.resource_limits(),
+            network.campaign_effect_log(),
             crucible_engine::model::FaultReplayMode::RecomputedCause,
-        )?;
-        combined
-            .map(|trace| {
-                trace
-                    .canonical_bytes()
-                    .map_err(|error| SchedulerError::BoundaryViolation {
-                        message: format!("encode production resolved-effect trace: {error}"),
-                    })
-            })
-            .transpose()
+        )
     }
 
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -973,6 +971,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         }
         self.checkpoint_terminal_cause = Some(cause);
         Ok(())
+    }
+
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        self.inner.sealed_event_log_store()
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -2039,22 +2041,26 @@ impl ProductionVmLifecycleLoop {
         // Own every scheduler/controller input before the first QMP save can
         // pause a running node. Immutable object and manifest preparation is
         // fallible but remains rollback-safe under the capture owners below.
-        let event_log_objects = Arc::new(
-            self.inner
-                .loop_impl()
-                .event_log_dependency_objects()
-                .map_err(|error| SchedulerError::BoundaryViolation {
-                    message: format!("capture exact event-log closure: {error}"),
-                })?
-                .into_iter()
-                .collect(),
-        );
+        // Sealed segments are captured by reference; only their presence in
+        // the run's checkpoint object store is checked here.
+        self.inner
+            .loop_impl()
+            .verify_event_log_segments()
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("capture exact event-log closure: {error}"),
+            })?;
+        let event_log_segments =
+            ProductionEventLogSegments::store(self.inner.loop_impl().event_log_segment_store());
         let scheduler = self.inner.loop_impl().checkpoint().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("capture exact scheduler continuation: {error}"),
             }
         })?;
         let signal_artifact_objects = self.signal_artifact_objects.clone();
+        let fault_trace_objects = Arc::new(capture_fault_trace_objects(
+            &fault_checkpoint,
+            self.fault_trace_segments.as_ref(),
+        )?);
         let trigger_state = self.trigger_state.clone();
         let assertion_state = self.assertion_evaluator.checkpoint();
         let terminal_verdict = self.terminal_verdict.clone();
@@ -2461,8 +2467,9 @@ impl ProductionVmLifecycleLoop {
                 identity: ContentHash::default(),
                 configuration: configuration.clone(),
                 scheduler: Arc::new(scheduler),
-                event_log_objects,
+                event_log_segments,
                 signal_artifact_objects,
+                fault_trace_objects,
                 trigger_state,
                 assertion_state,
                 terminal_verdict,

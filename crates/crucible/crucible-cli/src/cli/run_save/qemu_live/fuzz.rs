@@ -4,13 +4,17 @@ use super::*;
 
 use crucible_campaign::{StopCondition, StopOutcome};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedDefaultCampaignRun,
-    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedCampaignExploration, GuardedCampaignExplorationStrategy, GuardedCampaignRunSink,
+    GuardedCampaignRunSinkError, GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign_with_sink,
 };
 
 #[path = "fuzz/corpus.rs"]
 mod corpus;
-use corpus::{load_qemu_fuzz_corpus, persist_qemu_fuzz_corpus};
+use corpus::{
+    CorpusPayloadStore, load_qemu_fuzz_corpus, load_qemu_fuzz_entry_payload,
+    persist_qemu_fuzz_corpus, store_qemu_fuzz_entry,
+};
 
 pub(crate) fn run_local_qemu_fuzz_workflow(
     thin_plan: &CliThinWrapperPlan,
@@ -34,7 +38,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     if deployment.resources.maximum_execution_quanta() < LIVE_FUZZ_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the fuzz requirement of {}",
@@ -42,21 +46,25 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             LIVE_FUZZ_QUANTUM_LIMIT,
         )));
     }
+    let (previous_corpus, payloads) = match &plan.corpus {
+        Some(corpus) => (
+            load_qemu_fuzz_corpus(corpus)?,
+            CorpusPayloadStore::durable(corpus),
+        ),
+        None => (Vec::new(), CorpusPayloadStore::scratch()?),
+    };
     let execution_context = QemuFuzzExecutionContext {
         config: &config,
         host: &deployment.host,
         resources: deployment.resources,
-        verify_determinism_findings,
+        attempt_policy,
         plan,
         backend_plan,
-    };
-    let previous_corpus = match &plan.corpus {
-        Some(corpus) => load_qemu_fuzz_corpus(corpus)?,
-        None => Vec::new(),
+        payloads: &payloads,
     };
     let execution = execute_qemu_fuzz_iterations(&execution_context, &family, previous_corpus)?;
     let (retained_entries, store_puts) = match &plan.corpus {
-        Some(corpus) => persist_qemu_fuzz_corpus(corpus, &execution.corpus_candidates)?,
+        Some(corpus) => persist_qemu_fuzz_corpus(corpus, &execution.corpus)?,
         None => (0, 0),
     };
     let mut report = FuzzExecutionReport {
@@ -103,7 +111,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         .count();
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     apply_fuzz_execution_report(&mut outcome, plan, &report);
-    for (index, feedback) in execution.feedback.iter().enumerate() {
+    for (index, coverage) in execution.coverage.iter().enumerate() {
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
             virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -111,8 +119,8 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             kind: String::from("fuzz_coverage_feedback"),
             summary: format!(
                 "iteration={index}\tblocks={}\tfingerprint={}",
-                feedback.projection().len(),
-                feedback.fingerprint().to_hex()
+                coverage.hits,
+                coverage.fingerprint.to_hex()
             ),
         });
     }
@@ -154,8 +162,8 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
 
 #[derive(Default)]
 struct QemuFuzzExecution {
-    feedback: Vec<crucible_engine::EventLogCoverageFeedback>,
-    corpus_candidates: Vec<LiveFuzzCorpusCandidate>,
+    coverage: Vec<QemuFuzzCoverageSummary>,
+    corpus: Vec<LiveFuzzCorpusEntry>,
     admissions: usize,
     replay_oracle_validations: u64,
     new_coverage: usize,
@@ -164,18 +172,41 @@ struct QemuFuzzExecution {
     reproduction_artifacts: Vec<Vec<u8>>,
 }
 
-struct LiveFuzzCorpusCandidate {
-    artifact: crucible_engine::ReproductionArtifact,
-    feedback: crucible_engine::EventLogCoverageFeedback,
-    coverage_entries: Vec<crucible_engine::SchedulerEventLogEntry>,
+/// Coverage reported for one accepted observation in the canonical log.
+struct QemuFuzzCoverageSummary {
+    hits: u64,
+    fingerprint: crucible_engine::ContentHash,
+}
+
+/// Resident handle of one corpus entry.
+///
+/// Parent selection, admission, and guidance read only these fields. The
+/// entry's reproduction artifact and replay closure stay in the corpus
+/// payload store until the entry is chosen as a parent.
+struct LiveFuzzCorpusEntry {
+    descriptor: crucible_engine::ContentHash,
+    artifact_id: crucible_engine::ContentHash,
+    scenario_form_id: crucible_engine::ContentHash,
+    coverage_fingerprint: crucible_engine::ContentHash,
     coverage_ids: std::collections::BTreeSet<crucible_engine::ContentHash>,
     novel_coverage: usize,
+    resumable_choice: bool,
+    // Whether this run wrote the entry's objects, as opposed to opening them.
+    stored_this_run: bool,
+}
+
+/// One accepted observation with the payloads its corpus entry would store.
+///
+/// Candidates live only until admission decides whether to store them.
+struct LiveFuzzCorpusCandidate {
+    artifact: crucible_engine::ReproductionArtifact,
+    coverage: crucible_engine::EventLogCoverageSet,
+    coverage_ids: std::collections::BTreeSet<crucible_engine::ContentHash>,
     parent: Option<crucible_engine::ContentHash>,
     sample_index: u64,
     energy: u64,
     replay_closure: crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     resumable_choice: bool,
-    descriptor: Option<crucible_engine::ContentHash>,
 }
 
 struct QemuFuzzCampaignRecord {
@@ -288,69 +319,114 @@ struct QemuFuzzExecutionContext<'a> {
     config: &'a production_api::ProductionVmLifecycleConfig,
     host: &'a crucible_daemon::LinuxQemuAttemptHostConfig,
     resources: crucible_campaign::AttemptResourceLimits,
-    verify_determinism_findings: bool,
+    attempt_policy: GuardedCampaignAttemptPolicy,
     plan: &'a FuzzDriverPlan,
     backend_plan: &'a BackendSelectionPlan,
+    payloads: &'a CorpusPayloadStore,
 }
 
-fn authenticate_qemu_fuzz_campaign(
-    form: &crucible_engine::ScenarioDefForm,
-    campaign: &GuardedDefaultCampaignRun,
+/// Folds each accepted observation of one fuzz campaign into a corpus candidate.
+///
+/// The campaign streams its observations, so the candidate is built while the
+/// attempt's log segments are live and the observation itself is dropped.
+struct QemuFuzzCandidateSink<'a> {
+    form: &'a crucible_engine::ScenarioDefForm,
     parent: Option<crucible_engine::ContentHash>,
     sample_index: u64,
     energy: u64,
-) -> Result<(usize, Vec<LiveFuzzCorpusCandidate>), CliError> {
-    let mut override_observations = 0;
-    let mut candidates = Vec::with_capacity(campaign.observations().len());
+    override_observations: usize,
+    candidates: Vec<LiveFuzzCorpusCandidate>,
+    failure: Option<CliError>,
+}
 
-    for accepted in campaign.observations() {
-        let configuration = accepted.configuration();
-        accepted
-            .replay_closure()
-            .validate_for_schedule(form, &configuration.schedule)
-            .map_err(|error| {
-                artifact_error(format!("authenticate QEMU fuzz choice replay: {error}"))
-            })?;
+impl<'a> QemuFuzzCandidateSink<'a> {
+    fn new(
+        form: &'a crucible_engine::ScenarioDefForm,
+        parent: Option<crucible_engine::ContentHash>,
+        sample_index: u64,
+        energy: u64,
+    ) -> Self {
+        Self {
+            form,
+            parent,
+            sample_index,
+            energy,
+            override_observations: 0,
+            candidates: Vec::new(),
+            failure: None,
+        }
+    }
+}
 
-        let artifact = capture_qemu_fuzz_reproduction(form, configuration)?;
-        override_observations += usize::from(
-            configuration
-                .schedule
-                .decisions()
-                .iter()
-                .any(|decision| matches!(decision, crucible_engine::Decision::Override(_))),
-        );
-        let feedback = crucible_engine::EventLogCoverageFeedback::from_event_log(
-            accepted.evidence().event_log_entries(),
-        );
-        let coverage_entries = feedback
-            .projection()
-            .entries()
-            .iter()
-            .map(|entry| accepted.evidence().event_log_entries()[entry.raw_index].clone())
-            .collect();
-        let coverage_ids = feedback
-            .projection()
-            .entries()
-            .iter()
-            .map(|entry| entry.observation.content_hash())
-            .collect();
-        candidates.push(LiveFuzzCorpusCandidate {
+impl GuardedCampaignRunSink for QemuFuzzCandidateSink<'_> {
+    fn on_observation(
+        &mut self,
+        accepted: &GuardedDefaultCampaignObservation,
+    ) -> Result<(), GuardedCampaignRunSinkError> {
+        match authenticate_qemu_fuzz_observation(
+            self.form,
+            accepted,
+            self.parent,
+            self.sample_index,
+            self.energy,
+        ) {
+            Ok((overrides, candidate)) => {
+                self.override_observations += usize::from(overrides);
+                self.candidates.push(candidate);
+                Ok(())
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.failure = Some(error);
+                Err(GuardedCampaignRunSinkError::new(message))
+            }
+        }
+    }
+}
+
+fn authenticate_qemu_fuzz_observation(
+    form: &crucible_engine::ScenarioDefForm,
+    accepted: &GuardedDefaultCampaignObservation,
+    parent: Option<crucible_engine::ContentHash>,
+    sample_index: u64,
+    energy: u64,
+) -> Result<(bool, LiveFuzzCorpusCandidate), CliError> {
+    let configuration = accepted.configuration();
+    accepted
+        .replay_closure()
+        .validate_for_schedule(form, &configuration.schedule)
+        .map_err(|error| {
+            artifact_error(format!("authenticate QEMU fuzz choice replay: {error}"))
+        })?;
+
+    let artifact = capture_qemu_fuzz_reproduction(form, configuration)?;
+    let overrides = configuration
+        .schedule
+        .decision_history()
+        .iter()
+        .any(|decision| matches!(decision, crucible_engine::Decision::Override(_)));
+    // One streamed pass keeps each distinct coverage observation once.
+    let mut coverage = crucible_engine::EventLogCoverageSet::new();
+    accepted
+        .evidence()
+        .try_for_each_event_log_entry(|entry| {
+            coverage.observe(entry);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .map_err(|error| artifact_error(format!("read QEMU fuzz event evidence: {error}")))?;
+    Ok((
+        overrides,
+        LiveFuzzCorpusCandidate {
             artifact,
-            feedback,
-            coverage_entries,
-            coverage_ids,
-            novel_coverage: 0,
+            coverage_ids: coverage.identities(),
+            coverage,
             parent,
             sample_index,
             energy,
             replay_closure: accepted.replay_closure().clone(),
             resumable_choice: accepted.observation().stop().reached_next_choice(),
-            descriptor: None,
-        });
-    }
-
-    Ok((override_observations, candidates))
+        },
+    ))
 }
 
 fn capture_qemu_fuzz_reproduction(
@@ -375,71 +451,76 @@ fn capture_qemu_fuzz_reproduction(
 }
 
 fn select_qemu_fuzz_parent<'a>(
-    candidates: &'a [LiveFuzzCorpusCandidate],
+    corpus: &'a [LiveFuzzCorpusEntry],
     form: &crucible_engine::ScenarioDefForm,
     seed: crucible_engine::Seed,
     sequence: u64,
-) -> Option<&'a LiveFuzzCorpusCandidate> {
-    candidates
+) -> Option<&'a LiveFuzzCorpusEntry> {
+    corpus
         .iter()
-        .filter(|candidate| {
-            candidate.resumable_choice
-                && candidate.artifact.scenario_form().id() == form.id()
-                && !candidate.coverage_ids.is_empty()
+        .filter(|entry| {
+            entry.resumable_choice
+                && entry.scenario_form_id == form.id()
+                && !entry.coverage_ids.is_empty()
         })
-        .max_by_key(|candidate| {
+        .max_by_key(|entry| {
             (
-                candidate.novel_coverage,
+                entry.novel_coverage,
                 crucible_engine::ContentHash::from_canonical_material(
                     "crucible.live-fuzz-corpus-parent.v1",
                     &format!(
                         "seed={}\nsequence={sequence}\nartifact={}\ncoverage={}",
                         seed.to_hex(),
-                        candidate.artifact.id().to_hex(),
-                        candidate.feedback.fingerprint().to_hex(),
+                        entry.artifact_id.to_hex(),
+                        entry.coverage_fingerprint.to_hex(),
                     ),
                 ),
             )
         })
 }
 
+/// Admits candidates with novel coverage, storing each admitted one's payloads.
+///
+/// An admitted entry replaces every retained entry whose coverage it covers.
 fn admit_qemu_fuzz_candidates(
-    corpus: &mut Vec<LiveFuzzCorpusCandidate>,
+    corpus: &mut Vec<LiveFuzzCorpusEntry>,
     observed: &mut std::collections::BTreeSet<crucible_engine::ContentHash>,
-    guidance: &mut Vec<crucible_engine::EventLogCoverageFeedback>,
+    guidance: &mut Vec<crucible_engine::ContentHash>,
     candidates: Vec<LiveFuzzCorpusCandidate>,
-) -> usize {
+    payloads: &CorpusPayloadStore,
+) -> Result<usize, CliError> {
     let mut admitted = 0;
 
-    for mut candidate in candidates {
-        candidate.novel_coverage = admit_novel_coverage_feedback(
+    for candidate in candidates {
+        let novel_coverage = admit_novel_coverage_feedback(
             observed,
             guidance,
             &candidate.coverage_ids,
-            &candidate.feedback,
+            candidate.coverage.fingerprint(),
         );
-        if candidate.novel_coverage == 0 {
+        if novel_coverage == 0 {
             continue;
         }
 
-        corpus.retain(|retained| !retained.coverage_ids.is_subset(&candidate.coverage_ids));
-        corpus.push(candidate);
+        let entry = store_qemu_fuzz_entry(payloads, candidate, novel_coverage)?;
+        corpus.retain(|retained| !retained.coverage_ids.is_subset(&entry.coverage_ids));
+        corpus.push(entry);
         admitted += 1;
     }
 
-    admitted
+    Ok(admitted)
 }
 
 fn admit_novel_coverage_feedback(
     observed: &mut std::collections::BTreeSet<crucible_engine::ContentHash>,
-    guidance: &mut Vec<crucible_engine::EventLogCoverageFeedback>,
+    guidance: &mut Vec<crucible_engine::ContentHash>,
     coverage_ids: &std::collections::BTreeSet<crucible_engine::ContentHash>,
-    feedback: &crucible_engine::EventLogCoverageFeedback,
+    fingerprint: crucible_engine::ContentHash,
 ) -> usize {
     let novel = coverage_ids.difference(observed).count();
     if novel > 0 {
         observed.extend(coverage_ids.iter().copied());
-        guidance.push(feedback.clone());
+        guidance.push(fingerprint);
     }
     novel
 }
@@ -447,32 +528,36 @@ fn admit_novel_coverage_feedback(
 fn execute_qemu_fuzz_iterations(
     context: &QemuFuzzExecutionContext<'_>,
     family: &crucible_engine::ScenarioFamily,
-    previous_corpus: Vec<LiveFuzzCorpusCandidate>,
+    previous_corpus: Vec<LiveFuzzCorpusEntry>,
 ) -> Result<QemuFuzzExecution, CliError> {
     let mut observed_coverage = std::collections::BTreeSet::new();
     let mut guidance = Vec::with_capacity(previous_corpus.len());
-    for candidate in &previous_corpus {
-        observed_coverage.extend(candidate.coverage_ids.iter().copied());
-        guidance.push(candidate.feedback.clone());
+    for entry in &previous_corpus {
+        observed_coverage.extend(entry.coverage_ids.iter().copied());
+        guidance.push(entry.coverage_fingerprint);
     }
     let mut execution = QemuFuzzExecution {
         replay_oracle_validations: previous_corpus.len() as u64,
-        corpus_candidates: previous_corpus,
+        corpus: previous_corpus,
         ..QemuFuzzExecution::default()
     };
     for sequence in 0..context.plan.config.iterations {
         let (sample_index, pinned, energy) = family
-            .sample_coverage_guided(context.plan.config, sequence, &guidance)
+            .sample_coverage_guided_by_fingerprint(context.plan.config, sequence, &guidance)
             .map_err(|error| backend_error(format!("sample QEMU fuzz family: {error}")))?;
         let form = pinned.into_form();
         let run_plan = qemu_fuzz_iteration_plan(sequence, form.clone());
         let parent = select_qemu_fuzz_parent(
-            &execution.corpus_candidates,
+            &execution.corpus,
             &form,
             context.plan.config.meta_seed,
             sequence,
         );
-        let parent_id = parent.map(|candidate| candidate.artifact.id());
+        let parent_id = parent.map(|entry| entry.artifact_id);
+        // Only the chosen parent's payloads are read back from the corpus store.
+        let parent_payload = parent
+            .map(|entry| load_qemu_fuzz_entry_payload(context.payloads, entry))
+            .transpose()?;
         let exploration = GuardedCampaignExploration::new(
             2 + (energy % 2),
             None,
@@ -490,27 +575,35 @@ fn execute_qemu_fuzz_iterations(
             context.host.clone(),
             context.resources,
         );
-        let request = match parent {
-            Some(candidate) => request.with_initial_replay(
-                candidate.artifact.schedule().clone(),
-                Some(candidate.replay_closure.clone()),
-            ),
+        let request = match parent_payload {
+            Some((artifact, replay_closure)) => {
+                request.with_initial_replay(artifact.schedule().clone(), Some(replay_closure))
+            }
             None => request,
         }
         .with_exploration(exploration);
-        let request =
-            apply_guarded_campaign_determinism_policy(request, context.verify_determinism_findings);
-        let campaign = run_guarded_default_campaign(request).map_err(|error| {
+        let request = context.attempt_policy.apply(request);
+        let mut sink = QemuFuzzCandidateSink::new(&form, parent_id, sample_index, energy);
+        let campaign = run_guarded_default_campaign_with_sink(request, &mut sink);
+        if let Some(failure) = sink.failure.take() {
+            return Err(failure);
+        }
+        let campaign = campaign.map_err(|error| {
             backend_error(format!(
                 "execute QEMU fuzz iteration {sequence} through campaign owner: {error}",
             ))
         })?;
-        let (override_observations, candidates) =
-            authenticate_qemu_fuzz_campaign(&form, &campaign, parent_id, sample_index, energy)?;
+        let QemuFuzzCandidateSink {
+            override_observations,
+            candidates,
+            ..
+        } = sink;
         let (status, terminal_outcome, campaign_completion) = qemu_fuzz_campaign_status(&campaign)?;
+        // A fuzz iteration requests no watch frames.
         let report = crate::cli_verify_serve::campaign_run::campaign_run_report(
             &run_plan,
             &campaign,
+            &[],
             terminal_outcome,
             status,
         )?;
@@ -525,8 +618,8 @@ fn execute_qemu_fuzz_iterations(
             observation: terminal.id(),
             configuration: terminal.configuration().id(),
             stop: qemu_fuzz_campaign_stop_label(terminal.observation().stop()),
-            accepted_observations: campaign.observations().len(),
-            branch_requests: campaign.branch_acceptances().len(),
+            accepted_observations: campaign.observation_count(),
+            branch_requests: campaign.branch_request_count(),
             override_observations,
             frontier: campaign.evidence().frontier(),
             quanta: campaign.evidence().quanta(),
@@ -555,19 +648,21 @@ fn execute_qemu_fuzz_iterations(
             context.backend_plan,
             campaign_completion,
         )?;
-        execution.feedback.extend(
-            candidates
-                .iter()
-                .map(|candidate| candidate.feedback.clone()),
-        );
+        execution
+            .coverage
+            .extend(candidates.iter().map(|candidate| QemuFuzzCoverageSummary {
+                hits: candidate.coverage.hits(),
+                fingerprint: candidate.coverage.fingerprint(),
+            }));
         execution.admissions += candidates.len();
         execution.replay_oracle_validations += candidates.len() as u64;
         let admitted = admit_qemu_fuzz_candidates(
-            &mut execution.corpus_candidates,
+            &mut execution.corpus,
             &mut observed_coverage,
             &mut guidance,
             candidates,
-        );
+            context.payloads,
+        )?;
         execution.new_coverage += usize::from(admitted > 0);
         if let Some((evidence, reproduction)) = finding {
             let store = crucible_engine::LocalDagStore::new(context.plan.store_root.clone());
@@ -810,9 +905,9 @@ mod finding_tests {
 
     #[test]
     fn duplicate_coverage_does_not_enter_future_sampling_guidance() {
-        let feedback = crucible_engine::EventLogCoverageFeedback::from_event_log(&[]);
-        let first = crucible_engine::ContentHash::from_bytes(b"covered-block");
-        let second = crucible_engine::ContentHash::from_bytes(b"new-block");
+        let feedback = crate::crucible_engine::ContentHash::default();
+        let first = crate::crucible_engine::ContentHash::from_bytes(b"covered-block");
+        let second = crate::crucible_engine::ContentHash::from_bytes(b"new-block");
         let mut observed = std::collections::BTreeSet::new();
         let mut guidance = Vec::new();
 
@@ -821,7 +916,7 @@ mod finding_tests {
                 &mut observed,
                 &mut guidance,
                 &std::collections::BTreeSet::from([first]),
-                &feedback,
+                feedback,
             ),
             1,
         );
@@ -830,7 +925,7 @@ mod finding_tests {
                 &mut observed,
                 &mut guidance,
                 &std::collections::BTreeSet::from([first]),
-                &feedback,
+                feedback,
             ),
             0,
         );
@@ -840,7 +935,7 @@ mod finding_tests {
                 &mut observed,
                 &mut guidance,
                 &std::collections::BTreeSet::from([first, second]),
-                &feedback,
+                feedback,
             ),
             1,
         );

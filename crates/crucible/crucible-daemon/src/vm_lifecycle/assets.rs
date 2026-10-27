@@ -8,7 +8,7 @@ use crucible_engine::{ContentHash, NodeId};
 use super::*;
 
 /// Immutable boot artifacts selected for one guest architecture.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ProductionVmGuestAssets {
     pub(super) kernel: PathBuf,
     pub(super) root_image: PathBuf,

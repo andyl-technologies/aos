@@ -5,6 +5,13 @@
 //! generation it authenticates and avoids making plan publication invalidate
 //! its own physical-inventory basis.
 //!
+//! A manifest value is a handle to its canonical file, never a resident copy
+//! of its entries: opening a file validates it in one streaming pass and
+//! records only its identity and counters, and each iteration reads the file
+//! again. Planning writes manifests straight into private scratch files, and
+//! a journal holds handles to its own durable copies, so neither holds up to
+//! [`MAX_CAMPAIGN_GC_MANIFEST_ENTRIES`] entries in memory.
+//!
 //! The root format is:
 //!
 //! ```text
@@ -29,17 +36,27 @@
 //!     required_backend_length:u16be || required_backend_utf8
 //! ```
 
-use std::cmp::Ordering;
-use std::collections::BTreeSet;
-use std::io::{self, Read, Write};
+mod codec;
 
-use crucible_campaign::{CampaignHash, MAX_CAMPAIGN_CLOSURE_OBJECTS};
+use std::cmp::Ordering;
+use std::fs::File;
+use std::io::{self, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crucible_campaign::CampaignHash;
 use crucible_store::content_store::ContentId;
 use thiserror::Error;
 
+use super::spill::GcWorkDirectory;
 use super::{
     CampaignGcCandidateSetId, CampaignGcCandidateSetSummary, CampaignGcRootSetId,
-    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, validate_backend_id,
+    MAX_CAMPAIGN_GC_BACKEND_ID_BYTES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES, validate_backend_id,
+};
+use codec::{
+    CountingReader, PendingManifest, hash_bounded_string, hash_candidate, manifest_hasher,
+    next_entry_count, read_candidate, read_count, read_ordered_root, require_eof, require_magic,
+    write_bounded_string, write_candidate,
 };
 
 const ROOT_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-root-manifest.v1\0";
@@ -47,110 +64,281 @@ const ROOT_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-root-manifest.v1
 const CANDIDATE_MANIFEST_MAGIC: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1\0";
 const CANDIDATE_MANIFEST_HASH_DOMAIN: &[u8] = b"crucible.campaign.gc-candidate-manifest.v1";
 const MAX_CONTENT_ID_BYTES: usize = 128;
+const IO_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Maximum number of roots or physical placements in one local manifest.
 ///
-/// This matches the repository's complete-closure work bound. Implementations
-/// reject before retaining an additional entry once this bound is reached.
-pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+/// This is a format bound: writers reject an additional entry once it is
+/// reached, but entries are streamed to disk and never held in memory
+/// together. Repository closure walks have no matching whole-closure bound;
+/// they authenticate one transition delta at a time.
+pub const MAX_CAMPAIGN_GC_MANIFEST_ENTRIES: usize = 64_000_000;
 
-/// Exact sorted set of logical roots used for reachability planning.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CampaignGcRootManifest {
-    roots: Vec<ContentId>,
+/// Canonical manifest file and the scratch directory that owns it, if any.
+///
+/// A durable journal copy has no owner and outlives the handle. A planning
+/// copy keeps its private work directory alive and goes away with it.
+#[derive(Debug)]
+struct ManifestFile {
+    path: PathBuf,
+    _owner: Option<Arc<GcWorkDirectory>>,
 }
 
-impl CampaignGcRootManifest {
-    /// Builds a deduplicated canonical root manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignGcManifestError::EntryLimit`] if more than the fixed
-    /// v1 root bound is supplied.
-    pub fn new(
-        roots: impl IntoIterator<Item = ContentId>,
-    ) -> Result<Self, CampaignGcManifestError> {
-        let mut canonical = BTreeSet::new();
-        let mut observed = 0_usize;
-        for root in roots {
-            observed = observed
-                .checked_add(1)
-                .ok_or(CampaignGcManifestError::EntryLimit)?;
-            if observed > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
-                return Err(CampaignGcManifestError::EntryLimit);
-            }
-            canonical.insert(root);
-        }
-        let mut roots = canonical.into_iter().collect::<Vec<_>>();
-        roots.sort_unstable_by(|left, right| compare_content_id(*left, *right));
-        Ok(Self { roots })
+impl ManifestFile {
+    fn open_reader(&self) -> Result<CountingReader, CampaignGcManifestError> {
+        Ok(CountingReader::new(File::open(&self.path)?))
     }
+}
 
-    /// Strictly reads one canonical v1 root manifest.
+/// Exact sorted set of logical roots used for reachability planning.
+///
+/// Clones share the backing file. Two manifests are equal when their
+/// canonical identities and counts are equal.
+#[derive(Clone, Debug)]
+pub struct CampaignGcRootManifest {
+    file: Arc<ManifestFile>,
+    roots: u64,
+    id: CampaignGcRootSetId,
+}
+
+impl PartialEq for CampaignGcRootManifest {
+    fn eq(&self, other: &Self) -> bool {
+        self.roots == other.roots && self.id == other.id
+    }
+}
+
+impl Eq for CampaignGcRootManifest {}
+
+impl CampaignGcRootManifest {
+    /// Opens and strictly validates one canonical v1 root manifest file.
+    ///
+    /// The file is read once to compute its identity; the entries are not
+    /// retained.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignGcManifestError`] for I/O failure, unsupported magic,
     /// excessive count, malformed IDs, noncanonical order, or trailing bytes.
-    pub fn from_canonical_reader(reader: &mut dyn Read) -> Result<Self, CampaignGcManifestError> {
-        require_magic(reader, ROOT_MANIFEST_MAGIC)?;
-        let count = read_count(reader)?;
-        let mut roots = Vec::with_capacity(count.min(4_096));
-        let mut previous = None;
-        for _ in 0..count {
-            let root = read_content_id(reader)?;
-            if previous.is_some_and(|prior| compare_content_id(prior, root) != Ordering::Less) {
-                return Err(CampaignGcManifestError::Noncanonical);
-            }
-            roots.push(root);
-            previous = Some(root);
-        }
-        require_eof(reader)?;
-        Ok(Self { roots })
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, CampaignGcManifestError> {
+        Self::open_owned(path.into(), None)
     }
 
-    /// Streams the exact canonical v1 representation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignGcManifestError::Io`] if the destination rejects any
-    /// bytes. Construction already proves all length fields representable.
-    pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
-        writer.write_all(ROOT_MANIFEST_MAGIC)?;
-        writer.write_all(&entry_count(self.roots.len())?.to_be_bytes())?;
-        for root in &self.roots {
-            write_bounded_string(writer, &root.encode(), MAX_CONTENT_ID_BYTES)?;
+    fn open_owned(
+        path: PathBuf,
+        owner: Option<Arc<GcWorkDirectory>>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        let file = Arc::new(ManifestFile {
+            path,
+            _owner: owner,
+        });
+        let mut reader = file.open_reader()?;
+        require_magic(&mut reader, ROOT_MANIFEST_MAGIC)?;
+        let roots = read_count(&mut reader)?;
+
+        let mut hasher = manifest_hasher(ROOT_MANIFEST_HASH_DOMAIN);
+        hasher.update(ROOT_MANIFEST_MAGIC);
+        hasher.update(&roots.to_be_bytes());
+        let mut previous = None;
+        for _ in 0..roots {
+            let root = read_ordered_root(&mut reader, &mut previous)?;
+            hash_bounded_string(&mut hasher, &root.encode());
         }
-        Ok(())
+        require_eof(&mut reader)?;
+
+        let id =
+            CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(*hasher.finalize().as_bytes()));
+        Ok(Self { file, roots, id })
     }
 
     /// Returns the exact manifest identity.
     #[must_use]
-    pub fn id(&self) -> CampaignGcRootSetId {
-        let mut hasher = manifest_hasher(ROOT_MANIFEST_HASH_DOMAIN);
-        hasher.update(ROOT_MANIFEST_MAGIC);
-        hasher.update(&(self.roots.len() as u64).to_be_bytes());
-        for root in &self.roots {
-            hash_bounded_string(&mut hasher, &root.encode());
-        }
-        CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(*hasher.finalize().as_bytes()))
+    pub const fn id(&self) -> CampaignGcRootSetId {
+        self.id
     }
 
     /// Returns the number of unique logical roots.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.roots.len()
+    pub const fn len(&self) -> u64 {
+        self.roots
     }
 
     /// Returns whether the manifest contains no roots.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.roots.is_empty()
+    pub const fn is_empty(&self) -> bool {
+        self.roots == 0
     }
 
-    /// Iterates roots in their canonical order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = ContentId> + '_ {
-        self.roots.iter().copied()
+    /// Returns the path of the backing canonical file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.file.path
+    }
+
+    /// Streams roots in their canonical order from the backing file.
+    ///
+    /// The iterator re-derives the manifest identity as it reads. If the file
+    /// changed after it was opened, the last entry is replaced by
+    /// [`CampaignGcManifestError::Changed`], so a caller that consumes the
+    /// whole stream before acting never acts on substituted content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcManifestError`] when the file cannot be reopened
+    /// or no longer starts with the validated header. Entry errors are
+    /// yielded by the iterator, which then stops.
+    pub fn iter(&self) -> Result<CampaignGcRootManifestEntries, CampaignGcManifestError> {
+        let mut reader = self.file.open_reader()?;
+        require_magic(&mut reader, ROOT_MANIFEST_MAGIC)?;
+        if read_count(&mut reader)? != self.roots {
+            return Err(CampaignGcManifestError::Changed);
+        }
+        let mut hasher = manifest_hasher(ROOT_MANIFEST_HASH_DOMAIN);
+        hasher.update(ROOT_MANIFEST_MAGIC);
+        hasher.update(&self.roots.to_be_bytes());
+        Ok(CampaignGcRootManifestEntries {
+            reader,
+            remaining: self.roots,
+            previous: None,
+            hasher,
+            expected: self.id,
+        })
+    }
+
+    /// Reports whether `id` is one of the manifest's roots.
+    ///
+    /// This is a streaming scan of the backing file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcManifestError`] when the file cannot be read back.
+    pub fn contains(&self, id: ContentId) -> Result<bool, CampaignGcManifestError> {
+        for root in self.iter()? {
+            match compare_content_id(root?, id) {
+                Ordering::Less => {}
+                Ordering::Equal => return Ok(true),
+                Ordering::Greater => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Streams this manifest's exact canonical representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcManifestError::Io`] if the backing file cannot be
+    /// read or the destination rejects any bytes.
+    pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
+        io::copy(&mut File::open(&self.file.path)?, writer)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_roots_for_test(
+        directory: &Arc<GcWorkDirectory>,
+        roots: impl IntoIterator<Item = ContentId>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        let mut roots = roots.into_iter().collect::<Vec<_>>();
+        roots.sort_by(|left, right| compare_content_id(*left, *right));
+        roots.dedup();
+        let mut writer = CampaignGcRootManifestWriter::create(directory)?;
+        for root in roots {
+            writer.push(root)?;
+        }
+        writer.finish()
+    }
+}
+
+/// Streaming reader over one root manifest's entries.
+pub struct CampaignGcRootManifestEntries {
+    reader: CountingReader,
+    remaining: u64,
+    previous: Option<ContentId>,
+    hasher: blake3::Hasher,
+    expected: CampaignGcRootSetId,
+}
+
+impl CampaignGcRootManifestEntries {
+    fn read_next(&mut self) -> Result<ContentId, CampaignGcManifestError> {
+        let root = read_ordered_root(&mut self.reader, &mut self.previous)?;
+        hash_bounded_string(&mut self.hasher, &root.encode());
+        if self.remaining == 1 {
+            require_eof(&mut self.reader).map_err(|_| CampaignGcManifestError::Changed)?;
+            let actual = CampaignGcRootSetId::from_hash(CampaignHash::from_bytes(
+                *self.hasher.finalize().as_bytes(),
+            ));
+            if actual != self.expected {
+                return Err(CampaignGcManifestError::Changed);
+            }
+        }
+        Ok(root)
+    }
+}
+
+impl std::fmt::Debug for CampaignGcRootManifestEntries {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CampaignGcRootManifestEntries")
+            .field("remaining", &self.remaining)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Iterator for CampaignGcRootManifestEntries {
+    type Item = Result<ContentId, CampaignGcManifestError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let root = self.read_next();
+        // An error ends the stream so a caller never resumes mid-entry.
+        self.remaining = if root.is_ok() { self.remaining - 1 } else { 0 };
+        Some(root)
+    }
+}
+
+/// Streaming writer for one root manifest in a private work directory.
+///
+/// Roots must arrive in strict canonical order. The count is patched in
+/// after the last entry, and the finished file is reopened and validated.
+pub(super) struct CampaignGcRootManifestWriter {
+    output: PendingManifest,
+    roots: u64,
+    previous: Option<ContentId>,
+}
+
+impl CampaignGcRootManifestWriter {
+    pub(super) fn create(
+        directory: &Arc<GcWorkDirectory>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        Ok(Self {
+            output: PendingManifest::create(directory, "roots", ROOT_MANIFEST_MAGIC)?,
+            roots: 0,
+            previous: None,
+        })
+    }
+
+    pub(super) fn push(&mut self, root: ContentId) -> Result<(), CampaignGcManifestError> {
+        if self
+            .previous
+            .is_some_and(|prior| compare_content_id(prior, root) != Ordering::Less)
+        {
+            return Err(CampaignGcManifestError::Noncanonical);
+        }
+        self.roots = next_entry_count(self.roots)?;
+        write_bounded_string(
+            &mut self.output.writer,
+            &root.encode(),
+            MAX_CONTENT_ID_BYTES,
+        )?;
+        self.previous = Some(root);
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Result<CampaignGcRootManifest, CampaignGcManifestError> {
+        let (path, owner) = self.output.seal(self.roots)?;
+        CampaignGcRootManifest::open_owned(path, Some(owner))
     }
 }
 
@@ -249,202 +437,358 @@ impl CampaignGcCandidate {
     pub const fn reason(&self) -> &CampaignGcCandidateReason {
         &self.reason
     }
+}
 
-    pub(super) fn compare_id(&self, id: ContentId) -> Ordering {
-        compare_content_id(self.id, id)
-    }
+/// Byte range of one backend's contiguous candidates in a manifest file.
+#[derive(Clone, Debug)]
+struct BackendRange {
+    backend: String,
+    offset: u64,
+    candidates: u64,
 }
 
 /// Canonical ordered physical-deletion candidate manifest.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Clones share the backing file. Besides its identity and counters the
+/// handle keeps one byte range per physical backend, bounded by the plan's
+/// physical inventory limit, so one backend's candidates can be streamed
+/// without scanning the others. Two manifests are equal when their
+/// canonical summaries and reason counts are equal.
+#[derive(Clone, Debug)]
 pub struct CampaignGcCandidateManifest {
-    candidates: Vec<CampaignGcCandidate>,
-    logical_bytes: u64,
+    file: Arc<ManifestFile>,
+    summary: CampaignGcCandidateSetSummary,
+    unreachable_candidates: u64,
+    reachable_cache_candidates: u64,
+    backends: Vec<BackendRange>,
 }
 
-impl CampaignGcCandidateManifest {
-    /// Builds and canonically orders one candidate manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignGcManifestError::EntryLimit`] for an excessive entry
-    /// count, [`CampaignGcManifestError::DuplicateCandidate`] for the same
-    /// physical placement twice, or [`CampaignGcManifestError::CountOverflow`]
-    /// if logical byte accounting overflows.
-    pub fn new(mut candidates: Vec<CampaignGcCandidate>) -> Result<Self, CampaignGcManifestError> {
-        if candidates.len() > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
-            return Err(CampaignGcManifestError::EntryLimit);
-        }
-        candidates.sort_by(compare_candidate);
-        if candidates
-            .windows(2)
-            .any(|pair| pair[0].backend == pair[1].backend && pair[0].id == pair[1].id)
-        {
-            return Err(CampaignGcManifestError::DuplicateCandidate);
-        }
-        let logical_bytes = candidates.iter().try_fold(0_u64, |total, candidate| {
-            total
-                .checked_add(candidate.logical_length)
-                .ok_or(CampaignGcManifestError::CountOverflow)
-        })?;
-        Ok(Self {
-            candidates,
-            logical_bytes,
-        })
+impl PartialEq for CampaignGcCandidateManifest {
+    fn eq(&self, other: &Self) -> bool {
+        self.summary == other.summary
+            && self.unreachable_candidates == other.unreachable_candidates
+            && self.reachable_cache_candidates == other.reachable_cache_candidates
     }
+}
 
-    /// Strictly reads one supported canonical candidate manifest.
+impl Eq for CampaignGcCandidateManifest {}
+
+impl CampaignGcCandidateManifest {
+    /// Opens and strictly validates one canonical candidate manifest file.
+    ///
+    /// The file is read once to compute its summary and per-backend ranges;
+    /// the entries are not retained.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignGcManifestError`] for I/O failure, unsupported magic,
     /// excessive count, malformed fields, noncanonical order, duplicate
-    /// placements, accounting overflow, or trailing bytes.
-    pub fn from_canonical_reader(reader: &mut dyn Read) -> Result<Self, CampaignGcManifestError> {
-        require_magic(reader, CANDIDATE_MANIFEST_MAGIC)?;
-        let count = read_count(reader)?;
-        let mut candidates = Vec::with_capacity(count.min(4_096));
+    /// placements, more backends than a plan may bind, accounting overflow,
+    /// or trailing bytes.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, CampaignGcManifestError> {
+        Self::open_owned(path.into(), None)
+    }
+
+    fn open_owned(
+        path: PathBuf,
+        owner: Option<Arc<GcWorkDirectory>>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        let file = Arc::new(ManifestFile {
+            path,
+            _owner: owner,
+        });
+        let mut reader = file.open_reader()?;
+        require_magic(&mut reader, CANDIDATE_MANIFEST_MAGIC)?;
+        let count = read_count(&mut reader)?;
+
+        let mut hasher = manifest_hasher(CANDIDATE_MANIFEST_HASH_DOMAIN);
+        hasher.update(CANDIDATE_MANIFEST_MAGIC);
+        hasher.update(&count.to_be_bytes());
+        let mut logical_bytes = 0_u64;
+        let mut unreachable_candidates = 0_u64;
+        let mut backends = Vec::<BackendRange>::new();
+        let mut previous = None;
         for _ in 0..count {
-            let backend = read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?;
-            let id = read_content_id(reader)?;
-            let logical_length = read_u64(reader)?;
-            let candidate = match read_u8(reader)? {
-                0 => CampaignGcCandidate::new(backend, id, logical_length)?,
-                1 => CampaignGcCandidate::new_reachable_cache(
-                    backend,
-                    id,
-                    logical_length,
-                    read_bounded_string(reader, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES)?,
-                )?,
-                _ => return Err(CampaignGcManifestError::InvalidField),
-            };
-            candidates.push(candidate);
+            let offset = reader.position();
+            let candidate = read_candidate(&mut reader)?;
+            check_candidate_order(previous.as_ref(), &candidate)?;
+            hash_candidate(&mut hasher, &candidate);
+
+            logical_bytes = logical_bytes
+                .checked_add(candidate.logical_length)
+                .ok_or(CampaignGcManifestError::CountOverflow)?;
+            if candidate.reason == CampaignGcCandidateReason::Unreachable {
+                unreachable_candidates += 1;
+            }
+            match backends.last_mut() {
+                Some(range) if range.backend == candidate.backend => range.candidates += 1,
+                _ => {
+                    if backends.len() >= MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES {
+                        return Err(CampaignGcManifestError::BackendLimit);
+                    }
+                    backends.push(BackendRange {
+                        backend: candidate.backend.clone(),
+                        offset,
+                        candidates: 1,
+                    });
+                }
+            }
+            previous = Some(candidate);
         }
-        require_eof(reader)?;
-        if candidates
-            .windows(2)
-            .any(|pair| compare_candidate(&pair[0], &pair[1]) != Ordering::Less)
-        {
-            return Err(CampaignGcManifestError::Noncanonical);
+        require_eof(&mut reader)?;
+
+        let id = CampaignGcCandidateSetId::from_hash(CampaignHash::from_bytes(
+            *hasher.finalize().as_bytes(),
+        ));
+        Ok(Self {
+            file,
+            summary: CampaignGcCandidateSetSummary::new(id, count, logical_bytes),
+            unreachable_candidates,
+            reachable_cache_candidates: count - unreachable_candidates,
+            backends,
+        })
+    }
+
+    /// Returns the exact manifest identity and terminal counters.
+    #[must_use]
+    pub const fn summary(&self) -> CampaignGcCandidateSetSummary {
+        self.summary
+    }
+
+    /// Returns the number of physical candidates.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.summary.candidates()
+    }
+
+    /// Returns whether the candidate set is empty.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.summary.candidates() == 0
+    }
+
+    /// Returns the checked total candidate logical bytes.
+    #[must_use]
+    pub const fn logical_bytes(&self) -> u64 {
+        self.summary.logical_bytes()
+    }
+
+    /// Returns candidates authorized because their logical object is unreachable.
+    #[must_use]
+    pub const fn unreachable_candidates(&self) -> u64 {
+        self.unreachable_candidates
+    }
+
+    /// Returns reachable cache candidates authorized by current policy.
+    #[must_use]
+    pub const fn reachable_cache_candidates(&self) -> u64 {
+        self.reachable_cache_candidates
+    }
+
+    /// Returns the path of the backing canonical file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.file.path
+    }
+
+    /// Streams candidates in canonical physical order from the backing file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignGcManifestError`] when the file cannot be reopened
+    /// or no longer starts with the validated header. Entry errors are
+    /// yielded by the iterator, which then stops.
+    pub fn iter(&self) -> Result<CampaignGcCandidateManifestEntries, CampaignGcManifestError> {
+        let mut reader = self.file.open_reader()?;
+        require_magic(&mut reader, CANDIDATE_MANIFEST_MAGIC)?;
+        if read_count(&mut reader)? != self.len() {
+            return Err(CampaignGcManifestError::Changed);
         }
-        let manifest = Self::new(candidates)?;
-        Ok(manifest)
+        let mut hasher = manifest_hasher(CANDIDATE_MANIFEST_HASH_DOMAIN);
+        hasher.update(CANDIDATE_MANIFEST_MAGIC);
+        hasher.update(&self.len().to_be_bytes());
+        Ok(CampaignGcCandidateManifestEntries {
+            reader,
+            remaining: self.len(),
+            backend: None,
+            previous: None,
+            verify: Some((hasher, self.summary.id())),
+        })
+    }
+
+    /// Returns the number of candidates on one physical backend.
+    pub(super) fn backend_candidates(&self, backend: &str) -> u64 {
+        self.backend_range(backend)
+            .map_or(0, |range| range.candidates)
+    }
+
+    /// Streams one backend's candidates in canonical identity order.
+    pub(super) fn iter_backend(
+        &self,
+        backend: &str,
+    ) -> Result<CampaignGcCandidateManifestEntries, CampaignGcManifestError> {
+        let Some(range) = self.backend_range(backend) else {
+            return Ok(CampaignGcCandidateManifestEntries {
+                reader: self.file.open_reader()?,
+                remaining: 0,
+                backend: None,
+                previous: None,
+                verify: None,
+            });
+        };
+        let mut file = File::open(&self.file.path)?;
+        file.seek(SeekFrom::Start(range.offset))?;
+        Ok(CampaignGcCandidateManifestEntries {
+            reader: CountingReader::new(file),
+            remaining: range.candidates,
+            backend: Some(range.backend.clone()),
+            previous: None,
+            verify: None,
+        })
     }
 
     /// Streams this candidate manifest's exact canonical representation.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignGcManifestError::Io`] if the destination rejects any
-    /// bytes. Construction already proves all length fields representable.
+    /// Returns [`CampaignGcManifestError::Io`] if the backing file cannot be
+    /// read or the destination rejects any bytes.
     pub fn write_canonical(&self, writer: &mut dyn Write) -> Result<(), CampaignGcManifestError> {
-        writer.write_all(CANDIDATE_MANIFEST_MAGIC)?;
-        writer.write_all(&entry_count(self.candidates.len())?.to_be_bytes())?;
-        for candidate in &self.candidates {
-            write_bounded_string(
-                writer,
-                candidate.backend(),
-                MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
-            )?;
-            write_bounded_string(writer, &candidate.id().encode(), MAX_CONTENT_ID_BYTES)?;
-            writer.write_all(&candidate.logical_length().to_be_bytes())?;
-            match candidate.reason() {
-                CampaignGcCandidateReason::Unreachable => writer.write_all(&[0])?,
-                CampaignGcCandidateReason::ReachableCache { required_backend } => {
-                    writer.write_all(&[1])?;
-                    write_bounded_string(
-                        writer,
-                        required_backend,
-                        MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
-                    )?;
-                }
-            }
-        }
+        io::copy(&mut File::open(&self.file.path)?, writer)?;
         Ok(())
     }
 
-    /// Returns the exact manifest identity and terminal counters.
-    #[must_use]
-    pub fn summary(&self) -> CampaignGcCandidateSetSummary {
-        let mut hasher = manifest_hasher(CANDIDATE_MANIFEST_HASH_DOMAIN);
-        hasher.update(CANDIDATE_MANIFEST_MAGIC);
-        hasher.update(&(self.candidates.len() as u64).to_be_bytes());
-        for candidate in &self.candidates {
-            hash_bounded_string(&mut hasher, candidate.backend());
-            hash_bounded_string(&mut hasher, &candidate.id().encode());
-            hasher.update(&candidate.logical_length().to_be_bytes());
-            match candidate.reason() {
-                CampaignGcCandidateReason::Unreachable => {
-                    hasher.update(&[0]);
-                }
-                CampaignGcCandidateReason::ReachableCache { required_backend } => {
-                    hasher.update(&[1]);
-                    hash_bounded_string(&mut hasher, required_backend);
+    fn backend_range(&self, backend: &str) -> Option<&BackendRange> {
+        self.backends
+            .binary_search_by(|range| range.backend.as_str().cmp(backend))
+            .ok()
+            .map(|index| &self.backends[index])
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_candidates_for_test(
+        directory: &Arc<GcWorkDirectory>,
+        mut candidates: Vec<CampaignGcCandidate>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        candidates.sort_by(compare_candidate);
+        let mut writer = CampaignGcCandidateManifestWriter::create(directory)?;
+        for candidate in &candidates {
+            writer.push(candidate)?;
+        }
+        writer.finish()
+    }
+}
+
+/// Streaming reader over a candidate manifest or one backend's range of it.
+///
+/// A full-manifest reader re-derives the manifest identity and replaces its
+/// last entry with [`CampaignGcManifestError::Changed`] if the file changed
+/// after it was opened. A single backend's range is checked for order and
+/// backend only.
+pub struct CampaignGcCandidateManifestEntries {
+    reader: CountingReader,
+    remaining: u64,
+    backend: Option<String>,
+    previous: Option<CampaignGcCandidate>,
+    verify: Option<(blake3::Hasher, CampaignGcCandidateSetId)>,
+}
+
+impl std::fmt::Debug for CampaignGcCandidateManifestEntries {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CampaignGcCandidateManifestEntries")
+            .field("remaining", &self.remaining)
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CampaignGcCandidateManifestEntries {
+    fn read_next(&mut self) -> Result<CampaignGcCandidate, CampaignGcManifestError> {
+        let candidate = read_candidate(&mut self.reader)?;
+        check_candidate_order(self.previous.as_ref(), &candidate)?;
+        if self
+            .backend
+            .as_deref()
+            .is_some_and(|backend| backend != candidate.backend)
+        {
+            return Err(CampaignGcManifestError::Noncanonical);
+        }
+        if let Some((hasher, expected)) = self.verify.as_mut() {
+            hash_candidate(hasher, &candidate);
+            if self.remaining == 1 {
+                require_eof(&mut self.reader).map_err(|_| CampaignGcManifestError::Changed)?;
+                let actual = CampaignGcCandidateSetId::from_hash(CampaignHash::from_bytes(
+                    *hasher.finalize().as_bytes(),
+                ));
+                if actual != *expected {
+                    return Err(CampaignGcManifestError::Changed);
                 }
             }
         }
-        let id = CampaignGcCandidateSetId::from_hash(CampaignHash::from_bytes(
-            *hasher.finalize().as_bytes(),
-        ));
-        CampaignGcCandidateSetSummary::new(id, self.candidates.len() as u64, self.logical_bytes)
+        self.previous = Some(candidate.clone());
+        Ok(candidate)
+    }
+}
+
+impl Iterator for CampaignGcCandidateManifestEntries {
+    type Item = Result<CampaignGcCandidate, CampaignGcManifestError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let candidate = self.read_next();
+        // An error ends the stream so a caller never resumes mid-entry.
+        self.remaining = if candidate.is_ok() {
+            self.remaining - 1
+        } else {
+            0
+        };
+        Some(candidate)
+    }
+}
+
+/// Streaming writer for one candidate manifest in a private work directory.
+///
+/// Candidates must arrive in strict canonical (backend, identity) order.
+pub(super) struct CampaignGcCandidateManifestWriter {
+    output: PendingManifest,
+    candidates: u64,
+    logical_bytes: u64,
+    previous: Option<CampaignGcCandidate>,
+}
+
+impl CampaignGcCandidateManifestWriter {
+    pub(super) fn create(
+        directory: &Arc<GcWorkDirectory>,
+    ) -> Result<Self, CampaignGcManifestError> {
+        Ok(Self {
+            output: PendingManifest::create(directory, "candidates", CANDIDATE_MANIFEST_MAGIC)?,
+            candidates: 0,
+            logical_bytes: 0,
+            previous: None,
+        })
     }
 
-    /// Returns the number of physical candidates.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.candidates.len()
+    pub(super) fn push(
+        &mut self,
+        candidate: &CampaignGcCandidate,
+    ) -> Result<(), CampaignGcManifestError> {
+        check_candidate_order(self.previous.as_ref(), candidate)?;
+        self.candidates = next_entry_count(self.candidates)?;
+        self.logical_bytes = self
+            .logical_bytes
+            .checked_add(candidate.logical_length)
+            .ok_or(CampaignGcManifestError::CountOverflow)?;
+        write_candidate(&mut self.output.writer, candidate)?;
+        self.previous = Some(candidate.clone());
+        Ok(())
     }
 
-    /// Returns whether the candidate set is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.candidates.is_empty()
-    }
-
-    /// Returns the checked total candidate logical bytes.
-    #[must_use]
-    pub const fn logical_bytes(&self) -> u64 {
-        self.logical_bytes
-    }
-
-    /// Returns candidates authorized because their logical object is unreachable.
-    #[must_use]
-    pub fn unreachable_candidates(&self) -> u64 {
-        self.candidates
-            .iter()
-            .filter(|candidate| {
-                matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
-            })
-            .count() as u64
-    }
-
-    /// Returns reachable cache candidates authorized by current policy.
-    #[must_use]
-    pub fn reachable_cache_candidates(&self) -> u64 {
-        self.candidates
-            .iter()
-            .filter(|candidate| {
-                matches!(
-                    candidate.reason(),
-                    CampaignGcCandidateReason::ReachableCache { .. }
-                )
-            })
-            .count() as u64
-    }
-
-    /// Iterates candidates in canonical physical order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &CampaignGcCandidate> {
-        self.candidates.iter()
-    }
-
-    pub(super) fn for_backend(&self, backend: &str) -> &[CampaignGcCandidate] {
-        let start = self
-            .candidates
-            .partition_point(|candidate| candidate.backend() < backend);
-        let end = self
-            .candidates
-            .partition_point(|candidate| candidate.backend() <= backend);
-        &self.candidates[start..end]
+    pub(super) fn finish(self) -> Result<CampaignGcCandidateManifest, CampaignGcManifestError> {
+        let (path, owner) = self.output.seal(self.candidates)?;
+        CampaignGcCandidateManifest::open_owned(path, Some(owner))
     }
 }
 
@@ -454,6 +798,9 @@ pub enum CampaignGcManifestError {
     /// A manifest contains more entries than the fixed work bound.
     #[error("campaign GC manifest entry limit exceeded")]
     EntryLimit,
+    /// A candidate manifest names more physical backends than a plan may bind.
+    #[error("campaign GC candidate manifest names too many physical backends")]
+    BackendLimit,
     /// A physical backend identifier violates the fixed grammar.
     #[error("campaign GC manifest backend identifier is invalid")]
     InvalidBackendId,
@@ -472,25 +819,24 @@ pub enum CampaignGcManifestError {
     /// Entries are duplicated, unordered, or have an alternate representation.
     #[error("campaign GC manifest encoding is noncanonical")]
     Noncanonical,
+    /// The backing file no longer matches the identity validated at open.
+    #[error("campaign GC manifest file changed after it was opened")]
+    Changed,
     /// The canonical stream is truncated, unreadable, or unwritable.
     #[error("campaign GC manifest I/O failed")]
     Io(#[from] io::Error),
 }
 
-fn manifest_hasher(domain: &[u8]) -> blake3::Hasher {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&(domain.len() as u64).to_be_bytes());
-    hasher.update(domain);
-    hasher
-}
-
-fn compare_candidate(left: &CampaignGcCandidate, right: &CampaignGcCandidate) -> Ordering {
+pub(super) fn compare_candidate(
+    left: &CampaignGcCandidate,
+    right: &CampaignGcCandidate,
+) -> Ordering {
     left.backend
         .cmp(&right.backend)
         .then_with(|| compare_content_id(left.id, right.id))
 }
 
-fn compare_content_id(left: ContentId, right: ContentId) -> Ordering {
+pub(super) fn compare_content_id(left: ContentId, right: ContentId) -> Ordering {
     left.kind()
         .as_str()
         .cmp(right.kind().as_str())
@@ -498,89 +844,13 @@ fn compare_content_id(left: ContentId, right: ContentId) -> Ordering {
         .then_with(|| left.digest().cmp(&right.digest()))
 }
 
-fn hash_bounded_string(hasher: &mut blake3::Hasher, value: &str) {
-    hasher.update(&(value.len() as u16).to_be_bytes());
-    hasher.update(value.as_bytes());
-}
-
-fn entry_count(count: usize) -> Result<u64, CampaignGcManifestError> {
-    u64::try_from(count).map_err(|_| CampaignGcManifestError::EntryLimit)
-}
-
-fn read_count(reader: &mut dyn Read) -> Result<usize, CampaignGcManifestError> {
-    let count = read_u64(reader)?;
-    let count = usize::try_from(count).map_err(|_| CampaignGcManifestError::EntryLimit)?;
-    if count > MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
-        return Err(CampaignGcManifestError::EntryLimit);
-    }
-    Ok(count)
-}
-
-fn require_magic(reader: &mut dyn Read, expected: &[u8]) -> Result<(), CampaignGcManifestError> {
-    let mut actual = vec![0_u8; expected.len()];
-    reader.read_exact(&mut actual)?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(CampaignGcManifestError::UnsupportedSchema)
-    }
-}
-
-fn read_u16(reader: &mut dyn Read) -> Result<u16, CampaignGcManifestError> {
-    let mut bytes = [0_u8; 2];
-    reader.read_exact(&mut bytes)?;
-    Ok(u16::from_be_bytes(bytes))
-}
-
-fn read_u8(reader: &mut dyn Read) -> Result<u8, CampaignGcManifestError> {
-    let mut byte = [0_u8; 1];
-    reader.read_exact(&mut byte)?;
-    Ok(byte[0])
-}
-
-fn read_u64(reader: &mut dyn Read) -> Result<u64, CampaignGcManifestError> {
-    let mut bytes = [0_u8; 8];
-    reader.read_exact(&mut bytes)?;
-    Ok(u64::from_be_bytes(bytes))
-}
-
-fn read_bounded_string(
-    reader: &mut dyn Read,
-    maximum: usize,
-) -> Result<String, CampaignGcManifestError> {
-    let length = usize::from(read_u16(reader)?);
-    if length == 0 || length > maximum {
-        return Err(CampaignGcManifestError::InvalidField);
-    }
-    let mut bytes = vec![0_u8; length];
-    reader.read_exact(&mut bytes)?;
-    String::from_utf8(bytes).map_err(|_| CampaignGcManifestError::InvalidField)
-}
-
-fn read_content_id(reader: &mut dyn Read) -> Result<ContentId, CampaignGcManifestError> {
-    let encoded = read_bounded_string(reader, MAX_CONTENT_ID_BYTES)?;
-    ContentId::parse(&encoded).map_err(|_| CampaignGcManifestError::InvalidField)
-}
-
-fn write_bounded_string(
-    writer: &mut dyn Write,
-    value: &str,
-    maximum: usize,
+fn check_candidate_order(
+    previous: Option<&CampaignGcCandidate>,
+    candidate: &CampaignGcCandidate,
 ) -> Result<(), CampaignGcManifestError> {
-    if value.is_empty() || value.len() > maximum {
-        return Err(CampaignGcManifestError::InvalidField);
-    }
-    let length = u16::try_from(value.len()).map_err(|_| CampaignGcManifestError::InvalidField)?;
-    writer.write_all(&length.to_be_bytes())?;
-    writer.write_all(value.as_bytes())?;
-    Ok(())
-}
-
-fn require_eof(reader: &mut dyn Read) -> Result<(), CampaignGcManifestError> {
-    let mut trailing = [0_u8; 1];
-    if reader.read(&mut trailing)? == 0 {
-        Ok(())
-    } else {
-        Err(CampaignGcManifestError::Noncanonical)
+    match previous.map(|prior| compare_candidate(prior, candidate)) {
+        None | Some(Ordering::Less) => Ok(()),
+        Some(Ordering::Equal) => Err(CampaignGcManifestError::DuplicateCandidate),
+        Some(Ordering::Greater) => Err(CampaignGcManifestError::Noncanonical),
     }
 }

@@ -14,7 +14,8 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
     let orphan = ref_fixture
         .prepared
         .candidates()
-        .iter()
+        .entries_for_test()
+        .into_iter()
         .next()
         .expect("orphan candidate")
         .id();
@@ -81,6 +82,7 @@ fn stale_ref_and_blob_generations_fail_before_deletion() {
 
 #[test]
 fn stale_ledger_generation_fails_before_deletion() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new("ledger-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -101,6 +103,7 @@ fn stale_ledger_generation_fails_before_deletion() {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan ledger stale GC");
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
@@ -172,6 +175,7 @@ fn interrupted_apply_retains_journal_and_requires_a_fresh_plan() {
 
 #[test]
 fn directory_plan_journal_and_apply_survive_full_backend_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary GC root");
     let blob_root = temp.path().join("blobs");
     let ref_root = temp.path().join("refs");
@@ -215,6 +219,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan directory GC");
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
@@ -249,6 +254,7 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
 
 #[test]
 fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary compressed GC root");
     let blob_root = temp.path().join("compressed");
     let ref_root = temp.path().join("refs");
@@ -303,6 +309,7 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan compressed GC");
     assert_eq!(prepared.plan().physical().len(), 1);
@@ -317,7 +324,13 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         u64::try_from(orphan_bytes.len()).expect("orphan logical bytes")
     );
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan
     );
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
@@ -378,6 +391,7 @@ fn compressed_encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart
 }
 
 fn run_encrypted_graph_gc_restart(compressed: bool) {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary encrypted GC root");
     let blob_root = temp.path().join("encrypted");
     let ref_root = temp.path().join("refs");
@@ -453,6 +467,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan encrypted GC");
     assert_eq!(prepared.plan().physical()[0].objects(), 2);
@@ -512,6 +527,7 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
 
 #[test]
 fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary quota GC root");
     let blob_root = temp.path().join("objects");
     let quota_root = temp.path().join("quota");
@@ -585,11 +601,18 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan quota GC");
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan
     );
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)
@@ -630,6 +653,7 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
 
 #[test]
 fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary packed GC root");
     let pack_root = temp.path().join("packs");
     let ref_root = temp.path().join("refs");
@@ -693,6 +717,7 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan packed GC");
     assert_eq!(
@@ -701,7 +726,13 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     );
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan
     );
     let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared)

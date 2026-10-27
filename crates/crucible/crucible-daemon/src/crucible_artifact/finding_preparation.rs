@@ -1,16 +1,138 @@
 //! Signature-preserving finding preparation and replay-pass validation.
 
 use super::*;
+use crate::AttemptLogSegmentSources;
+use crucible_campaign::FindingTriageReplayLogSegment;
+use crucible_engine::SegmentSource;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The four role-specific triage replay records and the stores holding the
+/// attempt-log segments they name.
+#[derive(Clone, Debug)]
 pub(super) struct PreparedFindingTriageReplayRecords {
     pub(super) minimization_original: FindingTriageReplayEvidence,
     pub(super) minimization_selected: FindingTriageReplayEvidence,
     pub(super) verification_original: FindingTriageReplayEvidence,
     pub(super) verification_selected: FindingTriageReplayEvidence,
+    // Read handles: the replay stores until a journal stages the segments,
+    // then the journal's copies.
+    pub(super) segments: AttemptLogSegmentSources,
 }
 
+// The segment stores are read handles; the records name the content.
+impl PartialEq for PreparedFindingTriageReplayRecords {
+    fn eq(&self, other: &Self) -> bool {
+        self.records() == other.records()
+    }
+}
+
+impl Eq for PreparedFindingTriageReplayRecords {}
+
 impl PreparedFindingTriageReplayRecords {
+    /// Returns each log segment the four records name once, in record order.
+    ///
+    /// Replays of one reproduction often share segments, and paired logs share
+    /// a prefix, so a shared segment is listed once.
+    pub(super) fn referenced_segments(&self) -> Vec<FindingTriageReplayLogSegment> {
+        let mut seen = BTreeSet::new();
+        self.records()
+            .into_iter()
+            .flat_map(|record| record.log_segments().iter().copied())
+            .filter(|segment| seen.insert(segment.content()))
+            .collect()
+    }
+
+    /// Visits the bytes of each [`Self::referenced_segments`] entry, read
+    /// from the record stores and authenticated against the record, in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a store cannot supply a segment, the bytes do
+    /// not derive its identity and length, or `visit` fails.
+    pub(super) fn try_for_each_segment<E>(
+        &self,
+        mut visit: impl FnMut(FindingTriageReplayLogSegment, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        for segment in self.referenced_segments() {
+            let bytes = self.segments.segment(segment.content()).map_err(|_| {
+                CampaignRepositoryError::Integrity {
+                    reason: "prepared-finding-triage-log-segment-unavailable",
+                }
+            })?;
+            if bytes.len() as u64 != segment.bytes() || !segment.content().authenticates(&bytes) {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "prepared-finding-triage-log-segment-content",
+                }
+                .into());
+            }
+            visit(segment, &bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Publishes every named log segment, then the four records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleArtifactError`] when a segment or record cannot be
+    /// stored or a stored record identity differs from the prepared one.
+    pub(super) fn publish(
+        &self,
+        store: &CrucibleCampaignArtifactStore,
+    ) -> Result<(), CrucibleArtifactError> {
+        self.try_for_each_segment(|segment, bytes| {
+            store
+                .repository
+                .publish_finding_triage_replay_log_segment(segment, bytes)
+                .map(drop)
+        })
+        .map_err(CrucibleArtifactError::RepositoryPublication)?;
+
+        for record in self.records() {
+            let expected = record.id()?;
+            let stored = store
+                .repository
+                .publish_finding_triage_replay_evidence(record)
+                .map_err(CrucibleArtifactError::RepositoryPublication)?;
+            if stored != expected {
+                return Err(CrucibleArtifactError::SemanticIdentityMismatch {
+                    artifact: "stored finding triage replay evidence",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Publishes every named log segment, then the four records, through the
+    /// executor's repository capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignRepositoryError`] when a segment or record cannot be
+    /// stored or a stored record identity differs from the prepared one.
+    pub(super) fn publish_for_executor(
+        &self,
+        store: &CampaignExecutorStore,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.try_for_each_segment(|segment, bytes| {
+            store
+                .publish_executor_triage_replay_log_segment(segment, bytes)
+                .map(drop)
+        })?;
+
+        for record in self.records() {
+            let stored = store.publish_executor_finding_triage_replay_evidence(record)?;
+            if stored != record.id()? {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "prepared-finding-triage-publication-mismatch",
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn evidence_set(&self) -> Result<FindingTriageEvidenceSet, CampaignCodecError> {
         Ok(FindingTriageEvidenceSet::new(
             self.minimization_original.id()?,
@@ -45,8 +167,21 @@ pub(super) fn prepare_finding_triage_replay_records(
         return Ok(None);
     };
 
-    let prepare = |reproduction, replay: finding_replay::RetainedFindingTriageReplay| {
-        Ok::<_, CrucibleArtifactError>(FindingTriageReplayEvidence::new(
+    let mut segments = AttemptLogSegmentSources::default();
+    let mut prepare = |reproduction, replay: finding_replay::RetainedFindingTriageReplay| {
+        segments.push(replay.evidence.log_segments().clone());
+        let log_segments = replay
+            .evidence
+            .referenced_segments()
+            .iter()
+            .map(|segment| {
+                crucible_campaign::FindingTriageReplayLogSegment::new(
+                    segment.id,
+                    segment.encoded_bytes,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, CrucibleArtifactError>(FindingTriageReplayEvidence::new_with_log_segments(
             reproduction,
             replay.observed_signature,
             replay.evidence.schema_version(),
@@ -56,14 +191,20 @@ pub(super) fn prepare_finding_triage_replay_records(
                     source: Box::new(source),
                 }
             })?,
+            log_segments,
         )?)
     };
 
+    let minimization_original = prepare(original, minimization_original)?;
+    let minimization_selected = prepare(minimized, minimization_selected)?;
+    let verification_original = prepare(original, verification_original)?;
+    let verification_selected = prepare(minimized, verification_selected)?;
     Ok(Some(PreparedFindingTriageReplayRecords {
-        minimization_original: prepare(original, minimization_original)?,
-        minimization_selected: prepare(minimized, minimization_selected)?,
-        verification_original: prepare(original, verification_original)?,
-        verification_selected: prepare(minimized, verification_selected)?,
+        minimization_original,
+        minimization_selected,
+        verification_original,
+        verification_selected,
+        segments,
     }))
 }
 
@@ -109,8 +250,7 @@ pub(super) fn prepare_original_reproduction(
             configuration_record.id()?,
             CampaignHash::from_bytes(finding.finding_fingerprint.bytes),
         ),
-        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        finding.artifact.to_compact_binary(),
+        super::crucible_reproduction_payload(&finding.artifact)?,
     )?;
     Ok((scenario_record, configuration_record, reproduction))
 }
@@ -141,7 +281,7 @@ pub(super) fn prepare_minimized_reproduction(
         .collect();
     let minimization = FindingMinimizationEvidence::new(
         original,
-        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3,
+        CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V4,
         encode_crucible_minimization_policy(run.config()),
         attempts,
         CampaignHash::from_bytes(minimized.replay.state.bytes),
@@ -154,8 +294,7 @@ pub(super) fn prepare_minimized_reproduction(
             configuration_record.id()?,
             CampaignHash::from_bytes(minimized.finding_fingerprint.bytes),
         ),
-        CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V4,
-        minimized.artifact.to_compact_binary(),
+        super::crucible_reproduction_payload(&minimized.artifact)?,
         minimization,
     )?;
     Ok((configuration_record, reproduction))
@@ -347,11 +486,10 @@ where
 }
 
 pub(super) fn encode_crucible_minimization_policy(config: MinimizationConfig) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3.len() + 69);
-    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3);
+    let mut bytes = Vec::with_capacity(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4.len() + 61);
+    bytes.extend_from_slice(CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V4);
     bytes.extend_from_slice(&config.seed.bytes());
     bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATES.to_be_bytes());
-    bytes.extend_from_slice(&CRUCIBLE_MINIMIZATION_CANDIDATE_WORK_BYTES.to_be_bytes());
     match config.interesting_window() {
         Some(window) => {
             bytes.push(1);

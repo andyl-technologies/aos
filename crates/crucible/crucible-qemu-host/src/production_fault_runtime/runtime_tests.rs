@@ -251,6 +251,7 @@ fn empty_plan_checkpoint_preserves_custom_resource_identity() {
         checkpoint,
         test_host_manifests(),
         &mut nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     )
     .unwrap_or_else(|error| panic!("custom empty checkpoint should restore: {error}"));
 }
@@ -414,6 +415,7 @@ fn production_availability_survives_checkpoint_restore() {
         checkpoint,
         test_host_manifests(),
         &mut nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     )
     .unwrap_or_else(|error| panic!("production checkpoint should restore: {error}"));
     assert_eq!(

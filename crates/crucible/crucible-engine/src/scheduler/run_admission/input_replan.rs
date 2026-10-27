@@ -50,6 +50,8 @@ impl SingleScheduler {
             // mapping or configuration is advanced by the physical report.
             let mut projection = self.clone();
             projection.nodes[run.plan.index].counter = reached;
+            let projected_settled = projection.nodes[run.plan.index].settled.max(reached);
+            projection.nodes[run.plan.index].settled = projected_settled;
             let projected_node = &projection.nodes[run.plan.index];
             let candidate = projection
                 .advance_candidate(
@@ -88,6 +90,7 @@ impl SingleScheduler {
         }
 
         let target_time = self.node_time_for_counter(node, NodeCounter { ticks: target })?;
+        let dispatch_stop = self.run_ceiling_stop(node, target)?;
         let subdivision = self.planned_run_subdivision(&run.plan.node, run.plan.before, target)?;
         let publication =
             self.publish_run_ceiling(run.plan.node.clone(), reached, target, target_time)?;
@@ -116,6 +119,7 @@ impl SingleScheduler {
             dispatch_horizon: ExecutionHorizon {
                 icount: Icount { retired: target },
             },
+            dispatch_stop,
         };
         Ok(refreshed)
     }

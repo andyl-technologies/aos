@@ -6,6 +6,12 @@ use thiserror::Error;
 /// An error in live production callback setup or dispatch.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveVcpuTimeCallbackError {
+    /// The completed boundary was released but its hostward notification failed.
+    #[error("control boundary ACK notification failed: {source}")]
+    ControlBoundaryNotification {
+        /// Shared-futex transport failure after coherent state publication.
+        source: crucible_qemu_shmem::FutexError,
+    },
     /// A required QEMU callback registration symbol is absent.
     #[error("required live callback capability `{symbol}` is unavailable")]
     CapabilityUnavailable {
@@ -21,6 +27,18 @@ pub enum LiveVcpuTimeCallbackError {
     /// Required live fault-command callback state was not installed.
     #[error("live QEMU fault command callback state is unavailable")]
     FaultCommandStateUnavailable,
+    /// Native accepted-prefix preparation or commitment refused this callback.
+    #[error("native console control acceptance failed: {source}")]
+    ConsoleControl {
+        /// Typed refusal before the original control acknowledgement.
+        source: crucible_qemu_protocol::native_console::NativeConsoleError,
+    },
+    /// The installed native dispatch owner refused the coherent runnable read.
+    #[error("native console dispatch owner failed: {source}")]
+    ConsoleDispatch {
+        /// Typed refusal; no scalar fallback or executable receipt is supplied.
+        source: crucible_qemu_protocol::native_console::NativeConsoleError,
+    },
     /// The live preemption command or QEMU injection was rejected.
     #[error("live preemption injection failed: {source}")]
     Preemption {

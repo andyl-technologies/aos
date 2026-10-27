@@ -8,7 +8,7 @@ pub(super) fn validate_capture_content(
     shared_context: &FindingProductionReplaySharedContext,
     retained_selected_side: FindingProductionReplaySelectedSide,
     sides: &[FindingProductionReplayExecutionSide],
-    campaign_replay_closure: &[u8],
+    campaign_replay_closure: &GuardedCampaignReplayClosure,
     limits: FindingProductionReplayCaptureLimits,
 ) -> Result<(), FindingProductionReplayCaptureError> {
     let model = crucible_engine::ReproductionArtifact::from_compact_binary(model_reproduction)
@@ -24,9 +24,7 @@ pub(super) fn validate_capture_content(
         })?;
     let scenario = model.scenario_form();
     validate_shared_context(scenario, shared_context, limits)?;
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(campaign_replay_closure)
-        .map_err(FindingProductionReplayCaptureError::ReplayClosure)?;
-    closure
+    campaign_replay_closure
         .validate_for_schedule(scenario, model.schedule())
         .map_err(FindingProductionReplayCaptureError::ReplayClosure)?;
 
@@ -57,7 +55,7 @@ pub(super) fn validate_capture_content(
         _ => return Err(FindingProductionReplayCaptureError::InvalidSideCount),
     }
     for side in sides {
-        validate_execution_side(side, scenario, shared_context.recipe, limits)?;
+        validate_execution_side(side, scenario, shared_context.recipe)?;
     }
     Ok(())
 }
@@ -156,12 +154,19 @@ pub enum FindingProductionReplayCaptureError {
     /// One scheduler entry is unauthenticated or out of sequence.
     #[error("finding production replay event log is invalid")]
     InvalidEventLog,
+    /// A replay-side log segment could not be sealed, stored, or read.
+    #[error("finding production replay event log storage failed: {0}")]
+    EventLogStore(#[source] crate::AttemptEventLogError),
     /// Terminal fingerprints do not name every scenario VM exactly once.
     #[error("finding production replay terminal fingerprint set is incomplete or inconsistent")]
     InvalidTerminalFingerprints,
-    /// The resolved effect trace is absent, extraneous, or malformed.
+    /// The resolved effect trace is absent, extraneous, or malformed, or a
+    /// segment differs from its manifest reference.
     #[error("finding production replay resolved-effect trace is incomplete or inconsistent")]
     InvalidResolvedEffectTrace,
+    /// A resolved-effect trace segment could not be read from its store.
+    #[error("finding production replay resolved-effect trace storage failed: {0}")]
+    ResolvedEffectTraceStore(#[source] crucible_engine::model::FaultRuntimeError),
     /// A lifecycle object is missing, extraneous, or has another content hash.
     #[error("finding production replay lifecycle object closure is incomplete or inconsistent")]
     InvalidLifecycleObjects,
@@ -197,6 +202,24 @@ pub enum FindingProductionReplayCaptureError {
     /// The payload decoded but was not byte-canonical.
     #[error("finding production replay encoding is not canonical")]
     Noncanonical,
+    /// The manifest envelope is malformed or disagrees with its body.
+    #[error("finding production replay manifest has invalid {reason}")]
+    InvalidManifest {
+        /// Stable rejected field or relationship.
+        reason: &'static str,
+    },
+    /// The manifest envelope could not be built or decoded.
+    #[error("finding production replay manifest envelope is invalid: {0}")]
+    Envelope(#[source] crucible_store::content_envelope::ContentEnvelopeError),
+    /// A manifest child is absent from the supplied leaves.
+    #[error("finding production replay leaf {id} is missing")]
+    MissingLeaf {
+        /// Content identity of the absent leaf.
+        id: crucible_store::content_store::ContentId,
+    },
+    /// A referenced leaf could not be read or failed authentication.
+    #[error("finding production replay leaf could not be read: {0}")]
+    LeafStore(#[source] crucible_store::content_store::StoreError),
     /// A retained DAG store operation failed.
     #[error("finding production replay lifecycle store failed: {0}")]
     Store(#[source] crucible_engine::DagStoreError),
@@ -398,11 +421,14 @@ pub(super) fn selected_side(
     match sides {
         [_] => Ok(FindingProductionReplaySelectedSide::Observed),
         [expected, reproduced] => {
-            let comparison =
-                compare_event_log_determinism(&expected.event_log, &reproduced.event_log);
-            let mismatch = comparison
-                .mismatch()
-                .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
+            // Both logs stream one segment at a time and the comparison stops
+            // at the first causal difference, so neither log is held whole.
+            let mismatch = crucible_engine::first_event_log_causal_mismatch(
+                expected.event_log.entries(),
+                reproduced.event_log.entries(),
+            )
+            .map_err(|_| FindingProductionReplayCaptureError::InvalidEventLog)?
+            .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
             mismatch
                 .first_location()
                 .ok_or(FindingProductionReplayCaptureError::PairedSidesDoNotDiverge)?;
@@ -531,31 +557,13 @@ pub(super) fn validate_execution_side(
     side: &FindingProductionReplayExecutionSide,
     scenario: &crucible_engine::ScenarioDefForm,
     recipe: FindingProductionReplayRecipe,
-    limits: FindingProductionReplayCaptureLimits,
 ) -> Result<(), FindingProductionReplayCaptureError> {
-    if side.completed_quanta > recipe.lifecycle_quantum_budget
-        || side.event_log.len() > limits.max_events_per_side
-    {
+    // The side's log and trace segments were authenticated when the side was
+    // built, so only its bounded scalar, fingerprint, and manifest evidence
+    // is checked here.
+    if side.completed_quanta > recipe.lifecycle_quantum_budget {
         return Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: if side.completed_quanta > recipe.lifecycle_quantum_budget {
-                "finding-production-replay-completed-quanta"
-            } else {
-                "finding-production-replay-event-count"
-            },
-        });
-    }
-    validate_event_log_parts(&side.event_log, &[], side.frontier)?;
-    let mut event_bytes = 0usize;
-    for entry in &side.event_log {
-        event_bytes = event_bytes
-            .checked_add(entry.canonical_material_len())
-            .ok_or(FindingProductionReplayCaptureError::LimitExceeded {
-                limit: "finding-production-replay-event-bytes",
-            })?;
-    }
-    if event_bytes > limits.max_event_bytes_per_side {
-        return Err(FindingProductionReplayCaptureError::LimitExceeded {
-            limit: "finding-production-replay-event-bytes",
+            limit: "finding-production-replay-completed-quanta",
         });
     }
 
@@ -595,8 +603,10 @@ pub(super) fn validate_execution_side(
     {
         return Err(FindingProductionReplayCaptureError::InvalidResolvedEffectTrace);
     }
-    if let Some(bytes) = &side.resolved_effect_trace {
-        ResolvedEffectTrace::from_canonical_bytes(bytes, plan.resource_limits())
+    if let Some(trace) = &side.resolved_effect_trace {
+        trace
+            .manifest()
+            .admit(plan.resource_limits())
             .map_err(|_| FindingProductionReplayCaptureError::InvalidResolvedEffectTrace)?;
     }
     Ok(())

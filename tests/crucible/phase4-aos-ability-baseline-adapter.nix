@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase4.aosAbilityBaselineAdapter",
 }: let
   src = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   adapter = builtins.readFile ../../crates/activation/aos-activation-crucible/src/lib.rs;
   profile = builtins.readFile ../../modules/profiles/ability-crucible.nix;
   package = builtins.readFile ../../pkgs/tools/aos-ability-crucible.nix;
@@ -90,51 +90,23 @@ in
   if failures != []
   then throw "AOS ability baseline Crucible adapter check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-aos-ability-baseline-adapter";
-      version = "0";
       inherit src;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" \
-              "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          '';
-        }
-        {
           name = "run-adapter-gates";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/aos-ability-crucible-target" \
+            crucible-cargo test \
               -p aos-activation-crucible \
               -- --test-threads=1
           '';

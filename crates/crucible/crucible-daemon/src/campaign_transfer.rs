@@ -6,17 +6,24 @@
 //!
 //! ```text
 //! <root>/writer.lock
-//! <root>/records/<operation-id>.transfer
-//!   TransferRecordV1(operation, source|destination, manifest, [(object, length)...])
+//! <root>/records/<operation-id>/page-<index:08x>
+//!   TransferPageV2(operation, index, [(object, length)...])  <= 4,096 entries
+//! <root>/records/<operation-id>/header
+//!   TransferHeaderV2(operation, source|destination, manifest, pages, objects,
+//!                    pages digest)
 //! <root>/staging/<operation-id>.staging
 //! ```
 //!
-//! A record becomes visible by file sync, rename, and directory sync. GC holds
-//! the journal fence while treating every recorded object as a direct root.
+//! A record is paged like the archive inventory it protects, in canonical
+//! 4,096-entry pages, so one record admits every archive the campaign format
+//! admits and no journal file grows with the archive. Pages are fsynced
+//! before the header, and the header becomes visible by file sync, rename,
+//! and directory sync, so only complete records are visible. GC holds the
+//! journal fence while streaming every recorded object as a direct root.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 #[cfg(test)]
@@ -42,25 +49,31 @@ use crate::{
 mod tests;
 
 mod journal_io;
-#[cfg(test)]
-use journal_io::fail_next_directory_sync;
 use journal_io::{
-    cleanup_staging, create_child_directory, create_journal_directory, encode_content_id,
-    hash_field, io_error, read_bounded_file, sync_directory, write_atomic,
+    cleanup_staging, create_child_directory, create_journal_directory, hash_field, io_error,
+    read_bounded_file, sync_directory, write_atomic, write_new_file,
 };
+#[cfg(test)]
+use journal_io::{fail_directory_sync_after, fail_next_directory_sync};
 
-const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V1!!!";
-const JOURNAL_VERSION: u32 = 1;
+mod record;
+use record::{TransferHeader, TransferPage, TransferPagesDigest, encode_record};
+
 const WRITER_LOCK: &str = "writer.lock";
 const RECORDS_DIRECTORY: &str = "records";
 const STAGING_DIRECTORY: &str = "staging";
-const MAX_TRANSFER_OBJECTS: usize = 65_536;
+const HEADER_FILE: &str = "header";
+const PAGE_FILE_PREFIX: &str = "page-";
+// Incomplete operations one journal retains at once; each record is paged.
 const MAX_TRANSFER_RECORDS: usize = 65_536;
+// Bound on one header or page file. A full page of 4,096 entries encodes to
+// a few hundred KiB, so this frames a file without limiting archive size.
 const MAX_TRANSFER_RECORD_BYTES: u64 = 16 * 1024 * 1024;
 
+// Directory syncs to let pass before the next one fails; `None` fails none.
 #[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_DIRECTORY_SYNC: Cell<bool> = const { Cell::new(false) };
+    static FAIL_DIRECTORY_SYNC_AFTER: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
 /// Identity of one destination- and publication-bound transfer operation.
@@ -285,10 +298,13 @@ impl Drop for DirectoryCampaignTransferJournalInner {
 impl DirectoryCampaignTransferJournal {
     /// Opens or creates one durable transfer-journal namespace.
     ///
+    /// Opening removes staging files and incomplete records left by an
+    /// interrupted writer, then validates every complete record's header.
+    ///
     /// # Errors
     ///
     /// Returns [`CampaignTransferJournalError`] when the namespace cannot be
-    /// created, exclusively locked, fsynced, or fully validated within bounds.
+    /// created, exclusively locked, fsynced, or validated within bounds.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, CampaignTransferJournalError> {
         let root = root.into();
         create_journal_directory(&root)?;
@@ -313,10 +329,24 @@ impl DirectoryCampaignTransferJournal {
             }),
         };
         cleanup_staging(&journal.inner.root.join(STAGING_DIRECTORY))?;
-        journal.visit_records(&mut |_, _| Ok(()))?;
+        let mut removed_incomplete = false;
+        for (_, directory) in journal.record_directories()? {
+            if read_record_header(&directory, None)?.is_none() {
+                removed_incomplete |= remove_record_directory(&directory)?;
+            }
+        }
+        if removed_incomplete {
+            sync_directory(&journal.inner.root.join(RECORDS_DIRECTORY))?;
+        }
+        journal.validate_records()?;
         Ok(journal)
     }
 
+    /// Durably records the plan's direct objects before copying starts.
+    ///
+    /// Pages are written and fsynced first; the header is renamed into place
+    /// last, so a record is visible only when complete. Repeating a visible
+    /// record rebuilds it from the plan and requires identical files.
     fn begin(
         &self,
         operation: CampaignTransferOperationId,
@@ -328,33 +358,61 @@ impl DirectoryCampaignTransferJournal {
             .lifecycle
             .write()
             .map_err(|_| CampaignTransferJournalError::Poisoned)?;
-        let objects = plan.transfer_objects();
-        if objects.is_empty() || objects.len() > MAX_TRANSFER_OBJECTS {
-            return Err(CampaignTransferJournalError::ObjectLimit);
-        }
-        let record = TransferRecord::new(operation, role, plan.manifest_id(), objects)?;
-        let bytes = record.canonical_bytes()?;
-        let path = self.record_path(operation);
-        match read_bounded_file(&path) {
-            Ok(existing) if existing == bytes => {
+        let directory = self.record_directory(operation);
+        let header_path = directory.join(HEADER_FILE);
+        match read_bounded_file(&header_path) {
+            Ok(existing) => {
+                let header = encode_record(operation, role, plan, &mut |index, bytes| {
+                    if read_bounded_file(&directory.join(page_file_name(index)))? != bytes {
+                        return Err(CampaignTransferJournalError::RecordMismatch);
+                    }
+                    Ok(())
+                })?;
+                if header.canonical_bytes()? != existing {
+                    return Err(CampaignTransferJournalError::RecordMismatch);
+                }
+                sync_directory(&directory)?;
                 return sync_directory(&self.inner.root.join(RECORDS_DIRECTORY));
             }
-            Ok(_) => return Err(CampaignTransferJournalError::RecordMismatch),
             Err(CampaignTransferJournalError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound => {}
             Err(source) => return Err(source),
         }
-        if self.record_paths()?.len() >= MAX_TRANSFER_RECORDS {
+
+        let operation_name = operation.to_hex();
+        let other_records = self
+            .record_directories()?
+            .iter()
+            .filter(|(name, _)| *name != operation_name)
+            .count();
+        if other_records >= MAX_TRANSFER_RECORDS {
             return Err(CampaignTransferJournalError::RecordLimit);
         }
-        write_atomic(&path, &bytes)
+        // An earlier attempt may have left pages without a header; the
+        // records-directory sync below also makes that removal durable.
+        remove_record_directory(&directory)?;
+        fs::create_dir(&directory)
+            .map_err(|source| io_error("create-transfer-record", &directory, source))?;
+        sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))?;
+        let header = encode_record(operation, role, plan, &mut |index, bytes| {
+            write_new_file(&directory.join(page_file_name(index)), bytes)
+        })?;
+        sync_directory(&directory)?;
+        write_atomic(
+            &self.inner.root.join(STAGING_DIRECTORY),
+            &operation_name,
+            &header_path,
+            &header.canonical_bytes()?,
+        )
     }
 
     /// Returns whether a manifest retains incomplete transfer ownership.
     ///
+    /// Only the record header is read.
+    ///
     /// # Errors
     ///
-    /// Returns [`CampaignTransferJournalError`] if the record is malformed or unreadable.
+    /// Returns [`CampaignTransferJournalError`] if the header is malformed or unreadable.
     pub fn contains(
         &self,
         operation: CampaignTransferOperationId,
@@ -364,26 +422,17 @@ impl DirectoryCampaignTransferJournal {
             .lifecycle
             .read()
             .map_err(|_| CampaignTransferJournalError::Poisoned)?;
-        let path = self.record_path(operation);
-        match read_bounded_file(&path) {
-            Ok(bytes) => {
-                TransferRecord::from_canonical_bytes(&bytes, operation)?;
-                Ok(true)
-            }
-            Err(CampaignTransferJournalError::Io { source, .. })
-                if source.kind() == io::ErrorKind::NotFound =>
-            {
-                Ok(false)
-            }
-            Err(source) => Err(source),
-        }
+        Ok(read_record_header(&self.record_directory(operation), Some(operation))?.is_some())
     }
 
     /// Removes one completed transfer root after destination publication.
     ///
+    /// The header is removed first, so the record stops protecting its
+    /// objects before its pages are deleted.
+    ///
     /// # Errors
     ///
-    /// Returns [`CampaignTransferJournalError`] when an existing record is
+    /// Returns [`CampaignTransferJournalError`] when an existing header is
     /// corrupt or durable removal cannot complete.
     pub fn complete(
         &self,
@@ -394,31 +443,28 @@ impl DirectoryCampaignTransferJournal {
             .lifecycle
             .write()
             .map_err(|_| CampaignTransferJournalError::Poisoned)?;
-        let path = self.record_path(operation);
-        match read_bounded_file(&path) {
-            Ok(bytes) => {
-                TransferRecord::from_canonical_bytes(&bytes, operation)?;
-                fs::remove_file(&path)
-                    .map_err(|source| io_error("remove-transfer-record", &path, source))?;
-                sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))
-            }
-            Err(CampaignTransferJournalError::Io { source, .. })
-                if source.kind() == io::ErrorKind::NotFound =>
-            {
-                sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))
-            }
-            Err(source) => Err(source),
+        let directory = self.record_directory(operation);
+        if read_record_header(&directory, Some(operation))?.is_some() {
+            let header_path = directory.join(HEADER_FILE);
+            fs::remove_file(&header_path)
+                .map_err(|source| io_error("remove-transfer-record", &header_path, source))?;
+            sync_directory(&directory)?;
         }
+        // Syncing even when nothing remains re-establishes the durability of
+        // a removal whose earlier sync failed.
+        remove_record_directory(&directory)?;
+        sync_directory(&self.inner.root.join(RECORDS_DIRECTORY))
     }
 
-    fn record_path(&self, operation: CampaignTransferOperationId) -> PathBuf {
+    fn record_directory(&self, operation: CampaignTransferOperationId) -> PathBuf {
         self.inner
             .root
             .join(RECORDS_DIRECTORY)
-            .join(format!("{}.transfer", operation.to_hex()))
+            .join(operation.to_hex())
     }
 
-    fn record_paths(&self) -> Result<Vec<(String, PathBuf)>, CampaignTransferJournalError> {
+    /// Lists record directories, complete or not, in canonical name order.
+    fn record_directories(&self) -> Result<Vec<(String, PathBuf)>, CampaignTransferJournalError> {
         let records = self.inner.root.join(RECORDS_DIRECTORY);
         let mut result = Vec::new();
         for entry in fs::read_dir(&records)
@@ -432,14 +478,11 @@ impl DirectoryCampaignTransferJournal {
             let file_type = entry
                 .file_type()
                 .map_err(|source| io_error("stat-transfer-record", &entry.path(), source))?;
-            if !file_type.is_file() {
-                return Err(CampaignTransferJournalError::UnexpectedEntry);
-            }
             let name = entry
                 .file_name()
                 .into_string()
                 .map_err(|_| CampaignTransferJournalError::UnexpectedEntry)?;
-            if !name.ends_with(".transfer") {
+            if !file_type.is_dir() || !is_operation_name(&name) {
                 return Err(CampaignTransferJournalError::UnexpectedEntry);
             }
             result.push((name, entry.path()));
@@ -448,18 +491,20 @@ impl DirectoryCampaignTransferJournal {
         Ok(result)
     }
 
-    fn visit_records(
-        &self,
-        visitor: &mut dyn FnMut(&str, &TransferRecord) -> Result<(), CampaignTransferJournalError>,
-    ) -> Result<(), CampaignTransferJournalError> {
-        for (name, path) in self.record_paths()? {
-            let bytes = read_bounded_file(&path)?;
-            let record = TransferRecord::from_canonical_bytes_unbound(&bytes)?;
-            let expected = format!("{}.transfer", record.operation.to_hex());
-            if name != expected {
+    /// Validates every complete record's header and file set.
+    ///
+    /// Page contents are authenticated when a GC fence visits them or a
+    /// retried `begin` compares them, not here, so validation reads one
+    /// header per record.
+    fn validate_records(&self) -> Result<(), CampaignTransferJournalError> {
+        for (name, directory) in self.record_directories()? {
+            let Some(header) = read_record_header(&directory, None)? else {
+                continue;
+            };
+            if header.operation.to_hex() != name {
                 return Err(CampaignTransferJournalError::RecordMismatch);
             }
-            visitor(&name, &record)?;
+            validate_record_files(&directory, header.page_count)?;
         }
         Ok(())
     }
@@ -474,7 +519,7 @@ impl CampaignTransferRetentionAdmin for DirectoryCampaignTransferJournal {
             .lifecycle
             .read()
             .map_err(|_| CampaignTransferJournalError::Poisoned)?;
-        self.visit_records(&mut |_, _| Ok(()))?;
+        self.validate_records()?;
         Ok(Box::new(DirectoryTransferRetentionFence {
             journal: self,
             _lifecycle: lifecycle,
@@ -492,40 +537,142 @@ impl CampaignTransferRetentionFence for DirectoryTransferRetentionFence<'_> {
         &mut self,
         visitor: &mut dyn FnMut(CampaignTransferRetentionRoot) -> Result<(), StoreError>,
     ) -> Result<CampaignTransferRetentionSummary, CampaignTransferJournalError> {
-        let paths = self.journal.record_paths()?;
-        let mut hasher = blake3::Hasher::new();
+        let mut generation = blake3::Hasher::new();
+        let mut records = 0_u64;
         let mut roots = 0_u64;
-        for (name, path) in &paths {
-            let bytes = read_bounded_file(path)?;
-            hasher.update(&(name.len() as u64).to_be_bytes());
-            hasher.update(name.as_bytes());
-            hasher.update(&(bytes.len() as u64).to_be_bytes());
-            hasher.update(&bytes);
-            let record = TransferRecord::from_canonical_bytes_unbound(&bytes)?;
-            if *name != format!("{}.transfer", record.operation.to_hex()) {
+        for (name, directory) in self.journal.record_directories()? {
+            // The fence excludes writers, so a headerless directory is an
+            // interrupted removal that protects nothing.
+            let Some(header) = read_record_header(&directory, None)? else {
+                continue;
+            };
+            if header.operation.to_hex() != name {
                 return Err(CampaignTransferJournalError::RecordMismatch);
             }
-            for root in record.objects {
-                visitor(root).map_err(CampaignTransferJournalError::Visitor)?;
-                roots = roots
-                    .checked_add(1)
-                    .ok_or(CampaignTransferJournalError::ObjectLimit)?;
+            hash_field(&mut generation, name.as_bytes());
+            hash_field(&mut generation, &header.canonical_bytes()?);
+
+            // Pages are read, authenticated, and visited one at a time.
+            let mut pages_digest = TransferPagesDigest::new();
+            for index in 0..header.page_count {
+                let bytes = read_bounded_file(&directory.join(page_file_name(index)))?;
+                let page = TransferPage::from_canonical_bytes(&bytes, &header, index)?;
+                hash_field(&mut generation, &bytes);
+                pages_digest.update(&bytes);
+                for root in page.objects {
+                    visitor(root).map_err(CampaignTransferJournalError::Visitor)?;
+                    roots = roots
+                        .checked_add(1)
+                        .ok_or(CampaignTransferJournalError::ObjectLimit)?;
+                }
             }
+            if pages_digest.finish() != header.pages_digest {
+                return Err(CampaignTransferJournalError::Corrupt);
+            }
+            records += 1;
         }
         Ok(CampaignTransferRetentionSummary {
-            generation: CampaignTransferRetentionGeneration(*hasher.finalize().as_bytes()),
-            records: paths.len() as u64,
+            generation: CampaignTransferRetentionGeneration(*generation.finalize().as_bytes()),
+            records,
             roots,
         })
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TransferRecord {
-    operation: CampaignTransferOperationId,
-    role: TransferJournalRole,
-    manifest: CampaignArchiveManifestId,
-    objects: Vec<CampaignTransferRetentionRoot>,
+/// Reads a record's header, or `None` when the record has no header.
+fn read_record_header(
+    directory: &Path,
+    expected: Option<CampaignTransferOperationId>,
+) -> Result<Option<TransferHeader>, CampaignTransferJournalError> {
+    match read_bounded_file(&directory.join(HEADER_FILE)) {
+        Ok(bytes) => TransferHeader::from_canonical_bytes(&bytes, expected).map(Some),
+        Err(CampaignTransferJournalError::Io { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(source) => Err(source),
+    }
+}
+
+/// Requires exactly the header and pages `0..page_count` in a record.
+fn validate_record_files(
+    directory: &Path,
+    page_count: u32,
+) -> Result<(), CampaignTransferJournalError> {
+    let mut entries = 0_u64;
+    for entry in fs::read_dir(directory)
+        .map_err(|source| io_error("read-transfer-record", directory, source))?
+    {
+        let entry = entry.map_err(|source| io_error("read-transfer-record", directory, source))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| CampaignTransferJournalError::UnexpectedEntry)?;
+        let is_file = entry
+            .file_type()
+            .map_err(|source| io_error("stat-transfer-record", &entry.path(), source))?
+            .is_file();
+        let expected =
+            name == HEADER_FILE || page_file_index(&name).is_some_and(|index| index < page_count);
+        if !is_file || !expected {
+            return Err(CampaignTransferJournalError::UnexpectedEntry);
+        }
+        entries += 1;
+    }
+    if entries != u64::from(page_count) + 1 {
+        return Err(CampaignTransferJournalError::Corrupt);
+    }
+    Ok(())
+}
+
+/// Removes a record directory and its files, returning whether it existed.
+///
+/// The caller syncs the records directory to make the removal durable.
+fn remove_record_directory(directory: &Path) -> Result<bool, CampaignTransferJournalError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(io_error("read-transfer-record", directory, source)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error("read-transfer-record", directory, source))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| CampaignTransferJournalError::UnexpectedEntry)?;
+        if name != HEADER_FILE && page_file_index(&name).is_none() {
+            return Err(CampaignTransferJournalError::UnexpectedEntry);
+        }
+        fs::remove_file(entry.path())
+            .map_err(|source| io_error("remove-transfer-page", &entry.path(), source))?;
+    }
+    fs::remove_dir(directory)
+        .map_err(|source| io_error("remove-transfer-record", directory, source))?;
+    Ok(true)
+}
+
+fn page_file_name(index: u32) -> String {
+    format!("{PAGE_FILE_PREFIX}{index:08x}")
+}
+
+fn page_file_index(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix(PAGE_FILE_PREFIX)?;
+    if digits.len() != 8
+        || !digits
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
+}
+
+fn is_operation_name(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Prepared-service capability for one GC-registered archive transfer endpoint.
@@ -576,126 +723,6 @@ impl<'a> CampaignArchiveTransferEndpoint<'a> {
             checkpoints: Some(checkpoints),
             exact_pins: Some(exact_pins),
         }
-    }
-}
-
-impl TransferRecord {
-    fn new(
-        operation: CampaignTransferOperationId,
-        role: TransferJournalRole,
-        manifest: CampaignArchiveManifestId,
-        objects: Vec<(ContentId, u64)>,
-    ) -> Result<Self, CampaignTransferJournalError> {
-        let objects = objects
-            .into_iter()
-            .map(|(id, logical_length)| CampaignTransferRetentionRoot { id, logical_length })
-            .collect::<Vec<_>>();
-        if objects.is_empty()
-            || objects.len() > MAX_TRANSFER_OBJECTS
-            || objects.windows(2).any(|pair| pair[0].id >= pair[1].id)
-        {
-            return Err(CampaignTransferJournalError::ObjectLimit);
-        }
-        Ok(Self {
-            operation,
-            role,
-            manifest,
-            objects,
-        })
-    }
-
-    fn canonical_bytes(&self) -> Result<Vec<u8>, CampaignTransferJournalError> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(JOURNAL_MAGIC);
-        bytes.extend_from_slice(&JOURNAL_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&self.operation.0);
-        bytes.push(match self.role {
-            TransferJournalRole::Source => 0,
-            TransferJournalRole::Destination => 1,
-        });
-        encode_content_id(self.manifest.content_id(), &mut bytes)?;
-        bytes.extend_from_slice(&(self.objects.len() as u32).to_be_bytes());
-        for object in &self.objects {
-            encode_content_id(object.id, &mut bytes)?;
-            bytes.extend_from_slice(&object.logical_length.to_be_bytes());
-        }
-        let digest = blake3::hash(&bytes);
-        bytes.extend_from_slice(digest.as_bytes());
-        if bytes.len() as u64 > MAX_TRANSFER_RECORD_BYTES {
-            return Err(CampaignTransferJournalError::ObjectLimit);
-        }
-        Ok(bytes)
-    }
-
-    fn from_canonical_bytes(
-        bytes: &[u8],
-        expected: CampaignTransferOperationId,
-    ) -> Result<Self, CampaignTransferJournalError> {
-        let record = Self::from_canonical_bytes_unbound(bytes)?;
-        if record.operation != expected {
-            return Err(CampaignTransferJournalError::RecordMismatch);
-        }
-        Ok(record)
-    }
-
-    fn from_canonical_bytes_unbound(bytes: &[u8]) -> Result<Self, CampaignTransferJournalError> {
-        if bytes.len() < JOURNAL_MAGIC.len() + 4 + 32 + 1 + 4 + 4 + 32
-            || bytes.len() as u64 > MAX_TRANSFER_RECORD_BYTES
-        {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        let (payload, checksum) = bytes.split_at(bytes.len() - 32);
-        if blake3::hash(payload).as_bytes() != checksum {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        let mut cursor = Cursor::new(payload);
-        if cursor.take(JOURNAL_MAGIC.len())? != JOURNAL_MAGIC {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        if cursor.u32()? != JOURNAL_VERSION {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        let operation = CampaignTransferOperationId(
-            cursor
-                .take(32)?
-                .try_into()
-                .map_err(|_| CampaignTransferJournalError::Corrupt)?,
-        );
-        let role = match cursor.u8()? {
-            0 => TransferJournalRole::Source,
-            1 => TransferJournalRole::Destination,
-            _ => return Err(CampaignTransferJournalError::Corrupt),
-        };
-        let manifest_content = cursor.content_id()?;
-        let manifest = CampaignArchiveManifestId::parse(&format!(
-            "crucible.campaign.archive-manifest@{}",
-            manifest_content
-        ))
-        .map_err(|_| CampaignTransferJournalError::Corrupt)?;
-        let count = cursor.u32()? as usize;
-        if count == 0 || count > MAX_TRANSFER_OBJECTS {
-            return Err(CampaignTransferJournalError::ObjectLimit);
-        }
-        let mut objects = Vec::with_capacity(count);
-        for _ in 0..count {
-            objects.push(CampaignTransferRetentionRoot {
-                id: cursor.content_id()?,
-                logical_length: cursor.u64()?,
-            });
-        }
-        if !cursor.is_eof() || objects.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        let record = Self {
-            operation,
-            role,
-            manifest,
-            objects,
-        };
-        if record.canonical_bytes()? != bytes {
-            return Err(CampaignTransferJournalError::Corrupt);
-        }
-        Ok(record)
     }
 }
 
@@ -969,7 +996,8 @@ pub enum CampaignTransferJournalError {
     /// The record namespace exceeds its bounded file count.
     #[error("campaign transfer journal record limit exceeded")]
     RecordLimit,
-    /// One transfer exceeds its bounded direct-object inventory.
+    /// A plan protects no object, or a record or one of its files exceeds
+    /// its format bound.
     #[error("campaign transfer journal object limit exceeded")]
     ObjectLimit,
     /// The record directory contains an unexpected entry.
@@ -981,60 +1009,10 @@ pub enum CampaignTransferJournalError {
     /// A GC retention visitor rejected one root.
     #[error("campaign transfer retention visitor failed")]
     Visitor(#[source] StoreError),
+    /// The archive plan's spooled inventory could not be replayed.
+    #[error("campaign transfer plan inventory could not be replayed")]
+    Plan(#[from] CampaignRepositoryError),
     /// The shared in-process journal lifecycle lock was poisoned.
     #[error("campaign transfer journal lifecycle lock is poisoned")]
     Poisoned,
-}
-
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], CampaignTransferJournalError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(CampaignTransferJournalError::Corrupt)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(CampaignTransferJournalError::Corrupt)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn u8(&mut self) -> Result<u8, CampaignTransferJournalError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn u32(&mut self) -> Result<u32, CampaignTransferJournalError> {
-        self.take(4)?
-            .try_into()
-            .map(u32::from_be_bytes)
-            .map_err(|_| CampaignTransferJournalError::Corrupt)
-    }
-
-    fn u64(&mut self) -> Result<u64, CampaignTransferJournalError> {
-        self.take(8)?
-            .try_into()
-            .map(u64::from_be_bytes)
-            .map_err(|_| CampaignTransferJournalError::Corrupt)
-    }
-
-    fn content_id(&mut self) -> Result<ContentId, CampaignTransferJournalError> {
-        let length = self.u32()? as usize;
-        let text = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| CampaignTransferJournalError::Corrupt)?;
-        ContentId::parse(text).map_err(|_| CampaignTransferJournalError::Corrupt)
-    }
-
-    const fn is_eof(&self) -> bool {
-        self.offset == self.bytes.len()
-    }
 }

@@ -61,6 +61,9 @@ pub enum QemuLaunchCommandError {
     /// The composite setup plan could not be encoded within its fixed profile.
     #[error("QEMU plugin setup plan cannot be represented canonically")]
     InvalidPluginSetupPlan,
+    /// The console profile cannot describe the actual launch's vCPU topology.
+    #[error("native console launch requires one supported UART and 1..=64 vCPUs")]
+    InvalidNativeConsoleProfile,
     /// Only part of the app-random branch configuration was supplied.
     #[error("app-random branch seed and prefix draw count must be configured together")]
     InvalidAppRandomBranchConfiguration,

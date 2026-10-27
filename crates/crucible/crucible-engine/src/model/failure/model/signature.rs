@@ -2,31 +2,50 @@
 
 use super::*;
 
-/// Full canonical causal-cone material retained for exact policy keys.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Identity of the causal cone a failure signature was built from.
+///
+/// The cone is every causal entry up to the failure anchor that shares a
+/// dependency key with it, so it can grow with the run. Its canonical
+/// material is hashed as it is streamed and never retained; the hash and the
+/// cone's entry count stand for it in reports and keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FailureCausalCone {
-    pub(in crate::model) canonical_material: String,
+    pub(in crate::model) content_hash: ContentHash,
+    pub(in crate::model) events: usize,
 }
 
 impl FailureCausalCone {
-    /// Builds full causal-cone material from an already-canonical representation.
+    /// Builds a cone identity from its streamed material hash and entry count.
     #[must_use]
-    pub fn from_canonical_material(canonical_material: impl Into<String>) -> Self {
+    pub const fn new(content_hash: ContentHash, events: usize) -> Self {
         Self {
-            canonical_material: canonical_material.into(),
+            content_hash,
+            events,
         }
     }
 
-    /// Returns the full canonical causal-cone material.
+    /// Builds a cone identity from complete canonical material.
+    ///
+    /// The hash equals the one a streamed construction derives from the same
+    /// material.
     #[must_use]
-    pub fn canonical_material(&self) -> &str {
-        &self.canonical_material
+    pub fn from_canonical_material(canonical_material: &str, events: usize) -> Self {
+        Self::new(
+            ContentHash::from_canonical_material(FAILURE_CAUSAL_SLICE_DOMAIN, canonical_material),
+            events,
+        )
     }
 
-    /// Returns the hash used by non-exact policy levels when the causal slice is keyed.
+    /// Returns the hash of the cone's canonical material.
     #[must_use]
-    pub fn content_hash(&self) -> ContentHash {
-        ContentHash::from_canonical_material(FAILURE_CAUSAL_SLICE_DOMAIN, &self.canonical_material)
+    pub const fn content_hash(&self) -> ContentHash {
+        self.content_hash
+    }
+
+    /// Returns the number of causal entries in the cone.
+    #[must_use]
+    pub const fn events(&self) -> usize {
+        self.events
     }
 }
 
@@ -98,225 +117,6 @@ impl FailureSymmetryCanonicalizer {
 
     fn canonical_node_option(&self, node: &Option<NodeId>) -> Option<NodeId> {
         node.as_ref().map(|node| self.canonical_node(node))
-    }
-}
-
-/// Checked event-log evidence for failure-signature construction.
-///
-/// This value binds the supplied event-log entries to the
-/// [`ReproductionEventLogArtifact`] recorded for the same reproduction artifact,
-/// and retains the raw entries needed to recheck host-derived violations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FailureRecordedEventLog {
-    pub(in crate::model) artifact: ContentHash,
-    pub(in crate::model) event_log_artifact: ContentHash,
-    pub(in crate::model) causal_subsequence: ContentHash,
-    pub(in crate::model) causal_subsequence_events: usize,
-    pub(in crate::model) coverage_fingerprint: ContentHash,
-    pub(in crate::model) evidence_binding: ContentHash,
-    pub(in crate::model) projection: EventLogCausalProjection,
-    pub(in crate::model) raw_entries: Vec<SchedulerEventLogEntry>,
-}
-
-fn failure_recorded_evidence_binding(
-    projection: &EventLogCausalProjection,
-    coverage_fingerprint: ContentHash,
-    recorded_frames: &[Vec<u8>],
-) -> ContentHash {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"crucible.failure-recorded-evidence.v1\0");
-    bytes.extend_from_slice(&projection.content_hash().bytes);
-    bytes.extend_from_slice(&coverage_fingerprint.bytes);
-    bytes.extend_from_slice(&(recorded_frames.len() as u64).to_le_bytes());
-    for frame in recorded_frames {
-        bytes.extend_from_slice(&(frame.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(frame);
-    }
-    ContentHash::from_bytes(&bytes)
-}
-
-impl FailureRecordedEventLog {
-    /// Builds checked signature evidence from retained causal entries and an
-    /// independently reconstructed coverage fingerprint.
-    ///
-    /// This is the adapter boundary used when a remote event stream retains
-    /// exact causal events while coverage observations are transported through
-    /// the shared coverage-feedback projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding's
-    /// embedded reproduction identity is inconsistent.
-    pub fn from_causal_entries_and_coverage(
-        finding: &FindingReproductionArtifact,
-        causal_entries: &[SchedulerEventLogEntry],
-        coverage_fingerprint: ContentHash,
-    ) -> Result<Self, EngineError> {
-        Self::from_causal_entries_coverage_and_frames(
-            finding,
-            causal_entries,
-            coverage_fingerprint,
-            &[],
-        )
-    }
-
-    /// Builds checked signature evidence and binds the exact retained frames.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding's
-    /// embedded reproduction identity is inconsistent.
-    pub fn from_causal_entries_coverage_and_frames(
-        finding: &FindingReproductionArtifact,
-        causal_entries: &[SchedulerEventLogEntry],
-        coverage_fingerprint: ContentHash,
-        recorded_frames: &[Vec<u8>],
-    ) -> Result<Self, EngineError> {
-        validate_finding_static_identity(finding)?;
-        let projection = event_log_causal_projection(causal_entries);
-        let event_log_artifact = ReproductionEventLogArtifact::from_causal_projection(
-            finding.artifact.id(),
-            EventLogOffset::new(ContentHash::default(), 0, 0),
-            projection.content_hash(),
-            projection.canonical_bytes().len(),
-            projection.len(),
-            coverage_fingerprint,
-            Vec::new(),
-        );
-        Ok(Self {
-            artifact: finding.artifact.id(),
-            event_log_artifact: event_log_artifact.id(),
-            causal_subsequence: projection.content_hash(),
-            causal_subsequence_events: projection.len(),
-            coverage_fingerprint,
-            evidence_binding: failure_recorded_evidence_binding(
-                &projection,
-                coverage_fingerprint,
-                recorded_frames,
-            ),
-            projection,
-            raw_entries: causal_entries.to_vec(),
-        })
-    }
-
-    /// Builds checked signature evidence from recorded event-log entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ReplayTargetMismatch`] when `finding`,
-    /// `event_log_artifact`, and the supplied `event_log` do not identify the
-    /// same reproduction artifact and causal subsequence. Returns
-    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when non-hash projection
-    /// metadata is inconsistent.
-    pub fn from_recorded_artifact(
-        finding: &FindingReproductionArtifact,
-        event_log_artifact: &ReproductionEventLogArtifact,
-        event_log: &[SchedulerEventLogEntry],
-    ) -> Result<Self, EngineError> {
-        validate_finding_static_identity(finding)?;
-        let artifact = finding.artifact.id();
-        if event_log_artifact.reproduction_artifact != artifact {
-            return Err(EngineError::ReplayTargetMismatch {
-                expected: artifact,
-                actual: event_log_artifact.reproduction_artifact,
-            });
-        }
-
-        let projection = event_log_causal_projection(event_log);
-        if projection.content_hash() != event_log_artifact.causal_subsequence {
-            return Err(EngineError::ReplayTargetMismatch {
-                expected: event_log_artifact.causal_subsequence,
-                actual: projection.content_hash(),
-            });
-        }
-        if projection.canonical_bytes().len() != event_log_artifact.causal_subsequence_bytes {
-            return Err(EngineError::UnifiedOperationEvidenceMismatch {
-                operation: "failure-signature.event-log",
-                reason: "causal subsequence byte length does not match recorded metadata",
-            });
-        }
-        if projection.len() != event_log_artifact.causal_subsequence_events {
-            return Err(EngineError::UnifiedOperationEvidenceMismatch {
-                operation: "failure-signature.event-log",
-                reason: "causal subsequence event count does not match recorded metadata",
-            });
-        }
-        let coverage_fingerprint = coverage_fingerprint_from_event_log(event_log);
-        if coverage_fingerprint != event_log_artifact.coverage_fingerprint {
-            return Err(EngineError::ReplayTargetMismatch {
-                expected: event_log_artifact.coverage_fingerprint,
-                actual: coverage_fingerprint,
-            });
-        }
-
-        Ok(Self {
-            artifact,
-            event_log_artifact: event_log_artifact.id(),
-            causal_subsequence: projection.content_hash(),
-            causal_subsequence_events: projection.len(),
-            coverage_fingerprint: event_log_artifact.coverage_fingerprint,
-            evidence_binding: failure_recorded_evidence_binding(
-                &projection,
-                event_log_artifact.coverage_fingerprint,
-                &[],
-            ),
-            projection,
-            raw_entries: event_log.to_vec(),
-        })
-    }
-
-    /// Returns the reproduction artifact this checked log belongs to.
-    #[must_use]
-    pub fn artifact(&self) -> ContentHash {
-        self.artifact
-    }
-
-    /// Returns the content address of the event-log metadata record.
-    #[must_use]
-    pub fn event_log_artifact(&self) -> ContentHash {
-        self.event_log_artifact
-    }
-
-    /// Returns the recorded causal-subsequence hash.
-    #[must_use]
-    pub fn causal_subsequence(&self) -> ContentHash {
-        self.causal_subsequence
-    }
-
-    /// Returns the number of causal events retained by the projection.
-    #[must_use]
-    pub fn causal_subsequence_events(&self) -> usize {
-        self.causal_subsequence_events
-    }
-
-    /// Returns the recorded deterministic coverage fingerprint validated against the log.
-    #[must_use]
-    pub fn coverage_fingerprint(&self) -> ContentHash {
-        self.coverage_fingerprint
-    }
-
-    /// Returns the binding over causal evidence, coverage, and retained frames.
-    #[must_use]
-    pub fn evidence_binding(&self) -> ContentHash {
-        self.evidence_binding
-    }
-
-    /// Returns the bucketed failure coverage class for this recorded log.
-    #[must_use]
-    pub fn coverage_class(&self) -> FailureCoverageClass {
-        FailureCoverageClass::from_coverage_fingerprint(self.coverage_fingerprint)
-    }
-
-    /// Builds a symmetry canonicalizer bound to this log's recorded coverage.
-    #[must_use]
-    pub fn symmetry_canonicalizer(
-        &self,
-        normalization: &FailureSignatureNormalization,
-    ) -> FailureSymmetryCanonicalizer {
-        FailureSymmetryCanonicalizer::new(
-            self.coverage_fingerprint,
-            normalization.symmetry_classes.clone(),
-        )
     }
 }
 
@@ -457,10 +257,11 @@ pub struct FailureSignature {
     /// This is computed over the causal prefix ending at the first failing
     /// causal entry, not the whole causal subsequence.
     pub causal_slice_hash: Option<ContentHash>,
-    /// Full canonical causal cone retained for exact-policy forensic keys.
+    /// Causal-cone identity retained for exact-policy forensic keys.
     ///
     /// Coarse/default/fine policies key only selected scalar fields and, for
-    /// fine, the cone hash above. The exact policy uses this material directly.
+    /// fine, the cone hash above. The exact policy also keys the cone's entry
+    /// count.
     pub causal_cone: Option<FailureCausalCone>,
     /// Absolute instruction count of the first failing point for reports only.
     ///
@@ -567,7 +368,7 @@ impl FailureSignature {
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
         let causal_index = validate_divergence_point(event_log, divergence)?;
         let causal_cone =
-            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
+            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer, &[])?;
         Ok(Self {
             failure_kind: FailureKind::Divergence,
             property: None,
@@ -630,7 +431,7 @@ impl FailureSignature {
         let causal_index = validate_timeout_point(event_log, timeout)?;
         let canonicalizer = event_log.symmetry_canonicalizer(normalization);
         let causal_cone =
-            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
+            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer, &[])?;
         Ok(Self {
             failure_kind: FailureKind::Timeout,
             property: None,

@@ -3,6 +3,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+use crate::campaign_gc::ManifestEntriesForTest;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -775,6 +776,8 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         "x86_64",
         "deterministic-tcg-v1",
         CampaignHash::derive("crucible.test.shared-packaged-store.v1", b"bootstrap"),
+        // The executor stages prepared results under the run-state root, so it
+        // must stay inside the fixture directory.
         ProductionVmLifecycleConfig::new(
             "qemu",
             "plugin",
@@ -1503,6 +1506,7 @@ fn read_only_owner_denies_store_maintenance_with_graph_authority() {
 
 #[test]
 fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let orphan_bytes = b"unreachable imported scenario bytes";
@@ -1519,14 +1523,15 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
     let mut ledger = MemoryAssignmentLedger::default();
 
     let planned = authority
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, spill_parent.path())
         .expect("plan stopped-owner GC");
     assert_eq!(planned.roots().len(), 0);
     assert_eq!(planned.candidates().len(), 1);
     assert_eq!(
         planned
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .next()
             .expect("planned orphan")
             .id(),
@@ -1552,6 +1557,7 @@ fn prepared_store_gc_authority_plans_journals_and_applies_under_one_owner() {
 
 #[test]
 fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let (_source_directory, source_config) = fixture();
     let (_destination_directory, destination_config) = fixture();
     let mut source = source_config.prepare().expect("prepare source service");
@@ -1571,6 +1577,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
         .expect("plan metadata archive");
     let transfer_objects = plan
         .transfer_objects()
+        .expect("replay transfer objects")
         .into_iter()
         .map(|(id, _)| id)
         .collect::<BTreeSet<_>>();
@@ -1602,11 +1609,15 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let source_gc = source
         .store_gc_authority()
         .expect("source GC authority")
-        .plan(&mut source_ledger, None)
+        .plan(&mut source_ledger, None, spill_parent.path())
         .expect("plan source GC with transfer roots");
     for id in &transfer_objects {
         assert!(
-            source_gc.roots().iter().any(|root| root == *id),
+            source_gc
+                .roots()
+                .entries_for_test()
+                .into_iter()
+                .any(|root| root == *id),
             "source GC omitted registered transfer root {id}"
         );
     }
@@ -1615,11 +1626,15 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
     let destination_gc = destination
         .store_gc_authority()
         .expect("destination GC authority")
-        .plan(&mut destination_ledger, None)
+        .plan(&mut destination_ledger, None, spill_parent.path())
         .expect("plan destination GC with transfer roots");
     for id in transfer_objects {
         assert!(
-            destination_gc.roots().iter().any(|root| root == id),
+            destination_gc
+                .roots()
+                .entries_for_test()
+                .into_iter()
+                .any(|root| root == id),
             "destination GC omitted registered transfer root {id}"
         );
     }
@@ -1627,6 +1642,7 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
 
 #[test]
 fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let (directory, config) = fixture();
     let (store, graph) = external_graph_store(&directory);
     let prepared = config
@@ -1676,18 +1692,20 @@ fn prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart(
     let planned = restarted
         .store_gc_authority()
         .expect("borrow restarted GC authority")
-        .plan(&mut ledger, None)
+        .plan(&mut ledger, None, spill_parent.path())
         .expect("plan restarted GC with fallback");
     assert!(
         planned
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == configuration.content_id())
     );
     assert!(
         planned
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
     let (mut journal, disposition) = crate::DirectoryCampaignGcJournal::create(

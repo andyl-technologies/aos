@@ -95,7 +95,7 @@ fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
 fn changed_scheduler_quanta(
     checkpoint: &crucible_engine::SingleSchedulerCheckpoint,
 ) -> Result<crucible_engine::SingleSchedulerCheckpoint, Box<dyn std::error::Error>> {
-    const PREFIX: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+    const PREFIX: &[u8] = b"crucible.single-scheduler-continuation.v11\0";
     let bytes = checkpoint.canonical_bytes()?;
     let payload = bytes.strip_prefix(PREFIX).ok_or("scheduler version")?;
     let mut value: ciborium::value::Value = ciborium::de::from_reader(payload)?;
@@ -583,6 +583,101 @@ fn equal_configurations_with_distinct_exact_checkpoint_identities_are_independen
 
     pool.orderly_shutdown()
         .expect("retire both exact frontiers");
+}
+
+/// Reaps like [`ReapingDemotionSink`] and records each source key in order.
+#[derive(Default)]
+struct RecordingDemotionSink {
+    demoted: Vec<QemuHotForkSourceWorldKey>,
+}
+
+impl HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld> for RecordingDemotionSink {
+    type Error = QemuHotForkSourceWorldDemotionError;
+
+    fn validate_fallback(
+        &mut self,
+        _key: HotCheckpointPoolKey,
+        _fallback: HotCheckpointFallback,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn demote(
+        &mut self,
+        world: ManagedQemuHotForkSourceWorld,
+        plan: HotCheckpointPlannedDemotion,
+    ) -> Result<(), HotCheckpointTemplateDemotionFailure<ManagedQemuHotForkSourceWorld, Self::Error>>
+    {
+        let key = world.key().clone();
+        QemuHotForkSourceWorldDemoter.demote_source(world, plan)?;
+        self.demoted.push(key);
+        Ok(())
+    }
+}
+
+#[test]
+fn orderly_shutdown_retires_the_newest_admission_before_its_predecessors() {
+    let mut sources = [0x54, 0x55].map(|checkpoint_byte| {
+        let node = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked)
+            .expect("scripted source");
+        let (_nodes, mut source) = prepared_multi_node_hot_fork_source_world_for_test(vec![node])
+            .expect("prepared source world");
+        source.mark_reuse_boundary_advanced_for_test();
+        let checkpoint = exact_checkpoint(checkpoint_byte);
+        let key = QemuHotForkSourceWorldKey::new_exact(
+            lineage_id(0x3a),
+            source.continuation().configuration().def.id(),
+            source.continuation().configuration().id(),
+            compatibility_profile(),
+            checkpoint,
+        );
+        (key, checkpoint, source)
+    });
+
+    // Admit the canonically smaller key first, so key order and admission
+    // order disagree about which source shutdown retires first.
+    sources.sort_by_key(|(key, _, _)| manager_source_key(key));
+    let usages = sources
+        .each_mut()
+        .map(|(_, _, source)| source.measure_retained_resources().expect("measure source"));
+    let maximum_resources = HotCheckpointResourceProfile::new(
+        usages.iter().map(|usage| usage.template_bytes()).sum(),
+        usages
+            .iter()
+            .map(|usage| usage.expected_private_dirty_bytes())
+            .sum(),
+        usages.iter().map(|usage| usage.process_count()).sum(),
+        usages.iter().map(|usage| usage.virtual_cpu_count()).sum(),
+        usages.iter().map(|usage| usage.descriptor_count()).sum(),
+        usages.iter().map(|usage| usage.overlay_count()).sum(),
+    )
+    .expect("two-source resource ceiling");
+    let limits = HotCheckpointLimits::new(2, maximum_resources, 2, 1_000_000_000)
+        .expect("two-source limits");
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        RecordingDemotionSink::default(),
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("two-source pool");
+
+    let [
+        (older, older_checkpoint, older_source),
+        (newer, newer_checkpoint, newer_source),
+    ] = sources;
+    for (key, checkpoint, source) in [
+        (older.clone(), older_checkpoint, older_source),
+        (newer.clone(), newer_checkpoint, newer_source),
+    ] {
+        pool.admit_authenticated_exact_source(
+            AuthenticatedExactQemuHotForkSource::new_for_test(key, checkpoint, source),
+            HotCheckpointHotnessSignals::new(),
+        )
+        .expect("admit exact source");
+    }
+
+    pool.orderly_shutdown().expect("retire both sources");
+    assert_eq!(pool.demotions.demoted, [newer, older]);
 }
 
 #[test]

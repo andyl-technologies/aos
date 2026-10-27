@@ -365,10 +365,11 @@ fn restore_sample(seq: u64, icount: u64, rolling_fingerprint: &[u8]) -> Fingerpr
 }
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }
 
 fn corrupt_loadable_checkpoint(

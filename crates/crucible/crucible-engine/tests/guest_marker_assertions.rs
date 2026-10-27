@@ -477,7 +477,9 @@ fn assertion_markers_do_not_fire_guest_marker_triggers() {
         .with_world_white_box_policies(&world);
     let mut state = EventGraphState::new();
 
-    let firings = pass.evaluate_event_graph(&graph, &mut state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut state)
+        .expect("console matchers are declared");
 
     assert!(firings.is_empty());
 }

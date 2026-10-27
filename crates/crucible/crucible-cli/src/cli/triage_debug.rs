@@ -4,7 +4,7 @@
 pub(crate) mod campaign_evidence;
 
 use super::*;
-use campaign_evidence::{build_campaign_triage_minimization, parse_campaign_findings_ledger_bytes};
+use campaign_evidence::build_campaign_triage_minimization;
 #[path = "triage_debug/debug_relay.rs"]
 mod debug_relay;
 #[path = "triage_debug/debug_terminal.rs"]
@@ -21,8 +21,6 @@ pub(crate) use debug_terminal::run_private_unix_debug_relay_with_client_async;
 pub(crate) use debug_terminal::{
     GUEST_TRANSCRIPT_HEADER, GuestTranscriptDirection, GuestTranscriptWriter,
 };
-#[cfg(test)]
-pub(crate) use ledger_format::ledger_hex;
 pub(crate) use ledger_format::{format_content_hash_ref, write_reproduction_findings_ledger};
 #[cfg(test)]
 pub(crate) use triage::{

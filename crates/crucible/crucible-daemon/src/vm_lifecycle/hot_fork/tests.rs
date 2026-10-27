@@ -125,8 +125,8 @@ fn exact_boundary_from_continuation(
     ProductionVmExactHotForkSourceBoundary {
         configuration: continuation.configuration.clone(),
         scheduler: Arc::clone(&continuation.scheduler),
-        event_log_objects: Arc::clone(&continuation.event_log_objects),
         signal_artifact_objects: Arc::clone(&continuation.signal_artifact_objects),
+        fault_trace_objects: Arc::clone(&continuation.fault_trace_objects),
         node_generations: continuation.node_generations.clone(),
         node_service_states: continuation.node_service_states.clone(),
         host_io,
@@ -166,7 +166,7 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
     let (_source, mut captured) = permanently_failed_continuation();
     let original_bytes = vec![7; 4096];
     let original = ContentHash::from_bytes(&original_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(original, original_bytes);
+    Arc::make_mut(&mut captured.signal_artifact_objects).insert(original, original_bytes);
 
     let mut first = captured
         .try_clone_for_branch()
@@ -176,190 +176,94 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
         .unwrap_or_else(|error| panic!("clone second host branch: {error}"));
 
     assert!(Arc::ptr_eq(
-        &first.event_log_objects,
-        &second.event_log_objects
-    ));
-    assert!(Arc::ptr_eq(
         &first.signal_artifact_objects,
         &second.signal_artifact_objects
     ));
 
     let replacement_bytes = vec![9; 4096];
     let replacement = ContentHash::from_bytes(&replacement_bytes);
-    Arc::make_mut(&mut first.event_log_objects).insert(replacement, replacement_bytes);
+    Arc::make_mut(&mut first.signal_artifact_objects).insert(replacement, replacement_bytes);
     assert!(!Arc::ptr_eq(
-        &first.event_log_objects,
-        &second.event_log_objects
+        &first.signal_artifact_objects,
+        &second.signal_artifact_objects
     ));
     assert_eq!(
-        first.event_log_objects.get(&replacement),
+        first.signal_artifact_objects.get(&replacement),
         Some(&vec![9; 4096])
     );
-    assert!(!second.event_log_objects.contains_key(&replacement));
+    assert!(!second.signal_artifact_objects.contains_key(&replacement));
     assert_eq!(
-        second.event_log_objects.get(&original),
+        second.signal_artifact_objects.get(&original),
         Some(&vec![7; 4096])
     );
     assert_eq!(
-        captured.event_log_objects.get(&original),
+        captured.signal_artifact_objects.get(&original),
         Some(&vec![7; 4096])
     );
 }
+
+#[path = "tests/clone_cost.rs"]
+mod clone_cost;
+
+/// Exact libtest name of the clone-cost measurement, run alone in a child.
+const HOST_CLONE_COST_TEST_NAME: &str =
+    "vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings";
+
+/// Marks the child process that performs the clone-cost measurement.
+const HOST_CLONE_COST_CHILD_ENVIRONMENT: &str = "CRUCIBLE_TEST_HOST_CLONE_COST_CHILD";
+
+/// Prefix shared by every metric line the measurement prints.
+const HOST_CLONE_COST_METRIC_PREFIX: &str = "host_";
 
 #[test]
 fn host_continuation_clone_cost_is_bounded_across_siblings() {
-    const ISOLATION_MARKER: &str = "CRUCIBLE_HOST_CLONE_COST_ISOLATED";
-
-    // Private_Dirty measures the whole process. Other daemon tests allocate
-    // large checkpoint buffers, so measure this bound in a single-test child.
-    if std::env::var_os(ISOLATION_MARKER).is_none() {
-        let test_module = module_path!()
-            .split_once("::")
-            .map_or(module_path!(), |(_, module)| module);
-        let test_name =
-            format!("{test_module}::host_continuation_clone_cost_is_bounded_across_siblings");
-        let executable = std::env::current_exe()
-            .unwrap_or_else(|error| panic!("locate host clone cost test executable: {error}"));
-        let output = std::process::Command::new(executable)
-            .args([
-                test_name.as_str(),
-                "--exact",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(ISOLATION_MARKER, "1")
-            .output()
-            .unwrap_or_else(|error| panic!("run isolated host clone cost test: {error}"));
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        assert!(
-            output.status.success(),
-            "isolated host clone cost test failed:\n{stdout}\n{stderr}"
-        );
-        assert!(
-            stdout.contains("test result: ok. 1 passed;"),
-            "isolated host clone cost test did not execute exactly one test:\n{stdout}"
-        );
-        print!("{stdout}");
+    if std::env::var_os(HOST_CLONE_COST_CHILD_ENVIRONMENT).is_some() {
+        clone_cost::measure_host_continuation_clone_cost();
         return;
     }
 
-    const SIBLINGS: usize = 64;
-    const OBJECT_BYTES: usize = 16 * 1024 * 1024;
-    const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;
-
-    let (source, mut captured) = active_multi_node_continuation();
-    let event_bytes = vec![3; OBJECT_BYTES];
-    let event = ContentHash::from_bytes(&event_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
-    let signal_bytes = vec![5; OBJECT_BYTES];
-    let signal = ContentHash::from_bytes(&signal_bytes);
-    Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
-
-    let baseline_kib = host_private_dirty_kib();
-    let (siblings, clone_elapsed_micros) = time_host_clone(|| {
-        (0..SIBLINGS)
-            .map(|_| {
-                captured
-                    .try_clone_for_branch()
-                    .unwrap_or_else(|error| panic!("clone host sibling: {error}"))
-            })
-            .collect::<Vec<_>>()
-    });
-    let private_growth_kib = host_private_dirty_kib().saturating_sub(baseline_kib);
-
-    for sibling in &siblings {
-        sibling
-            .validate_complete_internal_state()
-            .unwrap_or_else(|error| panic!("active sibling should remain complete: {error}"));
-        sibling
-            .validate_world_io(source.world())
-            .unwrap_or_else(|error| panic!("active sibling host I/O should validate: {error}"));
-        assert!(Arc::ptr_eq(&captured.scheduler, &sibling.scheduler));
-        assert!(Arc::ptr_eq(
-            &captured.event_log_objects,
-            &sibling.event_log_objects
-        ));
-        assert!(Arc::ptr_eq(
-            &captured.signal_artifact_objects,
-            &sibling.signal_artifact_objects
-        ));
-        assert_eq!(sibling.event_log_objects[&event].len(), OBJECT_BYTES);
-        assert_eq!(sibling.signal_artifact_objects[&signal].len(), OBJECT_BYTES);
-        assert_eq!(sibling.active_host_io, captured.active_host_io);
-        assert!(sibling.failed_host_io.is_empty());
-    }
-    assert_eq!(Arc::strong_count(&captured.scheduler), SIBLINGS + 1);
-    assert_eq!(Arc::strong_count(&captured.event_log_objects), SIBLINGS + 1);
-    assert_eq!(
-        Arc::strong_count(&captured.signal_artifact_objects),
-        SIBLINGS + 1
-    );
+    // Private_Dirty is a whole-process figure, so concurrent tests in this
+    // binary would be charged to the clones. Measure in a child process that
+    // runs only this test, with the same bound, and forward its metrics.
+    let child = std::process::Command::new(
+        std::env::current_exe().unwrap_or_else(|error| panic!("current test binary: {error}")),
+    )
+    .args([
+        "--exact",
+        HOST_CLONE_COST_TEST_NAME,
+        "--nocapture",
+        "--test-threads=1",
+    ])
+    .env(HOST_CLONE_COST_CHILD_ENVIRONMENT, "1")
+    .output()
+    .unwrap_or_else(|error| panic!("run host clone-cost child: {error}"));
+    let stdout = String::from_utf8_lossy(&child.stdout);
     assert!(
-        private_growth_kib <= MAX_PRIVATE_GROWTH_KIB,
-        "{SIBLINGS} host clones consumed {private_growth_kib} KiB private memory"
+        child.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "host clone-cost child failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stderr),
     );
 
-    let mut siblings = siblings;
-    let changed_node = captured.nodes[0].node.clone();
-    let original_host_io = captured.active_host_io[&changed_node].clone();
-    let replacement_host_io =
-        QemuHostIoCheckpoint::without_devices(ContentHash::from_bytes(b"child-only-host-io"));
-    siblings[0]
-        .active_host_io
-        .insert(changed_node.clone(), replacement_host_io.clone());
-    siblings[0].node_generations.insert(changed_node.clone(), 2);
-    siblings[0].nodes[0].generation = 2;
-
-    assert_eq!(
-        siblings[0].active_host_io[&changed_node],
-        replacement_host_io
-    );
-    assert_eq!(siblings[0].node_generations[&changed_node], 2);
-    assert_eq!(captured.active_host_io[&changed_node], original_host_io);
-    assert_eq!(siblings[1].active_host_io[&changed_node], original_host_io);
-    assert_eq!(captured.node_generations[&changed_node], 1);
-    assert_eq!(siblings[1].node_generations[&changed_node], 1);
-    siblings[0]
-        .validate_complete_internal_state()
-        .unwrap_or_else(|error| panic!("mutated active sibling should remain complete: {error}"));
-
-    println!("host_continuation_siblings={SIBLINGS}");
-    println!("host_active_nodes={}", captured.nodes.len());
-    println!("host_immutable_object_bytes={}", 2 * OBJECT_BYTES);
-    println!("host_shared_backing_copies=1");
-    println!("host_clone_private_growth_kib={private_growth_kib}");
-    println!("host_clone_private_growth_limit_kib={MAX_PRIVATE_GROWTH_KIB}");
-    println!("host_clone_elapsed_micros={clone_elapsed_micros}");
-}
-
-fn host_private_dirty_kib() -> u64 {
-    let rollup = std::fs::read_to_string("/proc/self/smaps_rollup")
-        .unwrap_or_else(|error| panic!("read host memory rollup: {error}"));
-    rollup
+    // Libtest may join the first metric to the child's status prefix.
+    let metrics = stdout
         .lines()
-        .find_map(|line| line.strip_prefix("Private_Dirty:"))
-        .and_then(|value| value.trim().strip_suffix(" kB"))
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or_else(|| panic!("host memory rollup lacks Private_Dirty in KiB"))
-}
-
-// Host time is operational gate evidence and never enters deterministic state.
-// crucible-lint: allow clippy-disallowed-method -- this helper only times test cloning.
-#[allow(clippy::disallowed_methods)]
-fn time_host_clone<T>(clone: impl FnOnce() -> T) -> (T, u128) {
-    let started = std::time::Instant::now();
-    let result = clone();
-    (result, started.elapsed().as_micros())
+        .map(|line| line.rsplit(" ... ").next().unwrap_or(line))
+        .filter(|line| line.starts_with(HOST_CLONE_COST_METRIC_PREFIX))
+        .collect::<Vec<_>>();
+    assert!(
+        metrics
+            .iter()
+            .any(|line| line.starts_with("host_clone_private_growth_kib=")),
+        "host clone-cost child printed no growth metric:\n{stdout}"
+    );
+    for metric in metrics {
+        println!("{metric}");
+    }
 }
 
 #[test]
 fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
     let (_source, mut captured) = permanently_failed_continuation();
-    let event_bytes = vec![3; 4 * 1024 * 1024];
-    let event = ContentHash::from_bytes(&event_bytes);
-    Arc::make_mut(&mut captured.event_log_objects).insert(event, event_bytes);
     let signal_bytes = vec![5; 4 * 1024 * 1024];
     let signal = ContentHash::from_bytes(&signal_bytes);
     Arc::make_mut(&mut captured.signal_artifact_objects).insert(signal, signal_bytes);
@@ -374,15 +278,10 @@ fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
         &captured.scheduler,
         &restored.checkpoint.scheduler
     ));
-    assert_eq!(captured.event_log_objects[&event].len(), 4 * 1024 * 1024);
     assert_eq!(
         captured.signal_artifact_objects[&signal].len(),
         4 * 1024 * 1024
     );
-    assert!(Arc::ptr_eq(
-        &captured.event_log_objects,
-        &restored.checkpoint.event_log_objects
-    ));
     assert!(Arc::ptr_eq(
         &captured.signal_artifact_objects,
         &restored.checkpoint.signal_artifact_objects
@@ -686,6 +585,41 @@ fn dropping_unreconciled_preparation_failure_quarantines_its_lifecycle_owner() {
 }
 
 #[test]
+fn an_unfinished_source_rollback_names_each_node_and_its_cause() {
+    let (_source, lifecycle) = permanently_failed_loop();
+    let node = lifecycle
+        .source
+        .world()
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("fixture should contain a World node"))
+        .id
+        .clone();
+    let rollback = HotForkRollbackReport {
+        nodes: vec![node.clone()],
+        diagnostics: BTreeMap::from([(
+            node.clone(),
+            String::from("release retained hot-fork child QMP: injected"),
+        )]),
+    };
+
+    let failure = ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+        lifecycle,
+        "one or more prepared sources did not complete rollback",
+        rollback,
+    );
+
+    let rendered = failure.to_string();
+    assert!(
+        rendered.contains(&format!(
+            "`{}`: release retained hot-fork child QMP: injected",
+            node.name
+        )),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn hot_fork_capture_rejects_unresolved_lifecycle_ownership() {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);
@@ -926,6 +860,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
+        campaign_marker_parks,
     } = continuation.into_restore_parts(generations.clone(), "child-run-state");
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
@@ -935,4 +870,66 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert!(blocks.is_empty());
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
+    assert!(campaign_marker_parks.is_empty());
+}
+
+fn transport_park(physical_icount: u64) -> QemuParkedCampaignMarker {
+    QemuParkedCampaignMarker {
+        marker: String::from("fault.transport.ready"),
+        marker_icount: crucible_engine::Icount {
+            retired: physical_icount - 2,
+        },
+        marker_tick: crucible_engine::Icount {
+            retired: physical_icount - 1_000,
+        },
+        physical_raw_icount: crucible_engine::Icount {
+            retired: physical_icount - 1,
+        },
+        physical_icount: crucible_engine::Icount {
+            retired: physical_icount,
+        },
+    }
+}
+
+#[test]
+fn every_child_of_a_parked_source_inherits_its_campaign_marker_parks() {
+    let (_source, mut continuation) = active_multi_node_continuation();
+    let parks = continuation
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, boundary)| (boundary.node.clone(), transport_park(10_000 + index as u64)))
+        .collect::<BTreeMap<_, _>>();
+    continuation.campaign_marker_parks = parks.clone();
+    continuation
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("a parked running source should validate: {error}"));
+
+    // Each fork clones the continuation; every child world must keep the parks
+    // through to the restore parts its lifecycle adopts them from.
+    for _child in 0..2 {
+        let branch = continuation
+            .try_clone_for_branch()
+            .unwrap_or_else(|error| panic!("parked continuation should clone: {error}"));
+        let generations = branch.node_generations.clone();
+        let restored = branch
+            .into_restore_parts(generations, "child-run-state")
+            .campaign_marker_parks;
+        assert_eq!(restored, parks);
+    }
+}
+
+#[test]
+fn a_campaign_marker_park_on_a_failed_node_refuses_the_continuation() {
+    let (_source, mut continuation) = permanently_failed_continuation();
+    let node = continuation.nodes[0].node.clone();
+    continuation
+        .campaign_marker_parks
+        .insert(node, transport_park(10_000));
+
+    let error = continuation
+        .validate_complete_internal_state()
+        .err()
+        .unwrap_or_else(|| panic!("a failed node cannot hold an inherited marker stop"));
+    assert!(error.to_string().contains("not running"));
 }

@@ -5,8 +5,7 @@
   taskIds ? ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   replayTest = import ./_rust-module-source.nix {
     inherit lib;
@@ -259,61 +258,23 @@ in
   if failures != []
   then throw "crucible phase4 event-graph replay-oracle check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-event-graph-replay-oracle";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
-          pkgs.pkg-config
-          pkgs.rust
           pkgs.sed
-          pkgs.sqlite
         ]
         ++ dependencies;
-      runtimeDeps = [pkgs.sqlite];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-event-graph-replay-oracle";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-event-graph-replay-oracle-target" \
+            crucible-cargo test \
               -p crucible-engine \
               --features test-double \
               --test assertion_proximity_gradient \

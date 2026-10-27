@@ -8,9 +8,34 @@ use super::*;
 use crucible_engine::model::{Aggregation, MeasurementDefinition, MetricSource, UnitId};
 use crucible_engine::{EventLog, MarkerId, NodeTemplate, ReadyPoint, WhiteBoxPolicy};
 
+use crate::attempt_event_log::MemorySegmentStore;
+
+fn campaign_leaf(
+    label: &[u8],
+    entries: Vec<SchedulerEventLogEntry>,
+    terminal_at: u64,
+) -> (CrucibleMeasurementReplayEvidence, MemorySegmentStore) {
+    let (scenario, configuration) = identities(label);
+    let mut store = MemorySegmentStore::default();
+    let log = store.sealed_log(entries).expect("sealed log");
+    let leaf = CrucibleMeasurementReplayEvidence {
+        scenario,
+        configuration,
+        definitions: CampaignHash::derive("test.definitions", b"none"),
+        log: ReplayLog::Segmented(log),
+        terminal: MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: terminal_at },
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: false,
+        },
+        stop: CrucibleMeasurementStopEvidence::Campaign,
+    };
+    (leaf, store)
+}
+
 #[test]
 fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
-    let (scenario, configuration) = identities(b"assertion-boundary");
     let unrelated = SchedulerEventLogEntry::assertion_state_observation(
         0,
         VirtualTime { ticks: 1 },
@@ -24,19 +49,7 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
         AssertionPhase::Violated,
     );
     let entries = vec![unrelated, failed.clone()];
-    let leaf = CrucibleMeasurementReplayEvidence {
-        scenario,
-        configuration,
-        definitions: CampaignHash::derive("test.definitions", b"none"),
-        entries: entries.clone(),
-        terminal: MeasurementTerminalState {
-            scenario_ready_at: None,
-            at: VirtualTime { ticks: 2 },
-            node_icounts: BTreeMap::new(),
-            scheduler_quiescent: false,
-        },
-        stop: CrucibleMeasurementStopEvidence::Campaign,
-    };
+    let (leaf, store) = campaign_leaf(b"assertion-boundary", entries.clone(), 2);
     let hash = CampaignHash::from_bytes(failed.content_hash().bytes);
     let digest = observation_event_prefix_digest(&entries);
     let witness = |prefix_digest, transition_hash, property: &str| {
@@ -54,14 +67,17 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
 
     assert!(verify_assertion_failure_boundary(
         &leaf,
+        &store,
         &witness(digest, hash, "target")
     ));
     assert!(!verify_assertion_failure_boundary(
         &leaf,
+        &store,
         &witness(CampaignHash::derive("forged", b"prefix"), hash, "target")
     ));
     assert!(!verify_assertion_failure_boundary(
         &leaf,
+        &store,
         &witness(
             digest,
             CampaignHash::derive("forged", b"transition"),
@@ -70,7 +86,13 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
     ));
     assert!(!verify_assertion_failure_boundary(
         &leaf,
+        &store,
         &witness(digest, hash, "unrelated")
+    ));
+    assert!(!verify_assertion_failure_boundary(
+        &leaf,
+        &MemorySegmentStore::default(),
+        &witness(digest, hash, "target")
     ));
 
     let duplicate = SchedulerEventLogEntry::assertion_state_observation(
@@ -79,11 +101,13 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
         crucible_engine::AssertionId::from_name("target"),
         AssertionPhase::Violated,
     );
-    let mut duplicate_leaf = leaf.clone();
-    duplicate_leaf.entries.push(duplicate);
+    let mut duplicated_entries = entries;
+    duplicated_entries.push(duplicate);
+    let (duplicate_leaf, duplicate_store) =
+        campaign_leaf(b"assertion-boundary", duplicated_entries.clone(), 2);
     let duplicate_witness = FindingAssertionFailureBoundary::new(
         duplicate_leaf.id().expect("duplicate trace ID"),
-        observation_event_prefix_digest(duplicate_leaf.entries()),
+        observation_event_prefix_digest(&duplicated_entries),
         3,
         1,
         1,
@@ -93,6 +117,7 @@ fn assertion_boundary_replays_exact_trace_and_rejects_forged_fields() {
     .expect("duplicate witness");
     assert!(!verify_assertion_failure_boundary(
         &duplicate_leaf,
+        &duplicate_store,
         &duplicate_witness
     ));
 }
@@ -224,30 +249,38 @@ fn terminal() -> MeasurementTerminalState {
     }
 }
 
-fn campaign_evidence(
+struct Published {
+    publication: CrucibleMeasurementPublication,
+    store: MemorySegmentStore,
+}
+
+fn publish(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: &MeasurementDefinitions,
     entries: Vec<SchedulerEventLogEntry>,
     terminal: MeasurementTerminalState,
     maximum_bytes: usize,
-) -> Result<CrucibleMeasurementReplayEvidence, CrucibleMeasurementError> {
-    evaluate_crucible_measurement_publication(
+) -> Result<Published, CrucibleMeasurementError> {
+    let mut store = MemorySegmentStore::default();
+    let log = store.sealed_log(entries)?;
+    let publication = evaluate_crucible_measurement_publication(
         scenario,
         configuration,
         definitions,
-        entries,
+        log,
+        &store,
         terminal,
         maximum_bytes,
-    )
-    .map(|publication| publication.evidence)
+    )?;
+    Ok(Published { publication, store })
 }
 
 fn empty_evidence(label: &[u8]) -> CrucibleMeasurementReplayEvidence {
     let definitions = MeasurementDefinitions::empty();
     let (scenario, configuration) = identities(label);
 
-    campaign_evidence(
+    publish(
         scenario,
         configuration,
         &definitions,
@@ -261,6 +294,25 @@ fn empty_evidence(label: &[u8]) -> CrucibleMeasurementReplayEvidence {
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("empty evidence")
+    .publication
+    .evidence
+}
+
+/// Builds a version 2 leaf, which embeds its entries, for compatibility tests.
+fn inline_v2_evidence(
+    label: &[u8],
+    entries: Vec<SchedulerEventLogEntry>,
+    terminal: MeasurementTerminalState,
+) -> CrucibleMeasurementReplayEvidence {
+    let (scenario, configuration) = identities(label);
+    CrucibleMeasurementReplayEvidence {
+        scenario,
+        configuration,
+        definitions: campaign_hash(definitions().content_hash()),
+        log: ReplayLog::Inline(entries),
+        terminal,
+        stop: CrucibleMeasurementStopEvidence::Campaign,
+    }
 }
 
 fn replace_empty_container_length(bytes: &[u8], field: &str, major: u8, declared: u32) -> Vec<u8> {
@@ -330,7 +382,7 @@ fn with_forged_hash(entry: &SchedulerEventLogEntry) -> SchedulerEventLogEntry {
 }
 
 #[test]
-fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
+fn v3_publication_round_trips_and_rederives_guest_and_model_samples() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"bound");
     let samples = derive_crucible_measurement_samples(&definitions, &entries())
@@ -346,7 +398,7 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
             .any(|sample| sample.metric().as_str() == "virtual-time")
     );
 
-    let publication = evaluate_crucible_measurement_publication(
+    let Published { publication, store } = publish(
         scenario,
         configuration,
         &definitions,
@@ -354,15 +406,22 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
         terminal(),
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
-    .expect("v2 publication");
+    .expect("v3 publication");
     assert_eq!(
         publication.evidence().schema_version(),
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3
     );
     assert_eq!(
         publication.evidence().stop(),
         CrucibleMeasurementStopEvidence::Campaign
     );
+    assert_eq!(publication.evidence().entry_count(), entries().len() as u64);
+    assert!(!publication.evidence().segments().is_empty());
+    assert_eq!(
+        publication.measurement_set().evaluation().evidence(),
+        &publication.evidence().evidence_ids().expect("evidence IDs")
+    );
+
     let evidence_bytes = publication
         .evidence()
         .canonical_bytes()
@@ -374,6 +433,7 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
     let verified = verify_crucible_measurement_publication(
         publication.measurement_set(),
         &decoded,
+        &store,
         scenario,
         configuration,
         &definitions,
@@ -385,12 +445,65 @@ fn v2_publication_round_trips_and_rederives_guest_and_model_samples() {
     );
     assert_eq!(
         publication.measurement_set().evaluation().payload_schema(),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3
     );
+
+    // Verification streams segments, so a source missing them fails closed.
+    assert!(matches!(
+        verify_crucible_measurement_publication(
+            publication.measurement_set(),
+            &decoded,
+            &MemorySegmentStore::default(),
+            scenario,
+            configuration,
+            &definitions,
+        ),
+        Err(CrucibleMeasurementError::EventLog(_))
+    ));
 }
 
 #[test]
-fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
+fn v2_leaves_remain_readable_and_replay_identically() {
+    let definitions = definitions();
+    let (scenario, configuration) = identities(b"v2");
+    let leaf = inline_v2_evidence(b"v2", entries(), terminal());
+    let bytes = leaf.canonical_bytes().expect("canonical v2 evidence");
+    let decoded =
+        CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes).expect("decoded v2");
+
+    assert_eq!(decoded, leaf);
+    assert_eq!(
+        decoded.schema_version(),
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+    );
+    assert!(decoded.segments().is_empty());
+
+    let inline = decoded
+        .replay(
+            &MemorySegmentStore::default(),
+            scenario,
+            configuration,
+            &definitions,
+        )
+        .expect("v2 replay");
+    let Published { publication, store } = publish(
+        scenario,
+        configuration,
+        &definitions,
+        entries(),
+        terminal(),
+        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    )
+    .expect("v3 publication");
+    let segmented = publication
+        .evidence()
+        .replay(&store, scenario, configuration, &definitions)
+        .expect("v3 replay");
+    assert_eq!(inline, segmented);
+}
+
+#[test]
+fn observation_boundary_evidence_round_trips_exact_coordinates() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"observation-boundary");
     let entries = entries();
@@ -408,20 +521,19 @@ fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
     )
     .expect("observation boundary");
 
+    let mut store = MemorySegmentStore::default();
+    let manifest = store.sealed_log(entries).expect("sealed log");
     let publication = evaluate_crucible_observation_measurement_publication(
         scenario,
         configuration,
         &definitions,
-        entries,
+        manifest,
+        &store,
         terminal(),
         boundary,
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("observation publication");
-    assert_eq!(
-        publication.evidence().schema_version(),
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
-    );
     assert_eq!(
         publication.evidence().stop(),
         CrucibleMeasurementStopEvidence::Observation(boundary)
@@ -432,23 +544,23 @@ fn observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates() {
             .id()
             .expect("evidence ID")
             .schema_version(),
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3
     );
 
     let bytes = publication
         .evidence()
         .canonical_bytes()
-        .expect("canonical v2 evidence");
-    let decoded = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)
-        .expect("decoded v2 evidence");
+        .expect("canonical evidence");
+    let decoded =
+        CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes).expect("decoded evidence");
     assert_eq!(decoded, *publication.evidence());
 }
 
 #[test]
-fn v2_verifier_rejects_missing_or_wrong_binding() {
+fn verifier_rejects_missing_or_wrong_binding() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"bound");
-    let publication = evaluate_crucible_measurement_publication(
+    let Published { publication, store } = publish(
         scenario,
         configuration,
         &definitions,
@@ -456,51 +568,57 @@ fn v2_verifier_rejects_missing_or_wrong_binding() {
         terminal(),
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
-    .expect("v2 publication");
+    .expect("publication");
     let retained = publication.measurement_set().evaluation();
-    let missing_edge = MeasurementSet::from_evaluation(
-        retained.definitions(),
-        retained.payload_schema(),
-        retained.evaluation(),
-        retained.payload().to_vec(),
-        BTreeSet::new(),
-    )
-    .expect("measurement set without trace edge");
+    let with_evidence = |evidence| {
+        MeasurementSet::from_evaluation(
+            retained.definitions(),
+            retained.payload_schema(),
+            retained.evaluation(),
+            retained.payload().to_vec(),
+            evidence,
+        )
+        .expect("measurement set")
+    };
+
+    let leaf_only = with_evidence(BTreeSet::from([publication
+        .evidence()
+        .id()
+        .expect("trace ID")]));
     assert!(matches!(
         verify_crucible_measurement_publication(
-            &missing_edge,
+            &leaf_only,
             publication.evidence(),
+            &store,
             scenario,
             configuration,
             &definitions,
         ),
         Err(CrucibleMeasurementError::ReplayEvidenceSetMismatch {
-            actual_count: 0,
+            actual_count: 1,
             ..
         })
     ));
 
-    let extra_edge = ContentId::for_bytes(ObjectKind::Trace, 1, b"unowned-extra-evidence");
-    let with_extra_edge = MeasurementSet::from_evaluation(
-        retained.definitions(),
-        retained.payload_schema(),
-        retained.evaluation(),
-        retained.payload().to_vec(),
-        BTreeSet::from([publication.evidence().id().expect("trace ID"), extra_edge]),
-    )
-    .expect("measurement set with extra edge");
+    let mut extra = publication.evidence().evidence_ids().expect("evidence IDs");
+    let owned = extra.len();
+    extra.insert(ContentId::for_bytes(
+        ObjectKind::Trace,
+        1,
+        b"unowned-extra-evidence",
+    ));
+    let with_extra_edge = with_evidence(extra);
     assert!(matches!(
         verify_crucible_measurement_publication(
             &with_extra_edge,
             publication.evidence(),
+            &store,
             scenario,
             configuration,
             &definitions,
         ),
-        Err(CrucibleMeasurementError::ReplayEvidenceSetMismatch {
-            actual_count: 2,
-            ..
-        })
+        Err(CrucibleMeasurementError::ReplayEvidenceSetMismatch { actual_count, .. })
+            if actual_count == owned + 1
     ));
 
     let (wrong_scenario, _) = identities(b"wrong");
@@ -508,6 +626,7 @@ fn v2_verifier_rejects_missing_or_wrong_binding() {
         verify_crucible_measurement_publication(
             publication.measurement_set(),
             publication.evidence(),
+            &store,
             wrong_scenario,
             configuration,
             &definitions,
@@ -522,7 +641,7 @@ fn v2_verifier_rejects_missing_or_wrong_binding() {
 fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
     let definitions = definitions();
     let (scenario, configuration) = identities(b"decode");
-    let evidence = campaign_evidence(
+    let evidence = publish(
         scenario,
         configuration,
         &definitions,
@@ -530,7 +649,9 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
         terminal(),
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
-    .expect("evidence");
+    .expect("evidence")
+    .publication
+    .evidence;
     let bytes = evidence.canonical_bytes().expect("canonical bytes");
 
     let mut trailing_space = bytes.clone();
@@ -540,42 +661,69 @@ fn evidence_decode_rejects_noncanonical_unknown_and_unsupported_input() {
         Err(CrucibleMeasurementError::NonCanonicalEvidence)
     ));
 
-    let mut unknown_value: ciborium::Value =
-        ciborium::de::from_reader(bytes.as_slice()).expect("decoded CBOR value");
-    let ciborium::Value::Map(unknown_fields) = &mut unknown_value else {
-        panic!("evidence root must be a map");
+    type CborFields = Vec<(ciborium::Value, ciborium::Value)>;
+    let mutated = |edit: &dyn Fn(&mut CborFields)| {
+        let mut value: ciborium::Value =
+            ciborium::de::from_reader(bytes.as_slice()).expect("decoded CBOR value");
+        let ciborium::Value::Map(fields) = &mut value else {
+            panic!("evidence root must be a map");
+        };
+        edit(fields);
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&value, &mut encoded).expect("mutated CBOR");
+        encoded
     };
-    unknown_fields.push((
-        ciborium::Value::Text("unknown".to_owned()),
-        ciborium::Value::Integer(0.into()),
-    ));
-    let mut unknown = Vec::new();
-    ciborium::ser::into_writer(&unknown_value, &mut unknown).expect("unknown-field CBOR");
+
+    let unknown = mutated(&|fields| {
+        fields.push((
+            ciborium::Value::Text("unknown".to_owned()),
+            ciborium::Value::Integer(0.into()),
+        ));
+    });
     assert!(matches!(
         CrucibleMeasurementReplayEvidence::from_canonical_bytes(&unknown),
         Err(CrucibleMeasurementError::EvidenceEncoding { .. })
     ));
 
-    let mut unsupported_value: ciborium::Value =
-        ciborium::de::from_reader(bytes.as_slice()).expect("decoded CBOR value");
-    let ciborium::Value::Map(unsupported_fields) = &mut unsupported_value else {
-        panic!("evidence root must be a map");
-    };
-    let schema = unsupported_fields
-        .iter_mut()
-        .find(|(key, _)| key == &ciborium::Value::Text("schema_version".to_owned()))
-        .map(|(_, value)| value)
-        .expect("schema field");
-    *schema = ciborium::Value::Integer(3.into());
-    let mut unsupported = Vec::new();
-    ciborium::ser::into_writer(&unsupported_value, &mut unsupported)
-        .expect("unsupported-schema CBOR");
+    let unsupported = mutated(&|fields| {
+        let schema = fields
+            .iter_mut()
+            .find(|(key, _)| key == &ciborium::Value::Text("schema_version".to_owned()))
+            .map(|(_, value)| value)
+            .expect("schema field");
+        *schema = ciborium::Value::Integer(4.into());
+    });
     assert!(matches!(
         CrucibleMeasurementReplayEvidence::from_canonical_bytes(&unsupported),
         Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
-            actual: 3,
-            expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
+            actual: 4,
+            expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
         })
+    ));
+
+    // A manifest whose recorded chain differs from its segments is rejected
+    // before any segment is read.
+    let forged_chain = mutated(&|fields| {
+        let log = fields
+            .iter_mut()
+            .find(|(key, _)| key == &ciborium::Value::Text("log".to_owned()))
+            .map(|(_, value)| value)
+            .expect("log field");
+        let ciborium::Value::Map(log) = log else {
+            panic!("log must be a map");
+        };
+        let count = log
+            .iter_mut()
+            .find(|(key, _)| key == &ciborium::Value::Text("entry_count".to_owned()))
+            .map(|(_, value)| value)
+            .expect("entry count field");
+        *count = ciborium::Value::Integer(1.into());
+    });
+    assert!(matches!(
+        CrucibleMeasurementReplayEvidence::from_canonical_bytes(&forged_chain),
+        Err(CrucibleMeasurementError::EventLog(
+            crate::attempt_event_log::AttemptEventLogError::InvalidManifest { .. }
+        ))
     ));
 }
 
@@ -585,17 +733,17 @@ fn evidence_decode_rejects_oversized_declared_container_lengths() {
         .canonical_bytes()
         .expect("canonical bytes");
 
-    let oversized_entries = replace_empty_container_length(
+    let oversized_segments = replace_empty_container_length(
         &bytes,
-        "entries",
+        "segments",
         0x9a,
-        u32::try_from(MAX_MEASUREMENT_EVENT_ENTRIES + 1).expect("entry bound fits u32"),
+        u32::try_from(MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS + 1).expect("segment bound fits u32"),
     );
     let reason = evidence_encoding_reason(CrucibleMeasurementReplayEvidence::from_canonical_bytes(
-        &oversized_entries,
+        &oversized_segments,
     ));
     assert!(
-        reason.contains("at most 1000000 scheduler entries"),
+        reason.contains("at most 4095 attempt-log segments"),
         "unexpected rejection: {reason}"
     );
 
@@ -613,18 +761,30 @@ fn evidence_decode_rejects_oversized_declared_container_lengths() {
         "unexpected rejection: {reason}"
     );
 
-    let maximum_entries = replace_empty_container_length(
-        &bytes,
+    let v2_bytes = inline_v2_evidence(
+        b"declared-container-bounds",
+        Vec::new(),
+        MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: 0 },
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: true,
+        },
+    )
+    .canonical_bytes()
+    .expect("canonical v2 bytes");
+    let oversized_entries = replace_empty_container_length(
+        &v2_bytes,
         "entries",
         0x9a,
-        u32::try_from(MAX_MEASUREMENT_EVENT_ENTRIES).expect("entry bound fits u32"),
+        u32::try_from(MAX_MEASUREMENT_EVENT_ENTRIES + 1).expect("entry bound fits u32"),
     );
     let reason = evidence_encoding_reason(CrucibleMeasurementReplayEvidence::from_canonical_bytes(
-        &maximum_entries,
+        &oversized_entries,
     ));
     assert!(
-        !reason.contains("at most 1000000 scheduler entries"),
-        "exact limit must pass the count check: {reason}"
+        reason.contains("at most 1000000 scheduler entries"),
+        "unexpected rejection: {reason}"
     );
 }
 
@@ -638,46 +798,38 @@ fn campaign_stop_is_explicit_and_round_trips() {
     assert_eq!(decoded, evidence);
     assert_eq!(
         evidence.id().expect("content ID").schema_version(),
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3
     );
 }
 
 #[test]
-fn effective_byte_limit_precedes_event_log_replay() {
+fn effective_byte_limit_precedes_segment_reads() {
     let definitions = MeasurementDefinitions::empty();
     let (scenario, configuration) = identities(b"budget");
-    let valid_entries = entries();
-    let invalid_sequence = vec![valid_entries[0].clone(), valid_entries[2].clone()];
-    let terminal = terminal();
-    let unconstrained = campaign_evidence(
-        scenario,
-        configuration,
-        &definitions,
-        invalid_sequence.clone(),
-        terminal.clone(),
-        MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-    );
-    assert!(
-        matches!(
-            unconstrained,
-            Err(CrucibleMeasurementError::Evaluation(
-                crucible_engine::model::MeasurementEvaluationError::NonDenseEventLog {
-                    previous: 0,
-                    actual: 2,
-                }
-            ))
-        ),
-        "unexpected result: {unconstrained:?}"
-    );
-    assert!(matches!(
-        campaign_evidence(
+    let manifest = MemorySegmentStore::default()
+        .sealed_log(entries())
+        .expect("sealed log");
+    let absent = MemorySegmentStore::default();
+    let publish_with_limit = |maximum_bytes| {
+        evaluate_crucible_measurement_publication(
             scenario,
             configuration,
             &definitions,
-            invalid_sequence,
-            terminal,
-            1,
-        ),
+            manifest.clone(),
+            &absent,
+            terminal(),
+            maximum_bytes,
+        )
+    };
+
+    assert!(matches!(
+        publish_with_limit(MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES),
+        Err(CrucibleMeasurementError::EventLog(
+            crate::attempt_event_log::AttemptEventLogError::Store { .. }
+        ))
+    ));
+    assert!(matches!(
+        publish_with_limit(1),
         Err(CrucibleMeasurementError::EvidenceTooLarge { maximum: 1, .. })
     ));
 }

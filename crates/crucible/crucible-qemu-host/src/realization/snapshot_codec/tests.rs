@@ -90,3 +90,97 @@ fn snapshot_fixture(label: &str) -> QemuVmSnapshot {
     QemuVmSnapshot::diskless(checkpoint)
         .unwrap_or_else(|error| panic!("build diskless snapshot: {error}"))
 }
+
+#[test]
+fn streamed_envelope_matches_the_buffered_encoding() {
+    let snapshot = snapshot_fixture("streamed-envelope");
+    let buffered = snapshot
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("encode buffered snapshot: {error}"));
+
+    let mut streamed = Vec::new();
+    let length = snapshot
+        .write_canonical_with_limit(MAX_BYTES, &mut streamed)
+        .unwrap_or_else(|error| panic!("stream snapshot: {error}"));
+
+    assert_eq!(streamed, buffered);
+    assert_eq!(length, buffered.len() as u64);
+}
+
+#[test]
+fn streamed_envelope_reports_the_buffered_errors() {
+    let snapshot = snapshot_fixture("streamed-limit");
+    let exact = snapshot
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("encode snapshot: {error}"))
+        .len() as u64;
+
+    // A nested-bound failure, the fixed-envelope failure one byte short, and
+    // success at the exact length agree on both paths.
+    for maximum in [64, exact - 1, exact] {
+        let buffered = encode_snapshot(&snapshot, maximum).map(|bytes| bytes.len() as u64);
+        let streamed = snapshot.write_canonical_with_limit(maximum, &mut std::io::sink());
+        assert_eq!(streamed, buffered, "ceiling {maximum}");
+    }
+
+    let mut forged = snapshot.clone();
+    forged.identity = ContentHash::default();
+    assert_eq!(
+        forged.write_canonical_with_limit(MAX_BYTES, &mut std::io::sink()),
+        Err(QemuVmSnapshotCodecError::Identity)
+    );
+}
+
+#[test]
+fn streamed_envelope_surfaces_writer_failures() {
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let snapshot = snapshot_fixture("streamed-writer-failure");
+    assert_eq!(
+        snapshot.write_canonical_with_limit(MAX_BYTES, &mut FailingWriter),
+        Err(QemuVmSnapshotCodecError::Write {
+            kind: std::io::ErrorKind::StorageFull,
+        })
+    );
+}
+
+#[test]
+fn decoding_compares_a_streamed_re_encoding_with_the_input() {
+    let snapshot = snapshot_fixture("canonical-comparison");
+    let bytes = snapshot
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("encode snapshot: {error}"));
+    assert_eq!(QemuVmSnapshot::from_canonical_bytes(&bytes), Ok(snapshot));
+
+    let mut short = CanonicalComparison::new(&bytes);
+    short
+        .write_all(&bytes[..bytes.len() - 1])
+        .unwrap_or_else(|error| panic!("compare prefix: {error}"));
+    assert!(!short.matched(), "a short stream must not match");
+
+    let mut flipped = bytes.clone();
+    let last = flipped.len() - 1;
+    flipped[last] ^= 1;
+    let mut differing = CanonicalComparison::new(&flipped);
+    differing
+        .write_all(&bytes)
+        .unwrap_or_else(|error| panic!("compare bytes: {error}"));
+    assert!(!differing.matched(), "a differing byte must not match");
+
+    let mut long = CanonicalComparison::new(&bytes);
+    long.write_all(&bytes)
+        .unwrap_or_else(|error| panic!("compare bytes: {error}"));
+    long.write_all(b"x")
+        .unwrap_or_else(|error| panic!("compare tail: {error}"));
+    assert!(!long.matched(), "a long stream must not match");
+}

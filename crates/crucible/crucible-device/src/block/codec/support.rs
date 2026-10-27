@@ -81,7 +81,7 @@ pub enum BlockCodecError {
     /// The version byte does not match the supported ABI version.
     #[error("block ABI version mismatch: expected {expected}, found {found}")]
     VersionMismatch {
-        /// The supported [`crate::block::codec::BLOCK_ABI_VERSION`].
+        /// The supported request or response ABI version for this message kind.
         expected: u8,
         /// The version byte found on the wire.
         found: u8,
@@ -92,6 +92,18 @@ pub enum BlockCodecError {
     NonZeroReserved {
         /// The nonzero reserved value found on the wire.
         reserved: u16,
+    },
+
+    /// A request names an oldest live epoch newer than its own epoch.
+    ///
+    /// The frontend's oldest live epoch includes the request being sent, so it
+    /// can never follow that request's epoch ([IO-35]).
+    #[error("block request oldest live epoch {oldest_live_epoch} exceeds its epoch {epoch}")]
+    OldestLiveEpochAfterEpoch {
+        /// The request's transport epoch.
+        epoch: u64,
+        /// The oldest live epoch carried by the request.
+        oldest_live_epoch: u64,
     },
 
     /// The declared `count` exceeds the payload bytes after the header.

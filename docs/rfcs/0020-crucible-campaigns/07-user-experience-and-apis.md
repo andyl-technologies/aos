@@ -178,9 +178,11 @@ verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
 repository or daemon is opened.
 
 `campaign schedule compile` accepts at most 32 MiB of strict, deny-unknown-
-fields version-two TOML and writes a nonempty canonical Schedule V3 without
+fields version-three TOML and writes a nonempty canonical Schedule V3 without
 replacing an existing path. The closed `[[decisions]]` variants are
-`delivery-order`, `rng-draw`, `override`, and `preemption`; preemption carries
+`delivery-order`, `rng-draw`, `override`, and `preemption`; `rng-draw` carries
+its exact draw address (an ordinal, or a link frame's direction, producer
+sequence, and role index); preemption carries
 an exact `at_tick` and an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
 65,536 decisions, one delivery order contains 1 through 65,536 events, and each
 authored string contains 1 through 4,096 bytes without NUL or line breaks. The
@@ -456,14 +458,25 @@ of one exact indexed finding: its representative observation and original
 reproduction artifact. It rejects a mismatched finding, dependency kind,
 configuration artifact, or reproduction fingerprint before reporting the
 stable signature, causal identities, occurrence projection, modeled stop,
-evidence-set IDs, replay configuration, and payload profile.
+evidence-set IDs, replay configuration, and payload profile. Both explanation
+reports (`crucible.cli.campaign-finding-explanation.v2` and
+`crucible.cli.campaign-attempt-explanation.v6`) name an observation's
+discovered choices by the root and entry count of its paged discovered-choice
+map rather than listing every opportunity; `choices` pages the campaign's
+discovered opportunities.
 `explain-attempt` first authenticates the immutable attempt start and path,
 execution-basis cause and ordinal, branch selection and proposal provenance
 when present, plus a canonical completion or proved absence. For a completed
 attempt, it then reads the observation-linked measurement event leaf and any
-resolved-effect leaf through separately authorized, 1 MiB trace chunks. The
-client verifies the complete content ID before decoding either leaf. Its
-`crucible.cli.campaign-attempt-explanation.v4` JSON includes a bounded
+resolved-effect trace through separately authorized, 1 MiB trace chunks. The
+server reads only each requested byte range of a leaf, so a leaf costs linear
+work. Each trace kind bounds one leaf, never a whole run: a resolved-effect
+manifest is at most 1 MiB, a resolved-effect segment
+(`ResolvedEffectSegment`, admitted only when the observation lists it) at most
+16 MiB, and a measurement leaf at most 64 MiB. The client verifies each leaf's
+complete content ID before decoding it, and streams a resolved-effect trace
+one authenticated segment at a time against its manifest. Its
+attempt-explanation JSON includes a bounded
 `effect_evidence` object with schema
 `crucible.cli.campaign-attempt-effect-evidence.v2`: up to 4096 applied network
 records, guest semantic marker identities, typed route observations, and
@@ -516,9 +529,11 @@ scan admits at most 1,000,000 records and 128 MiB. Operational status is a
 tagged `Unavailable` or `Observed` value. Observed evidence binds preparing,
 running, checkpointing, publishing, canceling, and paused world counts plus
 distinct retained roots and materialized checkpoints to one daemon epoch and
-one inventory generation. A deployment without an owner capable of producing
-one complete stable inventory reports `Unavailable` instead of partial or
-zero-filled operational counts. The version-2 status JSON nests these two
+one inventory generation. The packaged executor folds its assignment-ledger
+records into those counts in campaign-membership batches of 4,096, so the
+inventory is bounded only by the ledger's own runtime-record limit. A
+deployment without an owner capable of producing one complete stable inventory
+reports `Unavailable` instead of partial or zero-filled operational counts. The version-2 status JSON nests these two
 domains as `semantic` and `operational`; watch remains the version-1 head view.
 
 `choices` shows choice opportunities and their branch points, domain, finite and
@@ -624,7 +639,7 @@ crucible campaign archive inspect --state STATE --policy POLICY --store STORE --
 
 crucible store status STORE
 crucible store ensure CONTENT_ID --in STORE
-crucible store verify STORE
+crucible store verify STORE [--max-logical-bytes BYTES] [--spool-dir DIR]
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL plan
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL cancel
 crucible store gc --state STATE --policy POLICY --store STORE --journal JOURNAL apply
@@ -652,12 +667,18 @@ profile without reading object bytes. `store ensure` parses one canonical
 content ID before deployment I/O, streams the complete logical object through
 the admitted root, and reports success only after deferred whole-object
 authentication reaches EOF. `store verify` visits physical leaves in canonical
-node-ID order, accepts at most 65,536 placements and 128 GiB of summed logical
-bytes, streams every placement through the exact physical backend to
-authenticated EOF, and reports success only when a closing inventory fence
-reproduces the opening generation, count, logical-byte total, and backend
-identity. Its report discloses aggregate per-backend evidence, not object IDs
-or delete authority. Store deployment selection is deliberately explicit;
+node-ID order and fails once the summed logical bytes exceed its
+`--max-logical-bytes` work budget (128 GiB by default). It places no limit on
+the placement count: each leaf's fenced inventory is spooled as fixed-width
+records to an anonymous owner-only file in a fresh `0700` directory under
+`--spool-dir` (the process temporary directory by default), so memory stays
+constant while disk use grows with the placement count. After the fence is
+released, it streams every spooled placement through the exact physical
+backend to authenticated EOF, and reports success only when a closing
+inventory fence reproduces the opening generation, count, logical-byte total,
+and backend identity. Its report (`crucible.cli.store-verify.v2`) discloses
+the logical-byte budget and aggregate per-backend evidence, not object IDs or
+delete authority. Store deployment selection is deliberately explicit;
 commands name the strict composed-store file instead of guessing a deployment
 registry.
 The current single-host command is an offline deployment-owner operation:

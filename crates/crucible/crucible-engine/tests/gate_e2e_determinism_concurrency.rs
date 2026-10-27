@@ -40,17 +40,18 @@
 use crucible_device::{BaseImage, BlockDevice, BlockLatency, BlockRequest, IoCore};
 use crucible_engine::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BackendInput,
-    ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ConditionLeaf, ContentHash,
+    ComposedRunVerdict, ConcurrentQuantumLoop, ConditionEventLogPrefix, ContentHash,
     ControlOperation, ControlOperationKind, Decision, DeviceId, DeviceSchedulingSubNode,
     EventDiagnosticPayload, EventLevel, HostAssertionEvaluator, HostAssertionOutcomeKind,
-    HostAssertionPredicate, HostAssertionReport, LintedHostAssertionOracle, NetworkLookahead,
-    NodeCounter, NodeId, ObservedOrderingFact, ObservedState, OfflineAssertionChecker, Predicate,
-    Properties, Property, QuantumLoop, QuantumRequest, RecordedAssertionLog, SIM_TICKS_PER_NS,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler,
-    TriggerActionState, VirtualTime, World, compare_event_log_determinism,
+    HostAssertionPredicate, HostAssertionReport, LintedHostAssertionOracle, NamedLeaf,
+    NamedPredicateError, NetworkLookahead, NodeCounter, NodeId, ObservedBatch,
+    ObservedOrderingFact, OfflineAssertionChecker, Predicate, Properties, Property, QuantumLoop,
+    QuantumRequest, RecordedAssertionLog, SIM_TICKS_PER_NS, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, ScheduledEventResolveClass, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerLivenessScenario,
+    SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
+    SchedulingNodeKind, Seed, SimDuration, SimInstant, SingleScheduler, TriggerActionState,
+    VirtualTime, World, compare_event_log_determinism,
 };
 
 /// The determinism-relevant fingerprint of one full run, independent of the
@@ -400,37 +401,52 @@ fn assertion_gate_failing_properties(world: &World) -> Properties {
 #[derive(Clone, Copy, Debug)]
 struct SchedulerFactOracle;
 
+/// Scheduler ordering facts folded so far.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct SchedulerFacts {
+    frame_delivery: bool,
+    delivery_order: bool,
+}
+
 impl HostAssertionPredicate for SchedulerFactOracle {
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        let ConditionLeaf::Named { name, nodes } = leaf else {
-            return false;
-        };
-        if !nodes.is_empty() {
+    type State = SchedulerFacts;
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) -> SchedulerFacts {
+        SchedulerFacts::default()
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        facts: &SchedulerFacts,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<SchedulerFacts, NamedPredicateError> {
+        let mut facts = *facts;
+        for fact in batch.ordering_facts() {
+            match fact {
+                ObservedOrderingFact::ResolvedHappening {
+                    class: ScheduledEventResolveClass::FrameDelivery,
+                    ..
+                } => facts.frame_delivery = true,
+                ObservedOrderingFact::DeliveryOrder { .. } => facts.delivery_order = true,
+                _ => {}
+            }
+        }
+        Ok(facts)
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, facts: &SchedulerFacts) -> bool {
+        if !leaf.nodes().is_empty() {
             return false;
         }
 
-        match name {
-            "saw-frame-delivery" => saw_frame_delivery(observed),
-            "saw-delivery-order" => observed
-                .ordering_facts()
-                .iter()
-                .any(|fact| matches!(fact, ObservedOrderingFact::DeliveryOrder { .. })),
-            "no-frame-delivery" => !saw_frame_delivery(observed),
+        match leaf.name() {
+            "saw-frame-delivery" => facts.frame_delivery,
+            "saw-delivery-order" => facts.delivery_order,
+            "no-frame-delivery" => !facts.frame_delivery,
             _ => false,
         }
     }
-}
-
-fn saw_frame_delivery(observed: ObservedState<'_>) -> bool {
-    observed.ordering_facts().iter().any(|fact| {
-        matches!(
-            fact,
-            ObservedOrderingFact::ResolvedHappening {
-                class: ScheduledEventResolveClass::FrameDelivery,
-                ..
-            }
-        )
-    })
 }
 
 fn scheduler_fact_oracle() -> LintedHostAssertionOracle<SchedulerFactOracle> {

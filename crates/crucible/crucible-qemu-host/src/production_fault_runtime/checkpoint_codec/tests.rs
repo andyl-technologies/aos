@@ -21,7 +21,7 @@ fn empty_checkpoint(
         qemu_action_commits: QemuActionMap::new(),
         qemu_active_rule_ids: QemuActionSet::new(),
         network_state,
-        emitted_events: Vec::new(),
+        referenced_events: ReferencedEventWindow::default(),
         pending_qemu_observations: Vec::new(),
         pending_qemu_events: PendingQemuEventMap::new(),
         identity: ContentHash::from_bytes(b"uninitialized checkpoint identity"),
@@ -38,7 +38,7 @@ fn empty_checkpoint(
         &checkpoint.qemu_action_commits,
         &checkpoint.qemu_active_rule_ids,
         checkpoint.network_state.as_ref(),
-        &checkpoint.emitted_events,
+        &checkpoint.referenced_events,
         &checkpoint.pending_qemu_observations,
         &checkpoint.pending_qemu_events,
     )
@@ -208,7 +208,7 @@ fn complete_production_checkpoint_round_trips_canonically() {
         &checkpoint.qemu_action_commits,
         &checkpoint.qemu_active_rule_ids,
         checkpoint.network_state.as_ref(),
-        &checkpoint.emitted_events,
+        &checkpoint.referenced_events,
         &checkpoint.pending_qemu_observations,
         &checkpoint.pending_qemu_events,
     )
@@ -238,6 +238,147 @@ fn complete_production_checkpoint_round_trips_canonically() {
             .to_canonical_bytes()
             .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}")),
         bytes
+    );
+}
+
+/// Builds a window with retained, retired, and subscribed state.
+fn populated_referenced_window(limits: FaultResourceLimits) -> ReferencedEventWindow {
+    let signal = |name: &str| {
+        crucible_engine::model::SignalId::parse(name)
+            .unwrap_or_else(|error| panic!("test signal should parse: {error}"))
+    };
+    let event = |name: &str, ticks: u64| {
+        let mut event = ReferencedSignalEvent {
+            signal: signal(name),
+            coordinate: crucible_engine::model::FaultCoordinate {
+                virtual_ticks: ticks,
+                retired_instructions: Some(ticks / 2),
+            },
+            same_coordinate_sequence: 0,
+            value: crucible_engine::model::SignalValue::Event {
+                schema: signal("recovery-schema"),
+                payload: vec![7],
+            },
+            evidence: ContentHash::default(),
+        };
+        event.evidence = event
+            .canonical_value_identity()
+            .unwrap_or_else(|error| panic!("test event should encode: {error}"))
+            .0;
+        event
+    };
+    let consumer = ReferencedEventConsumer::block_recovery(
+        &crucible_engine::model::ResolvedFaultTarget::BlockDevice {
+            device: ContentHash::from_bytes(b"codec-block"),
+        },
+    )
+    .unwrap_or_else(|error| panic!("test consumer should derive: {error}"));
+    let host = HostFaultActionState::default();
+    let mut window = ReferencedEventWindow::default();
+    window
+        .bind_consumers(&[consumer], &host, limits)
+        .unwrap_or_else(|error| panic!("test consumer should bind: {error}"));
+    window
+        .report_subscriptions(
+            consumer,
+            vec![ReferencedEventSubscription {
+                event: crate::storage_recovery_event_key(
+                    &crucible_engine::model::FaultObjectId::parse("recovered")
+                        .unwrap_or_else(|error| panic!("test key should parse: {error}")),
+                ),
+                after: ReferencedEventCoordinate {
+                    ticks: 15,
+                    sequence: 0,
+                },
+            }],
+            &host,
+            limits,
+        )
+        .unwrap_or_else(|error| panic!("test subscription should report: {error}"));
+    let charged = window
+        .charge(
+            &[
+                event("recovered", 10),
+                event("recovered", 20),
+                event("recovered", 25),
+                event("recovered", 30),
+            ],
+            limits,
+        )
+        .unwrap_or_else(|error| panic!("test events should charge: {error}"));
+    window
+        .try_reserve(charged.len(), limits)
+        .unwrap_or_else(|error| panic!("test window should reserve: {error}"));
+    window.publish(charged);
+    window
+        .retire_unneeded(&host, limits)
+        .unwrap_or_else(|error| panic!("test window should retire: {error}"));
+    window
+}
+
+#[test]
+fn referenced_event_window_round_trips_canonically_in_the_checkpoint() {
+    let plan = FaultSignalPlan::empty();
+    let seed = ContentHash::from_bytes(b"referenced window checkpoint seed");
+    let mut checkpoint = empty_checkpoint(&plan, None);
+    checkpoint.referenced_events = populated_referenced_window(plan.resource_limits());
+    assert_eq!(checkpoint.referenced_events.retained().len(), 2);
+    assert_eq!(checkpoint.referenced_events.emitted(), 4);
+    checkpoint.identity = production_checkpoint_identity(
+        plan.id(),
+        plan.resource_limits(),
+        checkpoint.runtime.as_ref(),
+        &checkpoint.host,
+        &checkpoint.qemu_fingerprints,
+        &checkpoint.qemu_fault_sequences,
+        &checkpoint.qemu_fault_event_sequences,
+        &checkpoint.qemu_issued_actions,
+        &checkpoint.qemu_action_commits,
+        &checkpoint.qemu_active_rule_ids,
+        checkpoint.network_state.as_ref(),
+        &checkpoint.referenced_events,
+        &checkpoint.pending_qemu_observations,
+        &checkpoint.pending_qemu_events,
+    )
+    .unwrap_or_else(|error| panic!("window checkpoint identity should encode: {error}"));
+
+    let bytes = checkpoint
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("window checkpoint should encode: {error}"));
+    let restored = ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed)
+        .unwrap_or_else(|error| panic!("window checkpoint should decode: {error}"));
+
+    assert_eq!(restored.id(), checkpoint.id());
+    assert_eq!(restored.referenced_events, checkpoint.referenced_events);
+    assert_ne!(
+        restored.id(),
+        empty_checkpoint(&plan, None).id(),
+        "identity must bind the referenced-event history"
+    );
+}
+
+#[test]
+fn referenced_event_window_rejects_a_count_below_its_retained_events() {
+    let limits = FaultResourceLimits::default();
+    let window = populated_referenced_window(limits);
+    let retained = window
+        .retained()
+        .iter()
+        .map(|event| (event.index(), event.event().clone()))
+        .collect::<Vec<_>>();
+
+    assert!(
+        ReferencedEventWindow::from_parts(
+            1,
+            window.log_bytes(),
+            window.history(),
+            window.newest(),
+            window.retired_frontiers().to_vec(),
+            retained,
+            Vec::new(),
+            limits,
+        )
+        .is_err()
     );
 }
 
@@ -378,7 +519,7 @@ fn measure_fault_checkpoint_clone_cost() {
         &source.qemu_action_commits,
         &source.qemu_active_rule_ids,
         source.network_state.as_ref(),
-        &source.emitted_events,
+        &source.referenced_events,
         &source.pending_qemu_observations,
         &source.pending_qemu_events,
     )
@@ -534,7 +675,7 @@ fn aggregate_identity_binds_network_adapter_bytes() {
 }
 
 #[test]
-fn aggregate_identity_preserves_canonical_v10_hex_material_hash() {
+fn aggregate_identity_preserves_canonical_v11_hex_material_hash() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let plan = FaultSignalPlan::empty();
@@ -543,6 +684,16 @@ fn aggregate_identity_preserves_canonical_v10_hex_material_hash() {
     material.extend_from_slice(&plan.id().bytes);
     material.extend_from_slice(&checkpoint.host.digest().bytes);
     material.push(0);
+    // An empty referenced-event history: emitted count, log bytes, chain
+    // origin, no newest coordinate, and empty retired, retained, and consumer
+    // collections.
+    material.extend_from_slice(&0_u64.to_be_bytes());
+    material.extend_from_slice(&0_u64.to_be_bytes());
+    material.extend_from_slice(&ContentHash::default().bytes);
+    material.push(0);
+    for _empty_collection in 0..3 {
+        material.extend_from_slice(&0_u64.to_be_bytes());
+    }
     let mut encoded = String::with_capacity(material.len() * 2);
     for byte in material {
         encoded.push(char::from(HEX[usize::from(byte >> 4)]));
@@ -552,7 +703,7 @@ fn aggregate_identity_preserves_canonical_v10_hex_material_hash() {
     assert_eq!(
         checkpoint.identity,
         ContentHash::from_canonical_material(
-            "crucible.production-fault-runtime-checkpoint.v10",
+            "crucible.production-fault-runtime-checkpoint.v11",
             &encoded,
         )
     );
@@ -578,7 +729,7 @@ fn aggregate_identity_enforces_authored_limit_before_growth() {
             &checkpoint.qemu_action_commits,
             &checkpoint.qemu_active_rule_ids,
             checkpoint.network_state.as_ref(),
-            &checkpoint.emitted_events,
+            &checkpoint.referenced_events,
             &checkpoint.pending_qemu_observations,
             &checkpoint.pending_qemu_events,
         ),
@@ -710,13 +861,13 @@ fn pending_network_output_resource_coordinates_cross_production_envelope() {
 }
 
 #[test]
-fn aggregate_codec_rejects_the_prior_nanosecond_version() {
+fn aggregate_codec_rejects_the_prior_referenced_history_version() {
     let plan = FaultSignalPlan::empty();
     let seed = ContentHash::from_bytes(b"unsupported checkpoint seed");
     let mut bytes = empty_checkpoint(&plan, None)
         .to_canonical_bytes()
         .unwrap_or_else(|error| panic!("checkpoint should encode: {error}"));
-    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v6\0");
+    bytes[..MAGIC.len()].copy_from_slice(b"crucible.production-fault-runtime.v7\0");
 
     assert!(matches!(
         ProductionFaultRuntimeCheckpoint::from_canonical_bytes(&bytes, &plan, seed),

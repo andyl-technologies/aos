@@ -5,6 +5,11 @@
 //! activation decision so retries, checkpoint/restore, and locked replay see
 //! the same physical-media continuation. Counters advance only for requests
 //! that reach the media stage and intersect the selected range.
+//!
+//! Counters belong to one resolved rule instance: a re-upserted binding gets a
+//! new contributor and starts from zero. Once a contributor can never be
+//! resolved again, its owner retires the continuation, so the map tracks live
+//! and in-flight contributors rather than every contributor ever installed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -120,6 +125,14 @@ impl BlockMediaState {
     #[must_use]
     pub const fn rules(&self) -> &BTreeMap<[u8; 32], BlockMediaRuleContinuation> {
         &self.rules
+    }
+
+    /// Retires one continuation whose contributor can never be resolved again.
+    ///
+    /// Only the rules a request carries are consulted, so dropping such a
+    /// continuation cannot change a later result. Returns whether it existed.
+    pub(in crate::block) fn retire(&mut self, contributor: &[u8; 32]) -> bool {
+        self.rules.remove(contributor).is_some()
     }
 
     /// Returns a canonical digest of all media-rule state.

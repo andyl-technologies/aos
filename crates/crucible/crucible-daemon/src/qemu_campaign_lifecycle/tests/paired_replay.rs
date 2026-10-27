@@ -92,16 +92,26 @@ fn fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coher
     };
     let (_, _, _, expected_triage) = (*expected).clone().into_parts();
     let (_, _, _, reproduced_triage) = (*reproduced).clone().into_parts();
-    let (_, expected_causal, _, _, _) = expected_triage.into_parts();
-    let (_, reproduced_causal, _, _, _) = reproduced_triage.into_parts();
+    let expected_causal = expected_triage.into_parts().log_entries_for_test();
+    let reproduced_causal = reproduced_triage.into_parts().log_entries_for_test();
     assert_ne!(expected_causal, reproduced_causal);
-    let reproduced = Box::new((*reproduced).compare_against_expected_replay(&expected));
+    let reproduced = Box::new(
+        (*reproduced)
+            .compare_against_expected_replay(&expected)
+            .expect("paired replay comparison"),
+    );
     let reproduced_coverage = reproduced
         .paired_reproduced_coverage()
         .expect("paired replay retains reproduced coverage")
         .clone();
     let (selected_replay, _, selected_events, triage) = (*reproduced).into_parts();
-    let (failures, causal_entries, coverage_fingerprint, _, paired_logs) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let (failures, coverage_fingerprint, paired_logs) = (
+        triage.failures,
+        triage.coverage_fingerprint,
+        triage.paired_divergence_logs,
+    );
 
     assert_ne!(expected_coverage, reproduced_coverage);
     assert_eq!(selected_replay.coverage(), &expected_coverage);
@@ -140,25 +150,26 @@ fn replay_divergence_uses_the_actual_first_causal_log_mismatch() {
     let reproduced_coverage = ContentHash::from_bytes(b"reproduced-replay-coverage");
     let expected_inputs =
         crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::replay_for_test(
-            expected.clone(),
+            &expected,
             expected_coverage,
-            vec![b"expected-frame".to_vec()],
         );
     let reproduced_inputs =
         crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::replay_for_test(
-            reproduced.clone(),
+            &reproduced,
             reproduced_coverage,
-            vec![b"reproduced-frame".to_vec()],
         );
 
     let (triage, selected_expected) = crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
         &expected_inputs,
         &reproduced_inputs,
     )
+    .expect("readable paired logs")
     .expect("divergence triage inputs");
-    let (failures, causal_entries, coverage_fingerprint, frames, paired_logs) = triage.into_parts();
+    let triage = triage.into_parts();
+    let causal_entries = triage.log_entries_for_test();
+    let paired_logs = triage.paired_entries_for_test();
     let [crucible_engine::FailureClusterReportFailure::Divergence(divergence)] =
-        failures.as_slice()
+        triage.failures.as_slice()
     else {
         panic!("mismatched causal logs must retain one divergence source")
     };
@@ -187,8 +198,7 @@ fn replay_divergence_uses_the_actual_first_causal_log_mismatch() {
         )
     );
     assert_eq!(causal_entries, expected);
-    assert_eq!(coverage_fingerprint, expected_coverage);
-    assert_eq!(frames, [b"expected-frame".to_vec()]);
+    assert_eq!(triage.coverage_fingerprint, expected_coverage);
     assert_eq!(paired_logs, Some((expected, reproduced)));
 }
 
@@ -204,27 +214,28 @@ fn replay_divergence_uses_reproduced_evidence_when_expected_entry_is_absent() {
     let reproduced_coverage = ContentHash::from_bytes(b"present-reproduced-replay-coverage");
     let expected_inputs =
         crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::replay_for_test(
-            expected.clone(),
+            &expected,
             expected_coverage,
-            vec![b"empty-expected-frame".to_vec()],
         );
     let reproduced_inputs =
         crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::replay_for_test(
-            reproduced.clone(),
+            &reproduced,
             reproduced_coverage,
-            vec![b"present-reproduced-frame".to_vec()],
         );
 
     let (triage, selected_expected) = crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs::from_replay_determinism_mismatch(
         &expected_inputs,
         &reproduced_inputs,
     )
+    .expect("readable paired logs")
     .expect("divergence triage inputs");
-    let (_, causal_entries, coverage_fingerprint, frames, paired_logs) = triage.into_parts();
+    let triage = triage.into_parts();
 
     assert!(!selected_expected);
-    assert_eq!(causal_entries, reproduced);
-    assert_eq!(coverage_fingerprint, reproduced_coverage);
-    assert_eq!(frames, [b"present-reproduced-frame".to_vec()]);
-    assert_eq!(paired_logs, Some((expected, reproduced)));
+    assert_eq!(triage.log_entries_for_test(), reproduced);
+    assert_eq!(triage.coverage_fingerprint, reproduced_coverage);
+    assert_eq!(
+        triage.paired_entries_for_test(),
+        Some((expected, reproduced))
+    );
 }

@@ -34,7 +34,7 @@ The nine patterns:
   §29.2  the scheduler quantum loop                    realizes 08
   §29.3  the lock-free SPSC ring + ceiling + futex     realizes 13
   §29.4  content-addressed store + thin/fat + CoW       realizes 07
-  §29.5  name-hash seeded RNG forking                  realizes 04
+  §29.5  keyed seeded RNG streams                     realizes 04
   §29.6  the SimulationBackend trait + in-proc double  realizes 20, 24
   §29.7  the CoW block overlay                         realizes 15
   §29.8  the framed codec                              realizes 13, 14
@@ -575,75 +575,98 @@ cache, not the identity (05 §2).
 
 ---
 
-## 29.5 Name-hash seeded RNG forking
+## 29.5 Keyed seeded RNG streams
 
-**Intent.** All probabilistic decisions derive from a single root seed via
-**deterministic forking**: each entity (node, link) gets its own RNG stream
-seeded by mixing the root seed with the *hash of the entity's name*. Same
-`(seed, name)` always yields the same stream; different names yield independent
-streams; and — critically — adding, removing, or renaming an *unrelated* entity
-does not perturb any other entity's stream, so a schedule stays interpretable
-after the `ScenarioDef` changes only in unrelated parts.
+**Intent.** All probabilistic decisions derive from a single root seed through
+a **keyed derivation** (`keyed-blake3-v2`, 04 §4.7): each entity (node, device,
+link, app-random stream) gets a stream key derived from the root seed, a fixed
+domain for its kind and its name, and every draw is a keyed hash of the draw's
+canonical address under that key. Same `(seed, domain, name, address)` always
+yields the same draw; different names yield independent streams; and adding,
+removing, or renaming an *unrelated* entity does not perturb any other stream,
+so a schedule stays interpretable after the `ScenarioDef` changes only in
+unrelated parts.
 
-**Invariants.** Streams are forked by name-hash, so an unrelated `World` edit
-does not move another stream's draws ([EXEC-9]); the mixing hash is a fixed,
-cross-platform stable hash, never the language's randomized default ([SCHED-19],
-[INV-9]); every recorded `Decision::RngDraw` carries its `RngStreamId` so a draw
-is attributable to its stream after the def changes ([EXEC-9]); node-stream and
-link-stream forks of the same name are distinct.
+**Invariants.** Stream keys depend only on the root, domain and name, so an
+unrelated `World` edit does not move another stream's draws ([EXEC-9]); the
+derivation is a fixed, cross-platform keyed hash, never the language's
+randomized default ([SCHED-19], [INV-9]); every recorded `Decision::RngDraw`
+carries its `RngStreamId` and its draw address, so a draw is attributable to its
+stream after the def changes ([EXEC-9]) and replay checks which draw was taken
+as well as its value ([DET-26]); node-stream and link-stream keys of the same name are
+distinct; and a stream shared by independently scheduled producers addresses
+each draw by event identity, so commit order and worker count cannot change it.
 
 **Realizes.** [`04-determinism-contract.md`](04-determinism-contract.md) §4.7
-(the seeded decision RNG; per-entity streams forked by name-hash).
+(the seeded decision RNG; per-entity keyed streams).
 
 ```rust,illustrative
-/// Derives every per-entity decision-RNG stream from one root seed by
-/// name-hash forking. Same `(seed, name)` ⇒ same stream; unrelated names are
+/// Derives every per-entity decision-RNG stream from one root seed by keyed
+/// derivation. Same `(seed, domain, name)` => same stream; unrelated names are
 /// independent, so adding a node does not perturb other streams' draws
 /// ([EXEC-9], 04 §4.7).
 pub struct DecisionRng {
-    seed: u64,
+    world_key: [u8; 32],
 }
 
 impl DecisionRng {
     /// A new decision-RNG controller rooted at `seed`.
     pub fn new(seed: u64) -> Self {
-        Self { seed }
+        Self {
+            world_key: blake3::derive_key(WORLD_KEY_CONTEXT, &seed.to_le_bytes()),
+        }
     }
 
-    /// Fork the stream for a named node. A fixed, cross-platform stable hash
-    /// (never the language's randomized default, [SCHED-19]) mixes the name
-    /// into the seed.
-    pub fn fork_for_node(&self, name: &str) -> StreamRng {
-        StreamRng::seed_from_u64(self.seed ^ stable_hash64(name.as_bytes()))
+    /// Opens the counter-addressed stream for a named node. Its owner's own
+    /// execution fixes the order of its draws.
+    pub fn fork_for_node(&self, name: &str) -> DecisionStream {
+        DecisionStream::counter(self.stream_key(NODE_DOMAIN, name))
     }
 
-    /// Fork the stream for a named link (e.g. `"a->b"`). A distinct mixing
-    /// constant separates link streams from the node stream of the same name.
-    pub fn fork_for_link(&self, name: &str) -> StreamRng {
-        const LINK_TWEAK: u64 = 0x9E37_79B9_7F4A_7C15; // fixed domain separator
-        StreamRng::seed_from_u64(self.seed ^ stable_hash64(name.as_bytes()) ^ LINK_TWEAK)
+    /// Opens the draws of one frame on a named link. The frame's direction
+    /// and producer sequence, not the commit order of the link's two
+    /// directions, address its draws.
+    pub fn link_frame(&self, link: &str, frame: &LinkFrameDrawKey) -> DecisionStream {
+        DecisionStream::event(self.stream_key(LINK_DOMAIN, link), &frame.encode())
+    }
+
+    fn stream_key(&self, domain: &str, name: &str) -> [u8; 32] {
+        keyed_hash(&self.world_key, &[lp(b"stream"), lp(domain), lp(name)])
     }
 }
 
 /// A recorded draw, attributed to its stream so a schedule remains
-/// interpretable after the def changes only in unrelated parts ([EXEC-9]).
+/// interpretable after the def changes only in unrelated parts ([EXEC-9]),
+/// and to its address so replay compares the draw taken, not only its value
+/// ([DET-26]).
 pub struct RecordedDraw {
     pub stream: RngStreamId,
+    pub address: DrawAddress,
     pub value: u64,
+}
+
+/// The exact keyed-hash input of one draw besides its stream key.
+pub enum DrawAddress {
+    /// The `n`th draw of a counter-addressed stream.
+    Ordinal { ordinal: u64 },
+    /// One role-indexed draw of a link frame ([SCHED-50]).
+    LinkFrame { direction: LinkDirection, producer_sequence: u64, role: u64 },
 }
 ```
 
-The pattern is the per-entity *fork* (not a single shared cursor everyone draws
-from): a shared cursor would couple every entity's draws to every other's, so
-adding one node would shift the entire stream. Name-hash forking gives each
-entity a private, reproducible stream and a stable identity to record draws
-against. Use a fixed stable hash and a distinct domain-separation constant per
-entity kind.
+The pattern is the per-entity *stream* (not a single shared cursor everyone
+draws from): a shared cursor would couple every entity's draws to every
+other's, so adding one node would shift the entire stream, and concurrent
+producers sharing one cursor would make each draw depend on host interleaving.
+Keyed derivation gives each entity a private, reproducible stream and a stable
+identity to record draws against. Use a fixed keyed hash, a distinct domain per
+entity kind, and event identity for any stream with more than one producer.
 
-- **[PAT-7]** The decision RNG SHOULD follow the name-hash forking shape in
-  §29.5: derive each per-entity stream by mixing the root seed with a fixed,
-  cross-platform stable hash of the entity name (distinct domain constants per
-  kind), and record each draw with its `RngStreamId`. Unrelated `World` edits
+- **[PAT-7]** The decision RNG SHOULD follow the keyed stream shape in §29.5:
+  derive each per-entity stream key from the root seed, a fixed domain per kind
+  and the entity name with a fixed, cross-platform keyed hash, address shared
+  streams by event identity, and record each draw with its `RngStreamId` and
+  draw address. Unrelated `World` edits
   MUST NOT perturb other streams. *Spec:*
   [`04-determinism-contract.md`](04-determinism-contract.md) §4.7,
   [`05-execution-model.md`](05-execution-model.md) §3 ([EXEC-9]),
@@ -1132,14 +1155,15 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     admission path keep materialization a cache policy rather than identity.
     `checks.crucible.phase1.gates.contentAddress` and
     `checks.crucible.phase1.gates.replayOracle` gate the pattern.
-- [x] **T-PAT-5** Ensure the decision RNG follows the §29.5 name-hash forking
+- [x] **T-PAT-5** Ensure the decision RNG follows the §29.5 keyed stream
   shape with recorded `RngStreamId`. — satisfies [PAT-7]; realized by
   **T-EXEC-2** and the 04 determinism-contract tasks (spec 04 §4.7).
   - Completed by `crucible_determinism::DecisionRng`,
     `DECISION_RNG_NODE_STREAM_DOMAIN`, `DECISION_RNG_LINK_STREAM_DOMAIN`,
-    `stable_domain_name_hash`, and `crucible_engine::decision::DecisionRecorder`:
-    streams fork from the root seed through stable name hashes instead of a
-    shared root cursor, same-name node/link streams use separate fixed domains,
+    the `keyed-blake3-v2` derivation, and `crucible_engine::decision::DecisionRecorder`:
+    stream keys derive from the root seed, domain and name instead of a shared
+    root cursor, link frames address their draws by direction and producer
+    sequence, same-name node/link streams use separate fixed domains,
     construction order and unrelated world edits do not perturb existing
     streams, and every recorded `Decision::RngDraw` / `BackendRngEvidence`
     carries its domain-qualified `RngStreamId` in the schedule.
@@ -1230,13 +1254,16 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).
   Completed by `checks.crucible.phase3.blockCowOverlayPattern`. The concrete
   block sub-node uses `BaseImage` as an immutable content-addressed base and
-  `CowOverlay` as an in-memory 4 KiB copy-on-write page layer. Overlay pages are
-  stored in a `BTreeMap`, dirty page bases in a `BTreeSet`, reads consult the
-  overlay before falling back to `BaseImage`, writes copy up from the base and
-  patch only overlay pages, and `dirty_delta` captures only pages dirtied since
-  the last checkpoint boundary in deterministic order. `BlockSnapshot` carries
-  the overlay delta, full overlay page set, dirty set, RNG cursor, active faults,
-  in-flight responses, base hash, and device length; restore stacks the delta
-  over the parent and reinstates the dirty set, while `BlockDevice::materialize`
-  copies base bytes into a fresh image before applying overlay pages, so the
-  base image is never mutated.
+  `CowOverlay` as a 4 KiB copy-on-write page layer whose page bytes live in a
+  `BlockPageStore`. The overlay page table is a `BTreeMap` of 4 MiB chunks and
+  the dirty pages are per-chunk `ChunkPageBits` in a `BTreeMap`, so every
+  capture visits pages in ascending order. Reads consult the overlay before
+  falling back to `BaseImage`, writes copy up from the base and patch only
+  overlay pages (a page shared with a clone or snapshot is copied first), and
+  `CowOverlay::freeze` captures a `BlockOverlayImage` naming each chunk by its
+  BLAKE3 identity with present and dirty page bitmaps. `BlockSnapshot` carries
+  that image, RNG cursor, active faults, in-flight responses, base hash, and
+  device length, never page bytes; restore authenticates every stored chunk,
+  rebuilds the overlay with its dirty set, and `BlockDevice::materialize_to`
+  streams base bytes with overlay pages applied, so the base image is never
+  mutated.

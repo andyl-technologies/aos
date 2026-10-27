@@ -1,7 +1,8 @@
 //! Construction, inspection, and initial admission of resolved block-fault state.
 //!
 //! Child modules own request-phase opportunities and continuations, array rebuild,
-//! transport recovery, and complete checkpoint validation. Observation wrappers
+//! transport recovery, the oldest-live-epoch floor, and complete checkpoint
+//! validation. Observation wrappers
 //! retain the revision boundary around those mutations.
 
 use super::*;
@@ -15,6 +16,7 @@ mod array_rebuild;
 mod request_continuations;
 mod request_opportunities;
 mod restore_validation;
+mod transport_floor;
 mod transport_recovery;
 
 impl BlockFaultState {
@@ -28,6 +30,7 @@ impl BlockFaultState {
             observation_changed: false,
             config: BlockDurabilityConfig::write_through(length_bytes),
             transport_epoch: None,
+            oldest_live_transport_epoch: 0,
             retired_transport_epochs: BTreeMap::new(),
             retry_preserve_authorizations: BTreeSet::new(),
             recovery_until_ticks: None,
@@ -106,6 +109,7 @@ impl BlockFaultState {
             observation_changed: false,
             config,
             transport_epoch: None,
+            oldest_live_transport_epoch: 0,
             retired_transport_epochs: BTreeMap::new(),
             retry_preserve_authorizations: BTreeSet::new(),
             recovery_until_ticks: None,
@@ -160,6 +164,7 @@ impl BlockFaultState {
     #[must_use]
     pub fn is_pristine(&self) -> bool {
         self.transport_epoch.is_none()
+            && self.oldest_live_transport_epoch == 0
             && self.retired_transport_epochs.is_empty()
             && self.retry_preserve_authorizations.is_empty()
             && self.recovery_until_ticks.is_none()
@@ -205,6 +210,15 @@ impl BlockFaultState {
     #[must_use]
     pub const fn transport_epoch(&self) -> Option<u64> {
         self.transport_epoch
+    }
+
+    /// Returns the oldest live transport epoch the frontend has acknowledged.
+    ///
+    /// Retired transport policy and preserve-ID authorizations exist only at or
+    /// above this epoch ([IO-35]).
+    #[must_use]
+    pub const fn oldest_live_transport_epoch(&self) -> u64 {
+        self.oldest_live_transport_epoch
     }
 
     /// Returns the exclusive simulation-tick recovery deadline, if active.

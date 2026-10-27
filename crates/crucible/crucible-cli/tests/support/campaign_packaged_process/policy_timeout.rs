@@ -70,9 +70,15 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         .verification_original();
     let replay_record = repository.load_finding_triage_replay_evidence(replay_id)?;
     let reproduction = repository.load_reproduction_artifact(replay_record.reproduction())?;
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
-    let configuration = crucible_engine::Configuration {
+    let artifact = crucible_daemon::decode_crucible_reproduction(
+        &reproduction,
+        &crucible_daemon::RepositoryReproductionSegments::new(
+            &repository,
+            replay_record.reproduction(),
+        ),
+        "retained reproduction",
+    )?;
+    let configuration = ::crucible_engine::Configuration {
         def: artifact.scenario_def(),
         schedule: artifact.schedule().clone(),
     }
@@ -86,10 +92,26 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         replay: artifact.replay()?,
         artifact,
     };
-    let native_replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
+    // The record's log segments are served by the repository by position.
+    let log_segments = ::crucible_engine::SharedSegmentStore::new();
+    for (index, segment) in (0_u32..).zip(replay_record.log_segments()) {
+        let bytes = repository.read_finding_triage_replay_log_segment(replay_id, index)?;
+        ::crucible_engine::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
+    }
+    let native_replay = ::crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         replay_record.payload(),
+        std::sync::Arc::new(log_segments),
     )?;
+    let mut retains_timeout_marker = false;
+    native_replay
+        .recorded_event_log()
+        .try_for_each_entry(|entry| {
+            retains_timeout_marker |= entry.event_payload().kind() == "execution_budget_exhausted"
+                && entry.event_payload().string("budget_kind") == Some("virtual-time")
+                && entry.at().ticks == POLICY_DEADLINE_PS;
+            Ok(())
+        })?;
     let FailureClusterReportFailure::Timeout(timeout) = native_replay.failure() else {
         return Err("packaged policy timeout replay retained a different failure".into());
     };
@@ -97,11 +119,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         || timeout.configured_limit != Some(POLICY_DEADLINE_PS)
         || timeout.at_virtual_time.ticks != POLICY_DEADLINE_PS
         || timeout.event_kind != "execution_budget_exhausted"
-        || !native_replay.causal_entries().iter().any(|entry| {
-            entry.event_payload().kind() == "execution_budget_exhausted"
-                && entry.event_payload().string("budget_kind") == Some("virtual-time")
-                && entry.at().ticks == POLICY_DEADLINE_PS
-        })
+        || !retains_timeout_marker
     {
         return Err(
             format!("packaged policy timeout replay lost its marker: {native_replay:?}").into(),

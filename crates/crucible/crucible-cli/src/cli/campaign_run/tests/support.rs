@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// Copies every scheduler entry `campaign` retained, for assertions.
+pub(super) fn retained_event_log(
+    campaign: &GuardedDefaultCampaignRun,
+) -> Vec<crucible_engine::SchedulerEventLogEntry> {
+    let mut entries = Vec::new();
+    campaign
+        .evidence()
+        .try_for_each_event_log_entry(|entry| {
+            entries.push(entry.clone());
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .or_panic("read retained event evidence");
+    entries
+}
+
 pub(super) fn default_run_plan() -> RunInvocationPlan {
     let cli = Cli::parse_from(["crucible", "run", "builtin:happy-path.scn"]);
     let Commands::Run(args) = &cli.command else {
@@ -42,10 +57,15 @@ fn determinism_policy_request() -> GuardedDefaultCampaignRunRequest {
 
 #[test]
 fn deployment_determinism_policy_controls_paired_replay_verification() {
-    let request = apply_guarded_campaign_determinism_policy(determinism_policy_request(), false);
+    let policy = |verify_determinism_findings| GuardedCampaignAttemptPolicy {
+        verify_determinism_findings,
+        maximum_event_log_bytes: crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+    };
+
+    let request = policy(false).apply(determinism_policy_request());
     assert!(!request.verifies_determinism_findings());
 
-    let request = apply_guarded_campaign_determinism_policy(determinism_policy_request(), true);
+    let request = policy(true).apply(determinism_policy_request());
     assert!(request.verifies_determinism_findings());
 }
 
@@ -121,9 +141,7 @@ pub(super) fn resume_evidence_for_scenario(
     };
     let checkpoint =
         checkpoint_for_resume_configuration(&configuration, frontier).or_panic("resume checkpoint");
-    let replay_closure =
-        GuardedCampaignReplayClosure::from_canonical_bytes(b"CCRC\0\0\0\x01\0\0\0\0")
-            .or_panic("canonical empty replay closure");
+    let replay_closure = GuardedCampaignReplayClosure::empty();
     replay_closure
         .validate_for_schedule(&scenario_form, &schedule)
         .or_panic("replay closure matches fixture schedule");
@@ -199,6 +217,7 @@ pub(super) fn typed_selection_schedule(scenario: &crucible_engine::ScenarioDef) 
 
 pub(super) struct ResumeCampaignFixture {
     pub(super) campaign: GuardedDefaultCampaignRun,
+    pub(super) progress: CampaignRunProgress,
     pub(super) checkpoints: Arc<ExactCheckpointStore>,
     pub(super) checkpoint_directory: TempDir,
     pub(super) checkpoint_root: PathBuf,
@@ -270,11 +289,13 @@ pub(super) fn try_resume_campaign_fixture(
     } else {
         request
     };
+    let mut progress = CampaignRunProgress::default();
     let (campaign, _trace) =
-        run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer(request, false)?;
+        run_guarded_default_campaign_test_fixture_into_sink(request, false, &mut progress)?;
 
     Ok(ResumeCampaignFixture {
         campaign,
+        progress,
         checkpoints,
         checkpoint_directory,
         checkpoint_root,
@@ -305,8 +326,9 @@ pub(super) fn capture_only_remote_observation_factory(
                 }
             })?;
         let replay_evidence =
-            crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+            crucible_daemon::CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
                 source.evidence(),
+                crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
             )
             .map_err(|error| {
                 crucible_control_api::LifecycleApiError::ResumeObservationSource {
@@ -314,7 +336,8 @@ pub(super) fn capture_only_remote_observation_factory(
                 }
             })?;
         replay_evidence
-            .verify_observation_stop_proof(&proof)
+            .evidence()
+            .verify_observation_stop_proof(replay_evidence.segments(), &proof)
             .map_err(
                 |error| crucible_control_api::LifecycleApiError::ResumeObservationSource {
                     message: format!("validate test remote observation source: {error}"),
@@ -329,7 +352,7 @@ pub(super) fn capture_only_remote_observation_factory(
                 },
             )
             .and_then(|closure| {
-                GuardedCampaignReplayClosure::from_canonical_bytes(closure.payload()).map_err(
+                GuardedCampaignReplayClosure::from_frame_objects(closure.frames()).map_err(
                     |error| crucible_control_api::LifecycleApiError::ResumeObservationSource {
                         message: format!("decode test remote replay closure: {error}"),
                     },

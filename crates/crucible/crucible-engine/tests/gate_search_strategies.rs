@@ -1760,10 +1760,11 @@ fn strategy_root_decisions() -> Result<Vec<Decision>, EngineError> {
 }
 
 fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }
 
 fn assertion_lowering_scenario(property: Property) -> Result<ScenarioDefForm, EngineError> {

@@ -41,9 +41,9 @@ fn snapshot_excludes_base_and_restore_round_trips() {
     assert_eq!(snap.delta_page_count(), 1);
     assert_eq!(snap.base_hash, dev.base_hash());
 
-    // Restore from the self-contained snapshot (no parent chain).
+    // Restore from the frozen snapshot image.
     let base = ramp_base(PAGE_SIZE * 3);
-    let restored = ok(BlockDevice::restore(&snap, base, None));
+    let restored = ok(BlockDevice::restore(&snap, base, &mem()));
     // Identical subsequent behavior: read the written range back.
     let got = ok(restored.overlay().read(restored.base(), 50, 20));
     assert_eq!(got, vec![0x42; 20]);
@@ -59,22 +59,18 @@ fn snapshot_mutate_restore_yields_identical_behavior() {
     let _ = ok(dev.next_response());
 
     let snap = dev.snapshot();
-    let baseline_image = dev.materialize();
+    let baseline_image = image(&dev);
 
     // Mutate after snapshot.
     ok(dev.submit(lim, &BlockRequest::write(2, 50, vec![0x99; 20])));
     let lim2 = dev.core().next_exact_local_event().unwrap_or(lim);
     ok(dev.advance_to(lim2));
     let _ = ok(dev.next_response());
-    assert_ne!(
-        dev.materialize(),
-        baseline_image,
-        "mutation must take effect"
-    );
+    assert_ne!(image(&dev), baseline_image, "mutation must take effect");
 
     // Restore: behavior returns to the snapshot point.
-    let restored = ok(BlockDevice::restore(&snap, ramp_base(base_len), None));
-    assert_eq!(restored.materialize(), baseline_image);
+    let restored = ok(BlockDevice::restore(&snap, ramp_base(base_len), &mem()));
+    assert_eq!(image(&restored), baseline_image);
 }
 
 #[test]
@@ -88,7 +84,7 @@ fn restore_rejects_mismatched_base() {
     // A different base has a different hash.
     let wrong = BaseImage::new(vec![0xFF; PAGE_SIZE]);
     assert!(matches!(
-        BlockDevice::restore(&snap, wrong, None),
+        BlockDevice::restore(&snap, wrong, &mem()),
         Err(crate::error::DeviceError::BaseMismatch { .. })
     ));
 }
@@ -102,7 +98,7 @@ fn snapshot_restore_preserves_inflight_responses() {
     let snap = dev.snapshot();
     assert_eq!(snap.inflight().len(), 1);
 
-    let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), None));
+    let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), &mem()));
     assert_eq!(restored.core().inflight_len(), 1);
     assert_eq!(
         restored.core().next_exact_local_event(),
@@ -120,16 +116,21 @@ fn run_twice_is_byte_identical() {
 }
 
 #[test]
-fn delta_pages_are_blake3_keyed() {
+fn overlay_chunks_are_blake3_keyed() {
     let base = ramp_base(PAGE_SIZE * 2);
     let mut overlay = CowOverlay::new();
     ok(overlay.write(&base, 0, &[0xAB; 16]));
-    let delta = overlay.dirty_delta();
-    let hashes = delta.page_hashes();
-    assert_eq!(hashes.len(), 1);
-    // Hash is content-derived: same page bytes => same hash.
-    let again = delta.page_hashes();
-    assert_eq!(hashes, again);
+    let chunks = ok(overlay.freeze(base.len()).chunks());
+    assert_eq!(chunks.len(), 1);
+    // The identity is the plain BLAKE3 key of the chunk's logical bytes:
+    // the written page, then zeroes for the absent page.
+    let mut logical = ok(overlay.read(&base, 0, PAGE_SIZE as u64));
+    logical.extend_from_slice(&[0; PAGE_SIZE]);
+    assert_eq!(chunks[0].identity, Some(*blake3::hash(&logical).as_bytes()));
+    // Content-derived: an independent overlay with the same bytes agrees.
+    let mut twin = CowOverlay::new();
+    ok(twin.write(&base, 0, &[0xAB; 16]));
+    assert_eq!(ok(twin.freeze(base.len()).chunks()), chunks);
 }
 
 // ---- regression: MAJOR #1 -- snapshot/restore preserves dirty set ----
@@ -151,21 +152,25 @@ fn regression_restore_preserves_mid_epoch_dirty_set() {
 
     // Restore (self-contained), then snapshot again: the delta must STILL be
     // 1 -- the dirty page survived the round-trip.
-    let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE * 2), None));
+    let restored = ok(BlockDevice::restore(
+        &snap,
+        ramp_base(PAGE_SIZE * 2),
+        &mem(),
+    ));
     let resnap = restored.snapshot();
     assert_eq!(
         resnap.delta_page_count(),
         1,
         "restore must preserve the mid-epoch dirty set"
     );
-    assert_eq!(resnap.dirty, snap.dirty);
+    assert!(resnap.overlay.dirty_pages().eq(snap.overlay.dirty_pages()));
 
-    // And the parent-chain restore path preserves it too.
-    let parent = CowOverlay::new();
+    // A restore through the encoded snapshot and a bound chunk source
+    // preserves it too.
     let restored_p = ok(BlockDevice::restore(
-        &snap,
+        &encoded_round_trip(&snap),
         ramp_base(PAGE_SIZE * 2),
-        Some(&parent),
+        &mem(),
     ));
     assert_eq!(restored_p.snapshot().delta_page_count(), 1);
 }
@@ -188,7 +193,7 @@ fn regression_restore_preserves_latency_so_delivery_icount_matches() {
     let original_event = dev.core().next_exact_local_event();
 
     // Restored: same request, must yield the same delivery_icount.
-    let mut restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), None));
+    let mut restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), &mem()));
     ok(restored.submit(0, &BlockRequest::read(1, 0, 16)));
     let restored_event = restored.core().next_exact_local_event();
 
@@ -264,7 +269,7 @@ fn array_dirty_ranges_coalesce_and_survive_checkpoint_restore() {
     let restored = ok(BlockDevice::restore(
         &snapshot,
         ramp_base(PAGE_SIZE * 2),
-        None,
+        &mem(),
     ));
     assert_eq!(
         restored.storage_fault_state().array_dirty_ranges(),
@@ -322,7 +327,7 @@ fn array_rebuild_is_rate_scheduled_authenticated_and_retryable() {
     let restored = ok(BlockDevice::restore(
         &snapshot,
         ramp_base(PAGE_SIZE * 2),
-        None,
+        &mem(),
     ));
     assert_eq!(
         restored.storage_fault_state().array_dirty_ranges(),

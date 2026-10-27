@@ -205,10 +205,11 @@ fn run_material(
     rng_value: u64,
     workload: &[u8],
 ) -> RunMaterial {
-    let schedule = vec![Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("marker-neutrality"),
-        value: rng_value,
-    })];
+    let schedule = vec![Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("marker-neutrality"),
+        0,
+        rng_value,
+    ))];
     let event_log = append_event_log(event_log_entries);
     let causal_event_log_fingerprint = event_log_causal_projection(&event_log).content_hash();
 
@@ -250,10 +251,11 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(stream),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(stream),
+            0,
             value,
-        })),
+        ))),
     )
 }
 

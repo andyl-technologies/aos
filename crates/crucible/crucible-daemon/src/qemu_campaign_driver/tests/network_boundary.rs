@@ -4,7 +4,7 @@ use super::*;
 use crucible_engine::NetworkFaultSelectable;
 
 use super::super::network_fault_boundary::{
-    next_network_fault_discovery, validate_phase_marker_coordinate,
+    NetworkFaultMarkerIndex, next_network_fault_discovery, validate_phase_marker_coordinate,
 };
 
 #[test]
@@ -73,6 +73,8 @@ struct NetworkBoundaryLifecycle {
     release_proofs: BTreeSet<(NodeId, String, ContentHash)>,
     checkpoint_ready: bool,
     queues_empty: bool,
+    joined_frontier: Option<VirtualTime>,
+    joins: usize,
 }
 
 impl NetworkBoundaryLifecycle {
@@ -89,6 +91,7 @@ impl NetworkBoundaryLifecycle {
                     QemuParkedCampaignMarker {
                         marker: marker.to_owned(),
                         marker_icount: Icount { retired: *retired },
+                        marker_tick: Icount { retired: *retired },
                         physical_raw_icount: Icount {
                             retired: retired + 1,
                         },
@@ -105,6 +108,8 @@ impl NetworkBoundaryLifecycle {
             release_proofs: BTreeSet::new(),
             checkpoint_ready: true,
             queues_empty: true,
+            joined_frontier: None,
+            joins: 0,
         }
     }
 }
@@ -133,14 +138,73 @@ fn ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &marker.entries,
+            &NetworkFaultMarkerIndex::from_entries(&marker.entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
         .expect("nonzero logical offset uses the retained raw stop")
         .is_some()
     );
+}
+
+#[test]
+fn staggered_parks_ahead_of_the_frontier_join_before_discovery() {
+    let scenario = network_choice_scenario(&["router-a", "router-b"]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let mut entries = network_phase_marker(&mut log, "router-a", 10);
+    entries.extend(network_phase_marker(&mut log, "router-b", 30));
+    let mut lifecycle = NetworkBoundaryLifecycle::parked(
+        &[("router-a", 10), ("router-b", 30)],
+        "fault.transport.ready",
+    );
+    // The earlier-parked VM ran ahead of the last live participant.
+    lifecycle.joined_frontier = Some(VirtualTime { ticks: 30 });
+
+    let discovery = next_network_fault_discovery(
+        &mut lifecycle,
+        &input,
+        &configuration,
+        &NetworkFaultMarkerIndex::from_entries(&entries),
+        VirtualTime { ticks: 10 },
+        Some(&SchedulerQuiescence::default()),
+    )
+    .expect("parked markers ahead of the frontier join before validation");
+
+    assert!(discovery.is_some());
+    assert_eq!(lifecycle.joins, 1);
+}
+
+#[test]
+fn unparked_marker_ahead_of_the_frontier_still_fails_closed() {
+    let scenario = network_choice_scenario(&["router-a", "router-b"]);
+    let input = input_for_scenario(scenario, StopCondition::NextChoice);
+    let configuration = starting_configuration(&input);
+    let mut log = EventLog::new();
+    let mut entries = network_phase_marker(&mut log, "router-a", 10);
+    entries.extend(network_phase_marker(&mut log, "router-b", 30));
+    let mut lifecycle =
+        NetworkBoundaryLifecycle::parked(&[("router-a", 10)], "fault.transport.ready");
+
+    let error = next_network_fault_discovery(
+        &mut lifecycle,
+        &input,
+        &configuration,
+        &NetworkFaultMarkerIndex::from_entries(&entries),
+        VirtualTime { ticks: 10 },
+        Some(&SchedulerQuiescence::default()),
+    )
+    .expect_err("an unparked future marker must fail closed");
+
+    assert!(matches!(
+        error,
+        QemuFreshModeledDriverError::NetworkFaultMarkerFuture {
+            marker_tick: 30,
+            ..
+        }
+    ));
+    assert_eq!(lifecycle.joins, 0);
 }
 
 impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
@@ -213,6 +277,11 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
         Ok(self.queues_empty)
     }
 
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.joins += 1;
+        Ok(self.joined_frontier)
+    }
+
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
@@ -268,8 +337,8 @@ fn network_fault_marker_rejects_a_frame_before_the_quiescent_barrier() {
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
             0,
-            &marker.entries,
-            &frame.entries,
+            NetworkFaultMarkerIndex::from_entries(marker.entries.iter().chain(&frame.entries))
+                .last_activity_sequence(),
         )
         .is_err()
     );
@@ -280,11 +349,75 @@ fn network_fault_marker_rejects_a_frame_before_the_quiescent_barrier() {
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
             0,
-            &marker.entries,
-            &[],
+            NetworkFaultMarkerIndex::from_entries(&marker.entries).last_activity_sequence(),
         )
         .is_ok()
     );
+}
+
+#[test]
+fn nonquiescent_boundary_names_its_scheduler_blockers() {
+    let quiescence = SchedulerQuiescence {
+        blockers: vec![
+            crucible_engine::SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+                target: node("traffic-west"),
+            },
+        ],
+    };
+
+    let error = validate_network_fault_boundary(
+        1,
+        VirtualTime { ticks: 10 },
+        VirtualTime { ticks: 10 },
+        Some(&quiescence),
+        0,
+        None,
+    )
+    .expect_err("a queued delivery keeps the boundary open");
+
+    let QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent { count, summary } = &error
+    else {
+        panic!("unexpected boundary error: {error}");
+    };
+    assert_eq!(*count, 1);
+    assert!(summary.contains("DeviceCompletionInFlight"));
+    assert!(summary.contains("traffic-west"));
+}
+
+/// Frames inside World links are checkpointed fabric state, so they do not
+/// hold the boundary open; device work beside them still does.
+#[test]
+fn boundary_admits_link_frames_but_not_device_work_beside_them() {
+    let frame = crucible_engine::SchedulerQuiescenceBlocker::NetworkFrameInFlight {
+        target: node("router-b"),
+    };
+    let validate = |blockers: Vec<crucible_engine::SchedulerQuiescenceBlocker>| {
+        validate_network_fault_boundary(
+            1,
+            VirtualTime { ticks: 10 },
+            VirtualTime { ticks: 10 },
+            Some(&SchedulerQuiescence { blockers }),
+            0,
+            None,
+        )
+    };
+
+    validate(vec![frame.clone()]).expect("link frames alone settle the boundary");
+
+    let error = validate(vec![
+        frame,
+        crucible_engine::SchedulerQuiescenceBlocker::DeviceCompletionInFlight {
+            target: node("traffic-west"),
+        },
+    ])
+    .expect_err("device work keeps the boundary open");
+    let QemuFreshModeledDriverError::NetworkFaultBoundaryNotQuiescent { count, summary } = &error
+    else {
+        panic!("unexpected boundary error: {error}");
+    };
+    assert_eq!(*count, 1);
+    assert!(!summary.contains("NetworkFrameInFlight"));
+    assert!(summary.contains("traffic-west"));
 }
 
 #[test]
@@ -308,8 +441,7 @@ fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
         &mut lifecycle,
         &input,
         &configuration,
-        &[],
-        &marker.entries,
+        &NetworkFaultMarkerIndex::from_entries(&marker.entries),
         VirtualTime { ticks: 10 },
         Some(&quiescence),
     )
@@ -319,8 +451,7 @@ fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
         &mut lifecycle,
         &input,
         &configuration,
-        &marker.entries,
-        &[],
+        &NetworkFaultMarkerIndex::from_entries(&marker.entries),
         VirtualTime { ticks: 10 },
         Some(&quiescence),
     )
@@ -364,8 +495,7 @@ fn selected_network_group_releases_the_exact_parked_phase() {
             &mut lifecycle,
             &input,
             &selected,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -379,8 +509,7 @@ fn selected_network_group_releases_the_exact_parked_phase() {
             &mut lifecycle,
             &input,
             &selected,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -394,8 +523,7 @@ fn selected_network_group_releases_the_exact_parked_phase() {
             &mut vanished,
             &input,
             &selected,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -420,8 +548,7 @@ fn network_choice_waits_for_every_parked_vm_marker() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &first,
+            &NetworkFaultMarkerIndex::from_entries(&first),
             VirtualTime { ticks: 10 },
             None,
         )
@@ -433,8 +560,7 @@ fn network_choice_waits_for_every_parked_vm_marker() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &first,
+            &NetworkFaultMarkerIndex::from_entries(&first),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -449,8 +575,7 @@ fn network_choice_waits_for_every_parked_vm_marker() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &first,
+            &NetworkFaultMarkerIndex::from_entries(&first),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -465,8 +590,7 @@ fn network_choice_waits_for_every_parked_vm_marker() {
         &mut lifecycle,
         &input,
         &configuration,
-        &[],
-        &entries,
+        &NetworkFaultMarkerIndex::from_entries(&entries),
         VirtualTime { ticks: 10 },
         Some(&SchedulerQuiescence::default()),
     )
@@ -500,8 +624,7 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&quiescence),
         )
@@ -520,8 +643,7 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &duplicate,
+            &NetworkFaultMarkerIndex::from_entries(&duplicate),
             VirtualTime { ticks: 10 },
             Some(&quiescence),
         )
@@ -535,8 +657,7 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &unknown,
+            &NetworkFaultMarkerIndex::from_entries(&unknown),
             VirtualTime { ticks: 10 },
             Some(&quiescence),
         )
@@ -549,8 +670,7 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&quiescence),
         )
@@ -579,8 +699,7 @@ fn lifecycle_without_marker_proof_cannot_publish_network_choice() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )
@@ -614,8 +733,7 @@ fn incidental_same_name_marker_is_inert_without_network_declaration() {
             &mut lifecycle,
             &input,
             &configuration,
-            &[],
-            &entries,
+            &NetworkFaultMarkerIndex::from_entries(&entries),
             VirtualTime { ticks: 10 },
             Some(&SchedulerQuiescence::default()),
         )

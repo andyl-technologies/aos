@@ -14,7 +14,7 @@ use crucible_control_api::{DestroySessionRequest, LifecycleApiError, SessionRef}
 use crucible_control_server::{
     InProcessLifecycleClient, LifecycleControlPlane, LifecycleLoopFactory, SessionLifetimeRetention,
 };
-use crucible_engine::{Checkpoint, Configuration, ReproductionArtifact, ScenarioDefForm};
+use crucible_engine::{Checkpoint, Configuration, ScenarioDefForm};
 use crucible_session::{DebugControllerLease, DebugRole};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -527,19 +527,35 @@ pub fn load_archived_finding_production_capture(
         .into_iter()
         .nth(index)
         .ok_or(CampaignFindingHandoffError::MissingCaptureSet)?;
-    let bytes = match selected {
-        LoadedFindingReplayCapture::Complete { bytes, .. } => bytes,
+    let objects = match selected {
+        LoadedFindingReplayCapture::Complete(objects) => objects,
         LoadedFindingReplayCapture::Incomplete(reason) => {
             return Err(CampaignFindingHandoffError::IncompleteCapture { reason });
         }
     };
 
     let reproduction = repository.load_reproduction_artifact(reproduction_id)?;
-    let model = ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let model = crate::crucible_artifact::decode_crucible_reproduction(
+        &reproduction,
+        &crate::crucible_artifact::RepositoryReproductionSegments {
+            repository,
+            reproduction: reproduction_id,
+        },
+        "retained finding reproduction",
+    )?;
     let limits = FindingProductionReplayCaptureLimits::for_reproduction(&model);
-    let capture = FindingProductionReplayCapture::from_canonical_bytes(&bytes, limits)?;
+    // Side logs keep reading their segments through the repository handles,
+    // one segment at a time, after this returns.
+    let capture = FindingProductionReplayCapture::from_objects(
+        objects.root(),
+        objects.manifest(),
+        objects.leaves(),
+        limits,
+    )?;
     capture.validate_binding(reproduction_id, finding.signature())?;
-    if capture.model_reproduction() != reproduction.payload() {
+    // The capture embeds the self-contained transport, whose hash is the
+    // model artifact's identity.
+    if ContentHash::from_bytes(capture.model_reproduction()) != model.id() {
         return Err(CampaignFindingHandoffError::ModelReproductionMismatch);
     }
     Ok(capture)
@@ -793,3 +809,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "campaign_finding_handoff/tests/runtime_provenance.rs"]
+mod runtime_provenance;

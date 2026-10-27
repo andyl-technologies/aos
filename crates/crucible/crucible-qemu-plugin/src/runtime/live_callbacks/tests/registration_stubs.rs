@@ -30,6 +30,13 @@ pub(super) extern "C" fn test_register_sim_dispatch(
 ) {
 }
 
+pub(super) extern "C" fn test_register_sim_settlement(
+    _publish_settled: Option<crate::QemuSimShmemPublishSettledCbFn>,
+    _exact_event: Option<crate::QemuSimShmemExactEventCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
 pub(super) extern "C" fn test_register_time_advance_cb(
     _callback: Option<crate::QemuTimeAdvanceCompletionCbFn>,
     _userdata: *mut c_void,

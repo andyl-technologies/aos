@@ -391,3 +391,67 @@ fn original_pid_epoch_reset_restores_late_stage_evidence_without_new_control_rea
     assert_eq!(slot.snapshot(), before);
     assert_eq!(RAW_QUERIES.get(), 0);
 }
+
+/// Runs the callback and returns whether it acknowledged the request.
+fn acknowledged_by_one_callback(state: &LiveVcpuTimeCallbackState, slot: &NodeSlot) -> bool {
+    let token = slot.control_boundary_token();
+    let (_stages, error) = run(state);
+    assert!(
+        error.is_none(),
+        "contention must not fail the callback: {error:?}"
+    );
+    let after = slot.control_boundary_token();
+    assert!(after == token || after == token + 1);
+    after == token + 1
+}
+
+#[test]
+fn unreadable_slot_leaves_the_request_pending_until_the_host_releases_it() {
+    let slot = NodeSlot::new(KIND_VM);
+    let state = state(&slot, false, None);
+    let token = request(&slot);
+    let deferrals_before = SNAPSHOT_CONTENTION_DEFERRALS.load(Ordering::Relaxed);
+
+    // A host publication lease makes the slot unreadable.
+    let lease = slot
+        .try_claim_control_boundary_publication()
+        .unwrap_or_else(|error| panic!("claim should be free: {error}"))
+        .unwrap_or_else(|| panic!("claim should not be native-owned"));
+    assert!(!acknowledged_by_one_callback(&state, &slot));
+    drop(lease);
+
+    // So does a host scheduler publication still in progress.
+    slot.publish_scheduler_advance_with_effect(
+        authorize_advance_ceiling(0, 1_000, None)
+            .unwrap_or_else(|error| panic!("test ceiling should validate: {error}")),
+        AdvanceStopCondition::Ceiling,
+        |_| assert!(!acknowledged_by_one_callback(&state, &slot)),
+    )
+    .unwrap_or_else(|error| panic!("test advance should publish: {error}"));
+
+    // And a node publication still in progress.
+    slot.publish_pause_quiesced_with_effect(0, 0, |_| {
+        assert!(!acknowledged_by_one_callback(&state, &slot));
+        Ok::<(), ()>(())
+    })
+    .unwrap_or_else(|error| panic!("test pause should publish: {error:?}"));
+
+    assert_eq!(slot.control_boundary_token(), token);
+    assert!(SNAPSHOT_CONTENTION_DEFERRALS.load(Ordering::Relaxed) >= deferrals_before + 3);
+
+    // The next wake after release acknowledges the same request.
+    assert!(acknowledged_by_one_callback(&state, &slot));
+    assert_eq!(slot.control_boundary_token(), token + 1);
+}
+
+#[test]
+fn contention_rows_are_bounded_and_written_whole() {
+    let mut row = Vec::new();
+    write_contention_row(&mut row, u64::MAX, u64::MAX)
+        .unwrap_or_else(|error| panic!("maximum-width row should fit: {error}"));
+    let text = String::from_utf8(row).unwrap_or_else(|error| panic!("row is text: {error}"));
+
+    assert!(text.starts_with("CRUCIBLE-CONTROL-CONTENTION-V1 pid="));
+    assert!(text.ends_with(" deferrals=18446744073709551615 reason=slot-unreadable\n"));
+    assert_eq!(text.matches('\n').count(), 1);
+}

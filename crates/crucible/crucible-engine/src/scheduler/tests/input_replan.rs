@@ -94,7 +94,13 @@ fn original_authorized_preemption_caps_fresh_window_and_is_consumed_once() {
 
     refreshed.staged_input_events = input;
     let outcome = scheduler
-        .commit_prepared_host_run(refreshed, 20, &[command], Vec::new(), Vec::new())
+        .commit_prepared_host_run(
+            refreshed,
+            HostRunReport::exact(20),
+            &[command],
+            Vec::new(),
+            Vec::new(),
+        )
         .expect("one actual modeled native acknowledgement commits the command");
     assert_eq!(outcome.resolved_events.len(), 1);
     assert!(scheduler.preemption_requests.is_empty());
@@ -165,7 +171,13 @@ fn fresh_windows_retain_original_owner_and_commit_origin_after_two_inputs() {
     assert_eq!(scheduler.nodes[0].counter, NodeCounter { ticks: 0 });
 
     scheduler
-        .commit_prepared_host_run(final_run, 64, &[], Vec::new(), Vec::new())
+        .commit_prepared_host_run(
+            final_run,
+            HostRunReport::exact(64),
+            &[],
+            Vec::new(),
+            Vec::new(),
+        )
         .expect("only final settled backend observation permits real STEP");
     assert_eq!(
         scheduler

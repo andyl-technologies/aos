@@ -188,7 +188,7 @@ fn delivery_order_decisions(report: &SchedulerLivenessReport) -> Vec<(u64, Vec<u
     report
         .final_configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .filter_map(|decision| match decision {
             Decision::DeliveryOrder(order) => Some((

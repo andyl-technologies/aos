@@ -5,8 +5,7 @@
   taskIds ? ["T-HARN-9" "T-HARN-10" "T-HARN-13" "T-DET-20" "T-EXEC-12"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   divergenceHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/divergence.rs;
   divergenceTypes = builtins.readFile ../../crates/crucible/crucible-test-support/src/divergence/types.rs;
   replayOracleHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/replay_oracle.rs;
@@ -301,57 +300,23 @@ in
   if failures != []
   then throw "crucible phase1 divergence-bisect gate check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-divergence-bisect";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
-          pkgs.rust
           pkgs.sed
         ]
         ++ dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-divergence-bisect";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-divergence-bisect-target" \
+            crucible-cargo test \
               -p crucible-test-support \
               --test gate_divergence_bisect \
               -- --test-threads=1

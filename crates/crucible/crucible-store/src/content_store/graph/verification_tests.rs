@@ -259,14 +259,26 @@ fn verification_admin(
     }
 }
 
+/// Owner-only spool directory removed when the test ends.
+fn spool_directory() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("private spool directory")
+}
+
 #[test]
 fn verification_streams_partial_reads_and_reports_canonical_aggregate_evidence() {
     let first = Arc::new(ScriptedPhysicalState::new("alpha", [object(b"alpha")]));
     let second = Arc::new(ScriptedPhysicalState::new("zeta", [object(b"zeta-object")]));
     let admin = verification_admin([("zeta", Arc::clone(&second)), ("alpha", Arc::clone(&first))]);
 
+    let spool = spool_directory();
+
     let report = admin
-        .verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION)
+        .verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path())
         .expect("stable inventories verify");
 
     assert_eq!(report.configuration(), admin.configuration_id());
@@ -282,33 +294,24 @@ fn verification_streams_partial_reads_and_reports_canonical_aggregate_evidence()
     );
     assert_eq!(first.active_fences.load(Ordering::SeqCst), 0);
     assert_eq!(second.active_fences.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_dir(spool.path())
+            .expect("read spool directory")
+            .count(),
+        0,
+        "the anonymous inventory spool must never leave a named file"
+    );
 }
 
 #[test]
-fn verification_enforces_aggregate_count_and_byte_limits_across_leaves() {
+fn verification_enforces_the_aggregate_byte_limit_across_leaves() {
     let first = Arc::new(ScriptedPhysicalState::new("alpha", [object(b"1234")]));
     let second = Arc::new(ScriptedPhysicalState::new("zeta", [object(b"5678")]));
     let admin = verification_admin([("alpha", Arc::clone(&first)), ("zeta", Arc::clone(&second))]);
-
-    let count_error = admin
-        .verify_physical_inventory(
-            StoreGraphVerificationLimits::new(1, MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES)
-                .expect("test verification bounds are valid"),
-        )
-        .expect_err("the second leaf must exceed the aggregate count");
-    assert!(matches!(
-        count_error,
-        StoreGraphVerificationError::LimitExceeded {
-            limit: StoreGraphVerificationLimit::Placements,
-            ..
-        }
-    ));
+    let spool = spool_directory();
 
     let byte_error = admin
-        .verify_physical_inventory(
-            StoreGraphVerificationLimits::new(MAX_STORE_GRAPH_VERIFY_PLACEMENTS, 7)
-                .expect("test verification bounds are valid"),
-        )
+        .verify_physical_inventory(StoreGraphVerificationLimits::new(7), spool.path())
         .expect_err("the second leaf must exceed the aggregate byte limit");
     assert!(matches!(
         byte_error,
@@ -322,25 +325,46 @@ fn verification_enforces_aggregate_count_and_byte_limits_across_leaves() {
 }
 
 #[test]
-fn verification_limits_cannot_raise_the_hard_work_bounds() {
-    assert_eq!(
-        StoreGraphVerificationLimits::new(
-            MAX_STORE_GRAPH_VERIFY_PLACEMENTS + 1,
-            MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
-        ),
-        Err(StoreGraphVerificationLimitsError::Placements {
-            requested: MAX_STORE_GRAPH_VERIFY_PLACEMENTS + 1,
-        })
-    );
-    assert_eq!(
-        StoreGraphVerificationLimits::new(
-            MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
-            MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES + 1,
-        ),
-        Err(StoreGraphVerificationLimitsError::LogicalBytes {
-            requested: MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES + 1,
-        })
-    );
+fn verification_holds_many_placements_without_a_placement_limit() {
+    // More placements than the former in-memory placement cap allowed.
+    let placements = 70_000_u64;
+    let objects = (0..placements).map(|index| object(&index.to_be_bytes()));
+    let state = Arc::new(ScriptedPhysicalState::new("leaf", objects));
+    let admin = verification_admin([("leaf", Arc::clone(&state))]);
+    let spool = spool_directory();
+
+    let report = admin
+        .verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path())
+        .expect("a large stable inventory verifies");
+
+    assert_eq!(report.placements(), placements);
+    assert_eq!(report.logical_bytes(), placements * 8);
+    assert_eq!(state.active_fences.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn verification_rejects_missing_and_shared_spool_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state = Arc::new(ScriptedPhysicalState::new("leaf", [object(b"body")]));
+    let admin = verification_admin([("leaf", Arc::clone(&state))]);
+    let spool = spool_directory();
+
+    let missing = spool.path().join("missing");
+    assert!(matches!(
+        admin.verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, &missing),
+        Err(StoreGraphVerificationError::SpoolDirectory { .. })
+    ));
+
+    let shared = spool.path().join("shared");
+    std::fs::create_dir(&shared).expect("create shared spool directory");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o750))
+        .expect("make spool directory group-readable");
+    assert!(matches!(
+        admin.verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, &shared),
+        Err(StoreGraphVerificationError::InsecureSpoolDirectory { .. })
+    ));
+    assert_eq!(state.active_fences.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -354,8 +378,9 @@ fn verification_rejects_short_long_and_deferred_failure_streams() {
     for (node, value) in cases {
         let state = Arc::new(ScriptedPhysicalState::new(node, [value]));
         let admin = verification_admin([(node, Arc::clone(&state))]);
+        let spool = spool_directory();
         let error = admin
-            .verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION)
+            .verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path())
             .expect_err("incomplete authentication must reject verification");
 
         assert!(matches!(
@@ -368,11 +393,12 @@ fn verification_rejects_short_long_and_deferred_failure_streams() {
 
 #[test]
 fn verification_rejects_opened_length_and_backend_identity_mismatches() {
+    let spool = spool_directory();
     let mismatch = scripted_object(b"length", 6, 7, 2, false);
     let state = Arc::new(ScriptedPhysicalState::new("leaf", [mismatch]));
     let admin = verification_admin([("leaf", Arc::clone(&state))]);
     assert!(matches!(
-        admin.verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION),
+        admin.verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path()),
         Err(StoreGraphVerificationError::LogicalLengthChanged { .. })
     ));
     assert_eq!(state.active_fences.load(Ordering::SeqCst), 0);
@@ -380,7 +406,7 @@ fn verification_rejects_opened_length_and_backend_identity_mismatches() {
     let state = Arc::new(ScriptedPhysicalState::new("foreign", [object(b"body")]));
     let admin = verification_admin([("leaf", Arc::clone(&state))]);
     assert!(matches!(
-        admin.verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION),
+        admin.verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path()),
         Err(StoreGraphVerificationError::BackendIdentityMismatch { .. })
     ));
     assert_eq!(state.active_fences.load(Ordering::SeqCst), 0);
@@ -390,10 +416,12 @@ fn verification_rejects_opened_length_and_backend_identity_mismatches() {
 fn verification_rejects_generation_aba_after_stream_authentication() {
     let state = Arc::new(ScriptedPhysicalState::new("leaf", [object(b"body")]));
     let admin = verification_admin([("leaf", Arc::clone(&state))]);
+    let spool = spool_directory();
 
     let error = admin
         .verify_physical_inventory_with_observer(
-            StoreGraphVerificationLimits::PRODUCTION,
+            StoreGraphVerificationLimits::DEFAULT,
+            spool.path(),
             &mut |_node| {
                 state.generation.fetch_add(1, Ordering::SeqCst);
             },

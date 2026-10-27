@@ -68,7 +68,6 @@ use crucible_qemu_shmem::{
 };
 
 use crate::QemuChildProcessContract;
-use crate::console_observation::{QemuConsoleObservationReader, QemuConsoleObservationSpool};
 use crate::node_factory::QemuNodeRestorePlan;
 use crate::node_factory::{
     build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
@@ -159,8 +158,12 @@ pub struct QemuLiveNodeStepGateConfig {
     accelerator: bool,
     queue_capacity: u32,
     completion_timeout: Duration,
+    #[cfg(feature = "test-support")]
+    slow_clamp_ack_poll: bool,
     unbounded_advance_completion: bool,
     console_capture: bool,
+    /// Sizes the TCG code buffer from guest RAM.
+    guest_derived_code_buffer: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
@@ -227,6 +230,17 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn without_gdbstub(mut self) -> Self {
         self.gdbstub = None;
+        self
+    }
+
+    /// Selects the one-millisecond completed-clamp baseline for test support.
+    ///
+    /// Only scheduled clamp polling changes. Discovery, priming, deadlines,
+    /// publication and guest coordinates keep their production behavior.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn with_slow_clamp_ack_poll_for_test(mut self) -> Self {
+        self.slow_clamp_ack_poll = true;
         self
     }
 
@@ -325,8 +339,11 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            #[cfg(feature = "test-support")]
+            slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
+            guest_derived_code_buffer: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes:
@@ -387,8 +404,11 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            #[cfg(feature = "test-support")]
+            slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
+            guest_derived_code_buffer: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes:
@@ -660,7 +680,7 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
-    /// Returns this configuration with output-only serial console capture enabled.
+    /// Returns this configuration with native serial console origin capture enabled.
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
@@ -714,6 +734,16 @@ impl QemuLiveNodeStepGateConfig {
         }
         self.runtime_determinism_trace_budget_bytes = bytes;
         Ok(self)
+    }
+
+    /// Returns this configuration with a TCG code buffer sized from guest RAM.
+    ///
+    /// Production live nodes opt in so a forked child's code-buffer dirty
+    /// bound scales with its guest instead of QEMU's fixed 1 GiB default.
+    #[must_use]
+    pub const fn with_guest_derived_code_buffer(mut self) -> Self {
+        self.guest_derived_code_buffer = true;
+        self
     }
 
     /// Returns this configuration with fixed QMP monitor diagnostics.
@@ -1219,6 +1249,9 @@ fn build_live_node_with_authority(
     if config.console_capture {
         command = command.with_console_capture();
     }
+    if config.guest_derived_code_buffer {
+        command = command.with_guest_derived_code_buffer();
+    }
     command = config.apply_diagnostic_trace(command);
     let command = command
         .build()
@@ -1278,29 +1311,7 @@ fn build_live_node_with_authority(
                 )
             })
     );
-    let console_observation = launch_try!(
-        config
-            .console_capture
-            .then(|| {
-                // QEMU realizes chardevs before the plugin publishes its setup ACK,
-                // so a missing socket here is a launch failure rather than a race.
-                crate::unix_socket_path::connect(
-                    &run_directory_path.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
-                )
-            })
-            .transpose()
-            .map_err(|source| {
-                QemuLiveNodeStepGateError::prime(
-                    "connect console observation",
-                    QemuNodeChannelError::new("connect QEMU console stream", source.to_string()),
-                )
-            })
-    );
-
-    let console_spool = console_observation
-        .as_ref()
-        .map(|_stream| QemuConsoleObservationSpool::new());
-    let runtime = launch_try!(
+    let mut runtime = launch_try!(
         QemuLiveHostIoRuntime::from_shmem_fd(
             setup.shmem_as_fd(),
             setup.wake_as_fd(),
@@ -1309,39 +1320,13 @@ fn build_live_node_with_authority(
         )
         .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
     );
-    let mut runtime = match (console_observation, console_spool.as_ref()) {
-        (Some(output), Some(spool)) => {
-            let reader = launch_try!(
-                QemuConsoleObservationReader::new(output, spool.clone()).map_err(|source| {
-                    QemuLiveNodeStepGateError::prime(
-                        "configure console observation",
-                        QemuNodeChannelError::new(
-                            "configure QEMU console stream",
-                            source.to_string(),
-                        ),
-                    )
-                })
-            );
-            launch_try!(
-                runtime
-                    .with_console_observation(reader)
-                    .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })
-            )
-        }
-        (None, None) => runtime,
-        _ => {
-            return Err(reap_failed_live_node_child(
-                child,
-                QemuLiveNodeStepGateError::prime(
-                    "configure console observation",
-                    QemuNodeChannelError::new(
-                        "configure QEMU console stream",
-                        "console stream and staging spool disagreed",
-                    ),
-                ),
-            ));
-        }
-    };
+    #[cfg(target_os = "linux")]
+    launch_try!(runtime.retain_console_launch(&setup).map_err(|source| {
+        QemuLiveNodeStepGateError::prime(
+            "retain console launch",
+            QemuNodeChannelError::new("retain console launch", source.to_string()),
+        )
+    }));
     let mut block_servicer = if let Some(block) = &config.shmem_block {
         let mut servicer = launch_try!(
             match &block.world_binding {
@@ -1362,6 +1347,18 @@ fn build_live_node_with_authority(
                 ),
             }
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
+        );
+        // Copied-up guest pages live in an unnamed file in the quota-accounted
+        // run directory rather than on the supervisor heap.
+        let page_store = launch_try!(
+            run_directory
+                .create_block_page_store()
+                .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })
+        );
+        launch_try!(
+            servicer
+                .use_page_store(page_store)
+                .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
         );
         launch_try!(
             servicer
@@ -1417,6 +1414,7 @@ fn build_live_node_with_authority(
         .map(|capture| capture.payload.as_slice());
     let prepared_priming = launch_try!(prepare_guest_prime(
         &setup,
+        config.completion_timeout,
         identity,
         config.coverage,
         boot_backpressure_payload,
@@ -1471,10 +1469,10 @@ fn build_live_node_with_authority(
     );
     let mut priming = launch_try!(complete_guest_prime(
         &setup,
-        config.completion_timeout,
         prepared_priming,
         block_servicer.as_mut(),
         ninep_servicer.as_mut(),
+        &mut runtime,
         boot_backpressure_payload,
     ));
     if !restoring_checkpoint
@@ -1496,6 +1494,7 @@ fn build_live_node_with_authority(
             BootNetworkBackpressureContinuation {
                 block: block_servicer.as_mut(),
                 ninep: ninep_servicer.as_mut(),
+                runtime: &mut runtime,
                 payload: capture.payload.as_slice(),
                 capture_icount: capture.capture_icount,
                 initial_network,
@@ -1512,6 +1511,14 @@ fn build_live_node_with_authority(
         config.shmem_block.as_ref().map(|block| block.latency),
         config.completion_timeout,
     ));
+
+    #[cfg(feature = "test-support")]
+    if config.slow_clamp_ack_poll {
+        // Arm after the original priming handoff, so only scheduled clamps
+        // participate in the comparison.
+        runtime.use_slow_clamp_ack_poll_for_test();
+    }
+
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
         let activation_stream = launch_try!(debug_guest_activation_stream.ok_or_else(|| {
             QemuLiveNodeStepGateError::prime(
@@ -1566,11 +1573,17 @@ fn build_live_node_with_authority(
         };
     }
 
+    #[cfg(target_os = "linux")]
+    node_try!(
+        node.bind_native_console_launch_artifacts(&config.qemu_executable, &config.plugin)
+            .map_err(|source| QemuLiveNodeStepGateError::prime(
+                "bind actual console source launch",
+                source
+            ))
+    );
+
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
-    }
-    if let Some(console_spool) = console_spool {
-        node = node.with_console_observation(node_id(identity.node), console_spool);
     }
     if !restoring_checkpoint {
         node_try!(
@@ -1597,6 +1610,16 @@ fn build_live_node_with_authority(
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     }));
     if !restoring_checkpoint {
+        #[cfg(target_os = "linux")]
+        node_try!(
+            node.bind_native_console_ready_visibility(crucible_engine::NodeCounter {
+                ticks: ready_boundary.ticks,
+            })
+            .map_err(|source| QemuLiveNodeStepGateError::node_op(
+                "retain original native console boot visibility",
+                crate::QemuNodeError::checkpoint(source.to_string()),
+            ))
+        );
         node = node.with_priming_observable_events(priming.observable_events, ready_boundary);
     }
     Ok(node)

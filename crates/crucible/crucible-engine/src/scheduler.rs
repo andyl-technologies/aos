@@ -40,7 +40,7 @@ use crate::{
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
-const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 5;
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 7;
 const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
 const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;
@@ -93,19 +93,26 @@ mod checkpoint;
 mod concurrent_prepare;
 mod fixed_input;
 pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
+mod campaign_park;
 mod control_state;
 mod device_group_selection;
+mod edge_guarantee;
 mod event_codec;
 mod event_log;
+mod graph_horizon;
 mod inactive_time;
 mod io_inventory;
 mod liveness;
 mod run_admission;
 mod runtime_state;
 mod scenario;
+mod settled_attestation;
 mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
+
+pub mod host_run_trace;
+pub mod network_admission_trace;
 
 pub use checkpoint::*;
 pub use concurrent_prepare::*;
@@ -114,6 +121,7 @@ pub use device_group_selection::{
     BackendDeviceGroupObservation, BackendDeviceGroupOwner, DeviceGroupSelectionPublication,
     PreparedDeviceGroupSelection,
 };
+pub use edge_guarantee::*;
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{
     recorded_assertion_log_from_schedule_for_search, scheduler_event_log_empty_prefix,
@@ -121,7 +129,7 @@ pub(crate) use event_codec::{
 };
 pub use event_log::*;
 pub use liveness::*;
-pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory};
+pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory, RunCeilingStop};
 pub use runtime_state::*;
 pub use scenario::*;
 pub use topology::*;

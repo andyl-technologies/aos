@@ -7,8 +7,38 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
+
+  # The two scale tests take most of the library suite's time (one runs for
+  # minutes on its own). They run in a separate derivation with no gate
+  # dependencies, so they start as soon as the test executables exist and
+  # overlap the earlier phase gates. The gate below skips them in its suite
+  # run and requires this derivation's result, so a campaign-model PASS still
+  # covers the complete library suite.
+  scaleTestNames = [
+    "repository::tests::request_budget_scale::distinct_request_transitions_keep_indexed_cap_queries_bounded"
+    "repository::tests::coordination::planning::budget_scale::ten_thousand_budget_transitions_preserve_exact_spending_and_cold_replay"
+  ];
+  scaleTests = mkCrucibleTestGate {
+    pname = "crucible-phase1-campaign-model-scale";
+    SCALE_TESTS = builtins.concatStringsSep " " scaleTestNames;
+    phases = [
+      {
+        name = "run-campaign-model-scale";
+        script = ''
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          crucible-exact-tests -p crucible-campaign --lib -- $SCALE_TESTS
+          mkdir -p "$out"
+          {
+            printf 'PASS\n'
+            printf 'package=crucible-campaign\n'
+            printf 'tests=%s\n' "$SCALE_TESTS"
+          } > "$out/result"
+        '';
+      }
+    ];
+  };
 in
   if campaignComposition != null
   then
@@ -17,112 +47,39 @@ in
       inherit (campaignComposition) mode system;
     }
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-campaign-model";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
-
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
+      SCALE_RESULT = scaleTests;
+      SCALE_TESTS = builtins.concatStringsSep " " scaleTestNames;
+      passthru = {inherit scaleTests;};
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-campaign-model";
           script = ''
             set -euo pipefail
             : "$DEPENDENCY_PATHS"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            run_exact_lib_test() {
-              gate_package=$1
-              gate_test=$2
-              gate_list_log="$TMPDIR/campaign-model-list.log"
-              gate_test_log="$TMPDIR/campaign-model-test.log"
-
-              printf 'listing library tests for %s\n' "$gate_package"
-              if cargo test --frozen --offline \
-                --manifest-path crates/Cargo.toml \
-                --target-dir "$TMPDIR/campaign-model-target" \
-                -p "$gate_package" --lib -- --list 2>&1 \
-                | "${pkgs.coreutils}/bin/tee" "$gate_list_log"; then
-                :
-              else
-                status="''${PIPESTATUS[0]}"
-                [ "$status" -ne 0 ] || status=1
-                exit "$status"
-              fi
-              match_count=$(grep -Fxc "$gate_test: test" "$gate_list_log" || true)
-              if [ "$match_count" -ne 1 ]; then
-                printf 'expected exactly one listed test named %s; found %s\n' \
-                  "$gate_test" "$match_count" >&2
-                exit 1
-              fi
-
-              printf 'running exact test %s::%s\n' "$gate_package" "$gate_test"
-              if cargo test --frozen --offline \
-                --manifest-path crates/Cargo.toml \
-                --target-dir "$TMPDIR/campaign-model-target" \
-                -p "$gate_package" --lib -- --exact "$gate_test" --test-threads=1 2>&1 \
-                | "${pkgs.coreutils}/bin/tee" "$gate_test_log"; then
-                :
-              else
-                status="''${PIPESTATUS[0]}"
-                [ "$status" -ne 0 ] || status=1
-                exit "$status"
-              fi
-              if ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$gate_test_log"; then
-                printf 'required test did not produce the exact pass count: %s\n' \
-                  "$gate_test" >&2
-                exit 1
-              fi
-            }
-
-            cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/campaign-model-target" \
-              -p crucible-campaign --lib -- --test-threads=1
-            cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/campaign-model-target" \
-              -p crucible-campaign --test gate_campaign_model -- --test-threads=1
-            run_exact_lib_test \
-              crucible-engine \
+            # The suites run on libtest's thread pool: crucible-campaign's
+            # tests share no process-global state (environment, working
+            # directory, or statics), and one serial run of the library
+            # suite was most of this gate's time. The individually required
+            # tests run in one exact invocation per test executable.
+            skip_args=()
+            for scale_test in $SCALE_TESTS; do
+              skip_args+=(--skip "$scale_test")
+            done
+            crucible-cargo test -p crucible-campaign --lib -- "''${skip_args[@]}"
+            grep -Fxq PASS "$SCALE_RESULT/result"
+            grep -Fxq "tests=$SCALE_TESTS" "$SCALE_RESULT/result"
+            crucible-cargo test -p crucible-campaign --test gate_campaign_model
+            crucible-exact-tests -p crucible-engine --lib -- \
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples
-            run_exact_lib_test \
-              crucible-daemon \
-              crucible_measurement::evidence::tests::v2_publication_round_trips_and_rederives_guest_and_model_samples
-            run_exact_lib_test \
-              crucible-daemon \
+            crucible-exact-tests -p crucible-daemon --lib -- \
+              crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples \
               crucible_measurement::tests::verified_crucible_aggregate_drives_exact_campaign_objective
           '';
         }

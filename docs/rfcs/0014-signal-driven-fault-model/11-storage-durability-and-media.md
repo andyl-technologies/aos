@@ -473,10 +473,27 @@ policy, release condition, writer session, and data lag. Re-evaluating one
 persistent action consequently produces the same ID and byte-identical commit,
 while distinct impulses or opportunities cannot collide merely because they
 reference the same object artifact. Repeating the same ID with byte-identical
-content is idempotent; reusing it with any differing field fails. Release is
+content is idempotent; reusing it with any differing field fails. Each update
+also names its authored slot (binding, phase, effect, target, and update
+object) and a generation equal to the binding transition sequence. A new
+installing action for one slot always follows a binding transition, so the
+device retains only the newest identity per slot: recommitting that identity
+stays idempotent after its update is compacted, and an identity whose
+generation does not exceed the slot's newest one fails closed. Release is
 exactly one absolute virtual-time deadline derived once from the resolved
-action's original coordinate and binding delay, or one observed signal-event
-identity; a later host poll never moves that deadline.
+action's original coordinate and binding delay, or one signal-event identity.
+An event-released update subscribes at the exact coordinate (tick and
+same-coordinate evaluation sequence) of the evaluation that commits it and is
+released at the first observation of its event after that commit: the earliest
+emission strictly after the subscription in `(tick, sequence)` order. That is
+the window rule block recovery applies to a retained completion, so an emission
+at the commit tick counts only when a later evaluation produced it. The device
+latches that emission once observed, and neither a later host poll nor a
+re-emission of the event moves either release coordinate, so the data deadline
+`release + lag` is fixed once the event is first observed after the commit.
+The first commit fixes the subscription; it is not compared content, so
+recommitting a persistent action's update from a later opportunity stays
+idempotent and keeps the original subscription.
 Frontiers advance only over a contiguous ready prefix, so a later ready update
 cannot pass an earlier blocked update.
 
@@ -493,9 +510,40 @@ epoch and clears virtual fids.
 
 A visible deletion hides the object. Before release,
 `retain_deleted_objects = true` preserves the prior visible version, whereas
-`false` hides the object as soon as the deletion commits. The object-version
-table, identity index, per-session metadata/data frontiers, virtual fids, and
-session epoch are authenticated checkpoint continuation.
+`false` hides the object as soon as the deletion commits.
+
+Only the current session epoch is ever queried, so a `Tversion` retires the
+previous session's frontiers and the device retains at most one session. The
+compaction floor is the smaller of that session's data frontier and the longest
+committed prefix that every present and future session would pass at the
+current tick by release alone, ignoring writer-immediate visibility. Because
+release coordinates never move later, an update whose data deadline has passed
+stays released, and event-released updates, with or without a data lag, join
+that prefix like any other. Each advance first folds the updates below the
+floor into a per-path residue: the newest version, plus the newest earlier
+non-deleted version when the newest is a deletion. Lookups consult the live
+window through a per-path index and fall back to that residue, which
+reproduces the uncompacted newest-deletion, metadata, and data results
+exactly. A session
+that has not advanced sees no residue; its first advance starts at the floor,
+because every folded update is released for it. Advancing with a tick earlier
+than the one that proved the floor fails closed. Callers supply non-decreasing
+ticks.
+
+The device consumes the production runtime's append-only emitted events
+through a checkpointed event cursor. Each service pass feeds only the emissions
+appended since the cursor, so its cost is proportional to new emissions, and a
+newly committed event-released update latches from the emissions the cursor
+already consumed. If emissions are appended out of coordinate order, the latch
+keeps the earliest eligible emission, so it can move earlier but never later.
+Decoding rejects a latch at or before its subscription and a latch on a
+time-released update. The first pass after construction or a rollback checks
+every live latch against the consumed emissions of the restored runtime and
+fails closed on any difference, including a cursor beyond those emissions. The
+live window with its subscriptions and latches, compacted residue, slot
+identity index, event cursor, retained session frontiers, virtual fids, and
+session epoch are authenticated checkpoint continuation
+(`crucible.ninep-snapshot.v6`).
 
 ## 11.15 Completion duplication and protocol validity
 

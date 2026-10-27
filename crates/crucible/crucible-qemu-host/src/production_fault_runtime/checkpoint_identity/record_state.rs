@@ -1,18 +1,21 @@
 //! Aggregate production event-record accounting and validation.
+//!
+//! Referenced events enter as cumulative counters charged once when each
+//! batch is staged, so accounting never rescans the emitted history. Pending
+//! observations and raw QEMU events drain every boundary and are measured
+//! directly.
 
 use super::*;
 
 pub(in crate::production_fault_runtime) fn validate_production_event_state(
-    emitted_events: &[ReferencedSignalEvent],
-    additional_emitted_events: &[ReferencedSignalEvent],
+    referenced: ReferencedEventUsage,
     pending_observations: &[FaultObservation],
     additional_observations: &[FaultObservation],
     pending_qemu_events: &PendingQemuEventMap,
     resource_limits: FaultResourceLimits,
 ) -> Result<(), ProductionFaultRuntimeError> {
     let _ = production_event_state_usage(
-        emitted_events,
-        additional_emitted_events,
+        referenced,
         pending_observations,
         additional_observations,
         pending_qemu_events,
@@ -22,25 +25,27 @@ pub(in crate::production_fault_runtime) fn validate_production_event_state(
 }
 
 pub(in crate::production_fault_runtime) fn production_event_state_usage(
-    emitted_events: &[ReferencedSignalEvent],
-    additional_emitted_events: &[ReferencedSignalEvent],
+    referenced: ReferencedEventUsage,
     pending_observations: &[FaultObservation],
     additional_observations: &[FaultObservation],
     pending_qemu_events: &PendingQemuEventMap,
     resource_limits: FaultResourceLimits,
 ) -> Result<(u64, u64), ProductionFaultRuntimeError> {
-    let (records, bytes) = extend_referenced_event_usage(emitted_events, resource_limits, 0, 0)?;
-    let (records, bytes) =
-        extend_referenced_event_usage(additional_emitted_events, resource_limits, records, bytes)?;
-    let (records, bytes) =
-        extend_observation_usage(pending_observations, resource_limits, records, bytes)?;
+    resource_limits.reserve("event_records", 0, referenced.records)?;
+    resource_limits.reserve("event_log_bytes", 0, referenced.log_bytes)?;
+    let (records, bytes) = extend_observation_usage(
+        pending_observations,
+        resource_limits,
+        referenced.records,
+        referenced.log_bytes,
+    )?;
     let (records, bytes) =
         extend_observation_usage(additional_observations, resource_limits, records, bytes)?;
     extend_pending_qemu_event_usage(pending_qemu_events, resource_limits, records, bytes)
 }
 
 pub(in crate::production_fault_runtime) fn validate_production_record_state(
-    emitted_events: &[ReferencedSignalEvent],
+    referenced: ReferencedEventUsage,
     pending_observations: &[FaultObservation],
     pending_qemu_events: &PendingQemuEventMap,
     qemu_issued_actions: &QemuActionMap<ResolvedBindingAction>,
@@ -49,7 +54,7 @@ pub(in crate::production_fault_runtime) fn validate_production_record_state(
     resource_limits: FaultResourceLimits,
 ) -> Result<(), ProductionFaultRuntimeError> {
     let _current = production_record_state_usage(
-        emitted_events,
+        referenced,
         pending_observations,
         pending_qemu_events,
         qemu_issued_actions,
@@ -61,7 +66,7 @@ pub(in crate::production_fault_runtime) fn validate_production_record_state(
 }
 
 pub(in crate::production_fault_runtime) fn production_record_state_usage(
-    emitted_events: &[ReferencedSignalEvent],
+    referenced: ReferencedEventUsage,
     pending_observations: &[FaultObservation],
     pending_qemu_events: &PendingQemuEventMap,
     qemu_issued_actions: &QemuActionMap<ResolvedBindingAction>,
@@ -70,8 +75,7 @@ pub(in crate::production_fault_runtime) fn production_record_state_usage(
     resource_limits: FaultResourceLimits,
 ) -> Result<u64, ProductionFaultRuntimeError> {
     let (event_state_records, _bytes) = production_event_state_usage(
-        emitted_events,
-        &[],
+        referenced,
         pending_observations,
         &[],
         pending_qemu_events,

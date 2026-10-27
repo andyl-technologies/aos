@@ -17,6 +17,7 @@ mod error;
 mod fingerprint_projection;
 mod helpers;
 mod modes;
+mod native_console;
 mod plugin_config;
 #[cfg(test)]
 mod profile_tests;
@@ -77,8 +78,6 @@ pub use whitebox_setup::{
 
 /// Stable QEMU chardev identifier for output-only guest console capture.
 pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
-/// Stable run-directory Unix socket carrying output-only guest console bytes.
-pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
 /// Run-directory file containing the RR control-boundary trace when enabled.
 pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
 pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
@@ -87,8 +86,10 @@ pub(crate) const QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION: &str =
     "enable=crucible_sim_rr_control_delivery";
 const CONTROL_CALLBACK_WITNESS_ENV: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
 pub(crate) const QEMU_IDLE_PREFIX_TRACE_SELECTION: &str = "enable=crucible_sim_idle_*";
+// Writable-file reservation added to pre-spawn admission for an enabled RR
+// trace. Readers stream the trace, so it is not a retention limit; the
+// attempt's aggregate writable ceiling bounds the file itself.
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
-pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 /// Fixed child-relative file used by the runtime-determinism diagnostic trace.
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
@@ -96,8 +97,9 @@ pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
 // Keep the diagnostic trace sparse enough that the bounded retained tail
 // includes the QMP exchange after a 60-second command timeout.
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
+// Default writable-file reservation for an enabled runtime or QMP liveness
+// trace; callers that stream larger traces raise the budget explicitly.
 pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES: usize = 131_072;
 pub(crate) const MAXIMUM_STREAMED_RUNTIME_DETERMINISM_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 /// Stable QEMU chardev identifier for fork-time debug guest activation.
 pub const QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID: &str = "crucible-debug-activation";
@@ -123,6 +125,15 @@ const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "sim,thread=single";
 const SIM_OFF_ACCEL: &str = "tcg,thread=single";
+/// Guest RAM divided by this is a production live node's TCG code buffer.
+///
+/// QEMU before 5.2 sized the system-mode code buffer at a quarter of guest
+/// RAM; current QEMU defaults to 1 GiB whatever the guest size, and a forked
+/// child may dirty every page of it. The buffer size is performance-only
+/// under icount: a full buffer flushes translations, which are retranslated
+/// on demand, while retirement accounting and event delivery stay keyed to
+/// guest instruction counts, so no guest-visible event moves.
+pub const CODE_BUFFER_GUEST_RAM_DIVISOR: u32 = 4;
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
@@ -390,6 +401,7 @@ pub struct QemuLaunchCommand {
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    plugin_process_generation: u64,
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     resource_requirements: QemuLaunchResourceRequirements,
     plugin_setup_plan: crucible_qemu_protocol::plugin_setup_plan::PluginSetupPlan,
@@ -554,6 +566,17 @@ impl QemuLaunchCommand {
         self.plugin_fault_node_hash
     }
 
+    /// Returns the process incarnation encoded in this validated launch.
+    #[must_use]
+    pub(crate) const fn plugin_process_generation(&self) -> u64 {
+        self.plugin_process_generation
+    }
+
+    /// Returns the exact encoded composite plan retained by command construction.
+    pub(crate) const fn plugin_setup_plan_digest(&self) -> [u8; 32] {
+        self.plugin_setup_plan_digest
+    }
+
     /// Returns the exact fault manifest bound to this launch identity.
     #[must_use]
     pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
@@ -623,6 +646,8 @@ pub struct QemuLaunchCommandBuilder {
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     allow_live_gate_manifest_discovery: bool,
     debug_guest_activation_endpoint: bool,
+    /// TCG code-buffer size in MiB, when derived from guest RAM.
+    code_buffer_mib: Option<u32>,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
@@ -651,6 +676,7 @@ impl QemuLaunchCommandBuilder {
             fault_capability_requirement,
             allow_live_gate_manifest_discovery: false,
             debug_guest_activation_endpoint: false,
+            code_buffer_mib: None,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes: MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
@@ -714,10 +740,10 @@ impl QemuLaunchCommandBuilder {
         self
     }
 
-    /// Returns a builder that captures guest serial output in the node run directory.
+    /// Returns a builder that captures guest serial output through native origins.
     ///
-    /// The character device is an output sink only from Crucible's perspective:
-    /// no host-to-guest write operation is exposed by the runtime.
+    /// The fixed native backend accepts no host input. Its closed UART plan and
+    /// bounded admission policy are part of the sealed setup descriptor.
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
@@ -731,6 +757,20 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub const fn with_debug_guest_activation_endpoint(mut self) -> Self {
         self.debug_guest_activation_endpoint = true;
+        self
+    }
+
+    /// Sizes the TCG code buffer from guest RAM instead of QEMU's fixed default.
+    ///
+    /// The `sim` accelerator argument gains `tb-size=<guest MiB /
+    /// CODE_BUFFER_GUEST_RAM_DIVISOR>`, so the size is part of the recorded
+    /// argv and launch identity. It stays out of scenario hash material
+    /// because it cannot change guest-visible behavior (see
+    /// [`CODE_BUFFER_GUEST_RAM_DIVISOR`]).
+    #[must_use]
+    pub const fn with_guest_derived_code_buffer(mut self) -> Self {
+        let mebibytes = self.profile.memory_mib / CODE_BUFFER_GUEST_RAM_DIVISOR;
+        self.code_buffer_mib = Some(if mebibytes == 0 { 1 } else { mebibytes });
         self
     }
 
@@ -882,6 +922,13 @@ impl QemuLaunchCommandBuilder {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
         }
         let mut args = self.profile.canonical_qemu_args();
+        if let Some(mebibytes) = self.code_buffer_mib {
+            replace_option_value(
+                &mut args,
+                "-accel",
+                &format!("{DEFAULT_ACCEL},tb-size={mebibytes}"),
+            )?;
+        }
         if self.vm.kernel().is_none() {
             remove_option_with_value(&mut args, "-append")?;
         }
@@ -893,9 +940,7 @@ impl QemuLaunchCommandBuilder {
             )?;
             args.extend([
                 "-chardev".to_owned(),
-                format!(
-                    "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
-                ),
+                native_console::NATIVE_CONSOLE_CHARDEV_ARGUMENT.to_owned(),
             ]);
         }
         args.extend(self.vm.qemu_args());
@@ -968,7 +1013,15 @@ impl QemuLaunchCommandBuilder {
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
 
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        let mut plugin_setup_plan = self.plugin.plugin_setup_plan();
+        if self.console_capture {
+            let console = native_console::closed_launch_plan(
+                executable_architecture,
+                self.profile.smp_vcpus,
+                self.plugin.slot(),
+            )?;
+            plugin_setup_plan = plugin_setup_plan.with_native_console(console);
+        }
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
@@ -983,6 +1036,7 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            plugin_process_generation: self.plugin.process_generation(),
             fault_capability_requirement,
             resource_requirements,
             plugin_setup_plan,

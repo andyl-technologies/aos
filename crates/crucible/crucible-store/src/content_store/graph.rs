@@ -49,9 +49,9 @@ mod verification_tests;
 
 use format::canonical_graph_configuration;
 pub use verification::{
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
-    StoreGraphPhysicalVerification, StoreGraphVerificationError, StoreGraphVerificationLimit,
-    StoreGraphVerificationLimits, StoreGraphVerificationLimitsError, StoreGraphVerificationReport,
+    DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES, StoreGraphPhysicalVerification,
+    StoreGraphVerificationError, StoreGraphVerificationLimit, StoreGraphVerificationLimits,
+    StoreGraphVerificationReport,
 };
 
 const MAX_GRAPH_NODES: usize = 256;

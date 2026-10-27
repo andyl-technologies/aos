@@ -35,6 +35,7 @@ fn empty_production_continuation_round_trips_with_the_same_identity() {
         checkpoint,
         HostFaultAdapterManifests::node_only().expect("node-only manifests should be valid"),
         &mut nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     )
     .expect("authenticated production checkpoint should restore");
     let round_trip = restored

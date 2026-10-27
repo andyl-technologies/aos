@@ -603,11 +603,12 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         adapter.backend().stepped,
         vec![source.clone(), destination.clone(), source.clone()],
     );
-    // The source yields while its peer is still at zero; the round frontier
-    // advances only after the held peer and source continuation are published.
+    // The source yields while its peer is still at zero. The frame is
+    // evaluated at its own release time, its emission at 1, not at the
+    // peer's lagging clock.
     assert_eq!(
         adapter.network_output_interceptor().batches,
-        vec![(VirtualTime { ticks: 0 }, 1, 0x5a)]
+        vec![(VirtualTime { ticks: 1 }, 1, 0x5a)]
     );
     assert_eq!(outcome.frontier, VirtualTime { ticks: 100 });
     assert!(!outcome.decisions.is_empty());

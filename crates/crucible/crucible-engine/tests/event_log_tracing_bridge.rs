@@ -172,10 +172,11 @@ fn rng_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("tracing-bridge-causal"),
-            value: 41,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("tracing-bridge-causal"),
+            0,
+            41,
+        ))),
     )
 }
 

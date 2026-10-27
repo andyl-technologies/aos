@@ -18,10 +18,11 @@ fn time(ticks: u64) -> VirtualTime {
 }
 
 fn rng_decision(name: &str, value: u64) -> SchedulerEventLogPayload {
-    SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(name),
+    SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(name),
+        0,
         value,
-    }))
+    )))
 }
 
 fn assertion_id(name: &str) -> AssertionId {

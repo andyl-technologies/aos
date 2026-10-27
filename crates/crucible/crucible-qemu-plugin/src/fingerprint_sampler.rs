@@ -86,7 +86,8 @@ struct CapturedFingerprintMaterial {
 }
 
 impl CapturedFingerprintMaterial {
-    fn digest(mut self) -> DigestReading {
+    /// Hashes the preimage from its current offset; positioned reads stay valid afterwards.
+    fn digest(&mut self) -> DigestReading {
         let mut hasher = Sha256::new();
         let mut remaining = self.material_length;
         let mut buffer = [0_u8; 64 * 1024];
@@ -146,6 +147,15 @@ impl CapturedFingerprintSample {
         }
         self.sample.ram_digest = ram.digest;
         self.sample.device_state_digest = device.digest;
+
+        // Opt-in diagnosis keeps the exact preimages behind a mismatching digest.
+        material_dump::dump_if_requested(&material_dump::MaterialDumpInput {
+            sample: &self.sample,
+            ram: &self.ram.file,
+            ram_material_bytes: self.ram.material_length,
+            device: &self.device.file,
+            device_material_bytes: self.device.material_length,
+        });
         self.sample
     }
 }
@@ -465,6 +475,9 @@ pub(crate) enum FingerprintSamplerError {
     #[error("assembled fingerprint sample is invalid: {0}")]
     Slot(FingerprintSampleError),
 }
+
+#[path = "fingerprint_sampler/material_dump.rs"]
+mod material_dump;
 
 #[cfg(test)]
 #[path = "fingerprint_sampler/tests.rs"]

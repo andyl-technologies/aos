@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.workloadVirtualTimeShapes",
   taskIds ? ["T-WL-5"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -174,47 +173,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-workload-virtual-time-shapes";
-      version = "0";
-      src = crucibleSrc;
-      runtimeDeps = [pkgs.sqlite];
-
-      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-workload-virtual-time-shapes";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -223,11 +189,7 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_load_patterns \
               -- --list > "$TMPDIR/workload-virtual-time-shape-tests"
@@ -246,20 +208,12 @@ in
             require_listed \
               "$TMPDIR/workload-virtual-time-shape-tests" \
               "load_pattern_reserved_parameters_reject_unknown_and_duplicate_values"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_load_patterns \
               time_varying_load_fixtures_reproduce_bit_identically \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-virtual-time-shapes-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-engine \
               --test workload_load_patterns \
               load_pattern_reserved_parameters_reject_unknown_and_duplicate_values \

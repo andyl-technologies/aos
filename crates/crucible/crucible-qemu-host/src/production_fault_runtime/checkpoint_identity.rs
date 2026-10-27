@@ -102,46 +102,6 @@ pub(super) fn validate_pending_qemu_event_sequences(
     Ok(())
 }
 
-pub(super) fn extend_referenced_event_usage(
-    events: &[ReferencedSignalEvent],
-    resource_limits: FaultResourceLimits,
-    mut records: u64,
-    mut total_bytes: u64,
-) -> Result<(u64, u64), ProductionFaultRuntimeError> {
-    for event in events {
-        let (evidence, bytes) = event
-            .canonical_value_identity()
-            .map_err(FaultExecutionError::from)?;
-        if evidence != event.evidence {
-            return Err(FaultExecutionError::CheckpointPresence.into());
-        }
-        resource_limits.reserve("event_records", records, 1)?;
-        records += 1;
-        let value_bytes =
-            u64::try_from(bytes).map_err(|_| FaultResourceLimitError::Representation {
-                field: "event_inline_payload_bytes",
-                value: u64::MAX,
-            })?;
-        resource_limits.reserve("event_inline_payload_bytes", 0, value_bytes)?;
-        let signal_bytes = u64::try_from(event.signal.as_str().len()).map_err(|_| {
-            FaultResourceLimitError::Representation {
-                field: "event_log_bytes",
-                value: u64::MAX,
-            }
-        })?;
-        let record_bytes = signal_bytes
-            .checked_add(value_bytes)
-            .and_then(|value| value.checked_add(81))
-            .ok_or(FaultResourceLimitError::Representation {
-                field: "event_log_bytes",
-                value: u64::MAX,
-            })?;
-        resource_limits.reserve("event_log_bytes", total_bytes, record_bytes)?;
-        total_bytes += record_bytes;
-    }
-    Ok((records, total_bytes))
-}
-
 pub(super) fn extend_observation_usage(
     observations: &[FaultObservation],
     resource_limits: FaultResourceLimits,
@@ -317,7 +277,7 @@ pub(super) fn production_checkpoint_identity(
     qemu_action_commits: &QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: &QemuActionSet,
     network_state: Option<&ProductionNetworkStateCheckpoint>,
-    emitted_events: &[ReferencedSignalEvent],
+    referenced_events: &ReferencedEventWindow,
     pending_qemu_observations: &[FaultObservation],
     pending_qemu_events: &PendingQemuEventMap,
 ) -> Result<ContentHash, ProductionFaultRuntimeError> {
@@ -364,20 +324,7 @@ pub(super) fn production_checkpoint_identity(
                 .bytes,
         )?;
     }
-    for event in emitted_events {
-        material.append(event.signal.as_str().as_bytes())?;
-        material.push(0)?;
-        material.append(&event.coordinate.virtual_ticks.to_be_bytes())?;
-        material.append(
-            &event
-                .coordinate
-                .retired_instructions
-                .unwrap_or(u64::MAX)
-                .to_be_bytes(),
-        )?;
-        material.append(&event.same_coordinate_sequence.to_be_bytes())?;
-        material.append(&event.evidence.bytes)?;
-    }
+    append_referenced_event_identity(&mut material, referenced_events)?;
     for observation in pending_qemu_observations {
         let checkpoint_offset = material.offset_after_length_prefix()?;
         material.append_length_prefixed(&observation_identity_material_at_checkpoint_offset(
@@ -431,9 +378,67 @@ pub(super) fn production_checkpoint_identity(
         material.append(&identity.bytes)?;
     }
     Ok(ContentHash::from_canonical_hex_bytes(
-        "crucible.production-fault-runtime-checkpoint.v10",
+        "crucible.production-fault-runtime-checkpoint.v11",
         material.as_slice(),
     ))
+}
+
+/// Appends the referenced-event history and window to checkpoint identity.
+///
+/// The cumulative counters and chain digest commit to every emitted event;
+/// the retained events, per-key retired frontiers, and consumer
+/// subscriptions are the live state a restored continuation resumes from.
+fn append_referenced_event_identity(
+    material: &mut BoundedCheckpointIdentityMaterial,
+    window: &ReferencedEventWindow,
+) -> Result<(), ProductionFaultRuntimeError> {
+    let count = |length: usize| {
+        u64::try_from(length).map_err(|_| FaultResourceLimitError::Representation {
+            field: "event_records",
+            value: u64::MAX,
+        })
+    };
+
+    material.append(&window.emitted().to_be_bytes())?;
+    material.append(&window.log_bytes().to_be_bytes())?;
+    material.append(&window.history().bytes)?;
+    match window.newest() {
+        Some(newest) => {
+            material.push(1)?;
+            material.append(&newest.ticks.to_be_bytes())?;
+            material.append(&newest.sequence.to_be_bytes())?;
+        }
+        None => material.push(0)?,
+    }
+
+    material.append(&count(window.retired_frontiers().len())?.to_be_bytes())?;
+    for (key, frontier) in window.retired_frontiers() {
+        material.append(key)?;
+        material.append(&frontier.ticks.to_be_bytes())?;
+        material.append(&frontier.sequence.to_be_bytes())?;
+    }
+
+    material.append(&count(window.retained().len())?.to_be_bytes())?;
+    let mut event_material = Vec::new();
+    for retained in window.retained() {
+        material.append(&retained.index().to_be_bytes())?;
+        event_material.clear();
+        referenced_events::event_identity_material(retained.event(), &mut event_material);
+        material.append_length_prefixed(&event_material)?;
+    }
+
+    let consumers = window.consumer_subscriptions();
+    material.append(&count(consumers.len())?.to_be_bytes())?;
+    for (consumer, subscriptions) in consumers {
+        material.append(&consumer.id().bytes)?;
+        material.append(&count(subscriptions.len())?.to_be_bytes())?;
+        for subscription in subscriptions {
+            material.append(&subscription.event)?;
+            material.append(&subscription.after.ticks.to_be_bytes())?;
+            material.append(&subscription.after.sequence.to_be_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_qemu_action_ledger(

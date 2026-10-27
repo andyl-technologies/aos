@@ -235,6 +235,41 @@ fn missing_foreign_and_changed_queue_observations_leave_actor_state_unchanged() 
 }
 
 #[test]
+fn staged_import_matches_the_transactional_import_and_its_retained_ledger() {
+    let (mut transactional, queue, pipeline) = fixture();
+    let mut staged = transactional.clone();
+
+    // The first observation creates the retained delivery. The repeat moves
+    // that ledger into the replacement queue instead of copying it.
+    for _ in 0..2 {
+        let inventory = observation(&transactional, &queue, &pipeline);
+        ok(transactional.import_initial_io_inventory(inventory.clone()));
+        ok(staged.import_initial_io_inventory_into_staged(inventory));
+
+        assert_eq!(staged.imported_io, transactional.imported_io);
+        assert_eq!(staged.pending_events, transactional.pending_events);
+        assert_eq!(
+            ok(ok(staged.checkpoint()).canonical_bytes()),
+            ok(ok(transactional.checkpoint()).canonical_bytes())
+        );
+    }
+
+    // Both forms refuse a mutated delivery; only the transactional form
+    // promises an unchanged scheduler, so staged callers discard their copy.
+    let before = ok(ok(transactional.checkpoint()).canonical_bytes());
+    let mut mutated = observation(&transactional, &queue, &pipeline);
+    mutated.queues[0].completions[0].payload.push(1);
+    assert!(
+        staged
+            .clone()
+            .import_initial_io_inventory_into_staged(mutated.clone())
+            .is_err()
+    );
+    assert!(transactional.import_initial_io_inventory(mutated).is_err());
+    assert_eq!(ok(ok(transactional.checkpoint()).canonical_bytes()), before);
+}
+
+#[test]
 fn actual_queue_removal_without_acknowledged_publication_is_refused() {
     let (mut scheduler, mut queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
@@ -255,7 +290,8 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
     let (mut scheduler, queue, pipeline) = fixture();
     ok(scheduler.import_initial_io_inventory(observation(&scheduler, &queue, &pipeline)));
     let bytes = ok(ok(scheduler.checkpoint()).canonical_bytes());
-    assert!(bytes.starts_with(b"crucible.single-scheduler-continuation.v6\0"));
+    let current = b"crucible.single-scheduler-continuation.v11\0";
+    assert!(bytes.starts_with(current));
 
     for _ in 0..2 {
         let (mut restored, _, _) = fixture();
@@ -264,9 +300,12 @@ fn pending_origin_ledger_survives_repeated_restore_and_rejects_prior_schema() {
         ok(restored.import_initial_io_inventory(observation(&restored, &queue, &pipeline)));
         assert_eq!(restored.pending_events, scheduler.pending_events);
     }
-    for &version in b"45" {
-        let mut retired = bytes.clone();
-        retired[b"crucible.single-scheduler-continuation.v".len()] = version;
+    for version in ["4", "5", "6", "7", "8", "9", "10"] {
+        let retired = [
+            format!("crucible.single-scheduler-continuation.v{version}\0").as_bytes(),
+            &bytes[current.len()..],
+        ]
+        .concat();
         assert!(matches!(
             SingleSchedulerCheckpoint::from_canonical_bytes(&retired),
             Err(SingleSchedulerCheckpointError::Version)
@@ -639,7 +678,13 @@ fn published_fixed_input_history_is_committed_once_by_the_later_semantic_run() {
     ));
     let run = prepared.runs[0].clone();
     let reached = run.plan.target_counter;
-    let outcome = ok(scheduler.commit_prepared_host_run(run, reached, &[], Vec::new(), Vec::new()));
+    let outcome = ok(scheduler.commit_prepared_host_run(
+        run,
+        HostRunReport::exact(reached),
+        &[],
+        Vec::new(),
+        Vec::new(),
+    ));
 
     assert_eq!(outcome.resolved_events, settled);
     assert!(scheduler.settled_fixed_input_events.is_empty());
@@ -778,6 +823,9 @@ fn native_caps_bound_idle_wake_without_fabricating_quiescent_completion() {
 
 #[path = "fixed_consumers.rs"]
 mod fixed_consumers;
+
+#[path = "ledger_window.rs"]
+mod ledger_window;
 
 #[test]
 fn live_world_attachment_retains_the_exact_physical_queue_owner() {

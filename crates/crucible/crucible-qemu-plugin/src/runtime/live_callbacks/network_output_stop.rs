@@ -155,12 +155,15 @@ impl LiveVcpuTimeCallbackState {
             self.logical_icount_for_raw(raw_icount)?
         };
         validate_original_coordinate(&stop, logical_icount, raw_icount, phase)?;
+        // The retained stop is still unconsumed, so it answers this advance.
+        let advance = self.zero_length_idle_advance()?;
         PluginShmemOrdering::publish_pause_quiesced(
             self.slot.get(),
             stop.logical_icount,
             stop.raw_icount,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+        self.record_zero_length_idle(advance);
         Ok(true)
     }
 
@@ -196,13 +199,18 @@ impl LiveVcpuTimeCallbackState {
             .as_ref()
             .ok_or(LiveVcpuTimeCallbackError::NetworkStateUnavailable)?;
         let write_index = PluginShmemOrdering::producer_write_index(network.outbound.header());
+        let advance = self.zero_length_idle_advance()?;
         PluginShmemOrdering::publish_pause_quiesced(self.slot.get(), logical_icount, raw_icount)
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+        self.record_zero_length_idle(advance);
         let stop = RetainedNetworkOutputStop {
             logical_icount,
             raw_icount,
             write_index,
-            context: context::ArmContext::new(self.control_callback_witness.is_enabled(), origin),
+            context: context::ArmContext::new(
+                self.control_callback_witness.is_stream_enabled(),
+                origin,
+            ),
         };
         *owner = Some(stop.clone());
         Ok(stop)

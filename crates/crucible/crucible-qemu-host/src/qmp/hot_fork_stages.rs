@@ -1,7 +1,7 @@
 //! Child resource staging surface of the typed QMP client.
 //!
 //! Each branch-private child resource (private rings, plugin endpoints,
-//! the diagnostics stream, the child QMP endpoint, the child console, the
+//! the diagnostics stream, the child QMP endpoint, the
 //! child process contract, and the child-file plan) is staged against the
 //! retained template, queried, and released through the same three-verb
 //! surface; QEMU consumes a staged resource only inside the fork.
@@ -412,103 +412,6 @@ where
                         command: QmpCommandKind::HotForkChildQmp,
                         response: String::from(
                             "child QMP release did not report a positive absent generation",
-                        ),
-                    })
-                } else {
-                    Ok(state)
-                }
-            });
-        self.poison_after_descriptor_mutation_error(result)
-    }
-
-    /// Makes QEMU retain one branch-private child console stream.
-    ///
-    /// The stream must already be imported with [`Self::install_descriptor`].
-    /// QEMU authenticates its Linux `SO_COOKIE` and binds it to the exact
-    /// connected `crucible-console` source chardev at the retained template.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the exchange fails, QEMU rejects the exact
-    /// stream or source-console basis, or its response violates the closed
-    /// schema. Every error poisons the client because retained ownership may
-    /// then be ambiguous.
-    pub fn stage_hot_fork_child_console(
-        &mut self,
-        name: &QmpDescriptorName,
-        socket_cookie: u64,
-        template_generation: u64,
-    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
-        let result = self
-            .send_command_return(QmpCommand::HotForkChildConsole {
-                action: HotForkChildConsoleAction::Stage,
-                name: Some(name),
-                socket_cookie: Some(socket_cookie),
-            })
-            .and_then(|response| parse_hot_fork_child_console_state(&response.value))
-            .and_then(|state| {
-                let exact_basis = state.staged()
-                    && state.descriptor_name() == Some(name)
-                    && state.socket_cookie() == Some(socket_cookie)
-                    && state.template_generation() == template_generation
-                    && state.retained_descriptor().is_some()
-                    && !state.resource_plan_bound();
-                if exact_basis {
-                    Ok(state)
-                } else {
-                    Err(QmpError::MalformedTypedResponse {
-                        command: QmpCommandKind::HotForkChildConsole,
-                        response: format!(
-                            "child console stage did not retain {name:?}/{socket_cookie}/{template_generation}"
-                        ),
-                    })
-                }
-            });
-        self.poison_after_descriptor_mutation_error(result)
-    }
-
-    /// Reads QEMU's exact retained branch-private child-console state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the query fails or the response violates the
-    /// closed version-1 contract.
-    pub fn query_hot_fork_child_console(
-        &mut self,
-    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
-        let response = self.send_command_return(QmpCommand::HotForkChildConsole {
-            action: HotForkChildConsoleAction::Query,
-            name: None,
-            socket_cookie: None,
-        })?;
-        parse_hot_fork_child_console_state(&response.value)
-    }
-
-    /// Releases QEMU's exact independently retained child console stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QmpError`] when the exchange fails, the exact basis no longer
-    /// matches, or QEMU still reports a retained stream. Every error poisons
-    /// the client because descriptor ownership may be ambiguous.
-    pub fn release_hot_fork_child_console(
-        &mut self,
-        name: &QmpDescriptorName,
-        socket_cookie: u64,
-    ) -> Result<QmpHotForkChildConsoleState, QmpError> {
-        let result = self
-            .send_command_return(QmpCommand::HotForkChildConsole {
-                action: HotForkChildConsoleAction::Release,
-                name: Some(name),
-                socket_cookie: Some(socket_cookie),
-            })
-            .and_then(|response| parse_hot_fork_child_console_state(&response.value))
-            .and_then(|state| {
-                if state.staged() || state.generation() == 0 {
-                    Err(QmpError::MalformedTypedResponse {
-                        command: QmpCommandKind::HotForkChildConsole,
-                        response: String::from(
-                            "child console release did not report a positive absent generation",
                         ),
                     })
                 } else {

@@ -10,6 +10,15 @@ mod topology;
 #[path = "network_output/preemption.rs"]
 mod preemption;
 
+#[path = "network_output/delayed_release.rs"]
+mod delayed_release;
+
+#[path = "network_output/admission_coordinate.rs"]
+mod admission_coordinate;
+
+#[path = "network_output/same_tick_delivery.rs"]
+mod same_tick_delivery;
+
 // The peer's RUN ceiling stays before either TX's earliest possible delivery.
 const NETWORK_PREFIX_TEST_MINIMUM_LATENCY: u64 = 64;
 
@@ -93,7 +102,8 @@ fn one_run_admits_tx_before_its_node_local_emit_overtakes_the_frontier() {
         )
         .expect("source RUN should admit its exact output-yield boundary");
 
-    assert_eq!(first.run_set.candidates.len(), 1);
+    // The lagging peer runs in the same set to its own horizon.
+    assert_eq!(first.run_set.candidates.len(), 2);
     assert_eq!(first.run_set.candidates[0].node.node.name, "source");
     assert_eq!(first.run_set.candidates[0].max_advance_icount, 64);
     assert!(
@@ -189,7 +199,7 @@ fn omitted_lagging_peer_output_precedes_source_candidate() {
 }
 
 #[test]
-fn omitted_producer_gets_a_fresh_ceiling_after_its_watermark_catchup() {
+fn an_uncoupled_peer_runs_to_its_own_horizon_beside_two_producers() {
     let scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "network-output-omitted-producer-catchup",
         16,
@@ -242,13 +252,16 @@ fn omitted_producer_gets_a_fresh_ceiling_after_its_watermark_catchup() {
         )
         .expect("omitted producer should receive a fresh authorized catch-up RUN");
 
-    assert_eq!(batch.run_set.candidates.len(), 2);
-    assert!(
+    // The peer with no inbound coupling runs to its own horizon in the same
+    // set instead of waiting for a watermark catch-up.
+    assert_eq!(
         batch
             .run_set
             .candidates
             .iter()
-            .all(|run| run.max_advance_icount == 64)
+            .map(|run| (run.node.node.name.as_str(), run.max_advance_icount))
+            .collect::<Vec<_>>(),
+        [("a-source", 64), ("b-source", 64), ("z-peer", 100)],
     );
     assert_eq!(
         admissions
@@ -272,7 +285,7 @@ fn omitted_producer_gets_a_fresh_ceiling_after_its_watermark_catchup() {
             .filter(|run| run.node().name == "z-peer")
             .map(|run| run.ceiling().ticks)
             .collect::<Vec<_>>(),
-        [30, 100],
+        [100],
     );
 }
 
@@ -663,7 +676,8 @@ fn same_tick_peer_evidence_survives_a_selectable_offer_until_default_settlement(
                 2,
             )
             .expect("the first canonical choice should retain peer evidence");
-        assert_eq!(offered.run_set.candidates.len(), 1);
+        // Both sources run together; the canonically first choice is offered.
+        assert_eq!(offered.run_set.candidates.len(), 2);
         assert_eq!(
             adapter
                 .live_network_preselection()

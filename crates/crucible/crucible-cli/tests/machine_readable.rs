@@ -47,7 +47,7 @@ fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn
 fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let trace = temp.path().join("selftest.jsonl");
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["--backend", "double", "--format", "jsonl", "--trace"])
         .arg(&trace)
         .arg("selftest")
@@ -65,7 +65,7 @@ fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Er
     assert_eq!(stdout.as_bytes(), fs::read(&trace)?);
 
     let quiet_trace = temp.path().join("selftest-quiet.jsonl");
-    let quiet = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let quiet = Command::new(crucible_executable())
         .args([
             "--backend",
             "double",
@@ -96,7 +96,7 @@ fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), 
     let save_store = temp.path().join("save-store");
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args([
             "--format",
             "jsonl",
@@ -136,7 +136,7 @@ fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
     fs::write(&family, valid_fuzz_family_toml())?;
 
-    let search_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let search_output = Command::new(crucible_executable())
         .args([
             "--format",
             "jsonl",
@@ -160,7 +160,7 @@ fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result
     let search_stdout = String::from_utf8(search_output.stdout)?;
     assert_machine_readable_jsonl(&search_stdout, &["search_strategy_run"])?;
 
-    let fuzz_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let fuzz_output = Command::new(crucible_executable())
         .args([
             "--format",
             "jsonl",
@@ -200,7 +200,7 @@ fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_fina
     )?;
     fs::write(&retained_evidence, valid_search_retained_evidence_toml())?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args([
             "--format",
             "jsonl",
@@ -242,7 +242,7 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
     let mismatch_check_path = temp.path().join("mismatch.jsonl");
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
 
-    let failure_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let failure_output = Command::new(crucible_executable())
         .args([
             "--format",
             "jsonl",
@@ -273,7 +273,7 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
         canonical_jsonl_from_reproduction_artifact(&artifact_path)?,
     )?;
 
-    let replay_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let replay_output = Command::new(crucible_executable())
         .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
         .arg(&artifact_dir)
         .arg("replay")
@@ -301,7 +301,7 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
     *first_byte = first_byte.wrapping_add(1);
     fs::write(&mismatch_check_path, mismatch_check)?;
 
-    let mismatch_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let mismatch_output = Command::new(crucible_executable())
         .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
         .arg(&artifact_dir)
         .arg("replay")
@@ -338,7 +338,7 @@ fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result
     let artifact = temp.path().join("malformed.crucible");
     fs::write(&artifact, "not a reproduction artifact")?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["--format", "jsonl", "--backend", "double", "replay"])
         .arg(&artifact)
         .output()?;
@@ -358,7 +358,7 @@ fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
     let artifact_dir = temp.path().join("replay-to-artifacts");
     let fixture = replay_to_savepoint_process_fixture(temp.path())?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
         .arg(&artifact_dir)
         .arg("replay")
@@ -391,7 +391,7 @@ fn run_machine_readable(
     scenario: &Path,
     artifact_dir: &Path,
 ) -> Result<String, Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args([
             "--format",
             format,
@@ -805,7 +805,7 @@ fn replay_to_savepoint_decision_fixtures(
     schedule: &crucible_engine::Schedule,
 ) -> Vec<ReplayToSavepointDecisionFixture> {
     schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(index, decision)| {
@@ -1045,4 +1045,16 @@ fn hex_nibble(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+/// Returns the `crucible` executable under test.
+///
+/// Cargo records the executable path at compile time. A prebuilt test binary
+/// that runs outside its Cargo target directory receives the relocated path
+/// through the same variable at run time, following the cargo-nextest
+/// archive convention.
+fn crucible_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_crucible")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_crucible")))
 }

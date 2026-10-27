@@ -1075,10 +1075,12 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     assert_ne!(past_frame.entry, test_event_log_entry(1));
 
     assert_eq!(actor.event_log.len(), 1);
-    assert_eq!(actor.condition_event_log.len(), 1);
-    assert_eq!(actor.condition_event_log[0], marker);
     assert_eq!(
-        actor.debug_event_coordinates.get(&marker.sequence()),
+        actor.debug_history.entries_for_test(),
+        std::slice::from_ref(&marker)
+    );
+    assert_eq!(
+        actor.debug_history.coordinate(marker.sequence()),
         Some(&actor.engine().snapshot().configuration),
     );
 }
@@ -1090,7 +1092,7 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
     actor.debug_index_configuration = root.clone();
-    let decisions = second.schedule.decisions();
+    let decisions = second.schedule.decision_history();
     let entries = vec![
         crucible_engine::test_support::condition_payload_entry_for_test(
             0,
@@ -1119,10 +1121,15 @@ fn actor_debug_history_indexes_each_emitted_decision_prefix() {
         .unwrap_or_else(|error| panic!("multi-entry history must append: {error}"));
 
     assert_ne!(root, first);
-    assert_eq!(actor.debug_event_coordinates.get(&0), Some(&first));
-    assert_eq!(actor.debug_event_coordinates.get(&1), Some(&first));
-    assert_eq!(actor.debug_event_coordinates.get(&2), Some(&second));
-    assert_eq!(actor.debug_event_coordinates.get(&3), Some(&second));
+    assert_eq!(actor.debug_history.coordinate(0), Some(&first));
+    assert_eq!(actor.debug_history.coordinate(1), Some(&first));
+    assert_eq!(actor.debug_history.coordinate(2), Some(&second));
+    assert_eq!(actor.debug_history.coordinate(3), Some(&second));
+    assert_eq!(actor.debug_history.coordinate(4), None);
+    let expanded = actor.debug_history.event_coordinates();
+    assert_eq!(expanded.len(), 4);
+    assert_eq!(expanded.get(&1), Some(&first));
+    assert_eq!(expanded.get(&3), Some(&second));
     assert_eq!(actor.debug_current_event_limit(&second), Some(4));
 }
 
@@ -1132,16 +1139,22 @@ fn actor_non_advancing_command_preserves_future_coordinate_indexes() {
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
-    actor.condition_event_log = vec![test_event_log_entry(0), test_event_log_entry(1)];
-    actor.debug_event_coordinates = BTreeMap::from([(0, second.clone()), (1, second)]);
+    actor
+        .debug_history
+        .append(
+            &[test_event_log_entry(0), test_event_log_entry(1)],
+            &second,
+            &second,
+        )
+        .unwrap_or_else(|error| panic!("history fixture must append: {error}"));
     actor.engine.event_log_len = 1;
 
     actor
         .append_event_log_entries(&[])
         .unwrap_or_else(|error| panic!("empty command boundary must preserve history: {error}"));
 
-    assert_eq!(actor.condition_event_log.len(), 2);
-    assert!(actor.debug_event_coordinates.contains_key(&1));
+    assert_eq!(actor.debug_history.len(), 2);
+    assert!(actor.debug_history.coordinate(1).is_some());
 }
 
 #[tokio::test]
@@ -1687,7 +1700,7 @@ async fn breakpoint_suspend_uses_shared_condition_and_preserves_canonical_log() 
         if let Err(error) = actor.run_once().await {
             panic!("baseline actor should drive one quantum: {error}");
         }
-        actor.event_log.lock_entries().clone()
+        actor.event_log.entries_for_test()
     };
 
     let scenario = generated_scenario(38);
@@ -1728,7 +1741,7 @@ async fn breakpoint_suspend_uses_shared_condition_and_preserves_canonical_log() 
     );
     assert!(actor.engine().breakpoints().is_empty());
     assert_eq!(
-        &*actor.event_log.lock_entries(),
+        &actor.event_log.entries_for_test(),
         baseline_entries.as_slice()
     );
     assert_eq!(
@@ -2448,7 +2461,7 @@ async fn quiescent_breakpoint_fires_without_emitted_entries() {
         panic!("no-event quiescent breakpoint quantum should run: {error}");
     }
 
-    assert!(actor.event_log.lock_entries().is_empty());
+    assert!(actor.event_log.entries_for_test().is_empty());
     assert_eq!(
         actor
             .engine()
@@ -2503,13 +2516,13 @@ async fn no_entry_breakpoint_after_prior_event_uses_current_boundary() {
         panic!("first post-event no-entry quantum should run: {error}");
     }
     assert!(actor.engine().breakpoint_firings().is_empty());
-    assert_eq!(actor.event_log.lock_entries().len(), 1);
+    assert_eq!(actor.event_log.entries_for_test().len(), 1);
 
     if let Err(error) = actor.run_once().await {
         panic!("second post-event no-entry quantum should run: {error}");
     }
 
-    assert_eq!(actor.event_log.lock_entries().len(), 1);
+    assert_eq!(actor.event_log.entries_for_test().len(), 1);
     assert_eq!(
         actor.engine().breakpoint_firings(),
         &[BreakpointFiring {

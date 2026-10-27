@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_determinism::{
-    DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
+    DECISION_RNG_ALGORITHM, DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
     DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, DecisionStream,
 };
 use serde::de;
@@ -49,7 +49,7 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The stable domain used for device-scoped decision streams ([IO-21]).
 ///
 /// A device (block / 9p / network sub-node) draws its probabilistic effects from a
-/// stream forked by name-hash in this fixed domain, so a device named `"disk"` and
+/// stream keyed by name in this fixed domain, so a device named `"disk"` and
 /// a node named `"disk"` never collide and adding or renaming an unrelated device
 /// never perturbs another device's draws ([DET-25]).
 pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.device-stream.v1";
@@ -94,6 +94,7 @@ pub use dag_store::*;
 mod binary_plan;
 mod binary_state;
 mod configuration;
+mod configuration_prefix;
 mod debug;
 mod engine;
 mod exploration;
@@ -103,11 +104,14 @@ mod fault_signal;
 mod material;
 mod materialized;
 mod measurement;
+mod minimization;
+mod persistent_set;
 mod plan_properties;
 mod reproduction;
 mod runtime;
 mod scenario;
 mod scenario_selectables;
+mod schedule_segments;
 mod store_artifacts;
 mod temporal_graph;
 mod time;
@@ -129,6 +133,7 @@ mod world_storage_policy;
 use binary_plan::*;
 use binary_state::*;
 pub use configuration::*;
+pub use configuration_prefix::*;
 pub use debug::*;
 pub use engine::*;
 pub use exploration::*;
@@ -139,11 +144,13 @@ pub use fault_signal::*;
 use material::*;
 pub use materialized::*;
 pub use measurement::*;
+pub use minimization::*;
 pub use plan_properties::*;
 pub use reproduction::*;
 pub use runtime::*;
 pub use scenario::*;
 pub use scenario_selectables::*;
+pub use schedule_segments::*;
 use store_artifacts::*;
 pub use temporal_graph::*;
 use temporal_graph::{debug_configuration_prefix, maps_equal_except_key};

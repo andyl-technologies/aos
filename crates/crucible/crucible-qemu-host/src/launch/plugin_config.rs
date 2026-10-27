@@ -58,7 +58,7 @@ pub struct QemuLaunchAppRandomConfig {
     pub decision_rng_root_seed: u64,
     /// Scenario-hashed maximum number of app-random draws.
     pub draw_cap: u64,
-    /// Canonical scheduler node name used in the name-hashed stream identity.
+    /// Canonical scheduler node name used in the keyed stream identity.
     pub node_name: String,
     branch_reseeds: Vec<(Seed, u64)>,
     /// Node-local draws already consumed before this process launches.

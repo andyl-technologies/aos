@@ -7,6 +7,9 @@ macro_rules! accepted_step {
     };
 }
 
+#[path = "tests/device_horizons.rs"]
+mod device_horizons;
+
 use super::*;
 use crate::model::{
     BindingSearchCandidateSemantics, BindingSearchChoice, SearchChoiceId, SearchOverride,
@@ -16,6 +19,8 @@ use crate::{
     RngDecision, ScenarioDef, StepObservation,
 };
 
+#[path = "tests/campaign_park.rs"]
+mod campaign_park;
 #[path = "tests/cap_boundary.rs"]
 mod cap_boundary;
 #[path = "tests/concurrent.rs"]
@@ -34,6 +39,10 @@ mod ordering;
 mod production_backend;
 #[path = "tests/run_admission.rs"]
 mod run_admission;
+#[path = "tests/sealed_event_log.rs"]
+mod sealed_event_log;
+#[path = "tests/settled_bounds.rs"]
+mod settled_bounds;
 
 #[test]
 fn pending_network_boundary_release_settles_before_a_far_quantum() {
@@ -578,10 +587,11 @@ fn quantum_outcome_carries_step_decisions() {
         "crucible.test.scheduler.quantum-outcome",
         "scenario=stub",
     ));
-    let decision = crate::Decision::RngDraw(crate::RngDecision {
-        stream: crate::RngStreamId::from_name("scheduler"),
-        value: 7,
-    });
+    let decision = crate::Decision::RngDraw(crate::RngDecision::ordinal(
+        crate::RngStreamId::from_name("scheduler"),
+        0,
+        7,
+    ));
     let child = accepted_step!(&config, decision.clone());
     let outcome = QuantumOutcome {
         configuration: child,
@@ -598,7 +608,10 @@ fn quantum_outcome_carries_step_decisions() {
         scheduler_quiescence: None,
     };
 
-    assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);
+    assert_eq!(
+        outcome.configuration.schedule.decision_history(),
+        &[decision]
+    );
 }
 
 #[test]
@@ -1179,6 +1192,48 @@ fn attempt_stop_frontier_precedes_branch_and_trigger_horizons() {
 }
 
 #[test]
+fn unbounded_time_limit_leaves_the_attempt_stop_as_the_modeled_horizon() {
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "test-scheduler-unbounded-horizon",
+        16,
+        SimInstant { ticks: u64::MAX },
+        vec![test_scenario_node(
+            "node-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    )
+    .with_rendezvous_interval(SimDuration { ticks: 10 })
+    .unwrap_or_else(|error| panic!("rendezvous should install: {error}"));
+    let mut scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("unbounded scheduler should build: {error}"));
+    scheduler
+        .set_attempt_stop_frontier(Some(VirtualTime { ticks: 35 }))
+        .unwrap_or_else(|error| panic!("attempt stop should install: {error}"));
+
+    let mut frontiers = Vec::new();
+    for _ in 0..5 {
+        let outcome = scheduler
+            .drive_quantum(QuantumRequest {
+                configuration: scheduler.configuration().clone(),
+                control: Vec::new(),
+            })
+            .unwrap_or_else(|error| panic!("unbounded quantum should run: {error}"));
+        frontiers.push(outcome.frontier.ticks);
+    }
+
+    // Rendezvous bounds every RUN, and the attempt stop, not a lifecycle
+    // ceiling, is where modeled time stops.
+    assert_eq!(frontiers, [10, 20, 30, 35, 35]);
+    assert!(!scheduler.reached_time_limit().unwrap_or_else(|error| {
+        panic!("scenario terminal state should remain inspectable: {error}")
+    }));
+}
+
+#[test]
 fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
@@ -1242,6 +1297,83 @@ fn signal_fault_frontier_preserves_parent_time_and_typed_candidates() {
 }
 
 #[test]
+fn search_frontier_window_retires_passed_boundaries_and_checkpoints_by_prefix() {
+    let node = test_scenario_node(
+        "a",
+        0,
+        SchedulerNodeActivity::Runnable,
+        NetworkLookahead::Infinite,
+        ExactLocalEvent::NoArmedTimer,
+    );
+    let mut scheduler = test_scheduler(vec![node.clone()], Vec::new());
+    let choice = |name: &[u8]| BindingSearchChoice {
+        id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(name)),
+        candidates_digest: ContentHash::from_bytes(b"window-candidates"),
+        candidate_count: 2,
+        candidate_semantics: BindingSearchCandidateSemantics::Outcome,
+        selected_index: None,
+        overridden: false,
+    };
+    let record = |scheduler: &mut SingleScheduler, ticks: u64, name: &[u8]| {
+        let parent = scheduler.configuration().clone();
+        scheduler
+            .record_signal_fault_search_frontiers(&parent, VirtualTime { ticks }, &[choice(name)])
+            .unwrap_or_else(|error| panic!("window frontier should record: {error}"));
+    };
+
+    // Two frontiers at the current boundary: the first names a strict prefix
+    // of the configuration the second one records.
+    record(&mut scheduler, 0, b"first");
+    let decision = crate::Decision::RngDraw(crate::RngDecision::ordinal(
+        crate::RngStreamId::from_name("window"),
+        0,
+        3,
+    ));
+    scheduler.configuration = accepted_step!(scheduler.configuration(), decision);
+    record(&mut scheduler, 0, b"second");
+
+    assert_eq!(scheduler.search_frontiers().len(), 2);
+    assert_eq!(scheduler.search_frontier_count(), 2);
+    let encoded = scheduler
+        .checkpoint()
+        .and_then(|checkpoint| checkpoint.canonical_bytes())
+        .unwrap_or_else(|error| panic!("window checkpoint should encode: {error}"));
+    let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&encoded)
+        .unwrap_or_else(|error| panic!("window checkpoint should decode: {error}"));
+    let mut restored = test_scheduler(vec![node], Vec::new());
+    decoded
+        .restore_into(&mut restored)
+        .unwrap_or_else(|error| panic!("window checkpoint should restore: {error}"));
+    assert_eq!(restored.search_frontiers(), scheduler.search_frontiers());
+    assert_eq!(restored.search_frontier_count(), 2);
+    assert_eq!(
+        restored
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("restored window should encode: {error}")),
+        encoded
+    );
+
+    // Once the scheduler passes their boundary, the next record retires both.
+    scheduler.frontier = VirtualTime { ticks: 9 };
+    record(&mut scheduler, 9, b"third");
+
+    assert_eq!(scheduler.search_frontiers().len(), 1);
+    assert_eq!(scheduler.search_frontier_count(), 3);
+    assert_eq!(scheduler.search_frontiers()[0].at, VirtualTime { ticks: 9 });
+    for (first, retained) in [(0, 1), (1, 1), (2, 1), (3, 0)] {
+        assert_eq!(
+            scheduler
+                .search_frontiers_since(first)
+                .unwrap_or_else(|error| panic!("recorded sequence should resolve: {error}"))
+                .len(),
+            retained
+        );
+    }
+    assert!(scheduler.search_frontiers_since(4).is_err());
+}
+
+#[test]
 fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let node = test_scenario_node(
         "a",
@@ -1270,15 +1402,22 @@ fn single_scheduler_checkpoint_round_trips_complete_device_and_event_state() {
     let checkpoint = scheduler
         .checkpoint()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should capture: {error}"));
-    assert_eq!(checkpoint.retained_event_log_base_events(), 0);
-    assert_eq!(checkpoint.retained_event_log_entries(), appended.entries);
+    let segments = scheduler.event_log_segment_store();
+    let referenced = |checkpoint: &SingleSchedulerCheckpoint| {
+        checkpoint
+            .event_log_entries(segments.as_ref())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| panic!("checkpoint log should read back: {error}"))
+    };
+    assert_eq!(checkpoint.event_log_base_events(), 0);
+    assert_eq!(referenced(&checkpoint), appended.entries);
     let bytes = checkpoint
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("scheduler checkpoint should encode: {error}"));
     let decoded = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
         .unwrap_or_else(|error| panic!("scheduler checkpoint should decode: {error}"));
-    assert_eq!(decoded.retained_event_log_base_events(), 0);
-    assert_eq!(decoded.retained_event_log_entries(), appended.entries);
+    assert_eq!(decoded.event_log_base_events(), 0);
+    assert_eq!(referenced(&decoded), appended.entries);
 
     let mut restored = test_scheduler(vec![node], vec![pending]);
     restored = restored.with_device_sub_node(disk_with_reads("a", "disk-a", &[]));

@@ -6,58 +6,22 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
   fuzzGuest = import ./phase5-cli-fuzz-guest.nix {inherit pkgs;};
-  liveFixtures = pkgs.mkDerivation {
+  liveFixtures = mkCrucibleTestGate {
     pname = "crucible-phase5-cli-search-fuzz-live-fixtures";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = crucibleSrc;
-    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
-    runtimeDeps = [pkgs.sqlite];
+    buildDeps = [pkgs.coreutils pkgs.sed];
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          export CARGO_TARGET_DIR="$TMPDIR/phase5-live-fixtures-target"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
       {
         name = "materialize-live-fixtures";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
           cd crates
-          cargo test --frozen --offline -p crucible-engine \
+          crucible-cargo test -p crucible-engine \
             --example phase5_live_asset_fixture -- --test-threads=1
-          cargo run --frozen --offline -p crucible-engine \
+          crucible-cargo run -p crucible-engine \
             --example phase5_live_asset_fixture -- \
             ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
             ${fuzzGuest}/fuzz-guest.elf \
@@ -70,6 +34,10 @@
   };
   searchFixture = "${liveFixtures}/search.scenario.toml";
   fuzzFixture = "${liveFixtures}/fuzz.family.toml";
+  corpusCheck = builtins.path {
+    name = "crucible-cli-fuzz-corpus-check.py";
+    path = ./cli-fuzz-corpus-check.py;
+  };
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -1113,68 +1081,25 @@ in
   if failures != []
   then throw "crucible phase5 CLI search/fuzz workflow check failed:\n${builtins.concatStringsSep "\n" failures}"
   else let
-    sourceChecks = pkgs.mkDerivation {
+    sourceChecks = mkCrucibleTestGate {
       pname = "crucible-phase5-cli-search-fuzz-source-checks";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
-      runtimeDeps = [pkgs.sqlite];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            set -eu
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-cli-search-fuzz-workflow";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
-            if ! cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
+            if ! crucible-cargo test \
               -p crucible-cli \
               --features test-double \
               cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
@@ -1257,8 +1182,10 @@ in
         pkgs.crucible
         pkgs.e2fsprogs
         pkgs.grep
+        pkgs.python3
         pkgs.sed
         pkgs.util-linux
+        corpusCheck
       ];
       testScript = ''
         set -eu
@@ -1269,7 +1196,13 @@ in
             for log in \
               /tmp/production-search.jsonl \
               /tmp/production-search.stderr \
-              /tmp/production-fuzz.jsonl; do
+              /tmp/production-fuzz.jsonl \
+              /tmp/production-fuzz-reopen.jsonl \
+              /tmp/production-fuzz-reopen.stderr \
+              /tmp/production-fuzz-missing.jsonl \
+              /tmp/production-fuzz-missing.stderr \
+              /tmp/production-fuzz-corrupt.jsonl \
+              /tmp/production-fuzz-corrupt.stderr; do
               if [ -f "$log" ]; then
                 echo "==> Tail of $log"
                 ${pkgs.coreutils}/bin/tail -c 16384 "$log"
@@ -1378,8 +1311,65 @@ in
             "/tmp/production-fuzz.jsonl"
         )"
 
+        ${pkgs.python3}/bin/python3 ${corpusCheck} snapshot \
+          /tmp/crucible-cli-fuzz-corpus /tmp/fuzz-corpus-before.json \
+          > /tmp/fuzz-corpus-first-descriptor
+
+        run_retained_fuzz() {
+          CRUCIBLE_KERNEL="${fuzzGuest}/fuzz-guest.elf" \
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+            CRUCIBLE_RUN_STATE_ROOT="$2" \
+            "${pkgs.crucible}/bin/crucible" \
+            --backend qemu \
+            --seed 42 \
+            --format jsonl \
+            --artifact-dir "/tmp/crucible-cli-fuzz-artifacts" \
+            --store "/tmp/crucible-cli-fuzz-store" \
+            fuzz \
+            ${fuzzFixture} \
+            --runs 1 \
+            --corpus "$1" \
+            > "$3.jsonl" 2> "$3.stderr"
+        }
+
+        run_retained_fuzz /tmp/crucible-cli-fuzz-corpus \
+          /tmp/crucible-cli-fuzz-reopen-state /tmp/production-fuzz-reopen
+        ${pkgs.python3}/bin/python3 ${corpusCheck} check-reopen \
+          /tmp/fuzz-corpus-before.json /tmp/production-fuzz-reopen.jsonl
+
+        descriptor=$(${pkgs.python3}/bin/python3 ${corpusCheck} snapshot \
+          /tmp/crucible-cli-fuzz-corpus /tmp/fuzz-corpus-after.json)
+        cp -R /tmp/crucible-cli-fuzz-corpus /tmp/crucible-cli-fuzz-missing-corpus
+        cp -R /tmp/crucible-cli-fuzz-corpus /tmp/crucible-cli-fuzz-corrupt-corpus
+        rm "/tmp/crucible-cli-fuzz-missing-corpus/$descriptor"
+        printf 'corrupt retained descriptor\n' \
+          > "/tmp/crucible-cli-fuzz-corrupt-corpus/$descriptor"
+
+        # The real loader must refuse damaged descriptors before starting a
+        # campaign. Fresh run-state roots remain absent on both error paths.
+        for failure in missing corrupt; do
+          state="/tmp/crucible-cli-fuzz-$failure-state"
+          test ! -e "$state"
+          status=0
+          run_retained_fuzz "/tmp/crucible-cli-fuzz-$failure-corpus" \
+            "$state" "/tmp/production-fuzz-$failure" || status="$?"
+          test "$status" -eq 5
+          test ! -e "$state"
+          if grep -q '"kind":"fuzz_campaign_execution"' \
+            "/tmp/production-fuzz-$failure.jsonl"; then
+            exit 1
+          fi
+        done
+        grep -F 'open QEMU fuzz corpus data:' /tmp/production-fuzz-missing.stderr
+        grep -F 'No such file or directory' /tmp/production-fuzz-missing.stderr
+        grep -F 'QEMU fuzz corpus object changed content identity' \
+          /tmp/production-fuzz-corrupt.stderr
+        echo 'durable_fuzz_descriptor_refusal=missing-and-corrupt-before-campaign'
+
         cat /tmp/production-search.jsonl
         cat /tmp/production-fuzz.jsonl
+        cat /tmp/production-fuzz-reopen.jsonl
+        cat /tmp/fuzz-corpus-before.json /tmp/fuzz-corpus-after.json
         ${pkgs.util-linux}/bin/umount /tmp/attempts
         trap - EXIT HUP INT TERM
       '';
@@ -1416,6 +1406,7 @@ in
             process_search_fuzz=production-qemu-jsonl-final-outcome
             state_space=live-qemu-frontier-branch-realization
             fuzz_feedback=live-qemu-basic-block-coverage
+            fuzz_corpus=authenticated-second-process-reopen-and-descriptor-refusal
             machine_readable_named_tests=1
             dependencies=$DEPENDENCY_COUNT
             RESULT

@@ -4,9 +4,10 @@ use super::*;
 
 /// A decoded, validated block request.
 ///
-/// Carries the operation, correlation id, and the read/write geometry. For a
-/// write, `data` holds exactly `count` bytes; for every other op `data` is empty
-/// and `count`/`offset` are zero by convention.
+/// Carries the operation, epoch-scoped correlation identity, the frontend's
+/// oldest live transport epoch, and the read/write geometry. For a write,
+/// `data` holds exactly `count` bytes; for every other op `data` is empty and
+/// `count`/`offset` are zero by convention.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockRequest {
     /// The operation to perform.
@@ -15,6 +16,12 @@ pub struct BlockRequest {
     pub epoch: u64,
     /// The correlation id echoed into the response.
     pub request_id: u32,
+    /// The oldest transport epoch any request the frontend may still submit
+    /// can carry, including this one.
+    ///
+    /// It never exceeds [`Self::epoch`] and never decreases in ring order. The
+    /// block fault state discards retired per-epoch transport state below it.
+    pub oldest_live_epoch: u64,
     /// The byte offset for a read or write (zero for flush/get-length).
     pub offset: u64,
     /// The byte count for a read or write (zero for flush/get-length).
@@ -31,6 +38,7 @@ impl BlockRequest {
             op: BlockOp::Read,
             epoch: 0,
             request_id,
+            oldest_live_epoch: 0,
             offset,
             count,
             data: Vec::new(),
@@ -50,6 +58,7 @@ impl BlockRequest {
             op: BlockOp::Write,
             epoch: 0,
             request_id,
+            oldest_live_epoch: 0,
             offset,
             count,
             data,
@@ -63,6 +72,7 @@ impl BlockRequest {
             op: BlockOp::Flush,
             epoch: 0,
             request_id,
+            oldest_live_epoch: 0,
             offset: 0,
             count: 0,
             data: Vec::new(),
@@ -76,6 +86,7 @@ impl BlockRequest {
             op: BlockOp::GetLength,
             epoch: 0,
             request_id,
+            oldest_live_epoch: 0,
             offset: 0,
             count: 0,
             data: Vec::new(),
@@ -89,6 +100,7 @@ impl BlockRequest {
             op: BlockOp::Discard,
             epoch: 0,
             request_id,
+            oldest_live_epoch: 0,
             offset,
             count,
             data: Vec::new(),
@@ -102,6 +114,9 @@ impl BlockRequest {
     }
 
     /// Assigns the transport identity used by the live adapter.
+    ///
+    /// The oldest live epoch is left unchanged; set it with
+    /// [`Self::with_oldest_live_epoch`].
     #[must_use]
     pub const fn with_identity(mut self, identity: BlockRequestIdentity) -> Self {
         self.epoch = identity.epoch;
@@ -109,18 +124,33 @@ impl BlockRequest {
         self
     }
 
+    /// Assigns the frontend's oldest live transport epoch.
+    #[must_use]
+    pub const fn with_oldest_live_epoch(mut self, oldest_live_epoch: u64) -> Self {
+        self.oldest_live_epoch = oldest_live_epoch;
+        self
+    }
+
     /// Encodes this request into its little-endian wire bytes.
     ///
     /// The reserved `u16` is emitted as zero ([IO-8]). For a write the payload
-    /// follows the 28-byte header; for every other op no payload is appended.
+    /// follows the 36-byte header; for every other op no payload is appended.
     /// The wire `count` is the `u32` view of the write payload length.
     ///
     /// # Errors
     ///
-    /// Returns [`BlockCodecError::CountOverflow`] when a write payload exceeds
-    /// `u32::MAX` bytes and cannot be represented in the wire `count` field --
-    /// rejected loudly rather than silently clamped ([IO-8]).
+    /// - [`BlockCodecError::CountOverflow`] when a write payload exceeds
+    ///   `u32::MAX` bytes and cannot be represented in the wire `count` field --
+    ///   rejected loudly rather than silently clamped ([IO-8]).
+    /// - [`BlockCodecError::OldestLiveEpochAfterEpoch`] when
+    ///   `oldest_live_epoch` exceeds `epoch` ([IO-35]).
     pub fn encode(&self) -> Result<Vec<u8>, BlockCodecError> {
+        if self.oldest_live_epoch > self.epoch {
+            return Err(BlockCodecError::OldestLiveEpochAfterEpoch {
+                epoch: self.epoch,
+                oldest_live_epoch: self.oldest_live_epoch,
+            });
+        }
         let count = if self.op == BlockOp::Write {
             u32::try_from(self.data.len()).map_err(|_| BlockCodecError::CountOverflow {
                 len: self.data.len(),
@@ -130,12 +160,13 @@ impl BlockRequest {
         };
         let mut out = Vec::with_capacity(REQUEST_HEADER_LEN + self.data.len());
         out.push(self.op.to_wire());
-        out.push(BLOCK_ABI_VERSION);
+        out.push(BLOCK_REQUEST_ABI_VERSION);
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.request_id.to_le_bytes());
         out.extend_from_slice(&self.offset.to_le_bytes());
         out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&self.oldest_live_epoch.to_le_bytes());
         if self.op == BlockOp::Write {
             out.extend_from_slice(&self.data);
         }
@@ -155,9 +186,11 @@ impl BlockRequest {
     ///   [`REQUEST_HEADER_LEN`].
     /// - [`BlockCodecError::UnknownOp`] when the op byte is undefined.
     /// - [`BlockCodecError::VersionMismatch`] when the version byte is not
-    ///   [`BLOCK_ABI_VERSION`].
+    ///   [`BLOCK_REQUEST_ABI_VERSION`].
     /// - [`BlockCodecError::NonZeroReserved`] when the reserved header field is
     ///   nonzero.
+    /// - [`BlockCodecError::OldestLiveEpochAfterEpoch`] when the oldest live
+    ///   epoch exceeds the request epoch.
     /// - [`BlockCodecError::CountExceedsPayload`] when a write's declared
     ///   `count` exceeds the bytes after the header.
     pub fn decode(bytes: &[u8]) -> Result<Self, BlockCodecError> {
@@ -172,9 +205,9 @@ impl BlockRequest {
         // within that range. `try_into` on fixed slices cannot fail here.
         let op = BlockOp::from_wire(header[0])?;
         let version = header[1];
-        if version != BLOCK_ABI_VERSION {
+        if version != BLOCK_REQUEST_ABI_VERSION {
             return Err(BlockCodecError::VersionMismatch {
-                expected: BLOCK_ABI_VERSION,
+                expected: BLOCK_REQUEST_ABI_VERSION,
                 found: version,
             });
         }
@@ -186,6 +219,13 @@ impl BlockRequest {
         let request_id = u32_le(header, 12);
         let offset = u64_le(header, 16);
         let count = u32_le(header, 24);
+        let oldest_live_epoch = u64_le(header, 28);
+        if oldest_live_epoch > epoch {
+            return Err(BlockCodecError::OldestLiveEpochAfterEpoch {
+                epoch,
+                oldest_live_epoch,
+            });
+        }
 
         let data = if op == BlockOp::Write {
             let want = count as usize;
@@ -205,6 +245,7 @@ impl BlockRequest {
             op,
             epoch,
             request_id,
+            oldest_live_epoch,
             offset,
             count,
             data,

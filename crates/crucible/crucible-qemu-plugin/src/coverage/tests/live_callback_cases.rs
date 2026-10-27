@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn combined_whitebox_and_coverage_share_one_ordered_translation_registration() {
+    let observer =
+        crate::runtime::live_callbacks::time_ownership_witness::scoped_translation_witness();
     let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
     CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
     CALLBACK_MODEL_TRANSLATION_REGISTRATIONS.store(0, Ordering::SeqCst);
@@ -45,12 +47,19 @@ fn combined_whitebox_and_coverage_share_one_ordered_translation_registration() {
         CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
     );
 
+    assert_eq!(
+        observer.instrumentations(),
+        1,
+        "combined translation duplicated or omitted the observer"
+    );
     assert_eq!(CALLBACK_MODEL_COMBINED_ORDER.load(Ordering::SeqCst), 2);
     assert_eq!(owner.translated_block_count(), 1);
 }
 
 #[test]
 fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount() {
+    let observer =
+        crate::runtime::live_callbacks::time_ownership_witness::scoped_translation_witness();
     let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
     CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
     CALLBACK_MODEL_EXEC_CALLBACK.store(0, Ordering::SeqCst);
@@ -102,6 +111,11 @@ fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount()
     translate(
         std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>(),
         CALLBACK_MODEL_TRANSLATION_USERDATA.load(Ordering::SeqCst) as *mut c_void,
+    );
+    assert_eq!(
+        observer.instrumentations(),
+        1,
+        "coverage omitted the observer"
     );
     let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.swap(0, Ordering::SeqCst);
     assert_ne!(execute_address, 0);

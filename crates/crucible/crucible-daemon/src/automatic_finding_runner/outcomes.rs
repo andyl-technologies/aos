@@ -315,10 +315,8 @@ fn automatic_finding_replays_both_passes_under_the_original_budget_and_path() {
         panic!("automatic finding returned a nonsemantic result")
     };
     let finding = result.finding().expect("automatic finding");
-    let minimized =
-        crucible_engine::ReproductionArtifact::from_compact_binary(finding.minimized().payload())
-            .expect("minimized reproduction");
-    assert!(minimized.schedule().decisions().is_empty());
+    let minimized = finding.minimized_artifact();
+    assert!(minimized.schedule().decision_history().is_empty());
     assert_eq!(main_calls.load(Ordering::SeqCst), 1);
     assert_eq!(replay_calls.load(Ordering::SeqCst), 4);
     assert_eq!(quarantines.load(Ordering::SeqCst), 0);
@@ -796,10 +794,8 @@ fn descendant_finding_replay_preserves_controls_signature_and_retained_world() {
         .finding()
         .expect("descendant automatic finding")
         .clone();
-    let minimized =
-        crucible_engine::ReproductionArtifact::from_compact_binary(finding.minimized().payload())
-            .expect("minimized descendant reproduction");
-    assert!(minimized.schedule().decisions().is_empty());
+    let minimized = finding.minimized_artifact();
+    assert!(minimized.schedule().decision_history().is_empty());
     assert_eq!(replay_calls.load(Ordering::SeqCst), 4);
     assert_eq!(controlled_calls.load(Ordering::SeqCst), 4);
     assert_eq!(retained_calls.load(Ordering::SeqCst), 4);

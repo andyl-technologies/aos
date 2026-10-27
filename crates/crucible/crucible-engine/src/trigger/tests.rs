@@ -155,7 +155,9 @@ fn polled_guest_marker_after_a_later_boundary_reaches_assertion_and_graph() {
 
     let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, false_condition_leaf)
         .with_world_white_box_policies(&world);
-    let firings = pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "marker-received");
 }
@@ -165,10 +167,11 @@ fn causal_projection_comparison_ignores_observational_entries() {
     let causal = SchedulerEventLogEntry::with_payload_for_test(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("causal-projection"),
-            value: 11,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("causal-projection"),
+            0,
+            11,
+        ))),
     );
     let diagnostic = SchedulerEventLogEntry::with_payload_for_test(
         1,
@@ -192,18 +195,20 @@ fn facts_through_point_preserves_resumed_event_log_base_sequence() {
     let first = SchedulerEventLogEntry::with_payload_for_test(
         5,
         VirtualTime { ticks: 5 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resumed-prefix-a"),
-            value: 17,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resumed-prefix-a"),
+            0,
+            17,
+        ))),
     );
     let second = SchedulerEventLogEntry::with_payload_for_test(
         6,
         VirtualTime { ticks: 7 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resumed-prefix-b"),
-            value: 23,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resumed-prefix-b"),
+            0,
+            23,
+        ))),
     );
     let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
         vec![first.clone(), second],
@@ -219,4 +224,75 @@ fn facts_through_point_preserves_resumed_event_log_base_sequence() {
     assert_eq!(through_first.scheduler_entries[0].sequence(), 5);
     assert_eq!(through_first.base_sequence, 5);
     assert_eq!(through_first.event_log_offset().events, 6);
+}
+
+#[test]
+fn evidence_prefix_keeps_a_resumed_base_sequence() {
+    let draw = |sequence: u64, ticks: u64| {
+        SchedulerEventLogEntry::with_payload_for_test(
+            sequence,
+            VirtualTime { ticks },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("resumed-evidence"),
+                0,
+                sequence,
+            ))),
+        )
+    };
+    let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+        vec![draw(8, 2), draw(9, 4), draw(10, 7)],
+        8,
+    )
+    .expect("resumed prefix should build");
+
+    let scoped = condition_prefix_for_evidence_at(
+        &prefix,
+        EventEvaluationPoint::assertion_deadline(VirtualTime { ticks: 5 }),
+    );
+
+    assert_eq!(scoped.scheduler_entries.len(), 2);
+    assert_eq!(scoped.base_sequence, 8);
+    assert_eq!(scoped.point().at(), VirtualTime { ticks: 5 });
+}
+
+#[test]
+fn deadline_facts_from_an_observed_prefix_match_a_whole_rebuild() {
+    let draw = |sequence: u64, ticks: u64| {
+        SchedulerEventLogEntry::with_payload_for_test(
+            sequence,
+            VirtualTime { ticks },
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("deadline-base"),
+                0,
+                sequence,
+            ))),
+        )
+    };
+    let entries = [draw(3, 2), draw(4, 4), draw(5, 6), draw(6, 6), draw(7, 9)];
+    let observed = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+        entries[..2].to_vec(),
+        3,
+    )
+    .expect("observed prefix should build");
+    let mut current = observed.clone();
+    current
+        .append_scheduler_entries(entries[2..].to_vec())
+        .expect("later entries should extend the observed prefix");
+
+    for ticks in [4, 5, 6, 8] {
+        let point = EventEvaluationPoint::assertion_deadline(VirtualTime { ticks });
+        let rebuilt = current.with_facts_through_point(point);
+        let extended = current.with_facts_through_point_after(Some(&observed), point);
+        assert_eq!(extended, rebuilt, "deadline at {ticks}");
+    }
+
+    // A base that is not an earlier prefix of the log is ignored.
+    let unrelated =
+        ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(vec![draw(3, 1)], 3)
+            .expect("unrelated prefix should build");
+    let point = EventEvaluationPoint::assertion_deadline(VirtualTime { ticks: 5 });
+    assert_eq!(
+        current.with_facts_through_point_after(Some(&unrelated), point),
+        current.with_facts_through_point(point)
+    );
 }

@@ -146,10 +146,11 @@ fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("basic-block-coverage"),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("basic-block-coverage"),
+            0,
             value,
-        })),
+        ))),
     )
 }
 

@@ -7,9 +7,15 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
+
+  # The probe is compiled once by the debug test family; the host gate and
+  # the campaign-mode guest both run this copy instead of compiling.
+  probe = mkCrucibleBinaries {
+    pname = "crucible-qemu-live-block-realization";
+    builds = [workspaceTests.apacheTests];
+    executables.crucible-qemu-live-block-realization = "build -p crucible-qemu-host --example crucible-qemu-live-block-realization";
+  };
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
@@ -18,56 +24,18 @@
     pkgs.coreutils
     pkgs.grep
     pkgs.qemu-crucible
-    pkgs.rust
     pkgs.sed
   ];
   runtimeEnvironment = {
-    src = crucibleSrc;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
   };
   executorPhases = [
     {
-      name = "unpack";
-      script = ''
-        cp -R "$src" source
-        chmod -R u+w source
-        cd source
-      '';
-    }
-    {
-      name = "configure";
-      script = ''
-        export CARGO_HOME="$TMPDIR/cargo"
-        if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-          cd source
-        fi
-        mkdir -p "$CARGO_HOME" .cargo
-        if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        else
-          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-            > .cargo/config.toml
-        fi
-      '';
-    }
-    {
       name = "run-live-block-realization";
       script = ''
         set -eu
-        if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-          cd source
-        fi
-
-        cargo build \
-          --frozen \
-          --offline \
-          --target-dir "$TMPDIR/live-block-realization-target" \
-          --manifest-path crates/Cargo.toml \
-          -p crucible-qemu-host \
-          --example crucible-qemu-live-block-realization
 
         run_dir="$TMPDIR/live-block-realization-run"
         mkdir -p "$run_dir"
@@ -77,7 +45,7 @@
         # reset; reaching prelaunch proves the schema, driver registration,
         # and `bdrv_open` all succeeded.
         timeout -k 15 120 \
-          "$TMPDIR/live-block-realization-target/debug/examples/crucible-qemu-live-block-realization" \
+          ${probe}/bin/crucible-qemu-live-block-realization \
           ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
           "$run_dir" \
           4194304 \
@@ -111,9 +79,7 @@
   authoritativeGate = pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-live-block-realization";
     version = "0";
-    src = crucibleSrc;
-    runtimeDeps = [pkgs.sqlite];
-
+    src = null;
     buildDeps = runtimeInputs;
     TASK_IDS = taskList;
     OPEN_TASK_IDS = openTaskList;
@@ -130,14 +96,13 @@ in
         testing
         runtimeScript
         ;
-      runtimeInputs = runtimeInputs ++ campaignRustRuntime.runtimeInputs;
-      runtimeEnvironment = runtimeEnvironment // campaignRustRuntime.runtimeEnvironment;
+      inherit runtimeInputs runtimeEnvironment;
       inherit (campaignComposition) mode system;
       gateName = "gate:block-realization";
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "qemu-live-block-realization";
-      runtimeClosures = [crucibleSrc cargoDeps];
+      runtimeClosures = [probe];
       timeout = 3600;
       memoryMiB = 4096;
       varSizeMiB = 8192;

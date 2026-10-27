@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:3bbf19d1234f676747150122f2a2ea169c9ee84bb1f189416353acb06ecbb1ba"
+id = "blake3:6dd4dc40cb2d6dcbb7061425de857dcf42f3d067c65afe3b9078249b778a0361"
 seed = "0x2e0e000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 selectable_declarations_per_node = 4096
@@ -238,7 +238,7 @@ kind = "ram"
 page_bytes = 4096
 
 [plan]
-id = "blake3:312760a71001cc7d960e0eaad7a3c09538e4e36df60fa693fbcd665fd26f7bf6"
+id = "blake3:772dbc20e7b2fe4cc8dcb80971a35b112dc074c076aaff3d715185df188d4da4"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -521,7 +521,6 @@ search_candidates_per_choice = 256
 search_choices_per_state = 65536
 trace_mutation_windows = 65536
 mapping_mutation_points = 65536
-minimization_attempts = 1048576
 
 [[plan.event]]
 id = "pass-on-workload-and-io"

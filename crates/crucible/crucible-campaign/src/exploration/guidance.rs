@@ -18,26 +18,19 @@ use crate::{
 /// One whole unit in the campaign fixed-point representation.
 pub const GUIDANCE_MICROS_PER_UNIT: u64 = 1_000_000;
 
-/// Maximum completed visits folded into one branch-edge visit projection.
-pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS: u64 = 65_536;
+/// Fixed scale `Q` of the inverse-frequency coverage rarity term.
+///
+/// Each occurrence of coverage identity `i` in a credited observation
+/// contributes `max(1, floor(Q / f(i)))`, where `f(i)` is the identity's
+/// global canonical-observation frequency. The scale is independent of
+/// campaign length; frequencies beyond `Q` contribute one.
+pub const BRANCH_RARITY_SCALE: u64 = 65_536;
 
-/// Maximum canonical evidence bytes folded into one edge-visit projection.
-pub const MAX_BRANCH_EDGE_VISIT_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
-
-/// Maximum canonical work bytes inspected by one branch novelty projection.
-pub const MAX_BRANCH_NOVELTY_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
-
-/// Maximum observation-root entries scanned by one branch novelty projection.
-pub const MAX_BRANCH_NOVELTY_ROOT_ENTRIES: u64 = 1_000_000;
-
-/// Maximum canonical observations inspected by one branch novelty projection.
-pub const MAX_BRANCH_NOVELTY_OBSERVATIONS: u64 = 65_536;
-
-/// Maximum coverage-identity visits charged by one branch novelty projection.
-pub const MAX_BRANCH_NOVELTY_IDENTITY_VISITS: u64 = 1_000_000;
-
-/// Maximum branch-relevant unique identities retained during novelty projection.
-pub const MAX_BRANCH_NOVELTY_IDENTITIES: usize = 65_536;
+/// Maximum distinct completed edges retained for one branch point.
+///
+/// Branch projections hold one accumulator per completed edge, so this bounds
+/// projection memory by the branch point's fan-out rather than its visits.
+pub const MAX_BRANCH_PROJECTION_EDGES: usize = 65_536;
 
 /// Maximum canonical finding bytes folded into one branch reward projection.
 pub const MAX_BRANCH_FINDING_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
@@ -47,12 +40,6 @@ pub const MAX_BRANCH_FINDING_ROOT_ENTRIES: u64 = 65_536;
 
 /// Maximum finding-occurrence entries scanned by one branch reward projection.
 pub const MAX_BRANCH_FINDING_OCCURRENCE_VISITS: u64 = 1_000_000;
-
-/// Maximum unique objective evaluations folded into one branch projection batch.
-pub const MAX_BRANCH_OBJECTIVE_EVALUATIONS: usize = 65_536;
-
-/// Maximum canonical evaluation-basis bytes folded into one projection batch.
-pub const MAX_BRANCH_OBJECTIVE_PROJECTION_BYTES: usize = 128 * 1024 * 1024;
 
 /// Maximum completed-edge visits used to derive distinct prospective priors.
 pub const MAX_BRANCH_PRIOR_NORMALIZATION_VISITS: usize = 1_000_000;
@@ -70,8 +57,8 @@ impl BranchEdgeVisitStatistics {
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignCodecError::LimitExceeded`] when the visit or edge
-    /// count exceeds the projection ceiling, or
+    /// Returns [`CampaignCodecError::LimitExceeded`] when the edge count
+    /// exceeds [`MAX_BRANCH_PROJECTION_EDGES`], or
     /// [`CampaignCodecError::InvalidValue`] when edge visits do not sum to the
     /// parent count or a retained edge has zero visits.
     pub fn new(
@@ -79,9 +66,7 @@ impl BranchEdgeVisitStatistics {
         parent_visits: u64,
         edge_visits: BTreeMap<BranchEdgeId, u64>,
     ) -> Result<Self, CampaignCodecError> {
-        if parent_visits > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS
-            || edge_visits.len() > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize
-        {
+        if edge_visits.len() > MAX_BRANCH_PROJECTION_EDGES {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "branch-edge-visit-projection-count",
             });
@@ -497,7 +482,7 @@ impl BranchPuctProjection {
                 .ok_or(CampaignCodecError::LimitExceeded {
                     limit: "branch-edge-visit-projection-count",
                 })?;
-        if edge_count > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize {
+        if edge_count > MAX_BRANCH_PROJECTION_EDGES {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "branch-edge-visit-projection-count",
             });
@@ -606,7 +591,7 @@ fn uniform_prior_weights(
 fn normalize_prior_weights(
     weights: &BTreeMap<BranchEdgeId, u64>,
 ) -> Result<BTreeMap<BranchEdgeId, u64>, CampaignCodecError> {
-    if weights.len() > MAX_BRANCH_EDGE_VISIT_PROJECTION_CREDITS as usize {
+    if weights.len() > MAX_BRANCH_PROJECTION_EDGES {
         return Err(CampaignCodecError::LimitExceeded {
             limit: "branch-edge-visit-projection-count",
         });

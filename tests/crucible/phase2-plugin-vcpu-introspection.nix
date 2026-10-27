@@ -5,8 +5,7 @@
   taskIds ? ["T-PLUG-26"],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginVcpu = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/vcpu_introspection.rs;
@@ -216,109 +215,31 @@ in
   if failures != []
   then throw "crucible phase2 plugin vCPU introspection check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-vcpu-introspection";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-vcpu-introspection";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            target_dir="$TMPDIR/crucible-plugin-vcpu-introspection-target"
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               vcpu_introspection::tests::vcpu_introspection_requires_register_and_cursor_capabilities \
-              vcpu_introspection::tests::vcpu_introspection_requires_register_and_cursor_capabilities
-            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_reads_all_vcpu_registers_and_rr_cursor \
-              vcpu_introspection::tests::vcpu_introspection_reads_all_vcpu_registers_and_rr_cursor
-            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_converts_reader_output_to_protocol_snapshot \
-              vcpu_introspection::tests::vcpu_introspection_converts_reader_output_to_protocol_snapshot
-            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_rejects_bad_cursor_before_register_reads \
-              vcpu_introspection::tests::vcpu_introspection_rejects_bad_cursor_before_register_reads
-            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_register_digest_is_stable_and_vcpu_qualified \
-              vcpu_introspection::tests::vcpu_introspection_register_digest_is_stable_and_vcpu_qualified
-            run_exact_test \
               vcpu_introspection::tests::vcpu_introspection_cursor_can_be_derived_from_local_round_robin_state \
-              vcpu_introspection::tests::vcpu_introspection_cursor_can_be_derived_from_local_round_robin_state
-            run_exact_test \
-              abi::tests::capabilities::abi_install_requires_vcpu_introspection_symbols \
               abi::tests::capabilities::abi_install_requires_vcpu_introspection_symbols
           '';
         }

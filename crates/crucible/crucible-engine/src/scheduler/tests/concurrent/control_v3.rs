@@ -1,4 +1,4 @@
-//! Explicit control-3 dispatch and strict unclassified Source regressions.
+//! Explicit bounded control dispatch and strict unclassified Source regressions.
 
 use super::*;
 
@@ -139,7 +139,9 @@ fn control_v3_preserves_bounded_deadlines_and_serial_parallel_canonical_order() 
         .iter()
         .map(|run| (run.node().name.as_str(), run.ceiling().ticks))
         .collect::<Vec<_>>();
-    assert_eq!(ceilings, vec![("a", 5), ("b", 5)]);
+    // Each node runs to its own bound: `a` strictly before `b`'s earliest
+    // delivery, `b` to its timer. `a` then catches up to `b`'s publication.
+    assert_eq!(ceilings, vec![("a", 5), ("b", 10), ("a", 10)]);
     assert!(
         parallel.backend().run_history[0]
             .admission
@@ -179,7 +181,7 @@ fn control_v3_refuses_horizon_results_outside_the_exact_published_ceiling() {
             )
             .unwrap_or_else(|error| panic!("bounded preparation: {error}"));
         for run in &mut prepared.runs {
-            run.dispatch_contract = crate::BackendDispatchContract::ControlV3;
+            run.dispatch_contract = crate::BackendDispatchContract::BoundedControl;
         }
         let completed = prepared
             .runs
@@ -396,7 +398,7 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
             .iter_mut()
             .find(|runtime| runtime.id.node.name == node)
             .expect("fixture node exists");
-        runtime.counter = NodeCounter { ticks: raw };
+        runtime.set_exact_clock(NodeCounter { ticks: raw });
         runtime.time_mapping = NodeTimeMapping {
             anchor_counter: runtime.counter,
             anchor_time: SimInstant { ticks: logical },
@@ -415,7 +417,7 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
         .prepare_host_concurrent_quantum_for_contract(
             request,
             2,
-            crate::BackendDispatchContract::ControlV3,
+            crate::BackendDispatchContract::BoundedControl,
         )
         .unwrap_or_else(|error| panic!("strict mapped preparation: {error}"));
 
@@ -429,4 +431,59 @@ fn control_v3_strict_delivery_cap_uses_shared_time_and_rebased_counter_floor() {
         control.runs[0].admission.dispatch_horizon().icount.retired,
         105
     );
+}
+
+#[test]
+fn control_v3_parked_producer_bounds_delivery_from_the_live_frontier() {
+    let nodes = [("a", 7), ("b", 2)]
+        .into_iter()
+        .map(|(name, counter)| {
+            test_scenario_node(
+                name,
+                counter,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::TimerDeadline {
+                    virtual_time: SimInstant { ticks: 10 },
+                },
+            )
+        })
+        .collect();
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "control-v3-parked-producer",
+        64,
+        SimInstant { ticks: 64 },
+        nodes,
+        Vec::new(),
+    )
+    .with_effective_topology_edges(vec![SchedulerLookaheadEdge::new(
+        scheduler_node("b", SchedulingNodeKind::Vm),
+        scheduler_node("a", SchedulingNodeKind::Vm),
+        SimDuration { ticks: 6 },
+    )]);
+    let mut scheduler = SingleScheduler::new(scenario)
+        .unwrap_or_else(|error| panic!("parked producer fixture: {error}"));
+    scheduler
+        .park_campaign_marker_node(&NodeId {
+            name: String::from("b"),
+        })
+        .unwrap_or_else(|error| panic!("producer should park: {error}"));
+    assert_eq!(scheduler.frontier(), VirtualTime { ticks: 7 });
+    let request = QuantumRequest {
+        configuration: scheduler.configuration().clone(),
+        control: Vec::new(),
+    };
+
+    // The frozen park at 2 would cap `a` at 2 + 6 - 1 = 7, its current time.
+    let control = scheduler
+        .prepare_host_concurrent_quantum_for_contract(
+            request,
+            2,
+            crate::BackendDispatchContract::BoundedControl,
+        )
+        .unwrap_or_else(|error| panic!("parked producer must not pin its consumer: {error}"));
+
+    assert_eq!(control.runs.len(), 1);
+    assert_eq!(control.runs[0].plan.node.node.name, "a");
+    assert_eq!(control.runs[0].plan.projected_target_time.ticks, 10);
 }

@@ -146,33 +146,37 @@ impl QemuLiveHostIoRuntime {
         deadline: &HostSupervisionDeadline,
         maximum_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let last_ack = loop {
+        let mut last_ack = None;
+        loop {
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 deadline,
                 timeout,
                 "await fault result publication fence",
             )?;
-            self.service_console_output()?;
-            let snapshot = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(super::map_slot_error)?
-                .snapshot();
+            let Some(snapshot) = self.wait_node_snapshot(|| deadline.remaining())? else {
+                break;
+            };
+            last_ack = Some(snapshot.control_boundary_ack);
             if control_boundary_request_is_acknowledged(request, &snapshot) {
                 return Ok(());
             }
             if !deadline.has_time_remaining() {
-                break snapshot.control_boundary_ack;
+                break;
             }
             self.write_wake_doorbell()?;
-            thread::sleep(self.poll_interval);
-        };
+            // The acknowledgement signals the host publication word.
+            let Some(remaining) = deadline.remaining() else {
+                break;
+            };
+            self.wait_for_poll_interval(remaining);
+        }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result publication fence",
             format!(
                 "QEMU did not finish fault result/event pump for control token {} within {timeout:?}; last acknowledgement {}",
-                request.generation, last_ack
+                request.generation,
+                last_ack.map_or_else(|| String::from("unavailable"), |ack| ack.to_string())
             ),
         ))
     }
@@ -192,7 +196,7 @@ impl QemuLiveHostIoRuntime {
         }
         let deadline = HostSupervisionDeadline::start(timeout);
         loop {
-            let request = self.signal_wake(None)?;
+            let request = self.signal_wake_within(None, &deadline)?;
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 &deadline,
@@ -234,6 +238,7 @@ impl QemuLiveHostIoRuntime {
             if !deadline.has_time_remaining() {
                 break;
             }
+            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
             thread::sleep(self.poll_interval);
         }
         Err(QemuAsyncDriverRuntimeError::new(
@@ -258,7 +263,7 @@ impl QemuLiveHostIoRuntime {
         let deadline = HostSupervisionDeadline::start(timeout);
         let mut payload_buffer = Vec::new();
         loop {
-            let request = self.signal_wake(None)?;
+            let request = self.signal_wake_within(None, &deadline)?;
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 &deadline,
@@ -320,6 +325,7 @@ impl QemuLiveHostIoRuntime {
             if !deadline.has_time_remaining() {
                 break;
             }
+            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
             thread::sleep(self.poll_interval);
         }
         Err(QemuAsyncDriverRuntimeError::new(

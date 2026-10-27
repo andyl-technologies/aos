@@ -6,6 +6,11 @@
 //! installer. The runner starts from the captured scheduler boundary, performs
 //! ordinary modeled execution, shuts down every adopted node, and retains the
 //! source and aggregate target authorities until durable publication.
+//!
+//! A branch from a published parent with no retained root may instead lease
+//! the deepest published root at a strict ancestor of that parent. The child
+//! then replays the recorded suffix with the same start-replay function thin
+//! replay uses; the `ancestor` module owns that eligibility policy.
 
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -23,19 +28,24 @@ use crate::{
 use crucible_campaign::{
     CampaignCodecError, CampaignLineageId, ExactCheckpointId, ExecutorCompatibilityProfile,
 };
-use crucible_engine::{ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass};
+use crucible_engine::{
+    Configuration, ContentHash, ScenarioDef, SchedulerError, SchedulerOperationalFailureClass,
+};
 use crucible_qemu_host::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuCrashDetector,
     QemuHotForkChildProcessOwner, QemuHotForkLaunchError, QemuNodeSetPreparedHotForkSource,
     QemuPreparedRunDirectory, QemuShutdownPolicy, QemuVmRealizationError,
 };
 
-use crate::managed_qemu_hot_fork_source_world_pool::QemuHotForkSourceWorldLease;
+use crate::managed_qemu_hot_fork_source_world_pool::{
+    QemuHotForkAncestorCheckout, QemuHotForkSourceWorldLease,
+};
 use crate::qemu_campaign_lifecycle::{
     QemuFreshScenarioResourceError, QemuObservedFreshAttemptLifecycle,
     QemuObservedFreshAttemptLifecycleFactory, QemuObservedFreshAttemptLifecycleFactoryError,
     validate_fresh_qemu_scenario_resources,
 };
+use crate::qemu_hot_fork_source_capture::QemuPublishedRootProvenance;
 use crate::qemu_hot_fork_world::QemuHotForkProductionLifecycleContext;
 use crate::supervision::ProcessDeadline;
 use crate::{
@@ -68,6 +78,11 @@ pub(crate) enum QemuHotForkSourceWorldBoundary {
     CanonicalGenesis,
     /// The source is at one completely authenticated exact-checkpoint boundary.
     ExactCheckpoint(ExactCheckpointId),
+    /// The source is a thin attempt's world kept at its published child boundary.
+    ///
+    /// The configuration is the child of a durably accepted observation, whose
+    /// stored configuration artifact is the source's thin fallback.
+    PublishedBoundary,
 }
 
 /// Failure while deriving the exact retained-source lookup key for an attempt.
@@ -115,6 +130,22 @@ impl QemuHotForkSourceWorldKey {
         }
     }
 
+    /// Binds a retained world to the published child boundary of a thin attempt.
+    #[must_use]
+    pub(crate) const fn new_published(
+        lineage: CampaignLineageId,
+        scenario: ContentHash,
+        configuration: ContentHash,
+        profile: ExecutorCompatibilityProfile,
+    ) -> Self {
+        Self {
+            template: crate::HotCheckpointPoolKey::new(lineage, configuration),
+            scenario,
+            profile,
+            boundary: QemuHotForkSourceWorldBoundary::PublishedBoundary,
+        }
+    }
+
     /// Returns the lineage and paused-source identity used by shared accounting.
     #[must_use]
     pub const fn template_key(&self) -> crate::HotCheckpointPoolKey {
@@ -139,6 +170,17 @@ impl QemuHotForkSourceWorldKey {
         self.boundary
     }
 
+    /// Returns whether both keys share lineage, scenario, and executor profile.
+    ///
+    /// Keys with a shared basis differ only in where their source is paused,
+    /// so a world under one may stand in for an ancestor of the other.
+    #[must_use]
+    pub(crate) fn shares_basis_with(&self, other: &Self) -> bool {
+        self.template.lineage() == other.template.lineage()
+            && self.scenario == other.scenario
+            && self.profile == other.profile
+    }
+
     fn for_execution(
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
@@ -160,9 +202,19 @@ impl QemuHotForkSourceWorldKey {
         };
         let scenario = input.scenario().scenario_def().id();
         let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+        // Only a branch from a later parent can reuse a published-boundary
+        // root. Discovery keeps the genesis key: continuing a configuration
+        // from a retained world is proven only for a recorded branch edge.
+        let published_parent = matches!(
+            input.start(),
+            crate::CrucibleResolvedAttemptStart::Branch { parent, .. } if !parent.is_genesis()
+        );
         Ok(match context.resume_checkpoint() {
             Some(checkpoint) => {
                 Self::new_exact(lineage, scenario, configuration, profile, checkpoint)
+            }
+            None if published_parent => {
+                Self::new_published(lineage, scenario, configuration, profile)
             }
             None => Self::new(lineage, scenario, configuration, profile),
         })
@@ -239,6 +291,25 @@ pub(crate) trait QemuHotForkSourceWorldProvider:
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
         let _ = (input, context);
         self.checkout(key)
+    }
+
+    /// Leases the deepest eligible published root at a strict ancestor of `parent`.
+    ///
+    /// `key` is the attempt's own published key at `parent`, and `eligible`
+    /// is the caller's suffix policy over each candidate root's provenance.
+    /// Providers without published roots never offer an ancestor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability failure without removing a source world.
+    fn checkout_ancestor(
+        &mut self,
+        key: &QemuHotForkSourceWorldKey,
+        parent: &crucible_engine::Configuration,
+        eligible: &dyn Fn(&QemuPublishedRootProvenance) -> bool,
+    ) -> Result<Option<QemuHotForkAncestorCheckout>, Self::Error> {
+        let _ = (key, parent, eligible);
+        Ok(None)
     }
 
     /// Classifies a checkout failure for the attempt supervisor.
@@ -417,6 +488,15 @@ pub(crate) trait QemuHotForkWorldLifecycleOwner:
         &mut self,
         disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError>;
+
+    /// Returns where the forked source sits relative to the attempt's start.
+    ///
+    /// The runner replays a suffix only for an ancestor origin and checks the
+    /// lifecycle stands at that origin first, so every owner, including each
+    /// wrapper, must report the origin of the lifecycle it holds. There is
+    /// deliberately no default.
+    #[must_use]
+    fn start_origin(&self) -> QemuHotForkStartOrigin;
 }
 
 impl<G> QemuHotForkWorldLifecycleOwner for QemuProductionHotForkWorldLifecycle<G>
@@ -438,6 +518,10 @@ where
         disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError> {
         QemuProductionHotForkWorldLifecycle::reconcile_execution_disposition(self, disposition)
+    }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        QemuProductionHotForkWorldLifecycle::start_origin(self).clone()
     }
 }
 
@@ -462,6 +546,10 @@ where
         self.lifecycle_mut()
             .reconcile_execution_disposition(disposition)
     }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        self.lifecycle().start_origin()
+    }
 }
 
 impl<F> QemuHotForkWorldLifecycleFactory for QemuObservedFreshAttemptLifecycleFactory<F>
@@ -478,7 +566,7 @@ where
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         let fingerprint_nodes = self
-            .prepare_observation(input.scenario())
+            .prepare_observation(input.scenario(), context)
             .map_err(|failure| {
                 failure.map(QemuObservedFreshAttemptLifecycleFactoryError::Evidence)
             })?;
@@ -522,6 +610,7 @@ where
     run_state_root: PathBuf,
     shutdown_policy: QemuShutdownPolicy,
     async_policy: QemuAsyncDriverPolicy,
+    stopped_restore_ack: Option<crucible_qemu_host::QemuStoppedRestoreAckCapability>,
     #[cfg(test)]
     node_launch_nanoseconds: Vec<(String, u64)>,
 }
@@ -548,9 +637,24 @@ where
             run_state_root: run_state_root.into(),
             shutdown_policy,
             async_policy,
+            stopped_restore_ack: None,
             #[cfg(test)]
             node_launch_nanoseconds: Vec::new(),
         }
+    }
+
+    /// Retains stopped-Restore support from the selected source launch pair.
+    ///
+    /// The packaged executor checks that pair against its actual lifecycle
+    /// paths before constructing this factory. A missing receipt keeps
+    /// console Restore unsupported; non-console installation remains valid.
+    #[must_use]
+    pub fn with_stopped_restore_ack(
+        mut self,
+        capability: crucible_qemu_host::QemuStoppedRestoreAckCapability,
+    ) -> Self {
+        self.stopped_restore_ack = Some(capability);
+        self
     }
 
     /// Selects the campaign store used for recoverable terminal restarts.
@@ -633,6 +737,30 @@ where
     target: QemuHotForkWorldNodeTarget<G>,
     run_directory: QemuPreparedRunDirectory,
     assembly: crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken,
+}
+
+/// Names why a whole-world hot fork declined an attempt.
+///
+/// A decline is not a failure: the router falls back to an anchored or thin
+/// replay. The row tells an operator which replay ran and why.
+/// Writes one hot-fork decline with its stable reason and optional error text.
+///
+/// ```text
+/// CRUCIBLE-HOT-FORK-DECLINE-V1 reason=<token>[ detail="<error>"]
+/// ```
+pub(crate) fn note_hot_fork_decline(refusal: impl Into<crate::HotForkRefusal>) {
+    use std::io::Write as _;
+
+    let refusal = refusal.into();
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-DECLINE-V1 {refusal}"
+    );
+}
+
+/// Writes one hot-fork decline caused by `detail`, an error a check returned.
+pub(crate) fn note_hot_fork_decline_with(reason: &'static str, detail: impl std::fmt::Display) {
+    note_hot_fork_decline(crate::HotForkRefusal::with_detail(reason, detail));
 }
 
 // Native acceptance records this operational duration only in cfg(test); it
@@ -744,6 +872,7 @@ where
             input.start(),
             crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
         ) {
+            note_hot_fork_decline("after-attempt-start");
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
         let runtime_basis = context
@@ -755,25 +884,29 @@ where
         let scenario = input.scenario().scenario_def();
         let source_key = QemuHotForkSourceWorldKey::for_execution(input, context, runtime_basis)
             .map_err(|error| AttemptWorkerFailure::Terminal(Self::Error::SourceKey(error)))?;
-        let Some(source_lease) = self
+        // A child of a published root inherits the root's configuration, so
+        // it cannot replay an edge that only lifecycle configuration serves.
+        if let crate::CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } = input.start()
+            && source_key.boundary() == QemuHotForkSourceWorldBoundary::PublishedBoundary
+        {
+            let edge = parent.schedule.len();
+            if ancestor::configuration_carried_decision(input, selected, edge, edge).is_some() {
+                note_hot_fork_decline("configuration-carried-edge");
+                return Ok(QemuHotForkWorldLifecycleStart::Declined);
+            }
+        }
+        let exact = self
             .sources
             .checkout_for_attempt(input, context, &source_key)
-            .map_err(|error| {
-                let class = S::failure_class(&error);
-                let error = Self::Error::SourceProvider(error);
-                match class {
-                    SchedulerOperationalFailureClass::Retryable => {
-                        AttemptWorkerFailure::Retryable(error)
-                    }
-                    SchedulerOperationalFailureClass::Canceled => {
-                        AttemptWorkerFailure::Canceled(error)
-                    }
-                    SchedulerOperationalFailureClass::Terminal => {
-                        AttemptWorkerFailure::Terminal(error)
-                    }
-                }
-            })?
-        else {
+            .map_err(map_source_provider_failure::<S>)?;
+        let checkout = match exact {
+            Some(lease) => Some((lease, source_key, QemuHotForkStartOrigin::Exact)),
+            None => self.checkout_published_ancestor(input, &source_key)?,
+        };
+        let Some((source_lease, source_key, start_origin)) = checkout else {
+            note_hot_fork_decline("no-exact-or-ancestor-source");
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
         let source_world = source_lease.source_owner();
@@ -787,13 +920,22 @@ where
                 )));
             }
         };
+        let source_configuration = source.continuation().configuration().id();
         let source_matches = source.continuation().configuration().def.id()
             == source_key.scenario()
-            && source.continuation().configuration().id() == source_key.configuration();
+            && source_configuration == source_key.configuration();
         if !source_matches {
             drop(source);
             drop(source_world);
             self.sources.restore(source_lease);
+            note_hot_fork_decline(crate::HotForkRefusal::with_detail(
+                "source-configuration-mismatch",
+                format!(
+                    "source={} key={}",
+                    source_configuration.to_hex(),
+                    source_key.configuration().to_hex()
+                ),
+            ));
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
         let continuation = match source.fork_continuation() {
@@ -808,6 +950,22 @@ where
             }
         };
         drop(source);
+        // The attempt's network branches must restore at the source boundary;
+        // a refusal here returns the source before any child exists.
+        let continuation =
+            match continuation.admit_attempt_fault_replay(input.signal_fault_replay()) {
+                Ok(Some(replay)) => continuation.with_attempt_fault_replay(replay),
+                Ok(None) => continuation,
+                Err(reason) => {
+                    drop(source_world);
+                    self.sources.restore(source_lease);
+                    note_hot_fork_decline(crate::HotForkRefusal::with_detail(
+                        "attempt-network-replay-mismatch",
+                        reason,
+                    ));
+                    return Ok(QemuHotForkWorldLifecycleStart::Declined);
+                }
+            };
         let mut guard =
             match self
                 .resources
@@ -861,7 +1019,12 @@ where
         {
             self.sources.abandon();
         }
-        outcome.result
+        outcome.result.map(|started| match started {
+            QemuHotForkWorldLifecycleStart::Started(lifecycle) => {
+                QemuHotForkWorldLifecycleStart::Started(lifecycle.with_start_origin(start_origin))
+            }
+            QemuHotForkWorldLifecycleStart::Declined => QemuHotForkWorldLifecycleStart::Declined,
+        })
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
@@ -890,6 +1053,69 @@ where
         + Send
         + 'static,
 {
+    /// Leases the deepest published root below a branch parent with no root.
+    ///
+    /// Records one ancestor diagnostic whenever a published-boundary attempt
+    /// misses its exact root, naming the deepest refused candidate if any.
+    fn checkout_published_ancestor(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        key: &QemuHotForkSourceWorldKey,
+    ) -> Result<
+        Option<SourceCheckout>,
+        AttemptWorkerFailure<QemuProductionHotForkWorldLifecycleFactoryError<S::Error>>,
+    > {
+        let crate::CrucibleResolvedAttemptStart::Branch {
+            parent, selected, ..
+        } = input.start()
+        else {
+            return Ok(None);
+        };
+        if key.boundary() != QemuHotForkSourceWorldBoundary::PublishedBoundary {
+            return Ok(None);
+        }
+
+        // The pool evaluates candidates without exposing them; remember the
+        // deepest refusal so the diagnostic can name why it was skipped.
+        let refused = std::cell::RefCell::new(None::<(Configuration, &'static str)>);
+        let eligible = |provenance: &QemuPublishedRootProvenance| {
+            let refusal = ancestor::ancestor_suffix_refusal(input, parent, selected, provenance);
+            if let Some(reason) = refusal {
+                let mut deepest = refused.borrow_mut();
+                let deeper = deepest.as_ref().is_none_or(|(anchor, _)| {
+                    anchor.schedule.len() < provenance.configuration().schedule.len()
+                });
+                if deeper {
+                    *deepest = Some((provenance.configuration().clone(), reason));
+                }
+            }
+            refusal.is_none()
+        };
+        let checkout = self
+            .sources
+            .checkout_ancestor(key, parent, &eligible)
+            .map_err(map_source_provider_failure::<S>)?;
+
+        let Some(checkout) = checkout else {
+            let (anchor, reason) = refused
+                .into_inner()
+                .map_or((None, "ancestor-absent"), |(anchor, reason)| {
+                    (Some(anchor), reason)
+                });
+            let suffix = anchor.as_ref().map_or(0, |anchor| {
+                parent.schedule.len().saturating_sub(anchor.schedule.len())
+            });
+            ancestor::record_ancestor_decision(input, anchor.as_ref(), suffix, "skipped", reason);
+            return Ok(None);
+        };
+        let (lease, ancestor_key, provenance) = checkout.into_parts();
+        let origin = QemuHotForkStartOrigin::Ancestor {
+            anchor: Arc::new(provenance.configuration().clone()),
+            root: provenance.origin(),
+        };
+        Ok(Some((lease, ancestor_key, origin)))
+    }
+
     // crucible-lint: allow rust-allow -- the transaction inputs remain explicit at the sole whole-world launch boundary.
     #[allow(clippy::too_many_arguments)]
     fn launch_complete_world(
@@ -1096,6 +1322,7 @@ where
                 self.shutdown_policy,
                 async_policy,
                 QemuCrashDetector::new(node.name.clone()),
+                self.stopped_restore_ack.as_ref(),
             ) {
                 let message = error.to_string();
                 quarantine_failed_assembly(source_world, resources, assembly, Some(child));
@@ -1598,8 +1825,33 @@ fn quarantine_failed_assembly<G>(
     let _retained_for_process_lifetime = Box::leak(Box::new(quarantine));
 }
 
+/// One leased source, the key it was checked out under, and its start origin.
+type SourceCheckout = (
+    QemuHotForkSourceWorldLease,
+    QemuHotForkSourceWorldKey,
+    QemuHotForkStartOrigin,
+);
+
+/// Classifies a source-provider checkout failure for the attempt supervisor.
+fn map_source_provider_failure<S>(
+    error: S::Error,
+) -> AttemptWorkerFailure<QemuProductionHotForkWorldLifecycleFactoryError<S::Error>>
+where
+    S: QemuHotForkSourceWorldProvider,
+{
+    let class = S::failure_class(&error);
+    let error = QemuProductionHotForkWorldLifecycleFactoryError::SourceProvider(error);
+    match class {
+        SchedulerOperationalFailureClass::Retryable => AttemptWorkerFailure::Retryable(error),
+        SchedulerOperationalFailureClass::Canceled => AttemptWorkerFailure::Canceled(error),
+        SchedulerOperationalFailureClass::Terminal => AttemptWorkerFailure::Terminal(error),
+    }
+}
+
+mod ancestor;
 mod runner;
 
+pub(crate) use ancestor::{QemuHotForkStartOrigin, configuration_carried_decision};
 pub(crate) use runner::{
     AttemptWorkerFailureExt, QemuHotForkWorldExecutionAttempt, QemuHotForkWorldExecutionRunner,
     QemuHotForkWorldExecutionRunnerError,

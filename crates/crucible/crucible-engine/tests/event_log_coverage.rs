@@ -46,10 +46,11 @@ fn rng_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("coverage-projection"),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("coverage-projection"),
+            0,
             value,
-        })),
+        ))),
     )
 }
 
@@ -207,10 +208,11 @@ fn graph_cache_snapshot_stamps_checkpoint_coverage_from_event_log_projection() {
     let genesis = Configuration::genesis(scenario);
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("graph-cache-stamping"),
-            value: 99,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("graph-cache-stamping"),
+            0,
+            99
+        )),
     );
     let coverage_log = vec![
         observation_entry(
@@ -278,10 +280,11 @@ fn delayed_checkpoint_closure_preserves_cached_coverage_fingerprint() {
     let genesis = Configuration::genesis(scenario);
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("delayed-closure-stamping"),
-            value: 101,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("delayed-closure-stamping"),
+            0,
+            101
+        )),
     );
     let coverage_log = vec![observation_entry(
         0,

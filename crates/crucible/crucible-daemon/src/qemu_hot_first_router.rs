@@ -4,6 +4,33 @@
 //! an explicit decline to the configured lower-tier runner. Durable checkpoint
 //! resumes bypass hot fork, and the selected route retains exclusive semantic
 //! reconciliation ownership until completion.
+//!
+//! Between a hot decline and thin replay, the lower tier may keep an anchor
+//! root at the attempt's network fault branch parent. Once one is admitted,
+//! the execution ends as retryable without running anything else:
+//!
+//! ```text
+//! hot --executed or failed---------------------> HotFork (or the failure)
+//!  `--declined--> anchor --admitted-------------> Retryable
+//!                   `--declined-------------------> thin
+//! ```
+//!
+//! # Anchored executions
+//!
+//! Anchoring replays the attempt's prefix to its parent and charges those
+//! quanta to the current execution. Running the attempt after that, hot or
+//! thin, in the same execution could exhaust a budget the attempt would have
+//! passed with thin replay alone and turn it into a terminal resource
+//! refusal. The router therefore never continues an anchored execution. The
+//! requeued execution starts with a full budget and finds the kept root, so
+//! its hot child spends only the attempt's own quanta, never more than thin
+//! replay of the whole attempt would.
+//!
+//! The requeued execution routes like any other, and every hot failure
+//! there, terminal, canceled, or retryable, propagates unchanged. Each attempt
+//! anchors at most once: the anchor tier claims the attempt before it replays
+//! or reports a retained root, so when hot fork declines again (the root was
+//! invalidated or could not be leased) the attempt replays thin.
 
 use crucible_campaign::AttemptStartMode;
 
@@ -11,9 +38,9 @@ use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
     AttemptWorkerFailure, CrucibleAttemptExecution, CrucibleExecutionOutcome,
-    CrucibleExecutionRunner, QemuFreshAttemptDriver, QemuHotForkWorldExecutionAttempt,
-    QemuHotForkWorldExecutionRunner, QemuHotForkWorldExecutionRunnerError,
-    QemuHotForkWorldLifecycleFactory,
+    CrucibleExecutionRunner, QemuAnchorRootMaterializer, QemuAnchorRootOutcome,
+    QemuFreshAttemptDriver, QemuHotForkWorldExecutionAttempt, QemuHotForkWorldExecutionRunner,
+    QemuHotForkWorldExecutionRunnerError, QemuHotForkWorldLifecycleFactory,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +79,71 @@ where
     }
 }
 
+type RouterFailure<F, D, R> = AttemptWorkerFailure<
+    QemuHotFirstExecutionRouterError<
+        QemuHotForkWorldExecutionRunnerError<
+            <F as QemuHotForkWorldLifecycleFactory>::Error,
+            <D as QemuFreshAttemptDriver>::Error,
+        >,
+        <R as CrucibleExecutionRunner>::Error,
+    >,
+>;
+
+impl<F, D, R> QemuHotFirstExecutionRouter<F, D, R>
+where
+    F: QemuHotForkWorldLifecycleFactory,
+    D: QemuFreshAttemptDriver,
+    R: QemuAnchorRootMaterializer,
+{
+    /// Runs the attempt hot, or keeps an anchor root for its next execution.
+    ///
+    /// Returns `None` when the attempt should replay thin.
+    ///
+    /// # Errors
+    ///
+    /// Returns every hot or anchoring failure unchanged, and
+    /// [`QemuHotFirstExecutionRouterError::AnchorRootAdmitted`] as retryable
+    /// once an anchor root is kept.
+    fn try_hot_fork(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<Option<CrucibleExecutionOutcome>, RouterFailure<F, D, R>> {
+        if let Some(outcome) = self.hot_attempt(input, context)? {
+            return Ok(Some(outcome));
+        }
+
+        let anchored = self
+            .fallback
+            .materialize_anchor_root(input, context)
+            .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::Fallback))?;
+        match anchored {
+            QemuAnchorRootOutcome::Declined(_) => Ok(None),
+            // The anchoring replay already spent part of this budget; the
+            // attempt runs again from the kept root with a full one.
+            QemuAnchorRootOutcome::Admitted => Err(AttemptWorkerFailure::Retryable(
+                QemuHotFirstExecutionRouterError::AnchorRootAdmitted,
+            )),
+        }
+    }
+
+    /// Runs one hot-fork attempt; `None` is an explicit decline.
+    fn hot_attempt(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<Option<CrucibleExecutionOutcome>, RouterFailure<F, D, R>> {
+        match self
+            .hot_fork
+            .try_execute(input, context)
+            .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::HotFork))?
+        {
+            QemuHotForkWorldExecutionAttempt::Declined => Ok(None),
+            QemuHotForkWorldExecutionAttempt::Executed(outcome) => Ok(Some(outcome)),
+        }
+    }
+}
+
 /// Failure from hot-first materialization routing or its selected runner.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum QemuHotFirstExecutionRouterError<H, R> {
@@ -64,6 +156,10 @@ pub(crate) enum QemuHotFirstExecutionRouterError<H, R> {
     /// Exact-origin fallback execution failed.
     #[error("fallback QEMU execution failed")]
     Fallback(#[source] R),
+    /// An anchor root was kept; the attempt runs again from it with a full
+    /// execution budget.
+    #[error("hot-first QEMU router kept an anchor root; the attempt runs again from it")]
+    AnchorRootAdmitted,
     /// Reconciliation arrived before any successful routed execution.
     #[error("hot-first QEMU router has no pending reconciliation")]
     NoPendingReconciliation,
@@ -73,7 +169,7 @@ impl<F, D, R> CrucibleExecutionRunner for QemuHotFirstExecutionRouter<F, D, R>
 where
     F: QemuHotForkWorldLifecycleFactory,
     D: QemuFreshAttemptDriver,
-    R: CrucibleExecutionRunner,
+    R: QemuAnchorRootMaterializer,
 {
     type Error = QemuHotFirstExecutionRouterError<
         QemuHotForkWorldExecutionRunnerError<F::Error, D::Error>,
@@ -93,18 +189,10 @@ where
 
         if context.resume_checkpoint().is_none()
             && context.start_mode() == AttemptStartMode::Execute
+            && let Some(outcome) = self.try_hot_fork(input, context)?
         {
-            match self
-                .hot_fork
-                .try_execute(input, context)
-                .map_err(|failure| failure.map(QemuHotFirstExecutionRouterError::HotFork))?
-            {
-                QemuHotForkWorldExecutionAttempt::Declined => {}
-                QemuHotForkWorldExecutionAttempt::Executed(outcome) => {
-                    self.pending = Some(QemuHotFirstPendingRoute::HotFork);
-                    return Ok(outcome);
-                }
-            }
+            self.pending = Some(QemuHotFirstPendingRoute::HotFork);
+            return Ok(outcome);
         }
 
         let outcome = self
@@ -171,7 +259,7 @@ impl<F, D, R> crate::QemuSelectedOriginVerifier for QemuHotFirstExecutionRouter<
 where
     F: QemuHotForkWorldLifecycleFactory,
     D: QemuFreshAttemptDriver,
-    R: crate::QemuSelectedOriginVerifier,
+    R: crate::QemuSelectedOriginVerifier + QemuAnchorRootMaterializer,
 {
     fn verify_selected_origin(
         &mut self,
@@ -194,7 +282,7 @@ impl<F, D, R> crate::QemuAttemptStartVerifier for QemuHotFirstExecutionRouter<F,
 where
     F: QemuHotForkWorldLifecycleFactory,
     D: QemuFreshAttemptDriver,
-    R: crate::QemuAttemptStartVerifier,
+    R: crate::QemuAttemptStartVerifier + QemuAnchorRootMaterializer,
 {
     fn verify_attempt_start(
         &mut self,

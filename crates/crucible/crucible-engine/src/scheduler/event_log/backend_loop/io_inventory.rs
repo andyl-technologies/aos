@@ -13,6 +13,8 @@ where
         {
             return Ok(());
         }
+        // One staged copy covers every node. Each import mutates it in place,
+        // and any refusal returns before it replaces the live scheduler.
         let mut staged = SingleScheduler::clone(self.loop_impl.borrow());
         let nodes = staged
             .nodes
@@ -27,7 +29,7 @@ where
                     message: String::from("physical inventory returned a different requested node"),
                 });
             }
-            staged.import_initial_io_inventory(inventory)?;
+            staged.import_initial_io_inventory_into_staged(inventory)?;
         }
         *self.loop_impl.borrow_mut() = staged;
         Ok(())

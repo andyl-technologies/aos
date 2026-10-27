@@ -232,7 +232,7 @@ pub struct MaterializedState {
     /// The harness decision-RNG state: the position of every seeded per-entity
     /// RNG stream (04, 08), so the next `Decision::RngDraw` (05 §3) resolves
     /// identically on resume as it would have without the pause (05 [EXEC-13]).
-    pub decision_rng: DecisionRngState, // per-stream positions, forked by name-hash (04)
+    pub decision_rng: DecisionRngState, // per-stream positions, keyed by name (04)
 
     /// The byte offset into the totally-ordered event log (19) at which this
     /// checkpoint sits. A resume continues appending at this offset; the log
@@ -263,7 +263,7 @@ delta:
   points, 17). This is the state 05 [EXEC-13] requires to live inside the
   configuration.
 - **Harness decision-RNG state** — owned by 04/08: the position of each seeded
-  per-entity stream, forked by name-hash so unrelated `World` edits don't
+  per-entity stream, keyed by name so unrelated `World` edits don't
   perturb other streams (05 [EXEC-9]).
 - **Event-log offset** — owned by 19: the offset into the single totally-ordered
   log at which this node sits, plus a content reference to the shared log prefix.

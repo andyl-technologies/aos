@@ -48,7 +48,17 @@ struct ProductionLifecycleJournalPreflight {
     #[serde(rename = "phase")]
     _phase: IgnoredAny,
     nodes: CountedSequence,
-    completed_exits: CountedSequence,
+    exit_log: ProductionLifecycleExitLogPreflight,
+}
+
+#[derive(serde::Deserialize)]
+struct ProductionLifecycleExitLogPreflight {
+    #[serde(rename = "version")]
+    _version: IgnoredAny,
+    records: u64,
+    bytes: u64,
+    #[serde(rename = "chain_sha256")]
+    _chain_sha256: IgnoredAny,
 }
 
 struct CountedMap(u64);
@@ -196,13 +206,15 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
         )
         .into());
     }
+    // The exit log is charged from its recorded length; it is streamed only
+    // after admission, and never retained.
     let state_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let retained_log_bytes = preflight
+        .runtime_event_log_bytes
+        .checked_add(preflight.journal.exit_log.bytes)
+        .ok_or_else(|| String::from("preflight lifecycle event-log byte count overflow"))?;
     limits
-        .reserve(
-            "event_log_bytes",
-            preflight.runtime_event_log_bytes,
-            state_bytes,
-        )
+        .reserve("event_log_bytes", retained_log_bytes, state_bytes)
         .map_err(map_limit)?;
     for count in [
         preflight.manifest.processes.0,
@@ -215,7 +227,7 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
         .journal
         .nodes
         .0
-        .checked_add(preflight.journal.completed_exits.0)
+        .checked_add(preflight.journal.exit_log.records)
         .ok_or_else(|| String::from("preflight lifecycle event-record count overflow"))?;
     limits
         .reserve(
@@ -232,7 +244,6 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
         admitted_count("current process", preflight.manifest.processes.0)?,
         admitted_count("staged process", preflight.manifest.staged_processes.0)?,
         admitted_count("lifecycle node", preflight.journal.nodes.0)?,
-        admitted_count("completed exit", preflight.journal.completed_exits.0)?,
     );
     let state: ProductionRunState = match serde_json::from_slice(&bytes) {
         Ok(state) => state,
@@ -291,6 +302,12 @@ pub(in crate::vm_lifecycle) fn decode_prior_run_state(
             state_path.display()
         )
     })?;
+    exit_log::verify_lifecycle_exit_log(directory, &journal, limits).map_err(|error| {
+        format!(
+            "invalid prior lifecycle exit log for {}: {error}",
+            state_path.display()
+        )
+    })?;
     Ok((
         manifest,
         journal,
@@ -310,12 +327,15 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             journal.version
         ));
     }
-    let records = journal
-        .nodes
-        .len()
-        .checked_add(journal.completed_exits.len())
+    journal
+        .exit_log
+        .validate()
+        .map_err(|error| error.to_string())?;
+    let records = u64::try_from(journal.nodes.len())
+        .unwrap_or(u64::MAX)
+        .checked_add(journal.exit_log.records)
         .ok_or_else(|| String::from("lifecycle journal record count overflow"))?;
-    if u64::try_from(records).unwrap_or(u64::MAX) > limits.event_records {
+    if records > limits.event_records {
         return Err(format!(
             "lifecycle journal has {records} records above limit {}",
             limits.event_records
@@ -351,7 +371,7 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
         ));
     }
     if matches!(journal.phase, ProductionLifecycleJournalPhase::Idle)
-        && (journal.transaction != 0 || !journal.completed_exits.is_empty())
+        && (journal.transaction != 0 || journal.exit_log.records != 0)
     {
         return Err(String::from(
             "idle lifecycle journal cannot retain transaction history",
@@ -408,28 +428,26 @@ pub(in crate::vm_lifecycle) fn validate_recovered_lifecycle_journal(
             ));
         }
     }
-    for (index, exit) in journal.completed_exits.iter().enumerate() {
-        if exit.node.is_empty()
-            || exit.transaction == 0
-            || exit.transaction > journal.transaction
-            || exit.generation == 0
-            || !valid_completed_exit_transition(&exit.transition)
-            || !valid_lifecycle_hash(&exit.action_sha256)
-            || !valid_lifecycle_hash(&exit.evidence_sha256)
-            || expected_lifecycle_exit_code(&exit.transition) != Some(exit.expected_exit_code)
-            || exit.expected_exit_code != exit.observed_exit_code
-            || !valid_process_identity(&exit.process)
-            || journal.completed_exits[..index]
-                .iter()
-                .any(|prior| prior.transaction == exit.transaction && prior.node == exit.node)
-        {
-            return Err(format!(
-                "completed lifecycle exit for {} has invalid canonical fields",
-                exit.node
-            ));
-        }
-    }
     Ok(())
+}
+
+/// Validates one completed exit's canonical fields against the journal's
+/// newest transaction. Ordering and per-transaction uniqueness are checked
+/// while streaming the exit log.
+pub(super) fn valid_completed_exit(
+    exit: &ProductionLifecycleCompletedExit,
+    journal_transaction: u64,
+) -> bool {
+    !exit.node.is_empty()
+        && exit.transaction != 0
+        && exit.transaction <= journal_transaction
+        && exit.generation != 0
+        && valid_completed_exit_transition(&exit.transition)
+        && valid_lifecycle_hash(&exit.action_sha256)
+        && valid_lifecycle_hash(&exit.evidence_sha256)
+        && expected_lifecycle_exit_code(&exit.transition) == Some(exit.expected_exit_code)
+        && exit.expected_exit_code == exit.observed_exit_code
+        && valid_process_identity(&exit.process)
 }
 
 fn valid_completed_exit_transition(value: &str) -> bool {

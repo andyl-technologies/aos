@@ -305,9 +305,6 @@ fn observation_journal_retains_future_batches_across_frontiers() {
 
 #[test]
 fn production_ninep_coordinator_mutates_result_and_visibility_state() {
-    use std::io::Write as _;
-    use std::os::fd::AsFd as _;
-
     let object_id = FaultObjectId::parse(String::from("ninep-object"))
         .unwrap_or_else(|error| panic!("test object ID should parse: {error}"));
     let policy_id = FaultObjectId::parse(String::from("ninep-visibility-policy"))
@@ -365,11 +362,14 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
     .unwrap_or_else(|error| panic!("test production fault runtime should build: {error}"));
     let coordinator = ProductionNinepFaultCoordinator {
         runtime: Arc::new(Mutex::new(runtime)),
+        consumer: ReferencedEventConsumer::ninep_visibility(&target)
+            .unwrap_or_else(|error| panic!("test 9p consumer should derive: {error}")),
         cursor: Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
         observations: Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
         world,
         target: target.clone(),
         resource_limits: FaultResourceLimits::compiled_maximum(),
+        verified_event_cursor: None,
     };
 
     let request = NinepRequestOpportunity {
@@ -465,6 +465,45 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         cause: crucible_engine::model::BindingActionCause::Signal,
         expected_precondition: None,
     };
+    let (_region, mut servicer) = test_ninep_servicer();
+    let persist = EvaluatedStoragePhase {
+        actions: vec![visibility_action],
+        coordinate_ticks: 7,
+        same_coordinate_sequence: 0,
+        journal_sequence: 0,
+    };
+    let observations = coordinator
+        .apply_visibility(&mut servicer, &persist)
+        .unwrap_or_else(|error| panic!("production 9p visibility should apply: {error}"));
+    assert_eq!(observations.len(), 1);
+    assert_eq!(servicer.visibility_state().committed_frontier(), 1);
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    // The authored 1 ns delay preserves the action's 7 ps phase.
+    servicer
+        .advance_visibility(1_006)
+        .unwrap_or_else(|error| panic!("pre-release visibility should advance: {error}"));
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
+    servicer
+        .advance_visibility(1_007)
+        .unwrap_or_else(|error| panic!("release visibility should advance: {error}"));
+    assert_eq!(servicer.visibility_state().visible_frontier(0), (1, 1));
+
+    record_production_effect_rows(
+        &[
+            crucible_engine::model::EffectKind::NinePResult,
+            crucible_engine::model::EffectKind::NinePVisibility,
+        ],
+        "ninep-result-and-visibility-production-coordinator",
+        "stale-object+committed-frontier+delayed-visible-frontier",
+    );
+}
+
+/// Maps a production 9p servicer over a fresh model shared region; the
+/// returned file keeps the region alive.
+fn test_ninep_servicer() -> (std::fs::File, QemuLive9pIoServicer) {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+
     let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
         crucible_qemu_shmem::RegionConfig::new(1, 4),
     )
@@ -479,30 +518,64 @@ fn production_ninep_coordinator_mutates_result_and_visibility_state() {
         .unwrap_or_else(|error| panic!("test shared region should size: {error}"));
     file.write_all(&bytes)
         .unwrap_or_else(|error| panic!("test shared region should initialize: {error}"));
-    let mut servicer = mapped_ninep_test_servicer(file.as_fd(), layout.region_size)
+    let servicer = mapped_ninep_test_servicer(file.as_fd(), layout.region_size)
         .unwrap_or_else(|error| panic!("test production 9p servicer should map: {error}"));
-    let observations = coordinator
-        .apply_visibility(&mut servicer, std::slice::from_ref(&visibility_action))
-        .unwrap_or_else(|error| panic!("production 9p visibility should apply: {error}"));
-    assert_eq!(observations.len(), 1);
-    assert_eq!(servicer.visibility_state().committed_frontier(), 1);
-    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
-    // The authored 1 ns delay preserves the action's 7 ps phase.
-    servicer
-        .advance_visibility(1_006, &std::collections::BTreeMap::new())
-        .unwrap_or_else(|error| panic!("pre-release visibility should advance: {error}"));
-    assert_eq!(servicer.visibility_state().visible_frontier(0), (0, 0));
-    servicer
-        .advance_visibility(1_007, &std::collections::BTreeMap::new())
-        .unwrap_or_else(|error| panic!("release visibility should advance: {error}"));
-    assert_eq!(servicer.visibility_state().visible_frontier(0), (1, 1));
+    (file, servicer)
+}
 
-    record_production_effect_rows(
-        &[
-            crucible_engine::model::EffectKind::NinePResult,
-            crucible_engine::model::EffectKind::NinePVisibility,
-        ],
-        "ninep-result-and-visibility-production-coordinator",
-        "stale-object+committed-frontier+delayed-visible-frontier",
+#[test]
+fn restored_ninep_event_cursor_beyond_the_runtime_fails_closed() {
+    let nodes = QemuNodeSet::new();
+    let runtime = ProductionFaultRuntime::new(
+        FaultSignalPlan::empty(),
+        None,
+        SignalBoundarySnapshot::default(),
+        ContentHash::from_bytes(b"ninep-event-cursor-runtime"),
+        super::super::fault_implementation::test_host_manifests(),
+        &nodes,
+    )
+    .unwrap_or_else(|error| panic!("test production fault runtime should build: {error}"));
+    let target = ResolvedFaultTarget::NinePDevice {
+        device: ContentHash::from_bytes(b"ninep-device"),
+    };
+    let consumer = ReferencedEventConsumer::ninep_visibility(&target)
+        .unwrap_or_else(|error| panic!("test 9p consumer should derive: {error}"));
+    let mut runtime = runtime;
+    runtime
+        .bind_referenced_event_consumers(&[consumer])
+        .unwrap_or_else(|error| panic!("test 9p consumer should bind: {error}"));
+    let mut coordinator = ProductionNinepFaultCoordinator::new(
+        Arc::new(Mutex::new(runtime)),
+        consumer,
+        Arc::new(Mutex::new(ProductionFaultEvaluationCursor::default())),
+        Arc::new(Mutex::new(ProductionFaultObservationJournal::default())),
+        World::from_nodes(Vec::new())
+            .unwrap_or_else(|error| panic!("empty test world should build: {error}")),
+        target,
+        FaultResourceLimits::compiled_maximum(),
     );
+    let (_region, mut servicer) = test_ninep_servicer();
+
+    // A continuation that consumed nothing agrees with an empty runtime.
+    coordinator
+        .feed_visibility_events(&mut servicer)
+        .unwrap_or_else(|error| panic!("consistent continuation should feed: {error}"));
+    assert_eq!(coordinator.verified_event_cursor, Some(0));
+
+    // A 9p continuation restored with an emission its runtime never emitted
+    // must not advance; a fresh coordinator re-verifies it first.
+    let emission = crucible_device::NinepEventEmission {
+        event: [9; 32],
+        coordinate: NinepEventCoordinate {
+            ticks: 5,
+            sequence: 0,
+        },
+    };
+    servicer
+        .observe_visibility_events(&[emission], 1)
+        .unwrap_or_else(|error| panic!("test emission should feed: {error}"));
+    coordinator.verified_event_cursor = None;
+    assert!(coordinator.feed_visibility_events(&mut servicer).is_err());
+    assert_eq!(coordinator.verified_event_cursor, None);
+    assert_eq!(servicer.visibility_state().event_cursor(), 1);
 }

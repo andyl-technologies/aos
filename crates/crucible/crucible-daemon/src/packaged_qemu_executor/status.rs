@@ -35,8 +35,7 @@ use crucible_qemu_protocol::SelectionReply;
 use super::PackagedAttemptAdmission;
 use super::exact_pin_materializer::{PackagedExactPinStatus, PackagedExactPinStatusHandle};
 use crate::assignment_ledger::{
-    AttemptRuntimeState, directory_assignment_retention_generation,
-    visit_directory_attempt_states_bounded,
+    AttemptRuntimeState, directory_assignment_retention_generation, visit_directory_attempt_states,
 };
 use crate::executor_pool::LocalExecutorOperationalSnapshot;
 use crate::executor_supervisor::LocalExecutionActivity;
@@ -50,7 +49,8 @@ use crate::{
     QueuedAttempt,
 };
 
-const MAX_PACKAGED_STATUS_ATTEMPT_RECORDS: usize = 65_536;
+/// Ledger records whose campaign membership is resolved in one repository query.
+const STATUS_MEMBERSHIP_BATCH_RECORDS: usize = 4_096;
 pub(crate) const MAX_PACKAGED_ATTEMPT_FAILURE_DIAGNOSTIC_BYTES: usize = 8 * 1024;
 const MAX_PACKAGED_ATTEMPT_FAILURE_SOURCES: usize = 16;
 const PACKAGED_ATTEMPT_FAILURE_TRUNCATION_SUFFIX: &str = "\n  ... diagnostic truncated";
@@ -118,9 +118,20 @@ pub(super) struct PackagedStatusHotForkFactory<F> {
 
 pub(super) struct PackagedStatusLifecycle<L> {
     inner: L,
+    status: PackagedLifecycleStatus,
+}
+
+/// Phase ownership of one attempt lifecycle, separable from the lifecycle.
+///
+/// Dropping an unfinished status invalidates the tracker. A lifecycle whose
+/// world becomes a retained source finishes its status at conversion, so the
+/// separated status can then be dropped cleanly.
+struct PackagedLifecycleStatus {
     lifecycles: PackagedWorldLifecycleTracker,
     execution: Option<ExecutionId>,
     shutdown_finished: bool,
+    /// The world settled its final boundary for retention and is post-processing.
+    retention_drained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,10 +402,46 @@ where
         }
         Ok(PackagedStatusLifecycle {
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
+            status: PackagedLifecycleStatus {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+                retention_drained: false,
+            },
         })
+    }
+
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        source: &ScenarioDefForm,
+        // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the sealed stop boundary unchanged.
+        boundary: &Configuration,
+        replay: &crucible_engine::SignalFaultCampaignReplayPlan,
+    ) -> crate::QemuRetainedSourcePreparation<Self::Lifecycle> {
+        let PackagedStatusLifecycle { inner, mut status } = lifecycle;
+        match self
+            .inner
+            .prepare_retained_source(inner, source, boundary, replay)
+        {
+            crate::QemuRetainedSourcePreparation::Prepared(world) => {
+                // Converting a drained world into a source finishes this
+                // attempt's lifecycle; it is no longer an unfinished teardown.
+                if status.retention_drained {
+                    status.shutdown_finished = true;
+                }
+                crate::QemuRetainedSourcePreparation::Prepared(world)
+            }
+            crate::QemuRetainedSourcePreparation::Recovered(inner) => {
+                crate::QemuRetainedSourcePreparation::Recovered(PackagedStatusLifecycle {
+                    inner,
+                    status,
+                })
+            }
+            crate::QemuRetainedSourcePreparation::Quarantined => {
+                crate::QemuRetainedSourcePreparation::Quarantined
+            }
+        }
     }
 }
 
@@ -435,9 +482,12 @@ where
         }
         Ok(PackagedStatusLifecycle {
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
+            status: PackagedLifecycleStatus {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+                retention_drained: false,
+            },
         })
     }
 }
@@ -512,6 +562,10 @@ where
         self.inner.settle_live_network_preselection()
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        self.inner.event_log_offset()
+    }
+
     fn handoff_live_network_preselection(
         &mut self,
         expected: &crucible_engine::LiveNetworkPreselection,
@@ -544,6 +598,12 @@ where
         self.inner.exact_checkpoint_ready()
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::QemuExactCheckpointRefusal>, SchedulerError> {
+        self.inner.exact_checkpoint_refusal()
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -559,6 +619,25 @@ where
     ) -> Result<(), SchedulerError> {
         self.inner
             .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.inner.park_held_campaign_markers(markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.inner.join_campaign_parks_to_frontier()
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible_engine::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        self.inner.append_network_fault_campaign_branch(branch)
     }
 
     fn campaign_marker_release_committed(
@@ -588,6 +667,14 @@ where
         self.inner.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.inner
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -598,6 +685,13 @@ where
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.inner
             .apply_selectable_reply(parent, decision, selected, pending, reply)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        self.inner.publish_released_host_outcomes(configuration)
     }
 
     fn capture_attempt_checkpoint(
@@ -629,26 +723,56 @@ where
         self.inner.prepare_terminal_fingerprints()
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         self.inner.resolved_effect_trace()
     }
 
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<crate::QemuFinalBoundaryDrain, SchedulerError> {
+        let drained = self.inner.drain_final_events_for_retention()?;
+        if drained == crate::QemuFinalBoundaryDrain::Retainable && !self.status.retention_drained {
+            // The world stops running here; a retained source is never torn
+            // down by this attempt, so it enters post-processing directly.
+            match self.status.execution {
+                Some(execution) => {
+                    self.status.lifecycles.tearing_down(execution);
+                    self.status.lifecycles.post_processing(execution);
+                }
+                None => self.status.lifecycles.invalidate(),
+            }
+            self.status.retention_drained = true;
+        }
+        Ok(drained)
+    }
+
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if self.shutdown_finished {
-            self.lifecycles.invalidate();
+        if self.status.shutdown_finished {
+            self.status.lifecycles.invalidate();
             return self.inner.shutdown();
         }
-        if let Some(execution) = self.execution {
-            self.lifecycles.tearing_down(execution);
+        if self.status.retention_drained {
+            // Already post-processing; only a failed teardown changes status.
+            let result = self.inner.shutdown();
+            self.status.shutdown_finished = true;
+            if result.is_err() {
+                self.status.lifecycles.invalidate();
+            }
+            return result;
+        }
+        if let Some(execution) = self.status.execution {
+            self.status.lifecycles.tearing_down(execution);
         } else {
-            self.lifecycles.invalidate();
+            self.status.lifecycles.invalidate();
         }
 
         let result = self.inner.shutdown();
-        self.shutdown_finished = true;
-        match (&result, self.execution) {
-            (Ok(_), Some(execution)) => self.lifecycles.post_processing(execution),
-            (Ok(_), None) | (Err(_), _) => self.lifecycles.invalidate(),
+        self.status.shutdown_finished = true;
+        match (&result, self.status.execution) {
+            (Ok(_), Some(execution)) => self.status.lifecycles.post_processing(execution),
+            (Ok(_), None) | (Err(_), _) => self.status.lifecycles.invalidate(),
         }
         result
     }
@@ -663,7 +787,7 @@ where
     }
 }
 
-impl<L> Drop for PackagedStatusLifecycle<L> {
+impl Drop for PackagedLifecycleStatus {
     fn drop(&mut self) {
         if !self.shutdown_finished {
             self.lifecycles.invalidate();
@@ -772,23 +896,18 @@ impl PackagedQemuOperationalStatusProvider {
             directory_assignment_retention_generation(&self.ledger_root).ok()?;
         let mut matched = None;
         let mut duplicate = false;
-        let complete = visit_directory_attempt_states_bounded(
-            &self.ledger_root,
-            MAX_PACKAGED_STATUS_ATTEMPT_RECORDS,
-            &mut |key, state| {
-                if key.attempt() == attempt
-                    && key.scope() == scope
-                    && key.lineage() == lineage
-                    && matched.replace(state).is_some()
-                {
-                    duplicate = true;
-                }
-            },
-        )
+        visit_directory_attempt_states(&self.ledger_root, &mut |key, state| {
+            if key.attempt() == attempt
+                && key.scope() == scope
+                && key.lineage() == lineage
+                && matched.replace(state).is_some()
+            {
+                duplicate = true;
+            }
+        })
         .ok()?;
         let generation_after = directory_assignment_retention_generation(&self.ledger_root).ok()?;
-        if !complete
-            || duplicate
+        if duplicate
             || generation_before != generation_after
             || self.repository.head(campaign.as_str()).ok()?.snapshot_id() != snapshot
         {
@@ -870,14 +989,40 @@ impl PackagedQemuOperationalStatusProvider {
         let lifecycles_before = self.lifecycles.snapshot()?;
         let materializer_before = self.materializer.status(campaign, snapshot).ok()?;
 
-        let mut runtime_states = Vec::new();
-        let complete = visit_directory_attempt_states_bounded(
-            &self.ledger_root,
-            MAX_PACKAGED_STATUS_ATTEMPT_RECORDS,
-            &mut |key, state| runtime_states.push((key, state)),
-        )
+        let activities = actor_before
+            .activities
+            .iter()
+            .map(|activity| (activity.execution, *activity))
+            .collect::<BTreeMap<_, _>>();
+        if lifecycles_before.phases.keys().any(|execution| {
+            !activities
+                .get(execution)
+                .is_some_and(|activity| activity.worker_in_flight)
+        }) {
+            return None;
+        }
+
+        // Membership at an immutable snapshot cannot change, so folding each
+        // batch inside the generation sandwich is equivalent to folding after
+        // it; the closing checks still reject any intervening change.
+        let mut projection = StatusProjection {
+            repository: &self.repository,
+            snapshot,
+            daemon_epoch: actor_before.daemon_epoch,
+            activities: &activities,
+            lifecycles: &lifecycles_before.phases,
+            batch: Vec::with_capacity(STATUS_MEMBERSHIP_BATCH_RECORDS),
+            worlds: [0; 6],
+            retained: materializer_before.selected_roots.clone(),
+            materialized: materializer_before.selected_roots.clone(),
+            failed: false,
+        };
+        visit_directory_attempt_states(&self.ledger_root, &mut |key, state| {
+            projection.push(key, state);
+        })
         .ok()?;
-        if !complete {
+        projection.flush();
+        if projection.failed {
             return None;
         }
 
@@ -894,63 +1039,12 @@ impl PackagedQemuOperationalStatusProvider {
             return None;
         }
 
-        let candidates = runtime_states
-            .iter()
-            .map(|(key, _state)| (key.lineage(), key.attempt()))
-            .collect::<Vec<_>>();
-        let membership = self
-            .repository
-            .attempt_membership_at(snapshot, &candidates)
-            .ok()?;
-        if membership.len() != runtime_states.len() {
-            return None;
-        }
-
-        let activities = actor_before
-            .activities
-            .iter()
-            .map(|activity| (activity.execution, *activity))
-            .collect::<BTreeMap<_, _>>();
-        if lifecycles_before.phases.keys().any(|execution| {
-            !activities
-                .get(execution)
-                .is_some_and(|activity| activity.worker_in_flight)
-        }) {
-            return None;
-        }
-        let mut worlds = [0_u64; 6];
-        let mut retained = materializer_before.selected_roots.clone();
-        let mut materialized = materializer_before.selected_roots.clone();
-        for ((_key, state), member) in runtime_states.iter().zip(membership) {
-            if !member {
-                continue;
-            }
-            for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
-                retained.insert(checkpoint);
-            }
-            for checkpoint in state.materialized_checkpoint_roots().into_iter().flatten() {
-                materialized.insert(checkpoint);
-            }
-            let phase = operational_phase(
-                *state,
-                actor_before.daemon_epoch,
-                &activities,
-                &lifecycles_before.phases,
-            )
-            .ok()?;
-            if let Some(phase) = phase {
-                let slot = match phase {
-                    OperationalPhase::Preparing => 0,
-                    OperationalPhase::Running => 1,
-                    OperationalPhase::Checkpointing => 2,
-                    OperationalPhase::Publishing => 3,
-                    OperationalPhase::Canceling => 4,
-                    OperationalPhase::Paused => 5,
-                };
-                worlds[slot] = worlds[slot].checked_add(1)?;
-            }
-        }
-
+        let StatusProjection {
+            worlds,
+            retained,
+            materialized,
+            ..
+        } = projection;
         let inventory_generation = packaged_status_generation(
             campaign,
             snapshot,
@@ -968,6 +1062,92 @@ impl PackagedQemuOperationalStatusProvider {
             u64::try_from(retained.len()).ok()?,
             u64::try_from(materialized.len()).ok()?,
         ))
+    }
+}
+
+/// Folds ledger attempt records into one campaign's operational counters.
+///
+/// Records are buffered only up to one membership batch. The retained and
+/// materialized sets hold distinct checkpoint roots, which the materializer
+/// catalog already bounds as a live set.
+struct StatusProjection<'a> {
+    repository: &'a CampaignRepository,
+    snapshot: CampaignSnapshotId,
+    daemon_epoch: DaemonEpoch,
+    activities: &'a BTreeMap<ExecutionId, LocalExecutionActivity>,
+    lifecycles: &'a BTreeMap<ExecutionId, PackagedWorldLifecyclePhase>,
+    batch: Vec<(crate::AttemptExecutionKey, AttemptRuntimeState)>,
+    worlds: [u64; 6],
+    retained: BTreeSet<crucible_campaign::ExactCheckpointId>,
+    materialized: BTreeSet<crucible_campaign::ExactCheckpointId>,
+    failed: bool,
+}
+
+impl StatusProjection<'_> {
+    fn push(&mut self, key: crate::AttemptExecutionKey, state: AttemptRuntimeState) {
+        if self.failed {
+            return;
+        }
+        self.batch.push((key, state));
+        if self.batch.len() >= STATUS_MEMBERSHIP_BATCH_RECORDS {
+            self.flush();
+        }
+    }
+
+    /// Resolves the buffered batch's membership and folds its members.
+    ///
+    /// Any failure poisons the projection; the observation then reports no
+    /// status rather than a partial count.
+    fn flush(&mut self) {
+        if self.failed || self.batch.is_empty() {
+            return;
+        }
+        if self.fold_batch().is_none() {
+            self.failed = true;
+        }
+        self.batch.clear();
+    }
+
+    fn fold_batch(&mut self) -> Option<()> {
+        let candidates = self
+            .batch
+            .iter()
+            .map(|(key, _state)| (key.lineage(), key.attempt()))
+            .collect::<Vec<_>>();
+        let membership = self
+            .repository
+            .attempt_membership_at(self.snapshot, &candidates)
+            .ok()?;
+        if membership.len() != self.batch.len() {
+            return None;
+        }
+
+        for ((_key, state), member) in self.batch.iter().zip(membership) {
+            if !member {
+                continue;
+            }
+            for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
+                self.retained.insert(checkpoint);
+            }
+            for checkpoint in state.materialized_checkpoint_roots().into_iter().flatten() {
+                self.materialized.insert(checkpoint);
+            }
+            let phase =
+                operational_phase(*state, self.daemon_epoch, self.activities, self.lifecycles)
+                    .ok()?;
+            if let Some(phase) = phase {
+                let slot = match phase {
+                    OperationalPhase::Preparing => 0,
+                    OperationalPhase::Running => 1,
+                    OperationalPhase::Checkpointing => 2,
+                    OperationalPhase::Publishing => 3,
+                    OperationalPhase::Canceling => 4,
+                    OperationalPhase::Paused => 5,
+                };
+                self.worlds[slot] = self.worlds[slot].checked_add(1)?;
+            }
+        }
+        Some(())
     }
 }
 
@@ -1095,3 +1275,6 @@ fn packaged_status_generation(
     material.extend_from_slice(&materializer.generation.as_bytes());
     CampaignHash::derive("crucible.executor.packaged-campaign-status.v1", &material)
 }
+
+#[cfg(test)]
+mod tests;

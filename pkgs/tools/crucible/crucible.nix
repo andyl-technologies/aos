@@ -17,8 +17,10 @@
   crucible-fixtures,
   bash,
   coreutils,
+  gawk,
   grep,
   sed,
+  zstd,
   util-linux,
   qemu-crucible-source,
   sqlite,
@@ -186,58 +188,129 @@
     buildDeps = [buildRustDev buildPkgConfig sqlite];
     runtimeDeps = [sqlite];
   };
-  controller = mkCargoPackage {
-    inherit platformSupport;
-    pname = "crucible-controller";
-    qualification.packageProbe = lib.qualification.commandProbe {
-      "primary" = {
-        "artifacts" = [];
-        "expected" = "The command returns success and documents Usage.";
-        "files" = {};
-        "input" = "The packaged crucible-controller command-line interface.";
-        "operation" = "Request its offline help text.";
-        "steps" = [
-          {
-            "argv" = [
-              "@python@"
-              "-c"
-              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-controller operation passed\")\n"
-            ];
-            "exit_code" = 0;
-            "stderr" = {
-              "exact" = "";
-            };
-            "stdout" = {
-              "exact" = "crucible-controller operation passed\n";
-            };
-          }
-        ];
-      };
-      "badInput" = {
-        "artifacts" = [];
-        "expected" = "The command rejects the unsupported option before performing its main operation.";
-        "files" = {};
-        "input" = "A crucible-controller invocation containing an unsupported command-line option.";
-        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
-        "steps" = [
-          {
-            "argv" = [
-              "@python@"
-              "-c"
-              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-controller rejected invalid input\\n\")\nraise SystemExit(7)\n"
-            ];
-            "exit_code" = 7;
-            "observes_rejection" = true;
-            "stderr" = {
-              "exact" = "crucible-controller rejected invalid input\n";
-            };
-            "stdout" = {
-              "exact" = "";
-            };
-          }
-        ];
-      };
+  # Gate and flight test executables compiled once per selection. See
+  # _workspace-tests.nix for the build graph and the gate runner.
+  workspaceTests = import ./_workspace-tests.nix {
+    inherit lib mkDerivation mkCargoPackage mkCargoArtifacts mkCargoDummySource;
+    inherit version cargoDeps rust buildRustDev buildPkgConfig buildProtobuf openssl sqlite;
+    inherit bash coreutils gawk grep sed zstd;
+    cargoEnv = controllerCargoEnv;
+  };
+  controllerPackageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The command returns success and documents Usage.";
+      "files" = {};
+      "input" = "The packaged crucible-controller command-line interface.";
+      "operation" = "Request its offline help text.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-controller operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "crucible-controller operation passed\n";
+          };
+        }
+      ];
     };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The command rejects the unsupported option before performing its main operation.";
+      "files" = {};
+      "input" = "A crucible-controller invocation containing an unsupported command-line option.";
+      "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-controller rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "crucible-controller rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+  # Installed-package checks and metadata shared by the published native
+  # package and the cross build: the CLI ships without its test-only
+  # backend, and the license and build information that the license gate
+  # and the workspace-build check read.
+  controllerInstallChecks = ''
+    ${
+      if stdenv.isCross
+      then ''
+        echo "deferring installed Crucible CLI execution until native qualification"
+      ''
+      else ''
+        if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
+          echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
+          exit 1
+        fi
+        if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
+          echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
+          exit 1
+        fi
+      ''
+    }
+
+    mkdir -p "$out/share/licenses/crucible-controller"
+    cp ${../../../LICENSES/Apache-2.0.txt} "$out/share/licenses/crucible-controller/Apache-2.0.txt"
+
+    mkdir -p "$out/nix-support"
+    cat > "$out/nix-support/crucible-build-info" <<'INFO'
+    package=crucible-controller
+    component=controller
+    component_license=Apache-2.0
+    build_system=mkCargoPackage
+    cargo_deps=fetchCargoVendor
+    cargo_workspace=crates
+    cargo_workspace_flags=${workspaceCargoFlags}
+    cargo_member_flags=${packageFlags}
+    cargo_nextest_open_files_limit=4096
+    cargo_doc=warning-free
+    cargo_doctest=hermetic
+    gate_license_boundary=crucible-test-support/gate_license_boundary
+    rustdocflags=-D warnings -D missing_docs
+    qemu_package=none
+    plugin_package=none
+    discovery_hint=flags-or-runtime-environment
+    shmem_abi_version=${shmemAbiVersion}
+    shmem_abi=crucible-shmem-abi-v${shmemAbiVersion}
+    guest_host_protocol_version=${guestHostProtocolVersion}
+    guest_host_protocol_abi=crucible-guest-host-channel-v${guestHostProtocolVersion}
+    doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}
+    rpc_abi_version=${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}
+    rpc_abi_build=${rpcProtocolBuild}
+    INFO
+  '';
+
+  # The Cargo build of the controller workspace. Natively it is the
+  # controller's qualification: the workspace test suite, Clippy, warning-free
+  # rustdoc, doctests, and the license-boundary harness, run as a check that
+  # no gate waits on. The published native package (`controller` below)
+  # copies its executables from the shared release family instead of
+  # compiling them a second time. A cross build has no family, so this
+  # derivation remains the published package there.
+  controllerCargoArgs = {
+    inherit platformSupport;
+    pname =
+      if stdenv.isCross
+      then "crucible-controller"
+      else "crucible-controller-qualification";
 
     inherit version src;
 
@@ -246,6 +319,8 @@
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
+    # Natively the release family supplies the shipped executables.
+    installBins = stdenv.isCross;
     cargoNextest = true;
     # Keep runtime tests within a bounded share of the allocated build cores.
     # Several controller suites run real subprocesses with production-sized
@@ -262,6 +337,7 @@
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
+      inherit workspaceTests;
     };
 
     cargoFlags = packageFlags;
@@ -318,23 +394,39 @@
             -D warnings
         ''
       }
+      # rustdoc flags differ from the build's, so documentation and
+      # doctests keep their own target directories. Nesting them in the
+      # build's target directory lets aos-dev's persistent target keep them
+      # warm too, instead of rechecking every dependency on each edit.
+      crucibleQualificationTargets="''${CARGO_TARGET_DIR:-target}"
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
-      cargo doc \
-        --no-deps \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doc-libs \
-        ${docPackageFlags}
-      cargo doc \
-        --no-deps \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doc-cli \
-        -p crucible-cli \
-        --bin crucible
-      ${
+      (
+        # rustdoc creates each documentation directory's lock readable only
+        # by this build user. The next build user of a persistent target
+        # must read it, so share the locks even when a command fails.
+        shareDocumentationLocks() {
+          find "$crucibleQualificationTargets" -mindepth 3 -maxdepth 3 \
+            -path '*/crucible-doc*/doc/.lock' -type f -user "$(id -u)" \
+            -exec chmod a+rw {} +
+        }
+        trap shareDocumentationLocks EXIT
+
+        cargo doc \
+          --no-deps \
+          --frozen \
+          --offline \
+          -j$NIX_BUILD_CORES \
+          --target-dir "$crucibleQualificationTargets/crucible-doc-libs" \
+          ${docPackageFlags}
+        cargo doc \
+          --no-deps \
+          --frozen \
+          --offline \
+          -j$NIX_BUILD_CORES \
+          --target-dir "$crucibleQualificationTargets/crucible-doc-cli" \
+          -p crucible-cli \
+          --bin crucible
+        ${
         if stdenv.isCross
         then ''
           echo "skipping target doctest execution while cross-compiling"
@@ -345,15 +437,18 @@
             --frozen \
             --offline \
             -j$NIX_BUILD_CORES \
-            --target-dir target/crucible-doctest-libs \
+            --target-dir "$crucibleQualificationTargets/crucible-doctest-libs" \
             ${doctestPackageFlags}
         ''
       }
+      )
     '';
 
-    # The check phase enables the test-only backend. Rebuild the installed CLI
-    # without test features and record the example artifacts' exact paths.
-    preInstall = ''
+    # The check phase enables the test-only backend. A cross build rebuilds
+    # the installed CLI without test features and records the example
+    # artifacts' exact paths. The native qualification installs only its
+    # record; the published native package is `controller` below.
+    preInstall = lib.optionalString stdenv.isCross ''
       cargo build \
         --release \
         --frozen \
@@ -385,73 +480,44 @@
         "$NIX_BUILD_TOP/crucible-scenario-example.jsonl" >&2
     '';
 
-    postInstall = ''
-      test -x "$out/bin/crucible"
-      install_example() {
-        name="$1"
-        messages="$2"
-        executable=$(jq -rs --arg name "$name" '
-          [.[] | select(.reason == "compiler-artifact" and
-            .target.name == $name and .target.kind == ["example"] and
-            .executable != null) | .executable] | unique |
-          if length == 1 then .[0]
-          else error("expected exactly one executable for " + $name)
-          end
-        ' "$messages")
-        test -x "$executable"
-        cp "$executable" "$out/bin/$name"
-      }
-      install_example crucible-debugger-live-fixture \
-        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
-      install_example crucible-e2e-determinism-scenario \
-        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
-      ${
-        if stdenv.isCross
-        then ''
-          echo "deferring installed Crucible CLI execution until native qualification"
-        ''
-        else ''
-          if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
-            echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
-            exit 1
-          fi
-          if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
-            echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
-            exit 1
-          fi
-        ''
-      }
-
-      mkdir -p "$out/share/licenses/crucible-controller"
-      cp ${../../../LICENSES/Apache-2.0.txt} "$out/share/licenses/crucible-controller/Apache-2.0.txt"
-
-      mkdir -p "$out/nix-support"
-      cat > "$out/nix-support/crucible-build-info" <<'INFO'
-      package=crucible-controller
-      component=controller
-      component_license=Apache-2.0
-      build_system=mkCargoPackage
-      cargo_deps=fetchCargoVendor
-      cargo_workspace=crates
-      cargo_workspace_flags=${workspaceCargoFlags}
-      cargo_member_flags=${packageFlags}
-      cargo_nextest_open_files_limit=4096
-      cargo_doc=warning-free
-      cargo_doctest=hermetic
-      gate_license_boundary=crucible-test-support/gate_license_boundary
-      rustdocflags=-D warnings -D missing_docs
-      qemu_package=none
-      plugin_package=none
-      discovery_hint=flags-or-runtime-environment
-      shmem_abi_version=${shmemAbiVersion}
-      shmem_abi=crucible-shmem-abi-v${shmemAbiVersion}
-      guest_host_protocol_version=${guestHostProtocolVersion}
-      guest_host_protocol_abi=crucible-guest-host-channel-v${guestHostProtocolVersion}
-      doorbell_instruction_abi_version=${doorbellInstructionAbiVersion}
-      rpc_abi_version=${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}
-      rpc_abi_build=${rpcProtocolBuild}
-      INFO
-    '';
+    postInstall =
+      if stdenv.isCross
+      then ''
+        test -x "$out/bin/crucible"
+        install_example() {
+          name="$1"
+          messages="$2"
+          executable=$(jq -rs --arg name "$name" '
+            [.[] | select(.reason == "compiler-artifact" and
+              .target.name == $name and .target.kind == ["example"] and
+              .executable != null) | .executable] | unique |
+            if length == 1 then .[0]
+            else error("expected exactly one executable for " + $name)
+            end
+          ' "$messages")
+          test -x "$executable"
+          cp "$executable" "$out/bin/$name"
+        }
+        install_example crucible-debugger-live-fixture \
+          "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+        install_example crucible-e2e-determinism-scenario \
+          "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
+        ${controllerInstallChecks}
+      ''
+      else ''
+        mkdir -p "$out/nix-support"
+        cat > "$out/nix-support/crucible-qualification" <<'INFO'
+        package=crucible-controller-qualification
+        qualifies=crucible-controller
+        cargo_workspace_flags=${workspaceCargoFlags}
+        cargo_test_flags=${packageFlags} --features crucible-cli/test-double
+        cargo_test_runner=nextest
+        cargo_clippy=all-targets-deny-warnings
+        cargo_doc=warning-free
+        cargo_doctest=hermetic
+        gate_license_boundary=crucible-test-support/gate_license_boundary
+        INFO
+      '';
 
     meta = {
       description = "Apache-licensed Crucible controller and CLI";
@@ -460,6 +526,74 @@
       mainProgram = "crucible";
     };
   };
+  # Only the cross build is published; the native qualification has no
+  # CLI to probe.
+  controllerCargoBuild = mkCargoPackage (controllerCargoArgs
+    // lib.optionalAttrs stdenv.isCross {
+      qualification.packageProbe = controllerPackageProbe;
+    });
+  # The published native controller: the shipped CLI and the two examples
+  # the suite links, copied from the shared Apache release family. The
+  # family compiles the CLI as `cargo build --release -p crucible-cli --bin
+  # crucible` resolves it (selection `cli`) and each example in its own
+  # package's resolution, exactly as this package's own Cargo commands did,
+  # so a source edit compiles them once for every consumer. The package
+  # depends on neither the qualification nor the test executables, so the
+  # license gate and the suite no longer wait for the workspace test suite.
+  nativeController = mkDerivation {
+    inherit platformSupport version;
+    pname = "crucible-controller";
+    qualification.packageProbe = controllerPackageProbe;
+    src = null;
+    buildDeps = [workspaceTests.runner workspaceTests.apacheRelease coreutils grep];
+    runtimeDeps = [openssl sqlite];
+    CRUCIBLE_CARGO_BUILDS = "${workspaceTests.apacheRelease}";
+    # The controller is the Apache side of a process boundary. Fail the build
+    # if any QEMU-side implementation, guest kernel, or fixture enters either
+    # its direct references or its runtime closure.
+    disallowedReferences = forbiddenControllerRuntimePaths;
+    disallowedRequisites = forbiddenControllerRuntimePaths;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          set -eu
+          mkdir -p "$out/bin"
+          install_release() {
+            name=$1
+            shift
+            executable=$(crucible-cargo executable build --release "$@")
+            cp "$executable" "$out/bin/$name"
+            chmod 0755 "$out/bin/$name"
+          }
+          install_release crucible -p crucible-cli --bin crucible
+          install_release crucible-debugger-live-fixture \
+            -p crucible-engine --example crucible-debugger-live-fixture
+          install_release crucible-e2e-determinism-scenario \
+            -p crucible-daemon --example crucible-e2e-determinism-scenario
+          test -x "$out/bin/crucible"
+          ${controllerInstallChecks}
+        '';
+      }
+    ];
+    passthru = {
+      cargoArtifacts = controllerArtifacts;
+      cargoDeps = cargoDeps;
+      inherit workspaceTests;
+      qualification = controllerCargoBuild;
+      evidenceSources = [src cargoDeps ./crucible.nix ./_workspace-tests.nix ./_workspace-test-selections.nix];
+    };
+    meta = {
+      description = "Apache-licensed Crucible controller and CLI";
+      homepage = "https://github.com/andyl/andyl-os";
+      license = "Apache-2.0";
+      mainProgram = "crucible";
+    };
+  };
+  controller =
+    if stdenv.isCross
+    then controllerCargoBuild
+    else nativeController;
   debugGateway = mkCargoPackage {
     pname = "crucible-debug-gateway";
     inherit version src;

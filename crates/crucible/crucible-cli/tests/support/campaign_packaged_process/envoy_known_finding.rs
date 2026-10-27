@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixStream;
 
+use super::super::finding_exact_vm;
 use super::*;
 use crucible_campaign::{
     CampaignExecutorStore, CampaignLineage, CampaignRepository, ConfigurationId, FindingId,
@@ -27,6 +28,9 @@ use crucible_engine::model::{
 const UNSAFE_SHORT_CIRCUIT: [u8; 32] = [0xff; 32];
 const FAILURE_PROPERTY: &str = "forbidden-destination-delivery";
 
+#[path = "envoy_known_finding/handoff.rs"]
+mod handoff;
+
 #[test]
 #[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
 fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn Error>> {
@@ -42,10 +46,13 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
     } = envoy_network::start_envoy_campaign(&fixture, false)?;
     let scenario =
         ScenarioDefForm::from_compact_binary(&fs::read(fixture.fixture.join("scenario.bin"))?)?;
+    // The primary outage isolates router-b, which must still poll router-a
+    // and acknowledge the follow-up boundary over A-B. Three virtual seconds
+    // lets it rejoin well before follow-up readiness and the policy deadline.
     let fault = envoy_network::group_argument(NetworkFaultSelectable::selected_value(
         "link_down",
         "primary",
-        30_000_000,
+        3_000_000,
         0,
         0,
     )?);
@@ -63,7 +70,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &fixture,
         &mut service,
         envoy_network::initial_discovery_attempt(&lineage, &policy)?,
-        Duration::from_secs(900),
+        envoy_network::envoy_attempt_limits(),
     );
     let discovery = match discovery {
         Ok(discovery) => discovery,
@@ -148,7 +155,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &mut service,
         &request,
         &unsafe_recovery,
-        Duration::from_secs(900),
+        envoy_network::envoy_attempt_limits(),
     )?;
     assert_eq!(
         failed["observation"]["stop"],
@@ -187,7 +194,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
     }
     let (snapshot, finding, finding_proof) =
         wait_for_finding(&fixture, &mut service, &failed_observation)?;
-    verify_packaged_replay(&fixture, &snapshot, &finding)?;
+    let portable_finding = export_packaged_finding(&fixture, &snapshot, &finding)?;
     let paused_snapshot = super::super::midpoint_debug::pause_campaign_for_debug(&fixture)?;
     let paused_proof = authenticated_finding(&fixture, &paused_snapshot, &finding)?;
     assert_eq!(paused_proof.finding(), finding_proof.finding());
@@ -208,6 +215,14 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &paused_proof,
         &debug_session,
     )?;
+
+    // Retention, debug recovery, and every owned service stop complete first.
+    // Only the independent bundle and immutable runtime closure survive replay.
+    if service.kill_on_drop || service.child.try_wait()?.is_none() {
+        return Err("Envoy source service remains owned during finding handoff".into());
+    }
+    fs::remove_dir_all(fixture._temporary.path())?;
+    verify_packaged_replay(&portable_finding, fixture._temporary.path())?;
 
     println!("envoy_product_branch_steering_authenticated=true");
     println!("envoy_known_finding_authenticated=true");
@@ -262,23 +277,21 @@ fn verified_observation(
     let repository = repository(fixture);
     let observation = repository.load_observation(ObservationId::parse(observation)?)?;
     let measurements = repository.load_measurement_set(observation.measurements())?;
-    let evidence_id = *measurements
-        .evaluation()
-        .evidence()
-        .iter()
-        .next()
-        .ok_or("measured observation omitted its raw event log")?;
-    let bytes = CampaignExecutorStore::new(Arc::clone(&repository))
-        .read_measurement_evidence_leaf(
-            observation.measurements(),
-            evidence_id,
-            64 * 1024 * 1024,
-        )?;
+    let evidence_id =
+        crucible_daemon::measurement_replay_leaf_id(measurements.evaluation().evidence())
+            .ok_or("measured observation omitted its raw event log")?;
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let bytes = store.read_measurement_evidence_leaf(
+        observation.measurements(),
+        evidence_id,
+        64 * 1024 * 1024,
+    )?;
     let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(&bytes)?;
     let lineage = CampaignLineage::from_canonical_bytes(&fs::read(lineage_path)?)?;
     let evaluation = verify_crucible_measurement_publication(
         &measurements,
         &evidence,
+        &crucible_daemon::MeasurementSetSegmentSource::new(&store, observation.measurements()),
         lineage.scenario(),
         observation.child(),
         scenario.measurements(),
@@ -327,8 +340,11 @@ fn verify_measured_objective(
     }
     let traffic = &evaluation.outcomes()[&MeasurementId::parse("traffic_loss_packets")?];
     let drops = &traffic.metrics()[&MetricId::parse("modeled_drop_count")?];
-    if drops.samples().is_empty()
-        || !matches!(drops.aggregate(), MeasurementAggregateValue::Unsigned(_))
+    if drops.samples() == 0
+        || !matches!(
+            drops.aggregate(),
+            Some(MeasurementAggregateValue::Unsigned(_))
+        )
     {
         return Err("traffic objective lacks model-derived drop evidence".into());
     }
@@ -387,7 +403,7 @@ fn wait_for_finding(
     Box<dyn Error>,
 > {
     let deadline = Instant::now() + Duration::from_secs(900);
-    wait_for_process_observation(deadline, || {
+    wait_for_long_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!("Envoy campaign service exited before finding: {status}").into());
         }
@@ -547,17 +563,28 @@ fn retain_and_cleanup_product_finding(
     assert!(
         journal
             .candidates()
-            .iter()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
-    assert!(!journal.roots().iter().any(|root| root == orphan));
+    assert!(
+        !journal
+            .roots()
+            .iter()?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .any(|root| root == orphan)
+    );
     let finding_checkpoints = original_proof.finding().exact_pin_retention().all();
     assert!(!finding_checkpoints.is_empty());
     for checkpoint in finding_checkpoints {
         assert!(
             !journal
                 .candidates()
-                .iter()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
                 .any(|candidate| candidate.id() == checkpoint.content_id()),
             "authenticated finding checkpoint entered the deletion manifest"
         );
@@ -716,11 +743,11 @@ fn format_debug_session(session: crucible_control_api::SessionRef) -> String {
     )
 }
 
-fn verify_packaged_replay(
+fn export_packaged_finding(
     fixture: &FlightFixture,
     snapshot: &str,
     finding: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<handoff::FindingBundle, Box<dyn Error>> {
     let bundle = fixture._temporary.path().join("envoy-known-finding-bundle");
     let exported = run_json(
         command(&[
@@ -743,30 +770,15 @@ fn verify_packaged_replay(
         "export measured Envoy failure",
     )?;
     assert_eq!(exported["native_signature_verified"], true);
-    let binary = std::env::var_os("CRUCIBLE_EXACT_BUNDLE_BINARY")
-        .ok_or("packaged finding verifier is unavailable")?;
-    let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    handoff::FindingBundle::copy_from(&bundle)
+}
+
+fn verify_packaged_replay(
+    portable_finding: &handoff::FindingBundle,
+    source_owner: &Path,
+) -> Result<(), Box<dyn Error>> {
     let verified = run_json(
-        Command::new(binary)
-            .current_dir(fixture._temporary.path())
-            .env_remove("CRUCIBLE_QEMU")
-            .env_remove("CRUCIBLE_PLUGIN")
-            .env_remove("CRUCIBLE_EXACT_BUNDLE_BINARY")
-            .env_remove("CRUCIBLE_PROCESS_FLIGHT_BINARY")
-            .env_remove("CRUCIBLE_FLIGHT_DEPLOYMENT")
-            .env_remove("CRUCIBLE_FLIGHT_QEMU")
-            .env_remove("CRUCIBLE_FLIGHT_PLUGIN")
-            .env_remove("CRUCIBLE_DEBUG_GATEWAY")
-            .env_remove("CRUCIBLE_KERNEL")
-            .env_remove("CRUCIBLE_INITRD")
-            .env_remove("CRUCIBLE_ROOT_IMAGE")
-            .env_remove("CRUCIBLE_RUN_STATE_ROOT")
-            .env_remove("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE")
-            .args(["--format", "jsonl", "--campaign-deployment"])
-            .arg(deployment)
-            .args(["campaign", "finding-bundle", "verify"])
-            .arg(&bundle)
-            .arg("--exact"),
+        &mut portable_finding.verify_command(source_owner)?,
         "fresh packaged Envoy finding replay",
     )?;
     assert_eq!(verified["native_signature_verified"], true);
@@ -775,6 +787,8 @@ fn verify_packaged_replay(
     if json_u64(&verified["exact_replay"], "completed_quanta")? == 0 {
         return Err("fresh Envoy finding replay executed no guest quantum".into());
     }
+    portable_finding.require_unchanged()?;
     println!("envoy_known_finding_fresh_packaged_replay=true");
+    println!("envoy_known_finding_source_owner_absent=true");
     Ok(())
 }

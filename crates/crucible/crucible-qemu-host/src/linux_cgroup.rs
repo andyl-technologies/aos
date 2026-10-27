@@ -29,6 +29,7 @@ use rustix::fs::{
 };
 use thiserror::Error;
 
+use crate::cancellation_fanout::{QemuCancellationFanout, write_eventfd};
 use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
@@ -274,6 +275,7 @@ pub struct LinuxQemuCgroupControl {
     name: String,
     directory: OwnedFd,
     cancellation_event: OwnedFd,
+    cancellation_fanout: Arc<QemuCancellationFanout>,
     cgroup_kill: File,
     cgroup_events: File,
     path: PathBuf,
@@ -288,6 +290,7 @@ pub struct LinuxQemuCgroupControl {
 #[derive(Debug)]
 pub(crate) struct LinuxQemuCgroupCancellationSignal {
     cancellation_event: OwnedFd,
+    cancellation_fanout: Arc<QemuCancellationFanout>,
     watcher_state: Arc<AtomicU8>,
     path: PathBuf,
 }
@@ -300,13 +303,16 @@ impl LinuxQemuCgroupCancellationSignal {
     /// Returns [`LinuxQemuCgroupError::Io`] when the sticky event cannot be
     /// published. Future child minting remains closed even on that error.
     pub(crate) fn signal(&self) -> Result<(), LinuxQemuCgroupError> {
-        signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd()).map_err(
-            |source| LinuxQemuCgroupError::Io {
-                operation: "signal QEMU cancellation eventfd",
-                path: self.path.clone(),
-                source,
-            },
+        signal_terminal(
+            &self.watcher_state,
+            self.cancellation_event.as_raw_fd(),
+            &self.cancellation_fanout,
         )
+        .map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "signal QEMU cancellation eventfd",
+            path: self.path.clone(),
+            source,
+        })
     }
 }
 
@@ -343,6 +349,7 @@ impl LinuxQemuCgroupControl {
                 "duplicate QEMU cancellation eventfd",
                 &self.path,
             )?,
+            cancellation_fanout: Arc::clone(&self.cancellation_fanout),
             path: self.path.clone(),
             watcher_state: Arc::clone(&self.watcher_state),
         })
@@ -357,6 +364,7 @@ impl LinuxQemuCgroupControl {
                 "duplicate QEMU cancellation signal",
                 &self.path,
             )?,
+            cancellation_fanout: Arc::clone(&self.cancellation_fanout),
             watcher_state: Arc::clone(&self.watcher_state),
             path: self.path.clone(),
         })
@@ -368,13 +376,16 @@ impl LinuxQemuCgroupControl {
     ///
     /// Returns [`LinuxQemuCgroupError::Io`] when the eventfd write fails.
     pub fn signal_cancellation(&mut self) -> Result<(), LinuxQemuCgroupError> {
-        signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd()).map_err(
-            |source| LinuxQemuCgroupError::Io {
-                operation: "signal QEMU cancellation eventfd",
-                path: self.path.clone(),
-                source,
-            },
-        )?;
+        signal_terminal(
+            &self.watcher_state,
+            self.cancellation_event.as_raw_fd(),
+            &self.cancellation_fanout,
+        )
+        .map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "signal QEMU cancellation eventfd",
+            path: self.path.clone(),
+            source,
+        })?;
         Ok(())
     }
 
@@ -407,6 +418,7 @@ impl LinuxQemuCgroupControl {
 #[must_use = "the watcher must be joined or transferred to quarantine"]
 pub struct LinuxQemuCgroupWatcher {
     cancellation_event: OwnedFd,
+    cancellation_fanout: Arc<QemuCancellationFanout>,
     watcher_state: Arc<AtomicU8>,
     join: Option<JoinHandle<LinuxQemuCgroupControl>>,
     path: PathBuf,
@@ -445,6 +457,8 @@ impl LinuxQemuCgroupWatcher {
                 Ordering::Acquire,
             );
         })?;
+        let cancellation_fanout = Arc::clone(&control.cancellation_fanout);
+        let thread_fanout = Arc::clone(&cancellation_fanout);
         let thread_state = Arc::clone(&watcher_state);
         let thread_event = duplicate_fd(
             control.cancellation_event.as_raw_fd(),
@@ -466,11 +480,19 @@ impl LinuxQemuCgroupWatcher {
                     match run_cgroup_watcher_attempt(|| cgroup_watcher_loop(&mut control)) {
                         LinuxQemuCgroupWatcherAttempt::Closed => break,
                         LinuxQemuCgroupWatcherAttempt::Retry => {
-                            let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                            let _ = signal_terminal(
+                                &thread_state,
+                                thread_event.as_raw_fd(),
+                                &thread_fanout,
+                            );
                             thread::sleep(CGROUP_KILL_INTERVAL);
                         }
                         LinuxQemuCgroupWatcherAttempt::Panicked => {
-                            let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                            let _ = signal_terminal(
+                                &thread_state,
+                                thread_event.as_raw_fd(),
+                                &thread_fanout,
+                            );
                             // Unwinding invalidates the worker's local
                             // invariants. Retain every authority descriptor in
                             // a parked quarantine instead of re-entering the
@@ -481,7 +503,7 @@ impl LinuxQemuCgroupWatcher {
                         }
                     }
                 }
-                let _ = signal_terminal(&thread_state, thread_event.as_raw_fd());
+                let _ = signal_terminal(&thread_state, thread_event.as_raw_fd(), &thread_fanout);
                 control
             }) {
             Ok(join) => join,
@@ -501,6 +523,7 @@ impl LinuxQemuCgroupWatcher {
         };
         Ok(Self {
             cancellation_event,
+            cancellation_fanout,
             watcher_state,
             join: Some(join),
             path,
@@ -523,9 +546,11 @@ impl LinuxQemuCgroupWatcher {
     }
 
     fn close_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
-        if let Err(source) =
-            signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd())
-        {
+        if let Err(source) = signal_terminal(
+            &self.watcher_state,
+            self.cancellation_event.as_raw_fd(),
+            &self.cancellation_fanout,
+        ) {
             return Err(LinuxQemuCgroupWatcherWaitError::Signal {
                 watcher: Box::new(self),
                 source,
@@ -612,7 +637,11 @@ impl LinuxQemuCgroupWatcher {
 impl Drop for LinuxQemuCgroupWatcher {
     fn drop(&mut self) {
         if self.join.is_some() {
-            let _ = signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd());
+            let _ = signal_terminal(
+                &self.watcher_state,
+                self.cancellation_event.as_raw_fd(),
+                &self.cancellation_fanout,
+            );
         }
     }
 }
@@ -887,6 +916,7 @@ impl LinuxQemuCgroup {
                 name,
                 directory,
                 cancellation_event,
+                cancellation_fanout: Arc::default(),
                 cgroup_kill,
                 cgroup_events,
                 path: cleanup.path,
@@ -985,6 +1015,9 @@ impl LinuxQemuCgroup {
             credentials,
             exact_checkpoint_root,
         )
+        .map(|contract| {
+            contract.with_cancellation_fanout(Arc::clone(&self.control.cancellation_fanout))
+        })
         .map_err(|source| LinuxQemuCgroupError::Io {
             operation: "seal QEMU child process contract",
             path: self.path.clone(),
@@ -1379,37 +1412,18 @@ fn write_kill(file: &mut File, path: &Path) -> Result<(), LinuxQemuCgroupError> 
         })
 }
 
-fn write_eventfd(descriptor: i32, value: u64) -> io::Result<()> {
-    loop {
-        let written = unsafe {
-            // SAFETY: `value` is a valid u64 input buffer for eventfd.
-            libc::write(
-                descriptor,
-                (&value as *const u64).cast(),
-                std::mem::size_of::<u64>(),
-            )
-        };
-        if written == 8 {
-            return Ok(());
-        }
-        if written >= 0 {
-            return Err(io::Error::from_raw_os_error(libc::EIO));
-        }
-        let source = io::Error::last_os_error();
-        if source.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        if source.kind() == io::ErrorKind::WouldBlock {
-            // A saturated nonblocking eventfd is already readable, which is
-            // the sticky wake postcondition required by pre-exec polling.
-            return Ok(());
-        }
-        return Err(source);
-    }
-}
-
-fn signal_terminal(watcher_state: &AtomicU8, cancellation_event: RawFd) -> io::Result<()> {
-    signal_terminal_with(watcher_state, || write_eventfd(cancellation_event, 1))
+fn signal_terminal(
+    watcher_state: &AtomicU8,
+    cancellation_event: RawFd,
+    cancellation_fanout: &QemuCancellationFanout,
+) -> io::Result<()> {
+    signal_terminal_with(watcher_state, || {
+        // Both wakes are attempted so one failure cannot hide cancellation
+        // from the other audience.
+        let primary = write_eventfd(cancellation_event, 1);
+        let members = cancellation_fanout.signal();
+        primary.and(members)
+    })
 }
 
 fn signal_terminal_with(
@@ -1646,6 +1660,7 @@ mod tests {
                 name: String::from("watcher-fixture"),
                 directory,
                 cancellation_event,
+                cancellation_fanout: Arc::default(),
                 cgroup_kill,
                 cgroup_events,
                 path: path.to_owned(),
@@ -1854,6 +1869,7 @@ mod tests {
             name: String::from("control-fixture"),
             directory: cgroup_directory,
             cancellation_event,
+            cancellation_fanout: Arc::default(),
             cgroup_kill,
             cgroup_events,
             path: directory.path().to_owned(),
@@ -1935,6 +1951,7 @@ mod tests {
             name: String::from("failed-signal-fixture"),
             directory: cgroup_directory,
             cancellation_event: read_end,
+            cancellation_fanout: Arc::default(),
             cgroup_kill,
             cgroup_events,
             path: directory.path().to_owned(),
@@ -2164,6 +2181,7 @@ mod tests {
                 name: String::from("attempt"),
                 directory: child_directory,
                 cancellation_event: create_cancellation_eventfd(&cgroup_path)?,
+                cancellation_fanout: Arc::default(),
                 cgroup_kill,
                 cgroup_events,
                 path: cgroup_path.clone(),

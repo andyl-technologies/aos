@@ -11,7 +11,7 @@ pub(in crate::vm_lifecycle) use persistence::LifecycleStatePersistence;
 pub(in crate::vm_lifecycle) use persistence::map_journal_limit;
 pub(in crate::vm_lifecycle) use persistence::{
     DurableRunStateError, PRODUCTION_RUN_STATE_FILE, decode_prior_run_state,
-    decode_run_json_bounded, persist_run_state_atomic,
+    decode_run_json_bounded, persist_run_state_atomic, truncate_lifecycle_exit_log_tail,
 };
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use persistence::{
@@ -66,9 +66,11 @@ impl ProductionVmLifecycleLoop {
         replacement_values
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
-        let completed_exit_count = self.lifecycle_journal.completed_exits.len();
-        let aggregate_event_records = runtime_event_records
-            .checked_add(u64::try_from(completed_exit_count).unwrap_or(u64::MAX))
+        let completed_exit_count = u64::try_from(self.lifecycle_journal.pending_exits.len())
+            .unwrap_or(u64::MAX)
+            .checked_add(self.lifecycle_journal.exit_log.records);
+        let aggregate_event_records = completed_exit_count
+            .and_then(|count| runtime_event_records.checked_add(count))
             .ok_or_else(|| {
                 lifecycle_resource_error("event_records", usize::MAX, intents.len(), limits)
             })?;
@@ -89,12 +91,12 @@ impl ProductionVmLifecycleLoop {
                 )
             })?;
         self.lifecycle_journal
-            .completed_exits
+            .pending_exits
             .try_reserve_exact(intents.len())
             .map_err(|_| {
                 lifecycle_resource_error(
                     "event_records",
-                    self.lifecycle_journal.completed_exits.len(),
+                    self.lifecycle_journal.pending_exits.len(),
                     intents.len(),
                     limits,
                 )
@@ -205,14 +207,9 @@ impl ProductionVmLifecycleLoop {
             runtime_event_log_bytes,
         )?;
         self.persist_lifecycle_state()?;
-        let reserved_event_records = u64::try_from(
-            self.lifecycle_journal
-                .nodes
-                .len()
-                .checked_add(self.lifecycle_journal.completed_exits.len())
-                .ok_or_else(|| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?,
-        )
-        .map_err(|_| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?;
+        let reserved_event_records =
+            persistence::lifecycle_record_count(&self.lifecycle_journal)
+                .ok_or_else(|| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?;
         Ok(PreparedLifecyclePrecommit {
             checkpoint,
             actions,
@@ -416,7 +413,7 @@ impl ProductionVmLifecycleLoop {
                 })?;
             let journal_node = self.lifecycle_journal.nodes.swap_remove(journal_index);
             self.lifecycle_journal
-                .completed_exits
+                .pending_exits
                 .push(ProductionLifecycleCompletedExit {
                     transaction: self.lifecycle_journal.transaction,
                     node: journal_node.node,

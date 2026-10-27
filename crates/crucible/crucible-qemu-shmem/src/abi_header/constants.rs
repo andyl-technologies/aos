@@ -6,6 +6,11 @@ use crate::{TICKS_PER_INSTRUCTION, TICKS_PER_NS};
 pub(super) fn emit_constants(out: &mut String) {
     emit_define_u64_hex(out, "CRUCIBLE_SHMEM_REGION_MAGIC", REGION_MAGIC);
     emit_define_u32(out, "CRUCIBLE_SHMEM_ABI_VERSION", ABI_VERSION);
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES",
+        crate::native_console::NATIVE_CONSOLE_SEGMENT_BYTES,
+    );
     emit_define_u32(out, "CRUCIBLE_SHMEM_TICKS_PER_NS", TICKS_PER_NS as u32);
     emit_define_u32(
         out,
@@ -22,6 +27,12 @@ pub(super) fn emit_constants(out: &mut String) {
         "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE",
         ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
     );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT",
+        ADVANCE_STOP_CONDITION_EXACT_EVENT,
+    );
+    emit_define_u64_hex(out, "CRUCIBLE_SHMEM_IDLE_WAKE_NONE", IDLE_WAKE_NONE);
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_FRAME_DATA", MAX_FRAME_DATA);
     emit_define_u32(
         out,
@@ -249,7 +260,10 @@ pub(super) fn emit_constants(out: &mut String) {
                 "CONTROL_BOUNDARY_CAPTURE_REQUEST",
                 NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
             ),
-            ("PAD3", NODE_SLOT_PAD3_OFFSET),
+            (
+                "CONTROL_BOUNDARY_PUBLICATION_CLAIM",
+                NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET,
+            ),
             (
                 "TIMER_WITNESS_GENERATION",
                 NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
@@ -289,6 +303,22 @@ pub(super) fn emit_constants(out: &mut String) {
             (
                 "ADVANCE_PUBLICATION_SEQUENCE",
                 NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET,
+            ),
+            (
+                "SETTLED_CEILING_TICK",
+                NODE_SLOT_SETTLED_CEILING_TICK_OFFSET,
+            ),
+            (
+                "SETTLED_PUBLICATION_SEQUENCE",
+                NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET,
+            ),
+            (
+                "HOST_PUBLICATION_SIGNAL",
+                NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET,
+            ),
+            (
+                "HOST_PUBLICATION_WAITERS",
+                NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET,
             ),
             ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],

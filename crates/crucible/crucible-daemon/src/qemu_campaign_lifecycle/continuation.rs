@@ -1,4 +1,4 @@
-//! Continuation validation, production configuration, and selected-origin replay.
+//! Production continuation configuration and selected-origin replay.
 
 use super::*;
 
@@ -97,11 +97,12 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<crate::QemuSavepointReplayProof, QemuCheckpointReplayFailure<F::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             Box::new(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::InvalidContinuationInput,
             ))
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -287,7 +288,9 @@ pub(super) fn production_continuation_plan(
                 if schedule.to_compact_binary() != *bytes {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 }
-                let [Decision::Selection(decision)] = schedule.decisions() else {
+                let (1, Some(Decision::Selection(decision))) =
+                    (schedule.len(), schedule.decision(0))
+                else {
                     return Err(QemuAttemptProductionVmLifecycleError::InvalidContinuationInput);
                 };
                 let selection = decision
@@ -310,14 +313,20 @@ pub(super) fn production_continuation_plan(
     }
 }
 
+/// Derives the lifecycle configuration that launches `start`.
+///
+/// `window` says whether the launch replays `start` from genesis or restores
+/// a checkpoint at `start`; only a genesis launch carries app-random branch
+/// substitutions.
 pub(super) fn production_lifecycle_config_for_start(
     config: &ProductionVmLifecycleConfig,
     source: &ScenarioDefForm,
     start: &Configuration,
+    window: AppRandomLaunchWindow,
     signal_fault_replay: Option<&crucible_engine::SignalFaultCampaignReplayPlan>,
     authenticated_network_selections: &[SelectionDecision],
 ) -> Result<ProductionVmLifecycleConfig, QemuAttemptProductionVmLifecycleError> {
-    let (selections, plans) = app_random_branch_replay(start)
+    let (selections, plans) = app_random_branch_replay(start, window)
         .map_err(QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay)?;
     if plans.keys().any(|node| {
         !source
@@ -338,7 +347,7 @@ pub(super) fn production_lifecycle_config_for_start(
     for selection in authenticated_network_selections {
         if !start
             .schedule
-            .decisions()
+            .decision_history()
             .contains(&Decision::Selection(selection.clone()))
         {
             return Err(
@@ -377,9 +386,16 @@ where
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        if self.pending_retention.is_some() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::PriorRetentionPending,
+            ));
+        }
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
+        let continuation_free = continuations.is_empty();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -559,7 +575,51 @@ where
         } else {
             Ok(None)
         };
-        let cleanup = lifecycle.shutdown();
+        let (mut lifecycle, driven, captured_trace, drained) = match (driven, captured_trace) {
+            (Ok(QemuFreshRunnerResult::Observation(pending)), Ok(trace)) => {
+                match self.published_root_plan(input, context, continuation_free, &pending) {
+                    None => (
+                        lifecycle,
+                        Ok(QemuFreshRunnerResult::Observation(pending)),
+                        Ok(trace),
+                        Vec::new(),
+                    ),
+                    Some(plan) => {
+                        match self.retain_published_root(lifecycle, pending, trace, plan, input) {
+                            source_retention::QemuPublishedRootAttempt::Declined {
+                                lifecycle,
+                                pending,
+                                trace,
+                                drained,
+                            } => (
+                                lifecycle,
+                                Ok(QemuFreshRunnerResult::Observation(pending)),
+                                Ok(trace),
+                                drained,
+                            ),
+                            source_retention::QemuPublishedRootAttempt::Finished(finished) => {
+                                let (product, retained) = finished?;
+                                self.pending_retention = retained;
+                                return Ok(CrucibleExecutionOutcome::new(
+                                    product,
+                                    CrucibleMaterializationTier::ThinReplay,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            (driven, captured_trace) => (lifecycle, driven, captured_trace, Vec::new()),
+        };
+        // A nonempty retention drain already appended its entries; they
+        // precede shutdown's entries exactly as one shutdown would order them.
+        let cleanup = lifecycle.shutdown().map(|events| {
+            if drained.is_empty() {
+                events
+            } else {
+                drained.into_iter().chain(events).collect()
+            }
+        });
         crate::crucible_execution::record_execution_phase_diagnostic(
             "shutdown-return",
             format_args!(
@@ -624,74 +684,26 @@ where
             CrucibleMaterializationTier::ThinReplay,
         ))
     }
-}
 
-pub(super) fn validated_attempt_continuations(
-    input: &CrucibleAttemptExecution,
-) -> Result<Vec<QemuAttemptContinuation<'_>>, ()> {
-    let Some((origins, terminal_input)) = input.continuation_replay_basis() else {
-        return input
-            .attempt()
-            .continuation_input()
-            .is_none()
-            .then(Vec::new)
-            .ok_or(());
-    };
-    let mut continuations = Vec::new();
-    let mut source = None;
-    for origin in origins.iter() {
-        if let Some(continuation_input) = origin.attempt().continuation_input() {
-            continuations.push(validated_attempt_continuation(
-                continuation_input,
-                source.ok_or(())?,
-            )?);
+    fn reconcile_execution(
+        &mut self,
+        disposition: crate::AttemptExecutionDisposition,
+    ) -> Result<crate::AttemptExecutionReconciliationStep, AttemptWorkerFailure<Self::Error>> {
+        if let Some(pending) = self.pending_retention.take() {
+            source_retention::reconcile_published_root(pending, &disposition).map_err(|error| {
+                AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::PublishedRootRetention(error.to_string()),
+                )
+            })?;
         }
-        source = Some(origin);
+        Ok(crate::AttemptExecutionReconciliationStep::Complete)
     }
-    if let Some(continuation_input) = terminal_input {
-        continuations.push(validated_attempt_continuation(
-            continuation_input,
-            source.ok_or(())?,
-        )?);
-    }
-    Ok(continuations)
-}
 
-fn validated_attempt_continuation<'a>(
-    continuation_input: &'a AttemptContinuationInput,
-    source: &'a CrucibleAttemptOrigin,
-) -> Result<QemuAttemptContinuation<'a>, ()> {
-    let source_frontier_ticks = match (source.attempt().stop(), source.source_stop()) {
-        (
-            StopCondition::VirtualTimePicoseconds(requested),
-            Some(crucible_campaign::StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(
-                reached,
-            ))),
-        ) if requested == reached => *reached,
-        (
-            StopCondition::Observation(condition),
-            Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
-        ) if proof.condition() == condition => proof.boundary().frontier_picoseconds(),
-        (
-            requested @ StopCondition::Bounded { .. },
-            Some(crucible_campaign::StopOutcome::BoundedPrimaryReached { stop, proof }),
-        ) if requested == stop => proof.frontier_picoseconds(),
-        (
-            StopCondition::Bounded { primary, .. },
-            Some(crucible_campaign::StopOutcome::ObservationReached(proof)),
-        ) if matches!(primary.as_ref(), StopCondition::Observation(condition) if proof.condition() == condition) => {
-            proof.boundary().frontier_picoseconds()
+    fn quarantine_pending_execution(&mut self) {
+        if let Some(pending) = self.pending_retention.take() {
+            source_retention::quarantine_published_root(pending);
         }
-        _ => return Err(()),
-    };
-    if source_frontier_ticks != continuation_input.source_frontier_ticks() {
-        return Err(());
     }
-
-    Ok(QemuAttemptContinuation {
-        input: continuation_input,
-        source: source.reached(),
-    })
 }
 
 impl<F, D> QemuAttemptStartVerifier for QemuFreshExecutionRunner<F, D>
@@ -777,9 +789,10 @@ where
         context: &AttemptExecutionContext,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
     ) -> Result<QemuSavepointReplayProof, AttemptWorkerFailure<Self::Error>> {
-        let continuations = validated_attempt_continuations(input).map_err(|()| {
+        let validated_continuations = validated_attempt_continuations(input).map_err(|()| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
         })?;
+        let continuations = validated_continuations.controls();
         if !self
             .lifecycles
             .configure_attempt_continuations(&continuations)
@@ -908,7 +921,14 @@ pub(super) fn replay_selected_origins<F, D>(
     let mut segment_start = base.as_ref().clone();
     let mut signal_fault_replay = base_signal_fault_replay.clone();
 
+    // Origins are materialized one at a time, so only the current segment's
+    // reached configuration is resident beside the terminal origin.
     for origin in origins.iter() {
+        let origin = origin.map_err(|error| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+                QemuFreshStartReplayError::OriginMaterialization(error),
+            ))
+        })?;
         let segment =
             input.for_origin_replay(origin.attempt().clone(), segment_start, signal_fault_replay);
         let mut facade = QemuFreshAttemptLifecycle::new(lifecycle);
@@ -963,36 +983,4 @@ pub(super) fn map_selected_origin_replay_failure<F, D>(
         AttemptWorkerFailure::Canceled(error) => AttemptWorkerFailure::Canceled(map(error)),
         AttemptWorkerFailure::Terminal(error) => AttemptWorkerFailure::Terminal(map(error)),
     }
-}
-
-pub(super) fn unsupported_fresh_replay_decision(
-    target: &Configuration,
-    signal_fault_replay: &crucible_engine::SignalFaultCampaignReplayPlan,
-) -> Option<usize> {
-    if signal_fault_replay.target() != target {
-        return Some(0);
-    }
-    let covered_signal_fault_overrides = signal_fault_replay
-        .branches()
-        .iter()
-        .filter(|branch| branch.decisions().len() == 2)
-        .map(|branch| branch.parent().schedule.len() + 1)
-        .collect::<BTreeSet<_>>();
-    target
-        .schedule
-        .decisions()
-        .iter()
-        .enumerate()
-        .find_map(|(index, decision)| match decision {
-            Decision::Override(_) if covered_signal_fault_overrides.contains(&index) => None,
-            Decision::Override(_) => Some(index),
-            Decision::Selection(selection) => selection
-                .selection()
-                .map_or(true, |decoded| {
-                    matches!(decoded.origin(), SelectionOrigin::ModelSample(_))
-                        && !selection.is_app_random_model_sample()
-                })
-                .then_some(index),
-            Decision::DeliveryOrder(_) | Decision::RngDraw(_) | Decision::Preemption(_) => None,
-        })
 }

@@ -2,6 +2,104 @@
 
 use super::*;
 
+/// Builds `mutations` alternating branch-request and control transitions.
+fn mixed_history(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    name: &str,
+    mutations: u64,
+) {
+    let template = branch_request(
+        repository,
+        lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        &format!("{name}-template"),
+    );
+    let mut snapshot = repository.head(name).expect("history head").snapshot_id();
+    for ordinal in 0..mutations {
+        snapshot = if ordinal % 2 == 0 {
+            let request = BranchRequest::new(
+                BranchRequest::identity(
+                    template.branch_point(),
+                    template.parent(),
+                    template.opportunity(),
+                    template.domain(),
+                ),
+                template.source().clone(),
+                BranchRequestCause::Operator(crate::CampaignCommandId::from_hash(
+                    CampaignHash::derive("test.flat-cold-request", &ordinal.to_be_bytes()),
+                )),
+                template.budget(),
+                template.stop().clone(),
+            )
+            .expect("history request");
+            repository
+                .submit_known_branch_request(name, snapshot, &request)
+                .expect("submit history request")
+                .new_snapshot
+        } else {
+            let action = if (ordinal / 2) % 2 == 0 {
+                CampaignControlAction::Resume
+            } else {
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::Drain)
+            };
+            let request = ControlRequest {
+                command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+                    "test.flat-cold-control",
+                    &ordinal.to_be_bytes(),
+                )),
+                expected_snapshot: snapshot,
+                action,
+            };
+            repository
+                .apply_control(name, &request)
+                .expect("apply history control")
+                .new_snapshot
+        };
+    }
+}
+
+#[test]
+fn cold_validation_resident_state_is_flat_in_snapshot_count() {
+    const SHORT: u64 = 32;
+    const LONG: u64 = 256;
+
+    let mut peaks = Vec::new();
+    for mutations in [SHORT, LONG] {
+        let (repository, lineage, policy) = fixture();
+        let name = format!("flat-cold-{mutations}");
+        repository
+            .create(&name, &lineage, &policy, &BTreeMap::new())
+            .expect("create history");
+        mixed_history(&repository, &lineage, &name, mutations);
+
+        let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+        let head = cold.head(&name).expect("complete cold validation");
+        let checkpoint = cold
+            .load_validation_checkpoint(head.snapshot_id().content_id())
+            .expect("cold checkpoint");
+        assert!(checkpoint.ancestry_depth > mutations as usize);
+        peaks.push(
+            cold.cold_validation_peak_resident(&name)
+                .expect("repeat complete cold validation"),
+        );
+    }
+
+    // An eightfold longer history may deepen each trie by a nibble or two,
+    // but one transition's resident walk must not scale with the ancestry.
+    let (short, long) = (peaks[0], peaks[1]);
+    eprintln!("cold-validation-peak-resident: short={short} long={long}");
+    assert!(
+        long <= short + 2 * MERKLE_UPDATE_NODE_UPPER,
+        "{short} -> {long}"
+    );
+    assert!(
+        long < LONG as usize,
+        "{long} resident entries for {LONG} snapshots"
+    );
+}
+
 #[test]
 fn ten_thousand_mixed_mutations_use_incremental_validation_and_replay_indexes() {
     const MUTATIONS: u64 = 10_000;
@@ -209,7 +307,7 @@ fn cold_ancestry_validation_rejects_a_head_beyond_its_bounded_depth() {
         .validate_snapshot_ancestry(content, &mut ChoiceValidationCache::default(), 3)
         .expect("three-snapshot cold ancestry");
     assert_eq!(depth, 3);
-    assert_eq!(MAX_SNAPSHOT_ANCESTRY, 1_250_001);
+    assert_eq!(MAX_CAMPAIGN_SNAPSHOT_ANCESTRY, 1_250_001);
 }
 
 #[test]
@@ -224,7 +322,7 @@ fn local_successors_enforce_the_restart_ancestry_limit() {
         .expect("validation checkpoints")
         .get_mut(&genesis.content_id())
         .expect("genesis checkpoint")
-        .ancestry_depth = MAX_SNAPSHOT_ANCESTRY;
+        .ancestry_depth = MAX_CAMPAIGN_SNAPSHOT_ANCESTRY;
     let request = branch_request(
         &repository,
         &lineage,
@@ -249,7 +347,7 @@ fn local_successors_enforce_the_restart_ancestry_limit() {
 }
 
 #[test]
-fn conservative_closure_limit_rebases_through_complete_validation() {
+fn large_conservative_closure_count_never_forces_a_rebase() {
     let (repository, lineage, policy) = fixture();
     let genesis = repository
         .create("closure-rebase", &lineage, &policy, &BTreeMap::new())
@@ -275,11 +373,11 @@ fn conservative_closure_limit_rebases_through_complete_validation() {
         .expect("validation checkpoints")
         .get_mut(&discovered.new_snapshot.content_id())
         .expect("discovery checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH - 1;
+        .closure_objects = usize::MAX / 2;
 
     let accepted = repository
         .submit_branch_request("closure-rebase", discovered.new_snapshot, &request)
-        .expect("full-validation rebase");
+        .expect("incremental successor from a large checkpoint");
     let checkpoints = repository
         .validated_heads
         .lock()
@@ -287,9 +385,9 @@ fn conservative_closure_limit_rebases_through_complete_validation() {
     assert_eq!(checkpoints.len(), 1);
     let checkpoint = checkpoints
         .get(&accepted.new_snapshot.content_id())
-        .expect("rebased child checkpoint");
+        .expect("incremental child checkpoint");
     assert_eq!(checkpoint.ancestry_depth, 3);
-    assert!(checkpoint.closure_objects < MAX_CAMPAIGN_CLOSURE_OBJECTS);
+    assert!(checkpoint.closure_objects > usize::MAX / 2);
 }
 
 #[test]
@@ -353,15 +451,13 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
             request.opportunity(),
         )
         .expect("discover generator request opportunity");
-    repository
+    let parent_objects = repository
         .validated_heads
         .lock()
         .expect("validation checkpoints")
-        .get_mut(&discovered.new_snapshot.content_id())
+        .get(&discovered.new_snapshot.content_id())
         .expect("discovery checkpoint")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS - MAX_SIMPLE_SUCCESSOR_GROWTH
-        // Three nested scan-index paths and its exploration anchor are new.
-        - (4 * MERKLE_UPDATE_NODE_UPPER) - 32;
+        .closure_objects;
     let accepted = repository
         .submit_branch_request("generator-anchor", discovered.new_snapshot, &request)
         .expect("accept anchored generator request");
@@ -373,9 +469,12 @@ fn reused_active_policy_generator_is_an_incremental_closure_anchor() {
         .get(&accepted.new_snapshot.content_id())
         .expect("incremental child checkpoint");
 
+    // Three nested scan-index paths and its exploration anchor are new; the
+    // reused generator graph is anchored rather than charged again.
     assert!(
-        checkpoint.closure_objects > MAX_CAMPAIGN_CLOSURE_OBJECTS / 2,
-        "reused generator closure forced an unnecessary complete rebase"
+        checkpoint.closure_objects - parent_objects
+            <= MAX_SIMPLE_SUCCESSOR_GROWTH + (4 * MERKLE_UPDATE_NODE_UPPER) + 32,
+        "reused generator closure was charged as new growth"
     );
 }
 

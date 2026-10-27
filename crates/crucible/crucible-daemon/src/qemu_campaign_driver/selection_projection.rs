@@ -12,16 +12,16 @@ pub(super) fn produced_selections_after_start(
     child: &Configuration,
     discovered_ids: &BTreeSet<ChoiceOpportunityId>,
 ) -> Result<Vec<Selection>, QemuFreshModeledDriverError> {
-    let start_decisions = start.schedule.decisions();
-    let child_decisions = child.schedule.decisions();
+    let start_decisions = start.schedule.decision_history();
+    let child_decisions = child.schedule.decision_history();
     if !child_decisions.starts_with(start_decisions) {
         return Err(QemuFreshModeledDriverError::StartSchedulePrefixMismatch);
     }
 
     // A branch start already owns its selected prefix. Only decisions made by
     // this attempt can be published as selections produced by its observation.
-    let selections = child_decisions[start_decisions.len()..]
-        .iter()
+    let selections = child_decisions
+        .iter_from(start_decisions.len())
         .filter_map(|decision| match decision {
             Decision::Selection(selection) => Some(selection),
             _ => None,
@@ -37,28 +37,17 @@ pub(super) fn produced_selections_after_start(
     Ok(selections)
 }
 
+/// Returns whether any of `discoveries` lacks a selection in `configuration`.
+///
+/// The stop check runs every quantum, so it asks the schedule's maintained
+/// selected-opportunity set instead of decoding the recorded history.
 pub(super) fn has_unselected_discovery<'a>(
     configuration: &Configuration,
     discoveries: impl IntoIterator<Item = &'a ChoiceDiscovery>,
 ) -> Result<bool, QemuFreshModeledDriverError> {
-    let selected = configuration
-        .schedule
-        .decisions()
-        .iter()
-        .filter_map(|decision| match decision {
-            Decision::Selection(selection) => Some(selection),
-            _ => None,
-        })
-        .map(|decision| {
-            decision
-                .selection()
-                .map(|selection| selection.opportunity())
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-
     for discovery in discoveries {
         let opportunity = discovery.opportunity().id()?;
-        if !selected.contains(&opportunity) {
+        if !configuration.schedule.has_selected(opportunity) {
             return Ok(true);
         }
     }

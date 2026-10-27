@@ -46,6 +46,8 @@ in
         || pathString == "${repoRootString}/pkgs/tools"
         || pathString == "${repoRootString}/pkgs/tools/aos-ability-crucible.nix"
         || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        # Evidence read by the Crucible ability-adapter baseline gate.
+        || pathString == "${repoRootString}/pkgs/tools/aos-ability-crucible.nix"
         || pathString == "${repoRootString}/stdenv"
         || pathString == "${repoRootString}/stdenv/phases.nix"
         || pathString == "${repoRootString}/modules"

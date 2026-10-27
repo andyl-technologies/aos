@@ -21,6 +21,9 @@ use crate::{
     ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger,
 };
 
+#[cfg(unix)]
+mod setup_watchdog;
+
 #[test]
 fn assignment_host_watchdog_interrupts_the_same_execution_incarnation() {
     let cancellation = ExecutionCancellation::default();
@@ -573,4 +576,35 @@ fn typed_content_id(tag: &str, kind: &str, schema_version: u32, byte: u8) -> Str
         "{tag}@{kind}.{schema_version}.{}",
         format!("{byte:02x}").repeat(32)
     )
+}
+
+#[test]
+fn attempt_contexts_create_event_log_stores_only_under_a_namespace() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let namespace =
+        crate::AttemptLogNamespace::create(parent.path().join("event-logs")).expect("namespace");
+    let context = AttemptExecutionContext::new(
+        AttemptResourceLimits::new(1, 1024, 2048, 2).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        ExecutionCancellation::default(),
+        ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    );
+    let with_namespace = context
+        .clone()
+        .with_event_log_namespace(Some(Arc::clone(&namespace)));
+
+    let without = context.create_event_log_store().expect("memory fallback");
+    let direct = with_namespace
+        .create_event_log_store()
+        .expect("attempt store");
+    let replay = with_namespace
+        .for_origin_replay()
+        .create_event_log_store()
+        .expect("replay store");
+
+    assert!(without.is_none());
+    assert!(matches!(direct, Some(crate::AttemptLogStore::Directory(_))));
+    assert!(matches!(replay, Some(crate::AttemptLogStore::Directory(_))));
+    assert_ne!(direct, replay);
 }

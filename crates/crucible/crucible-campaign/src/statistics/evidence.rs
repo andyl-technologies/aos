@@ -1,10 +1,11 @@
 //! Portable evidence used to replay statistical estimates without repository access.
 //!
-//! The evidence contains every record needed for semantic replay. A transport
-//! authenticates the record bodies and the root memberships returned by
-//! [`FiniteStatisticalEvidence::required_root_lookups`] or
-//! [`SequentialMonteCarloEvidence::required_root_lookups`] before calling the
-//! pure verifiers in this module.
+//! The evidence contains every record needed for semantic replay, split into a
+//! [`StatisticalEvidenceManifest`] and ordered [`StatisticalEvidenceChunk`]s
+//! (see the `chunked` module for the wire layout). A transport authenticates
+//! the manifest snapshot, each chunk's record bodies, and the root memberships
+//! returned by [`StatisticalEvidenceChunk::required_root_lookups`] before
+//! passing the chunk to [`StatisticalEvidenceVerifier`].
 //!
 //! Replay checks the statistical design, selected values, execution basis,
 //! observations, paths, selectors, and exact estimator arithmetic. A rooted
@@ -25,17 +26,27 @@ use crate::{
     Selection,
 };
 
+mod chunked;
 mod verify;
 
-pub(crate) use verify::verify_initial_smc_statistical_evidence;
+pub(crate) use chunked::statistical_evidence_item_count;
+pub use chunked::{
+    MAX_STATISTICAL_EVIDENCE_CHUNKS, StatisticalEvidenceChunk, StatisticalEvidenceChunkDescriptor,
+    StatisticalEvidenceItem, StatisticalEvidenceManifest, StatisticalEvidenceReport,
+    StatisticalEvidenceVerifier,
+};
+
 #[cfg(test)]
 pub(crate) use verify::verify_smc_source_selector;
-pub use verify::{verify_finite_statistical_evidence, verify_sequential_monte_carlo_evidence};
+pub(crate) use verify::{EvidenceBasis, FiniteEvidenceReplay, SmcEvidenceReplay};
 
-/// Maximum draws or transitions accepted in one statistical evidence bundle.
+/// Maximum draws or transitions carried by one statistical evidence chunk.
 pub const MAX_STATISTICAL_EVIDENCE_ITEMS: usize = 65_536;
 
-/// Maximum canonical bytes accepted for one aggregate statistical evidence bundle.
+/// Maximum canonical bytes of one statistical evidence chunk or manifest.
+///
+/// This is the per-message transport bound; a complete campaign's evidence
+/// spans as many chunks as it needs.
 pub const MAX_STATISTICAL_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Identifies one snapshot root used by statistical evidence.
@@ -508,131 +519,6 @@ impl Canonical for StatisticalDrawEvidence {
     }
 }
 
-/// Complete evidence for replaying one finite statistical estimate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FiniteStatisticalEvidence {
-    snapshot: CampaignSnapshot,
-    planning_view: CampaignPlanningView,
-    policy: CampaignPolicy,
-    lineage: CampaignLineage,
-    draws: Vec<StatisticalDrawEvidence>,
-}
-
-impl FiniteStatisticalEvidence {
-    /// Builds a complete finite statistical evidence bundle.
-    #[must_use]
-    pub fn new(
-        snapshot: CampaignSnapshot,
-        planning_view: CampaignPlanningView,
-        policy: CampaignPolicy,
-        lineage: CampaignLineage,
-        draws: Vec<StatisticalDrawEvidence>,
-    ) -> Self {
-        Self {
-            snapshot,
-            planning_view,
-            policy,
-            lineage,
-            draws,
-        }
-    }
-
-    /// Returns the pinned snapshot.
-    #[must_use]
-    pub const fn snapshot(&self) -> &CampaignSnapshot {
-        &self.snapshot
-    }
-
-    /// Returns the planning view embedded in the pinned snapshot.
-    #[must_use]
-    pub const fn planning_view(&self) -> &CampaignPlanningView {
-        &self.planning_view
-    }
-
-    /// Returns the active policy.
-    #[must_use]
-    pub const fn policy(&self) -> &CampaignPolicy {
-        &self.policy
-    }
-
-    /// Returns the campaign lineage.
-    #[must_use]
-    pub const fn lineage(&self) -> &CampaignLineage {
-        &self.lineage
-    }
-
-    /// Returns finite draws in coordinate order.
-    #[must_use]
-    pub fn draws(&self) -> &[StatisticalDrawEvidence] {
-        &self.draws
-    }
-
-    /// Returns the strict canonical evidence bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        crate::codec::encode(self)
-    }
-
-    /// Decodes one aggregate after enforcing its byte bound before allocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for oversized, malformed, noncanonical,
-    /// or structurally invalid record encodings. Cross-record semantics require
-    /// [`verify_finite_statistical_evidence`] after root authentication.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        if bytes.len() > MAX_STATISTICAL_EVIDENCE_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finite-statistical-evidence-bytes",
-            });
-        }
-        crate::codec::decode(bytes)
-    }
-
-    /// Derives all required snapshot-root memberships from the evidence bodies.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when an object identity cannot be formed
-    /// or two bodies claim different values for one root key.
-    pub fn required_root_lookups(&self) -> Result<Vec<StatisticalRootLookup>, CampaignCodecError> {
-        let mut lookups = BTreeMap::new();
-        for draw in &self.draws {
-            collect_execution_lookups(
-                &mut lookups,
-                statistical_draw_request_key(draw.coordinate),
-                statistical_draw_proposal_key(draw.coordinate),
-                &draw.execution,
-            )?;
-        }
-        finish_lookups(lookups)
-    }
-}
-
-impl Canonical for FiniteStatisticalEvidence {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.snapshot.encode(encoder);
-        self.planning_view.encode(encoder);
-        self.policy.encode(encoder);
-        self.lineage.encode(encoder);
-        self.draws.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Ok(Self::new(
-            CampaignSnapshot::decode(decoder)?,
-            CampaignPlanningView::decode(decoder)?,
-            CampaignPolicy::decode(decoder)?,
-            CampaignLineage::decode(decoder)?,
-            decoder.sequence_bounded(
-                MAX_STATISTICAL_EVIDENCE_ITEMS,
-                "finite-statistical-evidence-draw-count",
-                StatisticalDrawEvidence::decode,
-            )?,
-        ))
-    }
-}
-
 /// Complete semantic evidence for one SMC stage and particle slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SmcTransitionEvidence {
@@ -700,106 +586,6 @@ impl Canonical for SmcTransitionEvidence {
             u32::decode(decoder)?,
             u32::decode(decoder)?,
             StatisticalExecutionEvidence::decode(decoder)?,
-        ))
-    }
-}
-
-/// Complete evidence for replaying a sequential Monte Carlo estimate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SequentialMonteCarloEvidence {
-    initial: FiniteStatisticalEvidence,
-    transitions: Vec<SmcTransitionEvidence>,
-}
-
-impl SequentialMonteCarloEvidence {
-    /// Builds an SMC bundle from its initial flight and ordered transitions.
-    #[must_use]
-    pub const fn new(
-        initial: FiniteStatisticalEvidence,
-        transitions: Vec<SmcTransitionEvidence>,
-    ) -> Self {
-        Self {
-            initial,
-            transitions,
-        }
-    }
-
-    /// Returns the complete initial finite flight.
-    #[must_use]
-    pub const fn initial(&self) -> &FiniteStatisticalEvidence {
-        &self.initial
-    }
-
-    /// Returns transitions ordered by stage and slot.
-    #[must_use]
-    pub fn transitions(&self) -> &[SmcTransitionEvidence] {
-        &self.transitions
-    }
-
-    /// Returns the strict canonical evidence bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        crate::codec::encode(self)
-    }
-
-    /// Decodes one aggregate after enforcing its byte bound before allocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for oversized, malformed, noncanonical,
-    /// or structurally invalid record encodings. Cross-record semantics require
-    /// [`verify_sequential_monte_carlo_evidence`] after root authentication.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        if bytes.len() > MAX_STATISTICAL_EVIDENCE_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "SMC-evidence-bytes",
-            });
-        }
-        crate::codec::decode(bytes)
-    }
-
-    /// Derives all required snapshot-root memberships from the evidence bodies.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] when an object identity cannot be formed
-    /// or two bodies claim different values for one root key.
-    pub fn required_root_lookups(&self) -> Result<Vec<StatisticalRootLookup>, CampaignCodecError> {
-        let mut lookups = BTreeMap::new();
-        for draw in &self.initial.draws {
-            collect_execution_lookups(
-                &mut lookups,
-                statistical_draw_request_key(draw.coordinate),
-                statistical_draw_proposal_key(draw.coordinate),
-                &draw.execution,
-            )?;
-        }
-        for transition in &self.transitions {
-            collect_execution_lookups(
-                &mut lookups,
-                smc_transition_request_key(transition.stage, transition.slot),
-                smc_transition_proposal_key(transition.stage, transition.slot),
-                &transition.execution,
-            )?;
-        }
-        finish_lookups(lookups)
-    }
-}
-
-impl Canonical for SequentialMonteCarloEvidence {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.initial.encode(encoder);
-        self.transitions.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        Ok(Self::new(
-            FiniteStatisticalEvidence::decode(decoder)?,
-            decoder.sequence_bounded(
-                MAX_STATISTICAL_EVIDENCE_ITEMS,
-                "SMC-evidence-transition-count",
-                SmcTransitionEvidence::decode,
-            )?,
         ))
     }
 }
@@ -1016,26 +802,4 @@ fn branch_point_opportunity_key(
     bytes.extend_from_slice(&branch_point.as_hash().as_bytes());
     bytes.extend_from_slice(opportunity.content_id().encode().as_bytes());
     CampaignHash::derive("crucible.campaign-branch-point-opportunity.v1", &bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn aggregate_decoders_reject_oversized_input_before_nested_decoding() {
-        let oversized = vec![0_u8; MAX_STATISTICAL_EVIDENCE_BYTES + 1];
-        assert!(matches!(
-            FiniteStatisticalEvidence::from_canonical_bytes(&oversized),
-            Err(CampaignCodecError::LimitExceeded {
-                limit: "finite-statistical-evidence-bytes"
-            })
-        ));
-        assert!(matches!(
-            SequentialMonteCarloEvidence::from_canonical_bytes(&oversized),
-            Err(CampaignCodecError::LimitExceeded {
-                limit: "SMC-evidence-bytes"
-            })
-        ));
-    }
 }

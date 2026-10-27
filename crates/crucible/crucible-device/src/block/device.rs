@@ -8,12 +8,13 @@
 //! by the [`IoCore`] the device composes ([IO-10], [IO-22]).
 //!
 //! It also owns [`BlockSnapshot`], the device half of a `MaterializedState`
-//! contribution: the overlay delta (dirty pages only), the device RNG position
-//! cursor, the active fault table, the in-flight responses, the base hash, and
-//! the device length — **never** the base image bytes ([IO-11], [TEMP-9]).
-//! [`BlockDevice::restore`]
-//! stacks the delta over a parent overlay and re-arms the in-flight queue, and
-//! [`BlockDevice::materialize`] hands off a standalone raw image ([IO-12]).
+//! contribution: the chunked, content-addressed overlay image with its dirty
+//! page set, the device RNG position cursor, the active fault table, the
+//! in-flight responses, the base hash, and the device length — **never** the
+//! base image bytes or inline page bytes ([IO-11], [TEMP-9]).
+//! [`BlockDevice::restore`] rebuilds the overlay into a page store and re-arms
+//! the in-flight queue, and [`BlockDevice::materialize_to`] streams a
+//! standalone raw image ([IO-12]).
 //!
 //! ```text
 //! request payload  = BlockRequest::encode()   (rides the SLOT_BLK_IO ring)
@@ -45,6 +46,7 @@ use super::fault::{
     ResolvedBlockPersistenceMediaDirective, ResolvedBlockRequestPersistenceDirective,
 };
 use super::overlay::{BaseImage, CowOverlay};
+use super::page_store::BlockPageStore;
 use super::service::BlockServiceCompletion;
 
 pub use snapshot::{BlockSnapshot, BlockSnapshotCodecError, MAX_BLOCK_SNAPSHOT_BYTES};

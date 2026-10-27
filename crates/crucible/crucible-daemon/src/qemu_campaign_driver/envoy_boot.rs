@@ -1,8 +1,9 @@
 //! Audited choice-free prefix for the five-node Envoy guest fixture.
 //!
-//! The authenticated fixture token and topology permit concurrent QEMU RUNs
-//! only until west's convergence marker reaches the scheduler event log. Any
-//! choice during that prefix aborts the unpublished attempt continuation.
+//! The authenticated fixture token and topology prove that no choice occurs
+//! until west's convergence marker reaches the scheduler event log. RUN sets
+//! are concurrent before and after the marker; during that prefix any choice
+//! aborts the unpublished attempt continuation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,7 +14,7 @@ use crucible_engine::{
     WhiteBoxPolicy,
 };
 
-use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle};
+use super::{QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, RetainedAttemptLog};
 use crate::{AttemptWorkerFailure, CrucibleAttemptExecution};
 
 const ENVOY_FIXTURE_SEED: u64 = 802_750_664_550_812_378;
@@ -23,12 +24,42 @@ const BOOT_CONSOLE_TAIL_BYTES: usize = 160;
 
 /// Reports whether an attempt carries the audited five-node boot capability.
 pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) -> bool {
+    input.attempt().stop().accepts_next_choice()
+        && input.signal_fault_replay().network_branches().is_empty()
+        && audited_envoy_boot_graph(input)
+}
+
+/// Reports whether start replay must re-arm the audited Envoy boot prefix.
+///
+/// Every attempt runs concurrent RUN sets, so replay groups RUNs exactly as
+/// the original did whether or not this holds. While it holds, replay arms
+/// the choice-free mark so a choice before west's convergence marker fails
+/// closed, as in the original. Replay ignores its own attempt's stop and
+/// network branches because neither existed when the prefix was first run.
+///
+/// # Errors
+///
+/// Returns [`QemuFreshModeledDriverError::EventLog`] when the retained log
+/// must be read and a sealed segment cannot be read back.
+pub(crate) fn envoy_choice_free_boot_replay_eligible(
+    input: &CrucibleAttemptExecution,
+    retained: &RetainedAttemptLog,
+) -> Result<bool, QemuFreshModeledDriverError> {
+    Ok(audited_envoy_boot_graph(input) && !west_convergence_retained(retained)?)
+}
+
+/// Returns whether the retained log already holds west's convergence marker.
+fn west_convergence_retained(
+    retained: &RetainedAttemptLog,
+) -> Result<bool, QemuFreshModeledDriverError> {
+    Ok(retained.find(is_west_convergence_marker)?.is_some())
+}
+
+/// Matches the exact authored five-node World, seed and selectable catalog.
+fn audited_envoy_boot_graph(input: &CrucibleAttemptExecution) -> bool {
     // The fixture-authored cmdline token opts this exact boot graph into the
     // choice-free prefix proven by west convergence and positive link latency.
-    if !input.attempt().stop().accepts_next_choice()
-        || !input.signal_fault_replay().network_branches().is_empty()
-        || input.scenario().seed() != Seed::from_u64(ENVOY_FIXTURE_SEED)
-    {
+    if input.scenario().seed() != Seed::from_u64(ENVOY_FIXTURE_SEED) {
         return false;
     }
 
@@ -39,7 +70,7 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         .filter(|node| {
             node.cmdline
                 == format!(
-                    "root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
+                    "root=/dev/vda rw init=/init console=ttyS0 quiet loglevel=4 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                     node.id.name
                 )
                 && node.arch == VmArchitecture::X86_64
@@ -101,9 +132,12 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
 }
 
 /// Finds west's authenticated convergence marker in scheduler-owned evidence.
-pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
-    entries.iter().any(|entry| {
-        matches!(
+pub(crate) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -> bool {
+    entries.iter().any(is_west_convergence_marker)
+}
+
+fn is_west_convergence_marker(entry: &SchedulerEventLogEntry) -> bool {
+    matches!(
             entry.payload(),
             SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
                 node,
@@ -115,11 +149,10 @@ pub(super) fn west_convergence_marker_seen(entries: &[SchedulerEventLogEntry]) -
                 && marker == "network.converged"
                 && instance == "instance-1"
                 && details.is_empty()
-        )
-    })
+    )
 }
 
-/// Owns the audited concurrent prefix before west reports route convergence.
+/// Owns the audited choice-free prefix before west reports route convergence.
 pub(super) struct EnvoyParallelBoot {
     active: bool,
     next_progress_quanta: u64,
@@ -161,15 +194,15 @@ fn boot_stage(marker: &str) -> Option<(u8, &'static str)> {
 }
 
 impl EnvoyParallelBoot {
-    /// Arms parallel RUNs only for a fresh, not-yet-converged Envoy attempt.
+    /// Arms the choice-free mark only for a fresh, not-yet-converged Envoy attempt.
     pub(super) fn arm(
         input: &CrucibleAttemptExecution,
         fresh_start: bool,
-        entries: &[SchedulerEventLogEntry],
+        retained: &RetainedAttemptLog,
         lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
-    ) -> Self {
+    ) -> Result<Self, QemuFreshModeledDriverError> {
         let eligible = fresh_start && envoy_choice_free_boot_eligible(input);
-        let active = eligible && !west_convergence_marker_seen(entries);
+        let active = eligible && !west_convergence_retained(retained)?;
         lifecycle.set_choice_free_parallel_boot(active);
         if fresh_start && input.scenario().seed() == Seed::from_u64(ENVOY_FIXTURE_SEED) {
             let _ = writeln!(
@@ -177,7 +210,7 @@ impl EnvoyParallelBoot {
                 "CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed={active} eligible={eligible}"
             );
         }
-        Self {
+        Ok(Self {
             active,
             next_progress_quanta: 1,
             observable_events: 0,
@@ -191,7 +224,7 @@ impl EnvoyParallelBoot {
             .into_iter()
             .map(|node| (String::from(node), NodeBootProgress::new()))
             .collect(),
-        }
+        })
     }
 
     /// Reports bounded scheduler progress while the first Envoy choice is pending.
@@ -277,7 +310,7 @@ impl EnvoyParallelBoot {
         self.next_progress_quanta = completed_quanta.saturating_add(64);
     }
 
-    /// Stops parallel RUNs after the west marker and refuses an earlier choice.
+    /// Clears the choice-free mark after the west marker and refuses an earlier choice.
     ///
     /// # Errors
     ///

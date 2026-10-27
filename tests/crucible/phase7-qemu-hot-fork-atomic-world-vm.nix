@@ -8,8 +8,7 @@
   prefixOnly ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
   qemuAtomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
@@ -17,54 +16,12 @@
     destination = "/scenario.toml";
     text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
   };
-  flight = pkgs.mkDerivation {
+  flight = mkCrucibleBinaries {
     pname = "crucible-qemu-hot-fork-atomic-world-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
-      pkgs.sed
-
-      pkgs.sqlite
-    ];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo test --frozen --offline --release --no-run \
-            --message-format=json-render-diagnostics \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/messages.jsonl"
-          binary=$(jq -r \
-            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-            "$TMPDIR/messages.jsonl")
-          test -f "$binary"
-          mkdir -p "$out/bin"
-          cp "$binary" "$out/bin/crucible-daemon-atomic-world-flight"
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-daemon-atomic-world-flight = "test --release -p crucible-daemon --lib";
+    };
   };
   cgroupRoot =
     if campaignComposition == null

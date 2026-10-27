@@ -5,11 +5,14 @@ use crate::BackendEffect;
 
 mod admission;
 mod backend_shutdown;
+mod campaign_park;
 mod cap_boundary;
+mod custody_release;
 mod device_group;
 mod dispatch_boundary;
 mod fixed_input;
 mod held_boundary;
+mod held_catchup;
 mod held_delivery;
 mod held_lineage;
 mod held_stop;
@@ -17,10 +20,13 @@ mod host_concurrent;
 mod host_run_validation;
 mod input_boundary;
 mod io_inventory;
+#[cfg(test)]
+mod native_console_tests;
 mod preselection;
 mod settlement;
 use crate::scheduler::device_group_selection::DeviceGroupSelectionController;
 use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
+pub use backend_shutdown::FinalBoundaryRefusal;
 pub use cap_boundary::FailedCapNegotiation;
 pub use dispatch_boundary::FailedDispatchResolution;
 pub(in crate::scheduler) use held_delivery::HeldDeliveryCeiling;
@@ -102,6 +108,8 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     continuation_poisoned: bool,
     pause_before_live_network_choice: bool,
     parallel_choice_free_boot: bool,
+    /// Host worker bound of the latest RUN set, reused by its catch-up RUNs.
+    host_worker_limit: usize,
     preselection: Option<BackendPendingPreselection>,
     held_host_continuation: Option<HeldHostContinuation>,
     failed_input_resolution: Option<FailedInputResolution>,
@@ -128,6 +136,7 @@ impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
             continuation_poisoned: self.continuation_poisoned,
             pause_before_live_network_choice: self.pause_before_live_network_choice,
             parallel_choice_free_boot: self.parallel_choice_free_boot,
+            host_worker_limit: self.host_worker_limit,
             preselection: self.preselection.clone(),
             held_host_continuation: self.held_host_continuation.clone(),
             failed_input_resolution: self.failed_input_resolution.clone(),
@@ -166,6 +175,7 @@ fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
     match payload {
         ObservableEventPayload::NetworkDelivered { .. } => "network-delivered",
         ObservableEventPayload::ConsoleOutput { .. } => "console-output",
+        ObservableEventPayload::NativeConsoleByte { .. } => "native-console-byte",
         ObservableEventPayload::CoverageBlock { .. } => "coverage-block",
         ObservableEventPayload::CoverageMarker { .. } => "coverage-marker",
         ObservableEventPayload::AssertionProximity { .. } => "assertion-proximity",
@@ -190,6 +200,16 @@ fn normalize_backend_observations(
     events
         .into_iter()
         .map(|event| {
+            // Native origins and evaluation placement were joined explicitly by
+            // the acceptance adapter. Neither counter rebasing nor the generic
+            // poll floor may rewrite that placement. Activation still requires
+            // genuine operation-stop and deterministic projection proof.
+            if matches!(
+                event.payload(),
+                ObservableEventPayload::NativeConsoleByte { .. }
+            ) {
+                return Ok(event);
+            }
             let Some(node) = event.backend_node() else {
                 return Ok(event.normalize_backend_poll_boundary(poll_boundary));
             };
@@ -217,6 +237,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,
@@ -275,6 +296,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,
@@ -314,6 +336,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,
@@ -553,6 +576,7 @@ where
             });
         }
         let pending_before = self.pending_network_outputs.clone();
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("pre-quantum");
         match self.settle_pending_network_outputs_at_current_frontier_inner() {
             Ok(settlement) => {
                 self.prune_frozen_network_output_times();
@@ -646,10 +670,11 @@ where
             if network_outputs.is_empty() {
                 continue;
             }
-            appends.extend(self.network_output_interceptor.intercept_network_outputs(
+            appends.extend(admission::intercept_at_release_times(
+                &mut self.network_output_interceptor,
                 &mut self.loop_impl,
                 &mut self.backend,
-                frontier,
+                &self.frozen_network_output_times,
                 &mut self.pending_network_outputs,
                 &mut network_outputs,
             )?);
@@ -954,5 +979,9 @@ where
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.shutdown_backend_owner()
+    }
+
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        self.loop_impl.sealed_event_log_store()
     }
 }

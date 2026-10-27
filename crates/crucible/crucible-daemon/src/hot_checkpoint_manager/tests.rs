@@ -488,6 +488,49 @@ fn ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured() {
     println!("hot_checkpoint_fallback_authentication=exact-checkpoint-id");
 }
 
+#[test]
+fn reserved_headroom_demotes_colder_sources_before_refusing() {
+    let profile = resources(4, 4, 1, 1, 4, 1);
+    let mut manager = manager(2, resources(10, 10, 10, 10, 100, 10), 4);
+    let colder = manager
+        .plan_admission(candidate(1, 1, false, profile))
+        .expect("colder source fits");
+    manager
+        .commit_admission(colder, slot(1, 0))
+        .expect("colder source commits");
+    let child = HotCheckpointUsage::default()
+        .add_resource_reservation(profile)
+        .expect("child reservation");
+
+    // Without the child, the hotter candidate fits beside the colder source.
+    let unreserved = manager
+        .plan_admission(candidate(2, 5, false, profile))
+        .expect("unreserved plan");
+    assert!(unreserved.demotions().is_empty());
+
+    // Reserving its child needs 12 bytes of 10, so the colder source goes.
+    let reserved = manager
+        .plan_admission_with_reservations(candidate(2, 5, false, profile), child)
+        .expect("reserved plan demotes the colder source");
+    let demoted = reserved
+        .demotions()
+        .iter()
+        .map(|demotion| demotion.status().slot())
+        .collect::<Vec<_>>();
+    assert_eq!(demoted, vec![slot(1, 0)]);
+
+    // A candidate no hotter than the retained source cannot displace it.
+    let refused = manager
+        .plan_admission_with_reservations(candidate(3, 1, false, profile), child)
+        .expect_err("ties keep the retained source");
+    let HotCheckpointAdmissionRejection::InsufficientDemotableCapacity { pressure, .. } = refused
+    else {
+        panic!("expected demotable-capacity refusal, got {refused:?}");
+    };
+    assert!(pressure.template_bytes());
+    assert!(pressure.expected_private_dirty_bytes());
+}
+
 fn manager(
     maximum_templates: usize,
     maximum_resources: HotCheckpointResourceProfile,

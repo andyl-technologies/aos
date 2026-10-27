@@ -1,6 +1,7 @@
 //! Exact selected network interval state and resolved-effect replay admission.
 
 use super::*;
+use crucible_engine::model::ResolvedEffectTrace;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,7 +14,11 @@ pub(super) struct CampaignMarkerReleaseRecord {
     pub(super) selected: ContentHash,
 }
 
-pub(super) fn validate_campaign_replay_restore(
+/// Checks that a restored plan equals the checkpointed selection or extends it.
+///
+/// An extension appends exactly one branch, anchored at the restored frontier,
+/// to the plan the checkpoint authenticated.
+pub(in crate::vm_lifecycle) fn validate_campaign_replay_restore(
     checkpoint_identity: Option<ContentHash>,
     replay: Option<&crucible_engine::NetworkFaultCampaignReplayPlan>,
     restore_frontier: Option<VirtualTime>,
@@ -98,11 +103,7 @@ impl ProductionFaultNetworkInterceptor {
                 }
             }
         }
-        let committed = u64::try_from(self.campaign_records.len()).map_err(|_| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("campaign network effect record count exceeds u64"),
-            }
-        })?;
+        let committed = self.campaign_log.records();
         let mut runtime = self
             .runtime
             .lock()
@@ -123,6 +124,97 @@ impl ProductionFaultNetworkInterceptor {
         self.campaign_replay = replay;
         self.campaign_replay_identity = selected_identity;
         Ok(())
+    }
+
+    /// Rebinds the selected campaign plan of a world paused at `boundary`.
+    ///
+    /// A world launched for one attempt carries that attempt's whole plan,
+    /// including branches it has not reached yet. Before the world becomes a
+    /// source, its plan is replaced by the one an exact resume at `boundary`
+    /// would install, so a checkpoint names only branches the world has
+    /// already committed. The replacement must keep exactly the committed
+    /// branches and may drop only branches still ahead of `boundary`; every
+    /// recorded marker release must still name a kept branch. Returns the
+    /// previous plan so a failed preparation can restore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, leaving the plan unchanged, when `replay` differs
+    /// from the committed branches or a release names a dropped branch.
+    pub(in crate::vm_lifecycle) fn rebind_campaign_replay(
+        &mut self,
+        replay: Option<crucible_engine::NetworkFaultCampaignReplayPlan>,
+        boundary: &Configuration,
+    ) -> Result<Option<crucible_engine::NetworkFaultCampaignReplayPlan>, SchedulerError> {
+        let history = boundary.schedule.decision_history();
+        let committed = self
+            .campaign_replay
+            .as_ref()
+            .map_or(
+                &[][..],
+                crucible_engine::NetworkFaultCampaignReplayPlan::branches,
+            )
+            .iter()
+            .filter(|branch| {
+                let index = branch.parent().schedule.len();
+                index < boundary.schedule.len() && history.get(index) == Some(branch.decision())
+            })
+            .collect::<Vec<_>>();
+        let kept = replay.as_ref().map_or(
+            &[][..],
+            crucible_engine::NetworkFaultCampaignReplayPlan::branches,
+        );
+        if !kept.iter().eq(committed.iter().copied()) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "rebound network fault replay differs from the branches committed at the boundary: kept=[{}] committed=[{}] boundary_decisions={}",
+                    describe_branches(kept.iter()),
+                    describe_branches(committed.iter().copied()),
+                    boundary.schedule.len(),
+                ),
+            });
+        }
+        // A plan branch at or before the boundary whose decision is absent
+        // was neither committed nor still ahead; the world left that plan.
+        let abandoned = self.campaign_replay.as_ref().is_some_and(|plan| {
+            plan.branches().iter().any(|branch| {
+                let index = branch.parent().schedule.len();
+                index < boundary.schedule.len() && history.get(index) != Some(branch.decision())
+            })
+        });
+        let released_dropped = self.campaign_marker_releases.iter().any(|release| {
+            !kept
+                .iter()
+                .any(|branch| branch.selected().id() == release.selected)
+        });
+        if abandoned || released_dropped {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "rebound network fault replay drops a branch the world already crossed",
+                ),
+            });
+        }
+
+        self.campaign_replay_identity = replay
+            .as_ref()
+            .map(crucible_engine::NetworkFaultCampaignReplayPlan::identity);
+        Ok(std::mem::replace(&mut self.campaign_replay, replay))
+    }
+
+    /// Restores a plan returned by [`Self::rebind_campaign_replay`].
+    pub(in crate::vm_lifecycle) fn restore_campaign_replay(
+        &mut self,
+        replay: Option<crucible_engine::NetworkFaultCampaignReplayPlan>,
+    ) {
+        self.campaign_replay_identity = replay
+            .as_ref()
+            .map(crucible_engine::NetworkFaultCampaignReplayPlan::identity);
+        self.campaign_replay = replay;
+    }
+
+    /// Returns the identity of the selected campaign plan a checkpoint records.
+    pub(in crate::vm_lifecycle) const fn campaign_replay_identity(&self) -> Option<ContentHash> {
+        self.campaign_replay_identity
     }
 
     pub(in crate::vm_lifecycle) fn campaign_marker_release_committed(
@@ -202,38 +294,49 @@ impl ProductionFaultNetworkInterceptor {
         Ok(())
     }
 
-    /// Returns committed network actions using the production resolved-effect contract.
-    pub(in crate::vm_lifecycle) fn campaign_effect_records(&self) -> &[ResolvedEffectRecord] {
-        &self.campaign_records
+    /// Returns every committed campaign record, reading sealed segments.
+    #[cfg(test)]
+    pub(in crate::vm_lifecycle) fn campaign_effect_records(
+        &self,
+    ) -> Vec<crucible_engine::model::ResolvedEffectRecord> {
+        let mut records = Vec::new();
+        self.campaign_log
+            .try_for_each_record(|record| {
+                records.push(record.clone());
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("campaign effect log should read: {error}"));
+        records
+    }
+
+    /// Returns the segmented log of committed campaign network effects.
+    pub(in crate::vm_lifecycle) fn campaign_effect_log(&self) -> &CampaignRecordLog {
+        &self.campaign_log
     }
 
     /// Installs exact campaign-owned effect evidence after owner partitioning.
+    ///
+    /// A restore consumes the records the checkpointed log already committed,
+    /// reading both one segment at a time.
     pub(in crate::vm_lifecycle) fn install_campaign_effect_replay(
         &mut self,
-        expected: Option<Vec<ResolvedEffectRecord>>,
+        expected: Option<ResolvedEffectTrace>,
         restoring: bool,
     ) -> Result<(), SchedulerError> {
+        let mut replay = expected
+            .map(|trace| CampaignRecordReplay::new(trace, self.resource_limits))
+            .transpose()?;
         if self.campaign_replay.is_none()
-            && expected.as_ref().is_some_and(|records| !records.is_empty())
+            && replay.as_ref().is_some_and(|replay| replay.total() != 0)
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("campaign effect evidence has no selected network plan"),
             });
         }
-        let consumed = if restoring {
-            self.campaign_records.len()
-        } else {
-            0
-        };
-        if let Some(records) = &expected
-            && (consumed > records.len() || records[..consumed] != self.campaign_records)
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("restored network effect prefix differs from replay"),
-            });
+        if restoring && let Some(replay) = replay.as_mut() {
+            replay.skip_committed(&self.campaign_log)?;
         }
-        self.campaign_effect_replay = expected;
-        self.campaign_effect_replay_cursor = consumed;
+        self.campaign_effect_replay = replay;
         Ok(())
     }
 
@@ -244,7 +347,7 @@ impl ProductionFaultNetworkInterceptor {
         if self
             .campaign_effect_replay
             .as_ref()
-            .is_some_and(|expected| self.campaign_effect_replay_cursor != expected.len())
+            .is_some_and(|replay| !replay.exhausted())
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("campaign network effect replay was not exhausted"),
@@ -254,6 +357,7 @@ impl ProductionFaultNetworkInterceptor {
     }
 
     /// Returns the authored limits used by this network adapter.
+    #[cfg(test)]
     pub(in crate::vm_lifecycle) fn resource_limits(&self) -> FaultResourceLimits {
         self.resource_limits
     }
@@ -276,4 +380,22 @@ impl ProductionFaultNetworkInterceptor {
         outages.dedup();
         Ok(outages)
     }
+}
+
+/// Names each branch's phase, anchor time, decision index and child.
+fn describe_branches<'a>(
+    branches: impl Iterator<Item = &'a crucible_engine::NetworkFaultCampaignBranch>,
+) -> String {
+    branches
+        .map(|branch| {
+            format!(
+                "{:?}@{}:decision={}:child={}",
+                branch.phase(),
+                branch.at().ticks,
+                branch.parent().schedule.len(),
+                branch.selected().id().to_hex(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }

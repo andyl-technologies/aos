@@ -926,13 +926,15 @@ pub(super) fn write_savepoint_handle_fixture(
             &hex_bytes(&schedule_payload),
         ],
     );
-    let replay_closure = b"CCRC\0\0\0\x01\0\0\0\0";
+    let replay_closure =
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            .to_canonical_bytes()?;
     artifact_line(
         &mut text,
         &[
             "campaign-replay-closure",
-            &content_address_bytes(replay_closure),
-            &hex_bytes(replay_closure),
+            &content_address_bytes(&replay_closure),
+            &hex_bytes(&replay_closure),
         ],
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
@@ -1501,7 +1503,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "store",
             &[][..],
-            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.transform=Plan or apply one exact physical storage transformation\ncommand.credentials=Reload and validate deployment credential capabilities\ncommand.cleanup=Reclaim unreachable incomplete physical material under a stopped owner\ncommand.repair=Repair one physical copy from an independently authenticated peer\n",
+            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every physical placement in one stable generation\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.transform=Plan or apply one exact physical storage transformation\ncommand.credentials=Reload and validate deployment credential capabilities\ncommand.cleanup=Reclaim unreachable incomplete physical material under a stopped owner\ncommand.repair=Repair one physical copy from an independently authenticated peer\n",
         ),
         (
             "debug",

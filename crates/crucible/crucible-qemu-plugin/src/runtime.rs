@@ -9,11 +9,18 @@
 //! concrete trap and guest-memory callback ABI is available.
 
 pub(crate) mod callback_quiescence;
+mod endpoint_identity;
+mod installed_console;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
+mod ready_owner;
 mod worker_quiescence;
 
 use callback_quiescence::LiveCallbackQuiescence;
+#[cfg(test)]
+use endpoint_identity::hot_fork_eventfd_identity_token_from_fdinfo;
+use endpoint_identity::{hot_fork_control_socket_cookie, hot_fork_wake_eventfd_id};
+
 use worker_quiescence::{
     LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED, WORKER_RUN_CONTROL, WORKER_TEARDOWN,
     WorkerForkChildResetError, WorkerQuiescenceSnapshot,
@@ -25,7 +32,7 @@ pub use live_callbacks::{LiveDeviceCallbackError, LiveVcpuTimeCallbackError};
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
 
 #[cfg(unix)]
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Write as _};
 use std::marker::PhantomPinned;
 #[cfg(unix)]
 use std::net::Shutdown;
@@ -176,6 +183,12 @@ enum HotForkChildRuntimeError {
     Mapping {
         /// Exact mapping or layout failure.
         source: crate::setup::PluginSetupChildMappingError,
+    },
+    /// The installed console refused the authentic staged child mapping.
+    #[error("fork-child native console mapping custody failed")]
+    NativeConsole {
+        /// Exact checked mapping/native custody refusal.
+        source: installed_console::InstalledConsoleError,
     },
     /// The replacement control endpoint could not be duplicated.
     #[error("fork-child control endpoint duplication failed")]
@@ -356,6 +369,8 @@ pub(crate) struct OwnedCallbackRuntimeState {
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
     live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
     setup: PluginSetupCompletion,
+    committed_ready: Option<ready_owner::CommittedRuntimeReady>,
+    installed_console: Option<installed_console::InstalledConsole>,
     coverage: Option<LiveBasicBlockCoverage>,
     mapping_excluded_from_child: AtomicBool,
     child_runtime_state: AtomicU8,
@@ -388,6 +403,8 @@ impl OwnedCallbackRuntimeState {
             live_vcpu_time: None,
             live_whitebox: None,
             setup,
+            committed_ready: None,
+            installed_console: None,
             coverage: None,
             mapping_excluded_from_child: AtomicBool::new(false),
             child_runtime_state: AtomicU8::new(CHILD_RUNTIME_TEMPLATE),
@@ -516,6 +533,12 @@ impl OwnedCallbackRuntimeState {
             return Err(HotForkChildRuntimeError::TemplateNotQuiescent);
         }
 
+        if let Some(console) = self.installed_console.as_ref() {
+            console
+                .stage_hot_fork_child(&self.setup, binding.child_process_generation)
+                .map_err(|source| HotForkChildRuntimeError::NativeConsole { source })?;
+        }
+
         self.teardown_router
             .replace(teardown_sender.clone())
             .map_err(|()| HotForkChildRuntimeError::TeardownRoute)?;
@@ -545,6 +568,9 @@ impl OwnedCallbackRuntimeState {
                 .get_mut()
                 .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
                 .map_err(|source| HotForkChildRuntimeError::FingerprintWorker { source })?;
+            live.as_ref()
+                .get_ref()
+                .adopt_hot_fork_logical_continuation();
         }
 
         let teardown_handle = self
@@ -994,6 +1020,53 @@ impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
 }
 
 impl RequiredOwnedCallbacksRegistered {
+    fn retain_committed_ready(
+        &mut self,
+        ready: ready_owner::CommittedRuntimeReady,
+    ) -> Result<(), PluginRuntimeInstallError> {
+        // SAFETY: installing this receipt does not move callback allocations
+        // or the setup mapping owned by the pinned state.
+        let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        if let Some(console) = state.installed_console.as_mut() {
+            let callbacks = console.commit_ready(&ready).map_err(|error| {
+                PluginRuntimeInstallError::NativeConsoleInstall {
+                    diagnostic: error.to_string(),
+                }
+            })?;
+            let live = state.live_vcpu_time.as_mut().ok_or_else(|| {
+                PluginRuntimeInstallError::NativeConsoleInstall {
+                    diagnostic: "native console has no original live callback owner".to_owned(),
+                }
+            })?;
+            live.as_mut().get_mut().install_native_console(callbacks)?;
+        }
+        state.committed_ready = Some(ready);
+        Ok(())
+    }
+
+    fn install_native_console(
+        &mut self,
+        manifest: crate::QemuPluginResourceManifest,
+    ) -> Result<(), PluginRuntimeInstallError> {
+        // SAFETY: this installation retains the same pinned mapping and adds a
+        // sibling native owner; no existing callback allocation is moved.
+        let state = unsafe { self.state.as_mut().get_unchecked_mut() };
+        if state.setup.native_console_plan().is_some() {
+            let policy = state.setup.take_native_console_plan().ok_or_else(|| {
+                PluginRuntimeInstallError::NativeConsoleInstall {
+                    diagnostic: "sealed native console plan was already transferred".to_owned(),
+                }
+            })?;
+            let console =
+                installed_console::InstalledConsole::install(&state.setup, manifest, policy)
+                    .map_err(|error| PluginRuntimeInstallError::NativeConsoleInstall {
+                        diagnostic: error.to_string(),
+                    })?;
+            state.installed_console = Some(console);
+        }
+        Ok(())
+    }
+
     fn from_registered(
         state: Pin<Box<OwnedCallbackRuntimeState>>,
         registration_mask: OwnedCallbackRegistrationMask,
@@ -1099,7 +1172,14 @@ impl RequiredOwnedCallbacksRegistered {
         // SAFETY: this projection keeps `setup` at its pinned address and the
         // barrier implementation only borrows its mapping in place.
         let state = unsafe { self.state.as_mut().get_unchecked_mut() };
-        state.setup.wait_boot_barrier(setup_ack, slot_index)
+        match state.installed_console.as_mut() {
+            Some(console) => state.setup.wait_boot_barrier_with_reader(
+                setup_ack,
+                slot_index,
+                Some(&mut || console.boot_ceiling()),
+            ),
+            None => state.setup.wait_boot_barrier(setup_ack, slot_index),
+        }
     }
 
     #[cfg(test)]
@@ -1215,19 +1295,35 @@ impl LiveControlTeardownHandle {
     }
 
     fn report_final_control_callback(&self, teardown: &'static str) {
+        if self
+            .control_callback_witness
+            .as_ref()
+            .is_some_and(|witness| witness.is_enabled())
+        {
+            // crucible-lint: allow direct-diagnostic -- This fixed final witness is advisory and uses the original joined teardown owner.
+            let _result =
+                self.write_final_control_callback_to(teardown, &mut std::io::stderr().lock());
+        }
+    }
+
+    fn write_final_control_callback_to(
+        &self,
+        teardown: &str,
+        writer: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
         if let Some(witness) = &self.control_callback_witness
             && witness.is_enabled()
         {
-            // crucible-lint: allow direct-diagnostic -- This fixed final witness is advisory and uses the original joined teardown owner.
-            let _result = witness.write_final_to(
-                &mut std::io::stderr().lock(),
+            witness.write_final_to(
+                writer,
                 self.region_identity,
                 self.slot_index,
                 self.process_generation,
                 teardown,
                 self.slot().control_boundary_token(),
-            );
+            )?;
         }
+        Ok(())
     }
 }
 
@@ -1390,6 +1486,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_vcpu_idle_resume: Option<crate::QemuRegisterVcpuIdleResumeCbFn>,
     pub(crate) register_control_boundary: Option<crate::QemuRegisterControlBoundaryCbFn>,
     pub(crate) register_sim_shmem_dispatch: Option<crate::QemuRegisterSimShmemDispatchCbFn>,
+    pub(crate) register_sim_shmem_settlement: Option<crate::QemuRegisterSimShmemSettlementCbFn>,
     pub(crate) register_net_tx: Option<crate::QemuRegisterNetTxCbFn>,
     pub(crate) net_inject: Option<crate::QemuPluginNetInjectFn>,
     pub(crate) register_block: Option<crate::QemuRegisterBlkCbFn>,
@@ -1768,8 +1865,6 @@ extern "C" fn crucible_qemu_plugin_hot_fork_child_runtime(
     0
 }
 
-const HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES: u64 = 4_096;
-
 /// Returns the first check a fork-child plan fails, named for diagnostics.
 ///
 /// Every check is a protocol invariant between QEMU's plan and the runtime
@@ -1881,86 +1976,6 @@ fn hot_fork_child_process_generation_matches(
         && current.checked_add(1) == Some(plan.child_process_generation)
 }
 
-fn hot_fork_control_socket_cookie(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
-    let mut cookie = 0_u64;
-    let mut length = std::mem::size_of::<u64>() as libc::socklen_t;
-    let status =
-        // SAFETY: `cookie` and `length` are valid output buffers for SO_COOKIE.
-        unsafe {
-            libc::getsockopt(
-                descriptor,
-                libc::SOL_SOCKET,
-                libc::SO_COOKIE,
-                std::ptr::from_mut(&mut cookie).cast(),
-                &mut length,
-            )
-        };
-    if status != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if length as usize != std::mem::size_of::<u64>() || cookie == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "control socket returned an invalid SO_COOKIE",
-        ));
-    }
-    Ok(cookie)
-}
-
-// The versioned child plan carries kernel eventfd-id plus one; zero is absent.
-fn hot_fork_wake_eventfd_id(descriptor: std::os::fd::RawFd) -> io::Result<u64> {
-    let path = format!("/proc/self/fdinfo/{descriptor}");
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > HOT_FORK_ENDPOINT_FDINFO_MAX_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "eventfd fdinfo exceeds its fixed bound",
-        ));
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("eventfd fdinfo is not UTF-8: {error}"),
-        )
-    })?;
-    hot_fork_eventfd_identity_token_from_fdinfo(text)
-}
-
-fn hot_fork_eventfd_identity_token_from_fdinfo(text: &str) -> io::Result<u64> {
-    let mut identity = None;
-    for line in text.lines() {
-        let Some(value) = line.strip_prefix("eventfd-id:") else {
-            continue;
-        };
-        if identity.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "eventfd fdinfo repeats eventfd-id",
-            ));
-        }
-        let parsed = value.trim().parse::<u64>().map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("eventfd-id is invalid: {error}"),
-            )
-        })?;
-        // Linux may allocate eventfd ID zero. The versioned plan uses a
-        // one-based token so zero can keep denoting an absent identity.
-        identity = Some(parsed.checked_add(1).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "eventfd-id exceeds token range")
-        })?);
-    }
-    identity.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "eventfd fdinfo omits eventfd-id",
-        )
-    })
-}
-
 fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::raw::c_int {
     match error {
         HotForkChildRuntimeError::WrongPhase { .. } => -libc::EALREADY,
@@ -1973,6 +1988,7 @@ fn hot_fork_child_runtime_status(error: HotForkChildRuntimeError) -> std::os::ra
         HotForkChildRuntimeError::TemplateNotQuiescent
         | HotForkChildRuntimeError::ProcessGeneration
         | HotForkChildRuntimeError::Mapping { .. }
+        | HotForkChildRuntimeError::NativeConsole { .. }
         | HotForkChildRuntimeError::TeardownRoute
         | HotForkChildRuntimeError::WorkerReset { .. }
         | HotForkChildRuntimeError::FingerprintWorker { .. }
@@ -2144,6 +2160,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     register_vcpu_idle_resume: capabilities.register_vcpu_idle_resume,
                     register_control_boundary: capabilities.register_control_boundary,
                     register_sim_shmem_dispatch: capabilities.register_sim_shmem_dispatch,
+                    register_sim_shmem_settlement: capabilities.register_sim_shmem_settlement,
                     register_time_advance_cb: capabilities.register_time_advance_cb,
                     arm_virtual_timer_witness: capabilities.arm_virtual_timer_witness,
                     query_virtual_timer_witness: capabilities.query_virtual_timer_witness,
@@ -2531,6 +2548,12 @@ where
             ));
         }
 
+        let sealed_resources =
+            ready_owner::SealedRuntimeResources::observe_registered(resource_manifest);
+        retained
+            .registered_mut()?
+            .install_native_console(resource_manifest)?;
+
         post_registration_stage = PostRegistrationStage::SendReadyAck;
         maybe_inject_post_registration_panic(post_registration_stage);
         acknowledgement_state = PostRegistrationAckState::ReadyAttempted;
@@ -2547,6 +2570,12 @@ where
         control_stream
             .plugin_commit_ready_setup_ack()
             .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
+        let committed_ready = sealed_resources
+            .observe_ready_commit(&control_stream, &setup_ack)
+            .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
+        retained
+            .registered_mut()?
+            .retain_committed_ready(committed_ready)?;
         acknowledgement_state = PostRegistrationAckState::ReadySent;
 
         post_registration_stage = PostRegistrationStage::WaitBootBarrier;
@@ -2880,6 +2909,12 @@ pub enum PluginRuntimeInstallError {
     ResourceManifestRejected {
         /// Negative errno-style status returned by patched QEMU.
         status: i32,
+    },
+    /// The setup-owned native console failed before READY or boot release.
+    #[error("native console installation failed: {diagnostic}")]
+    NativeConsoleInstall {
+        /// The private resolver, shape or retained-resource refusal.
+        diagnostic: String,
     },
     /// QEMU rejected the process-lifetime callback-barrier registration.
     #[error("QEMU rejected the hot-fork callback barrier with status {status}")]

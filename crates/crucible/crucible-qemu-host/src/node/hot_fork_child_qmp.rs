@@ -526,12 +526,6 @@ impl QemuNode {
                 "plugin endpoints must release their sealed plan first",
             ));
         }
-        if self.hot_fork_child_console_stage.is_some() {
-            return Err(QemuNodeChannelError::new(
-                "release hot-fork child QMP",
-                "child console must release before its predecessor child QMP stage",
-            ));
-        }
         let (name, socket_cookie) = match self.hot_fork_child_qmp_stage.as_ref() {
             Some(QemuHotForkChildQmpStage::Installed(endpoint)) => {
                 (endpoint.descriptor_name.clone(), endpoint.socket_cookie)

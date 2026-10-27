@@ -2,15 +2,20 @@
 //!
 //! A Crucible measurement evaluation payload using schema v2 contains the
 //! compact derived evaluation. This module owns its independently
-//! content-addressed raw input leaf:
+//! content-addressed raw input leaf. Version 3, the only version new attempts
+//! publish, is a manifest that references the attempt log as separately
+//! stored segment leaves (RFC-0020 section 15.7):
 //!
 //! ```text
 //! canonical CBOR map:
-//!   schema_version: 2
+//!   schema_version: 3
 //!   scenario: <scenario definition identity>
 //!   configuration: <configuration identity>
 //!   definitions: <measurement-definition identity>
-//!   entries: [<complete SchedulerEventLogEntry sequence>]
+//!   log:
+//!     entry_count: <entries in the attempt log>
+//!     chain: <attempt-log chain hash after the last segment>
+//!     segments: [{id, first_sequence, entry_count, encoded_bytes}, ...]
 //!   terminal:
 //!     scenario_ready_at: <optional virtual time>
 //!     at: <terminal virtual time>
@@ -19,9 +24,13 @@
 //!   stop: <campaign stop or exact observation-stop boundary>
 //! ```
 //!
+//! Version 2 embeds `entries: [<complete SchedulerEventLogEntry sequence>]`
+//! in place of `log`; it remains readable for retained findings.
+//!
 //! Decoding is strict: bytes are size-bounded before allocation, the CBOR must
-//! be the unique serializer output, scheduler entries must be dense and
-//! authenticated, and terminal coordinates must cover the retained log.
+//! be the unique serializer output, and a manifest must be a dense chain of
+//! bounded segments. Entries are read through a segment source one segment at
+//! a time, and every segment is authenticated before its entries are used.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
@@ -31,13 +40,12 @@ use crucible_campaign::{
     ObservationCondition, ObservationStopProof, ObservationStopSatisfaction, ScenarioDefId,
 };
 use crucible_engine::model::{
-    BoundarySelector, CohortPolicy, MAX_MEASUREMENT_EVENT_ENTRIES,
-    MAX_MEASUREMENT_RUNTIME_SAMPLE_BYTES, MAX_MEASUREMENT_RUNTIME_SAMPLES,
-    MAX_MEASUREMENT_TERMINAL_NODES, MeasurementDefinition, MeasurementDefinitions,
-    MeasurementEvaluation, MeasurementId, MeasurementInstanceKey, MeasurementRuntimeSample,
-    MeasurementSampleValue, MeasurementTerminalState, MetricDefinition, MetricId, MetricSource,
-    MetricValueType, ReducedRational, append_model_measurement_samples, evaluate_measurements,
-    validate_measurement_event_log,
+    BoundarySelector, CohortPolicy, MAX_MEASUREMENT_EVENT_ENTRIES, MAX_MEASUREMENT_TERMINAL_NODES,
+    MeasurementDefinition, MeasurementDefinitions, MeasurementEvaluation,
+    MeasurementEvaluationError, MeasurementId, MeasurementInstanceKey, MeasurementReplay,
+    MeasurementRuntimeSample, MeasurementSampleValue, MeasurementTerminalState, MetricDefinition,
+    MetricId, MetricSource, MetricValueType, ModelSampleProjector, ReducedRational,
+    append_model_measurement_samples, evaluate_measurements, validate_measurement_event_log,
 };
 use crucible_engine::{
     AssertionPhase, EventLogOffset, EventSource, GuestMeasurementEvent, GuestMeasurementValue,
@@ -52,25 +60,48 @@ use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{CrucibleMeasurementError, campaign_hash};
+use crate::attempt_event_log::{
+    AttemptLogManifest, AttemptLogSegmentRef, AttemptLogSegmentSource,
+    MAX_ATTEMPT_LOG_MANIFEST_SEGMENTS,
+};
 
+mod assertion_boundary;
+mod bundle;
 mod guest;
 mod wire;
 
-use guest::normalize_guest_measurements;
+pub(crate) use assertion_boundary::{
+    AssertionTransitionScan, ObservationPrefixDigest, verify_assertion_failure_boundary,
+};
+#[cfg(test)]
+pub(crate) use assertion_boundary::{
+    observation_event_prefix_digest, verified_assertion_transition,
+};
+
+pub use bundle::CrucibleMeasurementEvidenceBundle;
+
 #[cfg(test)]
 use guest::validate_guest_measurement_value;
-use wire::{EvidenceWireRef, EvidenceWireV2, enforce_evidence_bytes, measure_canonical_bytes};
+use guest::{GuestMeasurementNormalizer, normalize_guest_measurements};
+use wire::{EvidenceWire, EvidenceWireRef, enforce_evidence_bytes, measure_canonical_bytes};
 
-/// Payload schema requiring retained raw replay evidence.
-pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2: u32 = 2;
+/// Payload schema carrying a folded evaluation and retained raw replay evidence.
+///
+/// Version 3 carries `crucible.model.measurement-evaluation.v3`, whose metrics
+/// report a sample count and aggregate rather than every sample.
+pub const CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3: u32 = 3;
 
-/// Content-object schema retaining an explicit campaign or observation stop.
+/// Content-object schema embedding the complete log; read-only.
 pub const CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2: u32 = 2;
+
+/// Content-object schema referencing the attempt log as segment leaves.
+pub const CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3: u32 = 3;
 
 /// Maximum canonical bytes retained by one measurement replay-evidence leaf.
 ///
-/// This matches the producer's aggregate event-material budget. Callers with a
-/// smaller attempt or journal budget can select that lower ceiling through
+/// The bound applies to both versions. A version 3 manifest at its segment
+/// limit encodes to well under a megabyte. Callers with a smaller attempt or
+/// journal budget can select that lower ceiling through
 /// [`CrucibleMeasurementReplayEvidence::canonical_bytes_with_limit`].
 pub const MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -83,9 +114,18 @@ pub struct CrucibleMeasurementReplayEvidence {
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: CampaignHash,
-    entries: Vec<SchedulerEventLogEntry>,
+    log: ReplayLog,
     terminal: MeasurementTerminalState,
     stop: CrucibleMeasurementStopEvidence,
+}
+
+/// Where a replay leaf keeps its scheduler entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReplayLog {
+    /// Version 2: the complete dense log, embedded in the leaf.
+    Inline(Vec<SchedulerEventLogEntry>),
+    /// Version 3: segment leaves referenced by a manifest.
+    Segmented(AttemptLogManifest),
 }
 
 /// Exact stop shape retained with one measurement evaluation.
@@ -198,10 +238,95 @@ impl CrucibleMeasurementReplayEvidence {
         self.definitions
     }
 
-    /// Returns the complete scheduler event-log sequence.
+    /// Returns the number of scheduler entries in the retained log.
     #[must_use]
-    pub fn entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.entries
+    pub fn entry_count(&self) -> u64 {
+        match &self.log {
+            ReplayLog::Inline(entries) => entries.len() as u64,
+            ReplayLog::Segmented(manifest) => manifest.entry_count(),
+        }
+    }
+
+    /// Returns the sealed log's manifest, or `None` for a version 2 leaf,
+    /// which embeds its entries.
+    #[must_use]
+    pub fn log_manifest(&self) -> Option<&AttemptLogManifest> {
+        match &self.log {
+            ReplayLog::Inline(_) => None,
+            ReplayLog::Segmented(manifest) => Some(manifest),
+        }
+    }
+
+    /// Returns the log segments this leaf references, in order.
+    ///
+    /// Version 2 leaves embed their entries and reference no segment.
+    #[must_use]
+    pub fn segments(&self) -> &[AttemptLogSegmentRef] {
+        match &self.log {
+            ReplayLog::Inline(_) => &[],
+            ReplayLog::Segmented(manifest) => manifest.segments(),
+        }
+    }
+
+    /// Returns every content object a measurement set must own for this leaf.
+    ///
+    /// The set holds this leaf's identity and every referenced segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrucibleMeasurementError`] when the leaf cannot be encoded.
+    pub fn evidence_ids(&self) -> Result<BTreeSet<ContentId>, CrucibleMeasurementError> {
+        let mut ids = BTreeSet::from([self.id()?]);
+        ids.extend(self.segments().iter().map(|segment| segment.id));
+        Ok(ids)
+    }
+
+    /// Visits the entries whose sequences fall in `range`, in order.
+    ///
+    /// Version 3 leaves read only the segments overlapping `range` from
+    /// `source` and authenticate each before visiting its entries. Version 2
+    /// leaves ignore `source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error converted from the segment failure when a segment is
+    /// absent or fails authentication, or the first error `visit` returns.
+    pub fn try_for_each_entry_in<E>(
+        &self,
+        source: &dyn AttemptLogSegmentSource,
+        range: std::ops::Range<u64>,
+        mut visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<crate::attempt_event_log::AttemptEventLogError>,
+    {
+        match &self.log {
+            ReplayLog::Inline(entries) => {
+                for entry in entries {
+                    if range.contains(&entry.sequence()) {
+                        visit(entry)?;
+                    }
+                }
+                Ok(())
+            }
+            ReplayLog::Segmented(manifest) => manifest.try_for_each_entry_in(source, range, visit),
+        }
+    }
+
+    /// Visits every retained entry; see [`Self::try_for_each_entry_in`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::try_for_each_entry_in`].
+    pub fn try_for_each_entry<E>(
+        &self,
+        source: &dyn AttemptLogSegmentSource,
+        visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<crate::attempt_event_log::AttemptEventLogError>,
+    {
+        self.try_for_each_entry_in(source, 0..u64::MAX, visit)
     }
 
     /// Returns the exact terminal evaluation state.
@@ -223,12 +348,17 @@ impl CrucibleMeasurementReplayEvidence {
     /// transition captured by the executor. It does not infer a later matching
     /// observation from the replay schedule.
     ///
+    /// Only the segments covering the proof's event prefix are read from
+    /// `source`.
+    ///
     /// # Errors
     ///
     /// Returns [`CrucibleMeasurementError`] when any proof field differs from
-    /// the retained v2 execution evidence.
+    /// the retained execution evidence, or a covering segment is absent or
+    /// fails authentication.
     pub fn verify_observation_stop_proof(
         &self,
+        source: &dyn AttemptLogSegmentSource,
         proof: &ObservationStopProof,
     ) -> Result<(), CrucibleMeasurementError> {
         let mismatch = |binding| CrucibleMeasurementError::EvidenceBindingMismatch { binding };
@@ -258,21 +388,34 @@ impl CrucibleMeasurementReplayEvidence {
             return Err(mismatch("observation-stop-execution-boundary"));
         }
 
-        let event_count = usize::try_from(event_log.events())
-            .map_err(|_| mismatch("observation-stop-event-count"))?;
-        let quantum_start = usize::try_from(boundary.start_events())
-            .map_err(|_| mismatch("observation-stop-quantum-event-count"))?;
-        let prefix = self
-            .entries
-            .get(..event_count)
-            .ok_or_else(|| mismatch("observation-stop-event-prefix"))?;
+        let event_count = event_log.events();
+        let quantum_start = boundary.start_events();
+        let frontier = boundary.frontier_picoseconds();
         if quantum_start > event_count
-            || observation_event_prefix_digest(prefix) != event_log.digest()
-            || prefix
-                .iter()
-                .any(|entry| entry.at().ticks > boundary.frontier_picoseconds())
-            || self.terminal.at.ticks < boundary.frontier_picoseconds()
+            || event_count > self.entry_count()
+            || self.terminal.at.ticks < frontier
         {
+            return Err(mismatch("observation-stop-event-prefix"));
+        }
+
+        // One pass over the proof's prefix computes its digest, checks every
+        // entry against the frontier, and captures the witness entry.
+        let witness_sequence = proof.assertion_witness().map(|witness| witness.sequence());
+        let mut digest = ObservationPrefixDigest::new(event_count);
+        let mut beyond_frontier = false;
+        let mut witness_entry = None;
+        self.try_for_each_entry_in(source, 0..event_count, |entry| {
+            digest.update(entry);
+            beyond_frontier |= entry.at().ticks > frontier;
+            if entry.sequence() >= quantum_start
+                && Some(entry.sequence()) == witness_sequence
+                && witness_entry.is_none()
+            {
+                witness_entry = Some(entry.clone());
+            }
+            Ok::<_, CrucibleMeasurementError>(())
+        })?;
+        if beyond_frontier || digest.finish() != Some(event_log.digest()) {
             return Err(mismatch("observation-stop-event-prefix"));
         }
 
@@ -286,10 +429,10 @@ impl CrucibleMeasurementReplayEvidence {
                 }
             }
             ObservationCondition::AssertionViolationTransition(assertion) => {
-                verify_assertion_observation_stop(proof, prefix, quantum_start, Some(assertion))?;
+                verify_assertion_observation_stop(proof, witness_entry.as_ref(), Some(assertion))?;
             }
             ObservationCondition::AnyAssertionViolationTransition => {
-                verify_assertion_observation_stop(proof, prefix, quantum_start, None)?;
+                verify_assertion_observation_stop(proof, witness_entry.as_ref(), None)?;
             }
             ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
                 let expected_satisfaction = if retained_boundary.scheduler_quiescent() {
@@ -313,21 +456,28 @@ impl CrucibleMeasurementReplayEvidence {
     /// Returns the exact content-object schema used by this evidence leaf.
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
-        CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+        match self.log {
+            ReplayLog::Inline(_) => CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
+            ReplayLog::Segmented(_) => CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3,
+        }
     }
 
     /// Replays the raw leaf against its exact semantic bindings.
     ///
     /// Guest and model samples are rederived from the retained scheduler
     /// entries on every call; no caller-supplied normalized sample is trusted.
+    /// Entries are streamed from `source` in one forward pass, holding one
+    /// segment at a time.
     ///
     /// # Errors
     ///
     /// Returns [`CrucibleMeasurementError`] for a scenario, configuration, or
     /// definition mismatch, invalid guest protocol input, invalid model sample
-    /// source, unauthenticated log, invalid terminal state, or evaluation bound.
+    /// source, absent or unauthenticated segment, non-dense log, invalid
+    /// terminal state, or evaluation bound.
     pub fn replay(
         &self,
+        source: &dyn AttemptLogSegmentSource,
         scenario: ScenarioDefId,
         configuration: ConfigurationId,
         definitions: &MeasurementDefinitions,
@@ -348,9 +498,27 @@ impl CrucibleMeasurementReplayEvidence {
             });
         }
 
-        let samples = derive_crucible_measurement_samples(definitions, &self.entries)?;
-        evaluate_measurements(definitions, &self.entries, samples, &self.terminal)
-            .map_err(Into::into)
+        let mut guest = GuestMeasurementNormalizer::new(definitions);
+        let model = ModelSampleProjector::new(definitions);
+        let mut replay = MeasurementReplay::new(definitions, &self.terminal)?;
+        let mut next_sequence = 0_u64;
+        self.try_for_each_entry(source, |entry| {
+            // Producers interpret typed payloads, so the entry is
+            // authenticated before either sees it.
+            if !entry.has_valid_content_hash() {
+                return Err(MeasurementEvaluationError::InvalidEventHash {
+                    sequence: entry.sequence(),
+                }
+                .into());
+            }
+            let mut samples = Vec::from_iter(guest.observe(entry)?);
+            model.project(entry, &mut samples)?;
+            replay.observe(entry, samples)?;
+            next_sequence = entry.sequence().saturating_add(1);
+            Ok::<_, CrucibleMeasurementError>(())
+        })?;
+        guest.finish(next_sequence)?;
+        replay.finish().map_err(Into::into)
     }
 
     /// Returns strict canonical replay-evidence bytes.
@@ -394,7 +562,8 @@ impl CrucibleMeasurementReplayEvidence {
     ///
     /// Returns [`CrucibleMeasurementError`] for oversized, malformed,
     /// unsupported, noncanonical, unauthenticated, non-dense, or terminally
-    /// inconsistent input.
+    /// inconsistent input, or a manifest whose segments are not a dense
+    /// bounded chain.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CrucibleMeasurementError> {
         Self::from_canonical_bytes_with_limit(bytes, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES)
     }
@@ -410,18 +579,8 @@ impl CrucibleMeasurementReplayEvidence {
         maximum_bytes: usize,
     ) -> Result<Self, CrucibleMeasurementError> {
         enforce_evidence_bytes(bytes.len(), maximum_bytes)?;
-        let wire: EvidenceWireV2 = ciborium::de::from_reader(bytes).map_err(|error| {
-            CrucibleMeasurementError::EvidenceEncoding {
-                reason: error.to_string(),
-            }
-        })?;
-        if wire.schema_version != CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2 {
-            return Err(CrucibleMeasurementError::UnsupportedEvidenceSchema {
-                actual: wire.schema_version,
-                expected: CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
-            });
-        }
-        if let CrucibleMeasurementStopEvidence::Observation(boundary) = wire.stop {
+        let value = EvidenceWire::decode(bytes)?.into_evidence()?;
+        if let CrucibleMeasurementStopEvidence::Observation(boundary) = value.stop {
             CrucibleObservationBoundaryEvidence::new(
                 boundary.frontier,
                 boundary.quantum_start_completed_quanta,
@@ -431,16 +590,35 @@ impl CrucibleMeasurementReplayEvidence {
                 boundary.scheduler_quiescent,
             )?;
         }
-        let value = Self::from(wire);
 
-        // Empty definitions exercise the shared log and terminal validators
-        // without claiming that semantic sample projection has run.
-        evaluate_measurements(
-            &MeasurementDefinitions::empty(),
-            &value.entries,
-            Vec::new(),
-            &value.terminal,
-        )?;
+        match &value.log {
+            // Empty definitions exercise the shared log and terminal
+            // validators without claiming that semantic sample projection
+            // has run.
+            ReplayLog::Inline(entries) => {
+                evaluate_measurements(
+                    &MeasurementDefinitions::empty(),
+                    entries,
+                    Vec::new(),
+                    &value.terminal,
+                )?;
+            }
+            // Segment contents are authenticated when read; decoding checks
+            // only what the manifest itself carries.
+            ReplayLog::Segmented(_) => {
+                MeasurementReplay::new(&MeasurementDefinitions::empty(), &value.terminal)?;
+                if value
+                    .terminal
+                    .scenario_ready_at
+                    .is_some_and(|ready| ready > value.terminal.at)
+                {
+                    return Err(MeasurementEvaluationError::TerminalBeforeEvent {
+                        sequence: value.entry_count().saturating_sub(1),
+                    }
+                    .into());
+                }
+            }
+        }
         if value.canonical_bytes_with_limit(maximum_bytes)? != bytes {
             return Err(CrucibleMeasurementError::NonCanonicalEvidence);
         }
@@ -465,8 +643,7 @@ impl CrucibleMeasurementReplayEvidence {
 
 fn verify_assertion_observation_stop(
     proof: &ObservationStopProof,
-    prefix: &[SchedulerEventLogEntry],
-    quantum_start: usize,
+    witness_entry: Option<&SchedulerEventLogEntry>,
     expected_assertion: Option<&String>,
 ) -> Result<(), CrucibleMeasurementError> {
     let mismatch = || CrucibleMeasurementError::EvidenceBindingMismatch {
@@ -476,14 +653,7 @@ fn verify_assertion_observation_stop(
         return Err(mismatch());
     }
     let witness = proof.assertion_witness().ok_or_else(mismatch)?;
-    let entry = prefix
-        .get(quantum_start..)
-        .and_then(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry.sequence() == witness.sequence())
-        })
-        .ok_or_else(mismatch)?;
+    let entry = witness_entry.ok_or_else(mismatch)?;
     if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
         || !matches!(
             entry.payload(),
@@ -499,66 +669,30 @@ fn verify_assertion_observation_stop(
     Ok(())
 }
 
-pub(crate) fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
-    hasher.update(&(entries.len() as u64).to_be_bytes());
-    for entry in entries {
-        hasher.update(&entry.sequence().to_be_bytes());
-        hasher.update(&entry.content_hash().bytes);
-    }
-    CampaignHash::from_bytes(*hasher.finalize().as_bytes())
-}
-
-pub(crate) fn verified_assertion_transition<'a>(
-    entries: &'a [SchedulerEventLogEntry],
-    quantum_start_events: u64,
-    property: &str,
-) -> Option<&'a SchedulerEventLogEntry> {
-    if entries
-        .iter()
-        .enumerate()
-        .any(|(index, entry)| entry.sequence() != index as u64 || !entry.has_valid_content_hash())
-    {
-        return None;
-    }
-    let mut transitions = entries
-        .get(usize::try_from(quantum_start_events).ok()?..)?
-        .iter()
-        .filter(|entry| {
-            matches!(entry.source(), EventSource::Engine)
-                && matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == property && *state == AssertionPhase::Violated
-                )
-        });
-    let transition = transitions.next()?;
-    transitions.next().is_none().then_some(transition)
-}
-
-pub(crate) fn verify_assertion_failure_boundary(
-    leaf: &CrucibleMeasurementReplayEvidence,
-    boundary: &FindingAssertionFailureBoundary,
-) -> bool {
-    let entries = leaf.entries();
-    let Some(transition) = verified_assertion_transition(
-        entries,
-        boundary.quantum_start_events(),
-        boundary.property(),
-    ) else {
-        return false;
-    };
-    leaf.id().ok() == Some(boundary.trace())
-        && leaf.stop() == CrucibleMeasurementStopEvidence::Campaign
-        && entries.len() as u64 == boundary.terminal_events()
-        && observation_event_prefix_digest(entries) == boundary.prefix_digest()
-        && transition.sequence() == boundary.transition_sequence()
-        && CampaignHash::from_bytes(transition.content_hash().bytes) == boundary.transition_hash()
+/// Returns the replay leaf among a measurement set's evidence identities.
+///
+/// A measurement set owns one replay leaf (schema 2 or 3) and, for version 3,
+/// the log segments it references. Returns `None` unless exactly one evidence
+/// identity carries a replay-leaf schema.
+#[must_use]
+pub fn measurement_replay_leaf_id(evidence: &BTreeSet<ContentId>) -> Option<ContentId> {
+    let mut leaves = evidence.iter().copied().filter(|id| {
+        matches!(
+            id.schema_version(),
+            CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2
+                | CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V3
+        )
+    });
+    let leaf = leaves.next()?;
+    leaves.next().is_none().then_some(leaf)
 }
 
 /// A derived measurement set paired with the raw leaf required to verify it.
+///
+/// The measurement set owns the replay leaf and every segment it references.
+/// A publisher stores each segment from the attempt's segment store before
+/// the leaf and the leaf before the measurement set, so no published object
+/// references an absent child (RFC-0020 CCOMP-29).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrucibleMeasurementPublication {
     measurement_set: MeasurementSet,
@@ -611,21 +745,23 @@ pub fn derive_crucible_measurement_samples(
 
 /// Evaluates one run and builds its child-first measurement publication pair.
 ///
-/// The resulting measurement set owns exactly the raw measurement trace. Other
-/// audit evidence belongs to its explicit observation or finding owner.
-/// `maximum_evidence_bytes` is the caller-selected minimum of every active
-/// model, attempt, prepared-result, and journal ceiling.
+/// The resulting measurement set owns exactly the replay leaf and the log
+/// segments it references. Other audit evidence belongs to its explicit
+/// observation or finding owner. `maximum_evidence_bytes` is the
+/// caller-selected minimum of every active model, attempt, prepared-result,
+/// and journal ceiling for the leaf itself; segments are bounded separately.
 ///
 /// # Errors
 ///
-/// Returns [`CrucibleMeasurementError`] for invalid replay inputs, semantic
-/// binding mismatches, evaluation failures, canonical trace limits, or
-/// campaign measurement-set limits.
+/// Returns [`CrucibleMeasurementError`] for invalid replay inputs, an absent
+/// or unauthenticated segment, semantic binding mismatches, evaluation
+/// failures, canonical leaf limits, or campaign measurement-set limits.
 pub fn evaluate_crucible_measurement_publication(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: &MeasurementDefinitions,
-    entries: Vec<SchedulerEventLogEntry>,
+    log: AttemptLogManifest,
+    source: &dyn AttemptLogSegmentSource,
     terminal: MeasurementTerminalState,
     maximum_evidence_bytes: usize,
 ) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
@@ -633,11 +769,11 @@ pub fn evaluate_crucible_measurement_publication(
         scenario,
         configuration,
         definitions: campaign_hash(definitions.content_hash()),
-        entries,
+        log: ReplayLog::Segmented(log),
         terminal,
         stop: CrucibleMeasurementStopEvidence::Campaign,
     };
-    evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
+    evaluate_crucible_measurement_evidence(evidence, source, definitions, maximum_evidence_bytes)
 }
 
 /// Evaluates one run and retains its exact observation-stop boundary.
@@ -645,11 +781,14 @@ pub fn evaluate_crucible_measurement_publication(
 /// # Errors
 ///
 /// Returns the same failures as the ordinary measurement publication path.
+// crucible-lint: allow rust-allow -- the stop proof adds its boundary to the ordinary publication inputs.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_crucible_observation_measurement_publication(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: &MeasurementDefinitions,
-    entries: Vec<SchedulerEventLogEntry>,
+    log: AttemptLogManifest,
+    source: &dyn AttemptLogSegmentSource,
     terminal: MeasurementTerminalState,
     observation_boundary: CrucibleObservationBoundaryEvidence,
     maximum_evidence_bytes: usize,
@@ -658,31 +797,32 @@ pub fn evaluate_crucible_observation_measurement_publication(
         scenario,
         configuration,
         definitions: campaign_hash(definitions.content_hash()),
-        entries,
+        log: ReplayLog::Segmented(log),
         terminal,
         stop: CrucibleMeasurementStopEvidence::Observation(observation_boundary),
     };
-    evaluate_crucible_measurement_evidence(evidence, definitions, maximum_evidence_bytes)
+    evaluate_crucible_measurement_evidence(evidence, source, definitions, maximum_evidence_bytes)
 }
 
 fn evaluate_crucible_measurement_evidence(
     evidence: CrucibleMeasurementReplayEvidence,
+    source: &dyn AttemptLogSegmentSource,
     definitions: &MeasurementDefinitions,
     maximum_evidence_bytes: usize,
 ) -> Result<CrucibleMeasurementPublication, CrucibleMeasurementError> {
     let evidence_bytes = evidence.canonical_bytes_with_limit(maximum_evidence_bytes)?;
-    let evaluation = evidence.replay(evidence.scenario, evidence.configuration, definitions)?;
-    let evidence_id = ContentId::for_bytes(
-        ObjectKind::Trace,
-        evidence.schema_version(),
-        &evidence_bytes,
-    );
+    let evaluation = evidence.replay(
+        source,
+        evidence.scenario,
+        evidence.configuration,
+        definitions,
+    )?;
     let measurement_set = MeasurementSet::from_evaluation(
         campaign_hash(evaluation.definitions()),
-        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+        CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         campaign_hash(evaluation.content_hash()),
         evaluation.canonical_bytes().to_vec(),
-        BTreeSet::from([evidence_id]),
+        evidence.evidence_ids()?,
     )?;
     Ok(CrucibleMeasurementPublication {
         measurement_set,
@@ -693,34 +833,38 @@ fn evaluate_crucible_measurement_evidence(
 
 /// Recomputes a retained measurement set solely from its raw evidence leaf.
 ///
+/// Segments are streamed from `source`, which for retained evidence is the
+/// repository that stores the measurement set's evidence children.
+///
 /// # Errors
 ///
-/// Returns [`CrucibleMeasurementError`] for an unsupported payload,
-/// non-singleton evidence set, binding mismatch, invalid raw input, or disagreement
+/// Returns [`CrucibleMeasurementError`] for an unsupported payload, an
+/// evidence set other than the leaf and its segments, binding mismatch,
+/// invalid raw input, an absent or unauthenticated segment, or disagreement
 /// between replay output and the retained derived evaluation.
 pub fn verify_crucible_measurement_publication(
     measurement_set: &MeasurementSet,
     evidence: &CrucibleMeasurementReplayEvidence,
+    source: &dyn AttemptLogSegmentSource,
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
     definitions: &MeasurementDefinitions,
 ) -> Result<MeasurementEvaluation, CrucibleMeasurementError> {
     let retained = measurement_set.evaluation();
-    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if retained.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(CrucibleMeasurementError::UnsupportedPayloadSchema {
             actual: retained.payload_schema(),
-            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
+            expected: CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3,
         });
     }
-    let evidence_id = evidence.id()?;
-    if retained.evidence() != &BTreeSet::from([evidence_id]) {
+    if retained.evidence() != &evidence.evidence_ids()? {
         return Err(CrucibleMeasurementError::ReplayEvidenceSetMismatch {
-            expected: evidence_id,
+            expected: evidence.id()?,
             actual_count: retained.evidence().len(),
         });
     }
 
-    let evaluation = evidence.replay(scenario, configuration, definitions)?;
+    let evaluation = evidence.replay(source, scenario, configuration, definitions)?;
     if retained.definitions() != campaign_hash(evaluation.definitions()) {
         return Err(CrucibleMeasurementError::DefinitionIdentityMismatch);
     }

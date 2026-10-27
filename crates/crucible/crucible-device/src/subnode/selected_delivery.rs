@@ -49,7 +49,7 @@ impl IoCore {
             return Err(refusal());
         }
         let frame =
-            frame_from_pending_response(pending).map_err(|source| ShmemDeliveryFailure {
+            frame_from_pending_response(pending, None).map_err(|source| ShmemDeliveryFailure {
                 published: 0,
                 source,
             })?;

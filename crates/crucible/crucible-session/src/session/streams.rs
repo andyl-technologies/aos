@@ -1,5 +1,12 @@
 //! Session event-log and state-transition broadcast streams.
+//!
+//! The event-log hub keeps the session's log as sealed segments plus a
+//! bounded resident tail ([`super::session_segmented_log`]). A subscriber
+//! first replays from its cursor, reading one sealed segment at a time, then
+//! follows the bounded live broadcast ring. A lagging subscriber falls back
+//! to cursor replay, so no subscriber needs the whole log in memory.
 
+use super::session_segmented_log::{LogChunk, SegmentedEntryLog};
 use super::*;
 
 /// Cursor into a session event-log stream.
@@ -66,6 +73,9 @@ pub enum SessionEventLogStreamError {
         /// Number of skipped broadcast frames reported by the live tail.
         skipped: u64,
     },
+    /// A sealed segment needed for cursor replay could not be read back.
+    #[error("session event-log replay is unavailable: {0}")]
+    Unavailable(#[from] SessionEventLogStoreError),
 }
 
 /// Session-owned event-log hub used by the control plane.
@@ -76,20 +86,41 @@ pub struct SessionEventLog {
 
 #[derive(Debug)]
 pub(super) struct SessionEventLogInner {
-    entries: Mutex<Vec<SchedulerEventLogEntry>>,
+    log: Mutex<SegmentedEntryLog>,
     generation: AtomicU64,
     generation_start: AtomicU64,
     tail: broadcast::Sender<SessionEventLogFrame>,
 }
 
 impl SessionEventLog {
-    /// Builds an empty event-log hub.
+    /// Builds an empty event-log hub that seals into process memory.
+    ///
+    /// Use [`Self::with_segment_store`] to keep sealed segments on disk.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_segment_store(Arc::new(crucible_engine::MemoryDagStore::new()))
+    }
+
+    /// Builds an empty event-log hub that seals its segments into `store`.
+    ///
+    /// Only the entries since the last seal stay resident; replay reads older
+    /// entries back from `store` one segment at a time.
+    #[must_use]
+    pub fn with_segment_store(store: Arc<dyn DagStore>) -> Self {
+        Self::from_log(SegmentedEntryLog::new(store))
+    }
+
+    /// Builds a hub with a small seal target for segment-crossing tests.
+    #[cfg(test)]
+    pub(super) fn with_seal_target_for_test(store: Arc<dyn DagStore>, seal_target: u64) -> Self {
+        Self::from_log(SegmentedEntryLog::with_seal_target(store, seal_target))
+    }
+
+    fn from_log(log: SegmentedEntryLog) -> Self {
         let (tail, _) = broadcast::channel(SESSION_EVENT_LOG_BROADCAST_CAPACITY);
         Self {
             inner: Arc::new(SessionEventLogInner {
-                entries: Mutex::new(Vec::new()),
+                log: Mutex::new(log),
                 generation: AtomicU64::new(0),
                 generation_start: AtomicU64::new(0),
                 tail,
@@ -100,20 +131,19 @@ impl SessionEventLog {
     /// Returns the number of retained event-log entries.
     #[must_use]
     pub fn len(&self) -> u64 {
-        usize_to_u64(self.lock_entries().len())
+        self.lock_log().len()
     }
 
     /// Returns whether no event-log entries are retained.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lock_entries().is_empty()
+        self.lock_log().is_empty()
     }
 
     /// Returns a cursor positioned at the retained log tail.
     #[must_use]
     pub fn current_cursor(&self) -> EventLogCursor {
-        let entries = self.lock_entries();
-        Self::current_cursor_for(&entries)
+        EventLogCursor::new(self.lock_log().end())
     }
 
     /// Subscribes to entries from `cursor` onward.
@@ -149,66 +179,74 @@ impl SessionEventLog {
                 replay_tail: current_tail,
                 replay_exhausted: false,
                 backlog: VecDeque::new(),
+                chunk: None,
                 receiver,
             },
         )
     }
 
     /// Returns a log-derived snapshot summary through `cursor`.
-    #[must_use]
-    pub fn snapshot_through(&self, cursor: EventLogCursor) -> SessionEventLogSnapshot {
-        let entries = self.lock_entries();
-        let mut event_count = 0_u64;
-        let mut causal_count = 0_u64;
-        let mut observational_count = 0_u64;
-        let mut last_sequence = None;
-        for entry in entries
-            .iter()
-            .take_while(|entry| entry.sequence() < cursor.next_sequence)
-        {
-            event_count = event_count.saturating_add(1);
-            match entry.class() {
-                SchedulerEventLogClass::Causal => causal_count = causal_count.saturating_add(1),
-                SchedulerEventLogClass::Observational => {
-                    observational_count = observational_count.saturating_add(1);
-                }
-            }
-            last_sequence = Some(entry.sequence());
-        }
-        SessionEventLogSnapshot {
+    ///
+    /// The hub keeps cumulative class counts per sealed segment, so a cursor
+    /// at the log tail needs no read and an earlier cursor decodes at most
+    /// one segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStoreError`] when the segment containing
+    /// `cursor` cannot be read back and authenticated.
+    pub fn snapshot_through(
+        &self,
+        cursor: EventLogCursor,
+    ) -> Result<SessionEventLogSnapshot, SessionEventLogStoreError> {
+        let (counts, last_sequence) = self.lock_log().counts_through(cursor.next_sequence)?;
+        Ok(SessionEventLogSnapshot {
             through: cursor,
-            event_count,
-            causal_count,
-            observational_count,
+            event_count: counts.total(),
+            causal_count: counts.causal,
+            observational_count: counts.observational,
             last_sequence,
-        }
+        })
     }
 
-    pub(super) fn append_entries(&self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_entries(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionEventLogStoreError> {
         if entries.is_empty() {
-            return;
+            return Ok(());
         }
 
         let generation = self.generation();
-        let frames = entries
-            .iter()
-            .cloned()
-            .map(|entry| SessionEventLogFrame::new(entry, generation))
-            .collect::<Vec<_>>();
-        self.lock_entries().extend(entries.iter().cloned());
-        for frame in frames {
-            let _ = self.inner.tail.send(frame);
+        self.lock_log().append(entries)?;
+        for entry in entries {
+            let _ = self
+                .inner
+                .tail
+                .send(SessionEventLogFrame::new(entry.clone(), generation));
         }
+        Ok(())
     }
 
-    pub(super) fn truncate_to_len(&self, len: usize) {
-        let mut entries = self.lock_entries();
-        if entries.len() > len {
-            entries.truncate(len);
-            self.inner
-                .generation_start
-                .store(usize_to_u64(len), Ordering::Release);
+    /// Drops every entry at or after sequence `len` and starts a new stream
+    /// generation when anything was dropped.
+    pub(super) fn truncate_to_len(&self, len: usize) -> Result<(), SessionEventLogStoreError> {
+        let len = usize_to_u64(len);
+        let mut log = self.lock_log();
+        if log.end() > len && !log.is_empty() {
+            log.truncate(len)?;
+            self.inner.generation_start.store(len, Ordering::Release);
             self.inner.generation.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
+    /// Collects every retained entry for test inspection.
+    #[cfg(test)]
+    pub(super) fn entries_for_test(&self) -> Vec<SchedulerEventLogEntry> {
+        match self.lock_log().collect_through(u64::MAX) {
+            Ok(entries) => entries,
+            Err(error) => panic!("session event log must read back: {error}"),
         }
     }
 
@@ -220,36 +258,19 @@ impl SessionEventLog {
         EventLogCursor::new(self.inner.generation_start.load(Ordering::Acquire))
     }
 
-    pub(super) fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
-        match self.inner.entries.lock() {
-            Ok(entries) => entries,
+    fn lock_log(&self) -> std::sync::MutexGuard<'_, SegmentedEntryLog> {
+        match self.inner.log.lock() {
+            Ok(log) => log,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
 
-    fn current_cursor_for(entries: &[SchedulerEventLogEntry]) -> EventLogCursor {
-        entries
-            .last()
-            .map(|entry| EventLogCursor::new(entry.sequence().saturating_add(1)))
-            .unwrap_or_default()
-    }
-
-    fn replay_batch_from(
+    fn replay_chunk_from(
         &self,
         cursor: EventLogCursor,
-        replay_tail: EventLogCursor,
-        generation: u64,
-    ) -> VecDeque<SessionEventLogFrame> {
-        let entries = self.lock_entries();
-        let start = entries.partition_point(|entry| entry.sequence() < cursor.next_sequence);
-        entries
-            .iter()
-            .skip(start)
-            .take_while(|entry| entry.sequence() < replay_tail.next_sequence)
-            .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
-            .cloned()
-            .map(|entry| SessionEventLogFrame::new(entry, generation))
-            .collect()
+    ) -> Result<Option<LogChunk>, SessionEventLogStoreError> {
+        self.lock_log()
+            .chunk_from(cursor.next_sequence, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
     }
 }
 
@@ -322,19 +343,32 @@ pub mod test_support {
 
     use crucible_engine::SchedulerEventLogEntry;
 
-    use crate::SessionEventLog;
+    use crate::{SessionEventLog, SessionEventLogStoreError};
 
     /// Appends event-log entries to a session event-log hub for integration tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStoreError`] when the entries are not dense
+    /// after the hub's tail or a full tail cannot be sealed.
     pub fn append_event_log_entries_for_test(
         hub: &SessionEventLog,
         entries: &[SchedulerEventLogEntry],
-    ) {
-        hub.append_entries(entries);
+    ) -> Result<(), SessionEventLogStoreError> {
+        hub.append_entries(entries)
     }
 
     /// Truncates a session event-log hub to `len` entries for integration tests.
-    pub fn truncate_event_log_for_test(hub: &SessionEventLog, len: usize) {
-        hub.truncate_to_len(len);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStoreError`] when a cut inside a sealed
+    /// segment cannot read that segment back.
+    pub fn truncate_event_log_for_test(
+        hub: &SessionEventLog,
+        len: usize,
+    ) -> Result<(), SessionEventLogStoreError> {
+        hub.truncate_to_len(len)
     }
 }
 
@@ -347,6 +381,8 @@ pub struct SessionEventLogStream {
     replay_tail: EventLogCursor,
     replay_exhausted: bool,
     backlog: VecDeque<SessionEventLogFrame>,
+    // One decoded segment or tail slice, reused while replay walks it.
+    chunk: Option<LogChunk>,
     receiver: broadcast::Receiver<SessionEventLogFrame>,
 }
 
@@ -362,12 +398,14 @@ impl SessionEventLogStream {
     /// # Errors
     ///
     /// A subscriber that falls behind the bounded live broadcast tail resumes
-    /// from the retained event log at its current cursor.
+    /// from the retained event log at its current cursor. Returns
+    /// [`SessionEventLogStreamError::Unavailable`] when cursor replay cannot
+    /// read a sealed segment back.
     pub async fn recv(
         &mut self,
     ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
         loop {
-            if let Some(frame) = self.take_ready_backlog_frame() {
+            if let Some(frame) = self.take_ready_backlog_frame()? {
                 return Ok(Some(frame));
             }
             match self.receiver.recv().await {
@@ -394,10 +432,12 @@ impl SessionEventLogStream {
     /// # Errors
     ///
     /// A subscriber that falls behind the bounded live broadcast tail resumes
-    /// from the retained event log at its current cursor.
+    /// from the retained event log at its current cursor. Returns
+    /// [`SessionEventLogStreamError::Unavailable`] when cursor replay cannot
+    /// read a sealed segment back.
     pub fn try_recv(&mut self) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
         loop {
-            if let Some(frame) = self.take_ready_backlog_frame() {
+            if let Some(frame) = self.take_ready_backlog_frame()? {
                 return Ok(Some(frame));
             }
             match self.receiver.try_recv() {
@@ -440,7 +480,9 @@ impl SessionEventLogStream {
 
     /// Refills the drained replay backlog and pops the next non-stale frame,
     /// returning `None` when it is exhausted and the tail should be consulted.
-    fn take_ready_backlog_frame(&mut self) -> Option<SessionEventLogFrame> {
+    fn take_ready_backlog_frame(
+        &mut self,
+    ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStoreError> {
         loop {
             let hub_generation = self.hub.generation();
             if hub_generation > self.generation {
@@ -449,22 +491,55 @@ impl SessionEventLogStream {
                 self.replay_tail = self.hub.current_cursor();
                 self.replay_exhausted = false;
                 self.backlog.clear();
+                // A truncation can replace entries at already decoded sequences.
+                self.chunk = None;
             }
             if self.backlog.is_empty() && !self.replay_exhausted {
-                self.backlog =
-                    self.hub
-                        .replay_batch_from(self.next_cursor, self.replay_tail, self.generation);
+                self.backlog = self.replay_batch()?;
                 self.replay_exhausted = self.backlog.is_empty();
             }
-            let frame = self.backlog.pop_front()?;
+            let Some(frame) = self.backlog.pop_front() else {
+                return Ok(None);
+            };
             if frame.generation < self.generation
                 || frame.cursor.next_sequence < self.next_cursor.next_sequence
             {
                 continue;
             }
             self.next_cursor = frame.next_cursor;
-            return Some(frame);
+            return Ok(Some(frame));
         }
+    }
+
+    /// Reads up to one replay batch from the cursor toward the replay tail.
+    ///
+    /// A decoded sealed segment is kept and walked batch by batch before the
+    /// next one is read, so replay holds at most one segment.
+    fn replay_batch(
+        &mut self,
+    ) -> Result<VecDeque<SessionEventLogFrame>, SessionEventLogStoreError> {
+        let cursor = self.next_cursor.next_sequence;
+        if cursor >= self.replay_tail.next_sequence {
+            return Ok(VecDeque::new());
+        }
+        if self
+            .chunk
+            .as_ref()
+            .is_none_or(|chunk| chunk.get(cursor).is_none())
+        {
+            self.chunk = self.hub.replay_chunk_from(self.next_cursor)?;
+        }
+        let Some(chunk) = self.chunk.as_ref() else {
+            return Ok(VecDeque::new());
+        };
+
+        let end = chunk.end().min(self.replay_tail.next_sequence);
+        let frames = (cursor.max(chunk.first_sequence)..end)
+            .take(SESSION_EVENT_LOG_REPLAY_BATCH_SIZE)
+            .filter_map(|sequence| chunk.get(sequence).cloned())
+            .map(|entry| SessionEventLogFrame::new(entry, self.generation))
+            .collect();
+        Ok(frames)
     }
 }
 

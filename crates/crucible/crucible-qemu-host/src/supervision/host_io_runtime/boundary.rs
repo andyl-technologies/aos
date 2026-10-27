@@ -64,11 +64,9 @@ impl QemuLiveHostIoRuntime {
         // The producer releases the frame before publishing its output pause.
         // A head observed after an older slot snapshot must wait for that fresh
         // coherent publication, rather than rejecting a valid newer event.
-        let observed = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
+        let Some(observed) = self.try_node_snapshot()? else {
+            return Ok(None);
+        };
         if observed.publish_gen != snapshot.publish_gen {
             return Ok(None);
         }
@@ -88,37 +86,117 @@ impl QemuLiveHostIoRuntime {
         Ok(Some(write_index))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn observe_console_operation_stop(
+        &mut self,
+        snapshot: &crucible_qemu_shmem::NodeSlotSnapshot,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let Some(custody) = &self.console_custody else {
+            // Ordinary profiles perform no console table or ring reads.
+            return Ok(false);
+        };
+        if self.console_stop.is_none() {
+            self.console_stop = custody
+                .observe_operation_stop(&self.region, *snapshot)
+                .map_err(|source| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "observe accounted console stop",
+                        source.to_string(),
+                    )
+                })?;
+        }
+        Ok(self.console_stop.is_some_and(|stop| {
+            snapshot.status == STATUS_IDLE
+                && stop
+                    .matches_coordinate(snapshot.current_icount, snapshot.logical_time_raw_icount)
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn console_operation_discovery_pending(
+        &self,
+        discovered: bool,
+    ) -> Result<bool, QemuAsyncDriverRuntimeError> {
+        let Some(custody) = &self.console_custody else {
+            return Ok(false);
+        };
+        if discovered {
+            return Ok(false);
+        }
+        custody
+            .has_unconsumed_operation(&self.region)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "await accounted console stop discovery",
+                    source.to_string(),
+                )
+            })
+    }
+
     /// Publishes the earliest exact completion across every attached host device.
     pub(super) fn publish_device_completion_deadline(
         &self,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let observe = self.wait_observation.is_enabled();
+        let mut observation = super::device_wait_observation::DeviceDeadlines::default();
         let block = self
             .block
             .as_ref()
             .map(|block| {
                 if block.worker.work_in_flight() {
-                    return Ok(block.worker.published_completion_deadline());
+                    let deadline = block.worker.published_completion_deadline();
+                    if observe {
+                        observation.block =
+                            super::device_wait_observation::CompletionCandidate::worker(
+                                deadline,
+                                block.worker.in_flight_request_observation(),
+                            );
+                    }
+                    return Ok(deadline);
                 }
-                block
-                    .lock_servicer("inspect block completion deadline")?
-                    .next_completion_icount()
-                    .map_err(|source| {
+                let servicer = block.lock_servicer("inspect block completion deadline")?;
+                if observe {
+                    let (deadline, head) =
+                        servicer.completion_head_observation().map_err(|source| {
+                            QemuAsyncDriverRuntimeError::new(
+                                "inspect block completion deadline",
+                                source.to_string(),
+                            )
+                        })?;
+                    observation.block =
+                        super::device_wait_observation::CompletionCandidate::queued(deadline, head);
+                    Ok(deadline)
+                } else {
+                    servicer.next_completion_icount().map_err(|source| {
                         QemuAsyncDriverRuntimeError::new(
                             "inspect block completion deadline",
                             source.to_string(),
                         )
                     })
+                }
             })
             .transpose()?
             .flatten();
-        let ninep = self
-            .ninep
-            .as_ref()
-            .and_then(|ninep| ninep.servicer.next_completion_icount());
+        let ninep = self.ninep.as_ref().and_then(|ninep| {
+            if observe {
+                let (deadline, head) = ninep.servicer.completion_head_observation();
+                observation.ninep =
+                    super::device_wait_observation::CompletionCandidate::queued(deadline, head);
+                deadline
+            } else {
+                ninep.servicer.next_completion_icount()
+            }
+        });
         let accelerator = self
             .accelerator
             .as_ref()
             .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
+        if observe {
+            observation.accelerator = accelerator;
+            self.wait_observation
+                .device_deadlines
+                .set(Some(observation));
+        }
         let deadline = [block, ninep, accelerator].into_iter().flatten().min();
         self.region
             .node_slot(self.vm_slot)
@@ -144,16 +222,17 @@ pub(super) fn bounded_poll_attempts(timeout: Duration, poll_interval: Duration) 
 /// both make an idle guest runnable. A snapshot from before QEMU consumes that
 /// wake no longer proves that the guest remains parked before its ceiling, so an
 /// early-idle pause requires a later stable plugin publication. A node already
-/// at its ceiling remains complete, however: the wake cannot authorize it to
-/// advance farther, and requiring another publication would deadlock with QEMU
-/// waiting for a strictly later ceiling.
+/// at its ceiling, or settled through it, remains complete, however: the wake
+/// cannot authorize it to advance farther, and requiring another publication
+/// would deadlock with QEMU waiting for a strictly later ceiling.
 pub(super) fn classify_after_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
     stop_condition: crate::QemuQuantumStopCondition,
+    settled: bool,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
-    let boundary = classify_quantum_boundary(idle, ceiling, stop_condition);
+    let boundary = classify_quantum_boundary(idle, ceiling, stop_condition, settled);
     if device_wake_unacknowledged && matches!(boundary, QuantumBoundary::Paused { .. }) {
         return QuantumBoundary::Pending;
     }
@@ -168,13 +247,20 @@ pub(super) fn classify_after_scheduler_and_host_wake(
     idle: &crate::QemuNodeIdleState,
     ceiling: u64,
     stop_condition: crate::QemuQuantumStopCondition,
+    settled: bool,
     scheduler_input_unobserved: bool,
     device_wake_unacknowledged: bool,
 ) -> QuantumBoundary {
     if scheduler_input_unobserved {
         QuantumBoundary::Pending
     } else {
-        classify_after_host_wake(idle, ceiling, stop_condition, device_wake_unacknowledged)
+        classify_after_host_wake(
+            idle,
+            ceiling,
+            stop_condition,
+            settled,
+            device_wake_unacknowledged,
+        )
     }
 }
 
@@ -204,6 +290,29 @@ pub(super) fn checkpoint_idle_publication_is_unreleased(
             && snapshot.current_icount == coordinate
             && snapshot.idle_wake_icount <= snapshot.current_icount
     })
+}
+
+/// Names what released an armed checkpoint guard at this poll.
+///
+/// A stop owner takes the publication before the coordinate check runs, so
+/// it is named first; otherwise the slot itself no longer matched.
+pub(super) const fn checkpoint_guard_release(
+    output_stop: bool,
+    console_output_stop: bool,
+    snapshot: &crucible_qemu_shmem::NodeSlotSnapshot,
+) -> CheckpointGuardRelease {
+    if output_stop {
+        CheckpointGuardRelease::OutputStop
+    } else if console_output_stop {
+        CheckpointGuardRelease::ConsoleStop
+    } else {
+        CheckpointGuardRelease::Changed {
+            status: snapshot.status,
+            logical: snapshot.current_icount,
+            idle_wake: snapshot.idle_wake_icount,
+            publish_gen: snapshot.publish_gen,
+        }
+    }
 }
 
 /// Returns whether checkpoint pause needs a QEMU main-loop control edge.

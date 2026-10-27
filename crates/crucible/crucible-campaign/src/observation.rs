@@ -5,12 +5,26 @@
 //! newly discovered choices, selections produced while continuing through
 //! those choices, and an optional canonical resolved-effect trace. Operational
 //! reservation, worker, retry, and host-timing data is deliberately absent.
+//!
+//! Choice material is paged. Discovered opportunities and produced selections
+//! are two [`MerkleMap`] sets keyed by [`choice_set_key`] of the opportunity,
+//! and the observation retains only their roots as envelope children:
+//!
+//! ```text
+//! discovered-choices  : choice_set_key(opportunity) -> opportunity content ID
+//! produced-selections : choice_set_key(opportunity) -> selection content ID
+//! ```
+//!
+//! The observation's size is therefore independent of how many choices one
+//! attempt discovers, and readers page both sets with ordinary Merkle scans.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use crucible_store::content_store::ContentId;
+use crucible_store::content_store::{ContentId, MemoryBlobBackend};
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
+use crate::merkle::{CampaignStoreError, MerkleMap, MerkleMapRoot};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     AttemptId, BranchPathId, CampaignCodecError, CampaignHash, ChoiceOpportunityId,
@@ -19,7 +33,7 @@ use crate::{
 };
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
-const OBSERVATION_SCHEMA_VERSION: u32 = 14;
+const OBSERVATION_SCHEMA_VERSION: u32 = 16;
 const MEASUREMENT_SET_SCHEMA_VERSION: u32 = 2;
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MEASUREMENT_EVALUATION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -30,11 +44,60 @@ const MAX_SCENARIO_FAILURE_REASON_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SCENARIO_FAILURE_REASONS_BYTES: usize = MAX_RECORD_BYTES;
 const MAX_EVIDENCE_OBJECTS: usize = 4096;
 const MAX_COVERAGE_IDENTITIES: usize = 1_000_000;
-// The generic content envelope permits 65,536 children. Observation reserves
-// seven roles for attempt, child, path, measurements, properties, coverage, and trace.
+// The generic content envelope permits 65,536 children. An observation
+// names eight fixed roles, the resolved-effect trace manifest, and at most
+// `MAX_MANIFEST_SEGMENTS` trace segments, so it always fits.
 const MAX_ENVELOPE_CHILDREN: usize = 65_536;
-const OBSERVATION_FIXED_CHILDREN: usize = 7;
-pub(crate) const MAX_DISCOVERED_CHOICES: usize = MAX_ENVELOPE_CHILDREN - OBSERVATION_FIXED_CHILDREN;
+
+/// Returns the paged-set key of one choice opportunity.
+///
+/// The key is the opportunity's raw content digest. Every opportunity
+/// identity has the same kind and schema, so ascending key order equals
+/// canonical opportunity-identity order. The campaign graph's choice index
+/// uses the same key, so an observation's discovered set and its index
+/// insertions share one ordering.
+#[must_use]
+pub fn choice_set_key(opportunity: ChoiceOpportunityId) -> CampaignHash {
+    CampaignHash::from_bytes(opportunity.content_id().digest())
+}
+
+/// Derives the canonical root of one ascending keyed choice set.
+///
+/// Executors build observations before they hold campaign storage, so the
+/// root is computed over a process-local scratch store that is dropped on
+/// return. The sorted builder keeps only final nodes, and the repository
+/// rebuilds the identical root in durable storage when it publishes the
+/// candidate.
+pub(crate) fn derive_choice_set_root(
+    entries: impl IntoIterator<Item = (CampaignHash, ContentId)>,
+) -> Result<MerkleMapRoot, CampaignCodecError> {
+    let scratch = MerkleMap::new(Arc::new(MemoryBlobBackend::new(
+        "crucible.observation.choice-set",
+        u64::MAX,
+    )));
+    scratch
+        .build_from_sorted(entries)
+        .map_err(choice_set_codec_error)
+}
+
+/// Returns the canonical empty choice-set root.
+pub(crate) fn empty_choice_set_root() -> Result<MerkleMapRoot, CampaignCodecError> {
+    derive_choice_set_root(std::iter::empty())
+}
+
+fn choice_set_codec_error(error: CampaignStoreError) -> CampaignCodecError {
+    match error {
+        CampaignStoreError::Codec(error) => error,
+        CampaignStoreError::InvalidMerkle { .. } => CampaignCodecError::InvalidValue {
+            reason: "observation choice set has duplicate or unordered entries",
+        },
+        CampaignStoreError::Store(_) | CampaignStoreError::InvalidPageSize => {
+            CampaignCodecError::InvalidValue {
+                reason: "observation choice-set root cannot be derived",
+            }
+        }
+    }
+}
 
 /// One execution-model-verified canonical measurement evaluation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1367,6 +1430,11 @@ pub(crate) fn scenario_failure_hash(reasons: &[String]) -> CampaignHash {
     )
 }
 
+mod coverage_frequency;
 mod record;
-pub use record::{Observation, ObservationOutcome};
+pub use coverage_frequency::{COVERAGE_IDENTITY_FREQUENCY_SATURATION, CoverageIdentityFrequency};
+pub use record::{Observation, ObservationOutcome, ResolvedEffectTraceRef};
+pub(crate) use record::{
+    RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA,
+};
 use record::{decode_record, require_schema};

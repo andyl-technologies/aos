@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+#[path = "checkpoint/event_log_continuation.rs"]
+mod event_log_continuation;
+pub use event_log_continuation::CheckpointEventLogEntries;
+use event_log_continuation::{EventLogWire, restore_event_log};
+
+// v11 retains each node's settled scheduler counter beside its actual clock.
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v11\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -44,6 +50,7 @@ struct SingleSchedulerWire {
     decision_rng_cursor: DecisionRngState,
     branch_network_choices: Vec<SelectionDecision>,
     search_frontiers: Vec<SearchRuntimeFrontierWire>,
+    retired_search_frontiers: u64,
     event_log: EventLogWire,
     trigger_actions: TriggerActionState,
     frontier: u64,
@@ -61,7 +68,11 @@ struct SingleSchedulerWire {
 struct RuntimeNodeWire {
     id: SchedulerNodeId,
     counter: u64,
+    // Settled scheduler counter; never below `counter`.
+    settled: u64,
+    idle_parked: bool,
     time_mapping: NodeTimeMapping,
+    ready_point_mapping: NodeTimeMapping,
     last_checkpoint: Option<SchedulerNodeCheckpoint>,
     activity: SchedulerNodeActivity,
     network_lookahead: NetworkLookahead,
@@ -69,23 +80,16 @@ struct RuntimeNodeWire {
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EventLogWire {
-    prefix: ContentHash,
-    appended_segment: Option<ContentHash>,
-    segment_dependencies: Vec<ContentHash>,
-    bytes: u64,
-    events: u64,
-    condition_entries: Vec<SchedulerEventLogEntry>,
-    condition_base_events: u64,
-}
-
+/// One retained search frontier, named relative to the checkpoint schedule.
+///
+/// Every frontier parent is a prefix of the scheduler configuration that
+/// recorded it, so the wire keeps only the prefix length and the parent's
+/// canonical identity instead of a second copy of the schedule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRuntimeFrontierWire {
-    scenario: ContentHash,
-    schedule: Vec<u8>,
+    parent_len: u64,
+    parent: ContentHash,
     at: u64,
     choices: Vec<Vec<u8>>,
 }
@@ -101,6 +105,9 @@ impl SingleScheduler {
         if self.lock_held
             || self.fixed_input_in_progress
             || !self.app_random_branch_selections.is_empty()
+            // A campaign park is live state awaiting its atomic join and is
+            // deliberately absent from the checkpoint format.
+            || self.has_campaign_parks()
         {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
@@ -137,11 +144,11 @@ impl SingleScheduler {
                 fixed_input_generation: self.fixed_input_generation,
                 settled_fixed_input_events: self.settled_fixed_input_events.clone(),
                 run_subdivision_policies: self.run_subdivision_policies.clone(),
-                run_subdivision_records: self.run_subdivision_records.clone(),
+                run_subdivision_records: self.run_subdivision_records.to_vec(),
                 preemption_requests: self.preemption_requests.clone(),
-                preemption_applications: self.preemption_applications.clone(),
+                preemption_applications: self.preemption_applications.to_vec(),
                 control_admissions: self.control_admissions.clone(),
-                control_applications: self.control_applications.clone(),
+                control_applications: self.control_applications.to_vec(),
                 control_inbox: self.control_inbox.clone(),
                 decision_seed: self.decision_seed.bytes(),
                 decision_rng_cursor: self.decision_rng_cursor.clone(),
@@ -149,47 +156,56 @@ impl SingleScheduler {
                 search_frontiers: self
                     .search_frontiers
                     .iter()
-                    .map(SearchRuntimeFrontierWire::from)
-                    .collect(),
+                    .map(|frontier| {
+                        SearchRuntimeFrontierWire::capture(&self.configuration, frontier)
+                    })
+                    .collect::<Result<_, _>>()?,
+                retired_search_frontiers: self.retired_search_frontiers,
                 event_log: EventLogWire::from(&self.event_log),
                 trigger_actions: self.trigger_actions.clone(),
                 frontier: self.frontier.ticks,
                 quanta: self.quanta,
-                topology_change_applications: self.topology_change_applications.clone(),
-                rendezvous_records: self.rendezvous_records.clone(),
+                topology_change_applications: self.topology_change_applications.to_vec(),
+                rendezvous_records: self.rendezvous_records.to_vec(),
                 boundary_yields: self.boundary_yields,
-                ceiling_publications: self.ceiling_publications.clone(),
+                ceiling_publications: self.ceiling_publications.to_vec(),
                 last_advance: self.last_advance.clone(),
                 last_topology_recompute: self.last_topology_recompute,
             },
         })
     }
 
-    /// Reads and authenticates every event-log segment required by the current prefix.
+    /// Checks that the segment store holds every sealed event-log segment.
+    ///
+    /// Capture names sealed segments by reference, so this checks presence
+    /// only; readers authenticate each segment's bytes when they decode it.
     ///
     /// # Errors
     ///
-    /// Returns [`SingleSchedulerCheckpointError::EventLog`] when a retained
-    /// segment is missing or its bytes no longer match its content identity.
-    pub fn event_log_dependency_objects(
-        &self,
-    ) -> Result<Vec<(ContentHash, Vec<u8>)>, SingleSchedulerCheckpointError> {
-        self.event_log
-            .segment_dependencies
-            .iter()
-            .map(|identity| {
-                let bytes = self
-                    .event_log
-                    .segment_store
-                    .store
-                    .get(identity)
-                    .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
-                if ContentHash::from_bytes(&bytes) != *identity {
-                    return Err(SingleSchedulerCheckpointError::EventLog);
-                }
-                Ok((*identity, bytes))
-            })
-            .collect()
+    /// Returns [`SingleSchedulerCheckpointError::EventLog`] when a sealed
+    /// segment is absent or the store cannot answer.
+    pub fn verify_event_log_segments(&self) -> Result<(), SingleSchedulerCheckpointError> {
+        for segment in self.event_log.sealed.iter() {
+            let present = self
+                .event_log
+                .segment_store
+                .store
+                .exists(&segment.object)
+                .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
+            if !present {
+                return Err(SingleSchedulerCheckpointError::EventLog);
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the content-addressed store holding this scheduler's sealed segments.
+    ///
+    /// A carrier that outlives the scheduler, such as a hot-fork continuation,
+    /// keeps this handle to read the segments its continuation names.
+    #[must_use]
+    pub fn event_log_segment_store(&self) -> Arc<dyn DagStore> {
+        Arc::clone(&self.event_log.segment_store.store)
     }
 }
 
@@ -198,7 +214,10 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
         Self {
             id: node.id.clone(),
             counter: node.counter.ticks,
+            settled: node.settled.ticks,
+            idle_parked: node.idle_parked,
             time_mapping: node.time_mapping,
+            ready_point_mapping: node.ready_point_mapping,
             last_checkpoint: node.last_checkpoint.clone(),
             activity: node.activity,
             network_lookahead: node.network_lookahead,
@@ -208,25 +227,24 @@ impl From<&RuntimeSchedulerNode> for RuntimeNodeWire {
     }
 }
 
-impl From<&EventLog> for EventLogWire {
-    fn from(log: &EventLog) -> Self {
-        Self {
-            prefix: log.offset.prefix,
-            appended_segment: log.offset.appended_segment,
-            segment_dependencies: log.segment_dependencies.clone(),
-            bytes: log.offset.bytes,
-            events: log.offset.events,
-            condition_entries: log.retained_entries().to_vec(),
-            condition_base_events: log.condition_base_events,
+impl SearchRuntimeFrontierWire {
+    /// Names `frontier` as a prefix of the scheduler's `configuration`.
+    ///
+    /// A parent that is not a prefix of the scheduler configuration has no
+    /// compact name, so capture fails closed instead of copying its schedule.
+    fn capture(
+        configuration: &Configuration,
+        frontier: &SearchRuntimeFrontier,
+    ) -> Result<Self, SingleSchedulerCheckpointError> {
+        let parent = &frontier.configuration;
+        if parent.def != configuration.def || !configuration.schedule.starts_with(&parent.schedule)
+        {
+            return Err(SingleSchedulerCheckpointError::Configuration);
         }
-    }
-}
-
-impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
-    fn from(frontier: &SearchRuntimeFrontier) -> Self {
-        Self {
-            scenario: frontier.configuration.def.id(),
-            schedule: frontier.configuration.schedule.to_compact_binary(),
+        Ok(Self {
+            parent_len: u64::try_from(parent.schedule.len())
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+            parent: parent.id(),
             at: frontier.at.ticks,
             choices: frontier
                 .choices
@@ -236,11 +254,69 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
                     Schedule::from_decisions(choice.decisions().to_vec()).to_compact_binary()
                 })
                 .collect(),
-        }
+        })
     }
 }
 
 impl SingleSchedulerCheckpoint {
+    /// Prepares a fresh scenario with this continuation's original ready origins.
+    ///
+    /// A restored backend's current counter is not its cold boot-ready counter.
+    /// This copies only the immutable epoch origins used by scheduler
+    /// construction; [`Self::restore_into`] still checks the complete mappings
+    /// and restores all mutable state atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError`] for invalid wire state, a
+    /// different scenario or node inventory, or a non-epoch ready mapping.
+    pub fn prepare_restore_scenario(
+        &self,
+        mut scenario: SchedulerLivenessScenario,
+    ) -> Result<SchedulerLivenessScenario, SingleSchedulerCheckpointError> {
+        validate_wire(&self.wire)?;
+        if scenario.canonical_configuration().def.id() != self.wire.scenario {
+            return Err(SingleSchedulerCheckpointError::Configuration);
+        }
+
+        let mut nodes = scenario
+            .nodes
+            .iter()
+            .map(|node| &node.id)
+            .collect::<Vec<_>>();
+        nodes.sort_unstable();
+        if nodes.len() != self.wire.nodes.len()
+            || nodes
+                .iter()
+                .zip(&self.wire.nodes)
+                .any(|(node, retained)| **node != retained.id)
+            || self
+                .wire
+                .nodes
+                .iter()
+                .any(|node| node.ready_point_mapping.anchor_time != SimInstant::EPOCH)
+        {
+            return Err(SingleSchedulerCheckpointError::Node);
+        }
+
+        scenario.ready_point_counters = self
+            .wire
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.ready_point_mapping.anchor_counter))
+            .collect();
+        // Construction projects every initial counter before mutable restore.
+        // Start at the retained epoch anchor so that projection cannot underflow.
+        for node in &mut scenario.nodes {
+            node.counter = scenario
+                .ready_point_counters
+                .get(&node.id)
+                .copied()
+                .ok_or(SingleSchedulerCheckpointError::Node)?;
+        }
+        Ok(scenario)
+    }
+
     /// Returns the immutable scenario identity owning this continuation.
     #[must_use]
     pub const fn scenario(&self) -> ContentHash {
@@ -293,6 +369,7 @@ impl SingleSchedulerCheckpoint {
             retained.id.node == *node && retained.id.kind == SchedulingNodeKind::Vm
         })?;
         (retained.counter == retained.time_mapping.anchor_counter.ticks
+            && retained.settled == retained.counter
             && retained.time_mapping.anchor_time == SimInstant::EPOCH)
             .then_some(NodeCounter {
                 ticks: retained.counter,
@@ -312,14 +389,13 @@ impl SingleSchedulerCheckpoint {
     }
 
     /// Returns the exact unified event-log boundary retained by this continuation.
+    ///
+    /// The offset is the log's chain position: its prefix hash commits to
+    /// every appended segment, so two continuations at equal offsets carry
+    /// equal entries (RFC-0020 CCOMP-30).
     #[must_use]
     pub fn event_log_offset(&self) -> EventLogOffset {
-        EventLogOffset {
-            prefix: self.wire.event_log.prefix,
-            appended_segment: self.wire.event_log.appended_segment,
-            bytes: self.wire.event_log.bytes,
-            events: self.wire.event_log.events,
-        }
+        self.wire.event_log.offset()
     }
 
     /// Returns the active branch frontier cap, if branch admission is pending.
@@ -343,31 +419,68 @@ impl SingleSchedulerCheckpoint {
         &self.wire.decision_rng_cursor
     }
 
-    /// Returns the ordered event-log segment identities retained by this continuation.
+    /// Returns the sealed event-log segments this continuation references, in order.
+    ///
+    /// The segments cover the dense entries from
+    /// [`Self::event_log_base_events`] up to the open tail.
     #[must_use]
-    pub fn event_log_segment_dependencies(&self) -> &[ContentHash] {
-        &self.wire.event_log.segment_dependencies
+    pub fn event_log_segments(&self) -> &[EventLogSegmentRef] {
+        &self.wire.event_log.segments
     }
 
-    /// Returns the exact event entries retained for condition and evidence replay.
+    /// Returns the store identities of [`Self::event_log_segments`], in order.
     ///
-    /// A scheduler created at run genesis retains a zero-based complete prefix.
-    /// A continuation reconstructed from an offset-only source may instead
-    /// retain a suffix whose first sequence is reported by
-    /// [`Self::retained_event_log_base_events`]. Callers that require complete
-    /// run evidence must reject a nonzero base or load the authenticated prior
-    /// segment closure before interpreting this slice as the whole run.
+    /// These are the event-log objects an exact checkpoint closure retains.
     #[must_use]
-    pub fn retained_event_log_entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.wire.event_log.condition_entries
+    pub fn event_log_segment_dependencies(&self) -> Vec<ContentHash> {
+        self.wire
+            .event_log
+            .segments
+            .iter()
+            .map(|segment| segment.object)
+            .collect()
     }
 
-    /// Returns the dense sequence preceding the retained event-entry suffix.
+    /// Returns the dense sequence preceding the first referenced entry.
     ///
-    /// Zero means [`Self::retained_event_log_entries`] starts at run genesis.
+    /// Zero means the referenced segments and tail cover the run from genesis.
+    /// A continuation reconstructed from an offset-only source covers only a
+    /// suffix; callers that require complete run evidence must reject it.
     #[must_use]
-    pub const fn retained_event_log_base_events(&self) -> u64 {
-        self.wire.event_log.condition_base_events
+    pub const fn event_log_base_events(&self) -> u64 {
+        self.wire.event_log.base_events
+    }
+
+    /// Visits every referenced event-log entry in order.
+    ///
+    /// Sealed segments are read from `reader` one at a time and authenticated
+    /// against their references before any of their entries is visited; the
+    /// open tail follows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::EventLog`], converted into
+    /// `E`, when a segment cannot be read or fails authentication, or the
+    /// first error `visit` returns.
+    pub fn try_for_each_event_log_entry<E: From<SingleSchedulerCheckpointError>>(
+        &self,
+        reader: &(impl EventLogSegmentReader + ?Sized),
+        mut visit: impl FnMut(&SchedulerEventLogEntry) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.wire
+            .event_log
+            .try_for_each_entry(reader, |entry| visit(&entry))
+    }
+
+    /// Returns a pull reader over every referenced event-log entry, in order.
+    ///
+    /// The reader holds at most one decoded segment.
+    #[must_use]
+    pub fn event_log_entries<'a, R: EventLogSegmentReader + ?Sized>(
+        &'a self,
+        reader: &'a R,
+    ) -> CheckpointEventLogEntries<'a, R> {
+        CheckpointEventLogEntries::new(&self.wire.event_log, reader)
     }
 
     /// Encodes the complete scheduler continuation canonically.
@@ -464,7 +577,7 @@ impl SingleSchedulerCheckpoint {
         restore_nodes(&mut staged, &self.wire.nodes)?;
         restore_event_log(&mut staged.event_log, &self.wire.event_log)?;
         let search_frontiers =
-            restore_search_frontiers(&configuration.def, &self.wire.search_frontiers)?;
+            restore_search_frontiers(&configuration, &self.wire.search_frontiers)?;
 
         staged.configuration = configuration;
         staged.quantum_budget = self.wire.quantum_budget;
@@ -487,11 +600,13 @@ impl SingleSchedulerCheckpoint {
             SchedulerLookaheadGraph::from_edges(state.effective_topology_edges.clone());
         staged.topology_changes = state.pending_topology_changes;
         staged.run_subdivision_policies = self.wire.run_subdivision_policies.clone();
-        staged.run_subdivision_records = self.wire.run_subdivision_records.clone();
+        staged.run_subdivision_records =
+            crate::History::from(self.wire.run_subdivision_records.clone());
         staged.preemption_requests = self.wire.preemption_requests.clone();
-        staged.preemption_applications = self.wire.preemption_applications.clone();
+        staged.preemption_applications =
+            crate::History::from(self.wire.preemption_applications.clone());
         staged.control_admissions = self.wire.control_admissions.clone();
-        staged.control_applications = self.wire.control_applications.clone();
+        staged.control_applications = crate::History::from(self.wire.control_applications.clone());
         staged.pending_events = self.wire.pending_events.clone();
         staged.imported_io = self.wire.imported_io.clone();
         staged.fixed_input_generation = self.wire.fixed_input_generation;
@@ -509,16 +624,18 @@ impl SingleSchedulerCheckpoint {
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
         staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
+        staged.retired_search_frontiers = self.wire.retired_search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {
             ticks: self.wire.frontier,
         };
         staged.quanta = self.wire.quanta;
         staged.topology_epoch = state.topology_epoch;
-        staged.topology_change_applications = self.wire.topology_change_applications.clone();
-        staged.rendezvous_records = self.wire.rendezvous_records.clone();
+        staged.topology_change_applications =
+            crate::History::from(self.wire.topology_change_applications.clone());
+        staged.rendezvous_records = crate::History::from(self.wire.rendezvous_records.clone());
         staged.boundary_yields = self.wire.boundary_yields;
-        staged.ceiling_publications = self.wire.ceiling_publications.clone();
+        staged.ceiling_publications = crate::History::from(self.wire.ceiling_publications.clone());
         staged.lock_held = false;
         staged.last_advance = self.wire.last_advance.clone();
         staged.last_topology_recompute = self.wire.last_topology_recompute;
@@ -541,6 +658,9 @@ impl SingleSchedulerCheckpoint {
 fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckpointError> {
     if wire.quantum_budget == 0
         || wire.nodes.windows(2).any(|pair| pair[0].id >= pair[1].id)
+        || wire.nodes.iter().any(|node| {
+            node.settled < node.counter || (node.idle_parked && node.settled == node.counter)
+        })
         || wire
             .device_state
             .windows(2)
@@ -592,18 +712,8 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
             }
         }
     }
-    if wire.event_log.events < wire.event_log.condition_base_events {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
-    let condition_entry_count =
-        usize::try_from(wire.event_log.events - wire.event_log.condition_base_events)
-            .map_err(|_| SingleSchedulerCheckpointError::EventLog)?;
-    if condition_entry_count != wire.event_log.condition_entries.len() {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
+    wire.event_log.validate()?;
     for frontier in &wire.search_frontiers {
-        Schedule::from_compact_binary(&frontier.schedule)
-            .map_err(|_| SingleSchedulerCheckpointError::State)?;
         for choice in &frontier.choices {
             Schedule::from_compact_binary(choice)
                 .map_err(|_| SingleSchedulerCheckpointError::State)?;
@@ -645,85 +755,47 @@ fn restore_nodes(
         return Err(SingleSchedulerCheckpointError::Node);
     }
     for (node, restored) in scheduler.nodes.iter_mut().zip(checkpoint) {
-        if node.id != restored.id {
+        if node.id != restored.id || node.ready_point_mapping != restored.ready_point_mapping {
             return Err(SingleSchedulerCheckpointError::Node);
         }
         node.counter = NodeCounter {
             ticks: restored.counter,
         };
+        node.settled = NodeCounter {
+            ticks: restored.settled,
+        };
+        node.idle_parked = restored.idle_parked;
         node.time_mapping = restored.time_mapping;
         node.last_checkpoint = restored.last_checkpoint.clone();
         node.activity = restored.activity;
         node.network_lookahead = restored.network_lookahead;
         node.exact_local_event = restored.exact_local_event.clone();
         node.vcpu_idle_states = restored.vcpu_idle_states.clone();
+        // Checkpoints are captured only without parks.
+        node.campaign_parked = false;
     }
-    Ok(())
-}
-
-fn restore_event_log(
-    log: &mut EventLog,
-    checkpoint: &EventLogWire,
-) -> Result<(), SingleSchedulerCheckpointError> {
-    let offset = EventLogOffset {
-        prefix: checkpoint.prefix,
-        appended_segment: checkpoint.appended_segment,
-        bytes: checkpoint.bytes,
-        events: checkpoint.events,
-    };
-    if checkpoint.appended_segment != checkpoint.segment_dependencies.last().copied()
-        && !(checkpoint.appended_segment.is_none() && checkpoint.segment_dependencies.is_empty())
-    {
-        return Err(SingleSchedulerCheckpointError::EventLog);
-    }
-    let condition_prefix = if checkpoint.condition_entries.is_empty() {
-        ConditionEventLogPrefix::genesis()
-            .with_base_sequence(checkpoint.condition_base_events)
-            .with_event_log_offset(offset)
-    } else {
-        ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
-            checkpoint.condition_entries.clone(),
-            checkpoint.condition_base_events,
-        )
-        .map_err(|_| SingleSchedulerCheckpointError::EventLog)?
-        .with_event_log_offset(offset)
-    };
-    log.prefix = scheduler_event_log_prefix_for_resume(offset);
-    log.segment_dependencies = checkpoint.segment_dependencies.clone();
-    log.offset = offset;
-    log.bytes = offset.bytes;
-    log.events = offset.events;
-    log.condition_base_events = checkpoint.condition_base_events;
-    log.condition_prefix = condition_prefix;
     Ok(())
 }
 
 fn restore_search_frontiers(
-    scenario: &ScenarioDef,
+    configuration: &Configuration,
     checkpoints: &[SearchRuntimeFrontierWire],
 ) -> Result<Vec<SearchRuntimeFrontier>, SingleSchedulerCheckpointError> {
     checkpoints
         .iter()
         .map(|checkpoint| {
-            if checkpoint.scenario != scenario.id() {
-                return Err(SingleSchedulerCheckpointError::Configuration);
-            }
-            let schedule = Schedule::from_compact_binary(&checkpoint.schedule)
-                .map_err(|_| SingleSchedulerCheckpointError::State)?;
+            let parent = restore_frontier_parent(configuration, checkpoint)?;
             let choices = checkpoint
                 .choices
                 .iter()
                 .map(|bytes| {
                     Schedule::from_compact_binary(bytes)
-                        .map(|schedule| schedule.decisions().to_vec())
+                        .map(|schedule| schedule.decision_history().to_vec())
                         .map_err(|_| SingleSchedulerCheckpointError::State)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(SearchRuntimeFrontier {
-                configuration: Configuration {
-                    def: scenario.clone(),
-                    schedule,
-                },
+                configuration: parent,
                 at: VirtualTime {
                     ticks: checkpoint.at,
                 },
@@ -731,6 +803,34 @@ fn restore_search_frontiers(
             })
         })
         .collect()
+}
+
+/// Rebuilds one frontier parent from its prefix of the restored schedule.
+///
+/// The whole-schedule parent shares the restored configuration; a shorter
+/// prefix is materialized once. Either way the canonical identity must equal
+/// the recorded parent identity.
+fn restore_frontier_parent(
+    configuration: &Configuration,
+    checkpoint: &SearchRuntimeFrontierWire,
+) -> Result<Configuration, SingleSchedulerCheckpointError> {
+    let len = usize::try_from(checkpoint.parent_len)
+        .map_err(|_| SingleSchedulerCheckpointError::Configuration)?;
+    let parent = if len == configuration.schedule.len() {
+        configuration.clone()
+    } else {
+        Configuration {
+            def: configuration.def.clone(),
+            schedule: configuration
+                .schedule
+                .prefix(len)
+                .map_err(|_| SingleSchedulerCheckpointError::Configuration)?,
+        }
+    };
+    if parent.id() != checkpoint.parent {
+        return Err(SingleSchedulerCheckpointError::Configuration);
+    }
+    Ok(parent)
 }
 
 /// Failure to encode, decode, validate, or restore an exact scheduler continuation.
@@ -770,6 +870,10 @@ pub enum SingleSchedulerCheckpointError {
     #[error("noncanonical single-scheduler checkpoint")]
     Noncanonical,
 }
+
+#[cfg(test)]
+#[path = "checkpoint/restore_ready_origins_tests.rs"]
+mod restore_ready_origins_tests;
 
 #[cfg(test)]
 mod epoch_ready_point_tests {
@@ -847,5 +951,91 @@ mod epoch_ready_point_tests {
             None,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod settled_counter_tests {
+    use super::*;
+
+    fn pair() -> SingleScheduler {
+        let nodes = ["a", "b"]
+            .into_iter()
+            .map(|name| SchedulerScenarioNode {
+                id: SchedulerNodeId {
+                    node: NodeId {
+                        name: String::from(name),
+                    },
+                    kind: SchedulingNodeKind::Vm,
+                },
+                counter: NodeCounter { ticks: 0 },
+                activity: SchedulerNodeActivity::Runnable,
+                network_lookahead: NetworkLookahead::Infinite,
+                exact_local_event: ExactLocalEvent::NoArmedTimer,
+            })
+            .collect();
+        SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
+            "settled-counter-checkpoint",
+            8,
+            SimInstant { ticks: 1_000 },
+            nodes,
+            Vec::new(),
+        ))
+        .unwrap_or_else(|error| panic!("checkpoint fixture: {error}"))
+    }
+
+    #[test]
+    fn continuation_retains_settled_time_beside_the_actual_clock() {
+        let mut scheduler = pair();
+        scheduler.nodes[0].counter = NodeCounter { ticks: 61 };
+        scheduler.nodes[0].settled = NodeCounter { ticks: 100 };
+        scheduler.nodes[0].idle_parked = true;
+        scheduler.nodes[1].counter = NodeCounter { ticks: 100 };
+        scheduler.nodes[1].settled = NodeCounter { ticks: 100 };
+        let bytes = scheduler
+            .checkpoint()
+            .and_then(|checkpoint| checkpoint.canonical_bytes())
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+
+        let mut restored = pair();
+        SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)
+            .and_then(|checkpoint| checkpoint.restore_into(&mut restored))
+            .unwrap_or_else(|error| panic!("restore: {error}"));
+
+        assert_eq!(restored.nodes[0].counter, NodeCounter { ticks: 61 });
+        assert_eq!(restored.nodes[0].settled, NodeCounter { ticks: 100 });
+        assert!(restored.nodes[0].idle_parked);
+        assert!(!restored.nodes[1].idle_parked);
+    }
+
+    #[test]
+    fn continuation_refuses_settled_time_behind_the_actual_clock() {
+        let scheduler = pair();
+        let mut checkpoint = scheduler
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+        checkpoint.wire.nodes[0].counter = 101;
+        checkpoint.wire.nodes[0].settled = 100;
+        let bytes = checkpoint
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode: {error}"));
+
+        assert_eq!(
+            SingleSchedulerCheckpoint::from_canonical_bytes(&bytes),
+            Err(SingleSchedulerCheckpointError::State)
+        );
+
+        // An idle park always leaves a gap between its clock and settlement.
+        let mut parked = scheduler
+            .checkpoint()
+            .unwrap_or_else(|error| panic!("capture: {error}"));
+        parked.wire.nodes[0].idle_parked = true;
+        let bytes = parked
+            .canonical_bytes()
+            .unwrap_or_else(|error| panic!("encode: {error}"));
+        assert_eq!(
+            SingleSchedulerCheckpoint::from_canonical_bytes(&bytes),
+            Err(SingleSchedulerCheckpointError::State)
+        );
     }
 }

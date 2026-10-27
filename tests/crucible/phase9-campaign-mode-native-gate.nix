@@ -13,73 +13,58 @@
   installedTests,
   runtimeCommands,
   executionFamily ? "native-runtime",
+  # Retained for callers: prebuilt executables always keep their native
+  # library references.
   sqliteRequired ? false,
 }: let
-  source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
-  controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
-  cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
-  cargoArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  sqliteInputs = lib.optionals sqliteRequired [pkgs.sqlite];
-  artifacts = pkgs.mkCargoArtifacts {
-    pname = "crucible-${name}-mode-artifacts";
-    version = "0";
-    src = pkgs.mkCargoDummySource {
-      srcRoot = ../../crates;
-      name = "crucible-${name}-mode-dummy-source";
-      cargoRoot = "crates";
-    };
-    inherit cargoDeps cargoArtifactContract cargoBuildCommands;
-    cargoArtifacts = controllerArtifacts;
-    cargoEnv = cargoArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf] ++ sqliteInputs;
-    runtimeDeps = [pkgs.openssl] ++ sqliteInputs;
-  };
-  executor = pkgs.mkCargoPackage {
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  inherit (testGate) workspaceTests;
+
+  # Each Cargo command builds one package selection. An installed test is
+  # that selection's prebuilt harness for one target, so the guest receives
+  # the executable the authoritative family compiled instead of a private
+  # rebuild.
+  words = command: builtins.filter (word: word != "") (lib.splitString " " command);
+  # Drops target flags and build-only options, keeping the selection.
+  selectionWords = command:
+    (lib.foldl' (state: word:
+      if state.skip
+      then state // {skip = false;}
+      else if word == "--test"
+      then state // {skip = true;}
+      else if builtins.elem word ["test" "--frozen" "--offline" "--no-run" "--lib" "-j$NIX_BUILD_CORES"]
+      then state
+      else state // {kept = state.kept ++ [word];}) {
+      skip = false;
+      kept = [];
+    } (words command)).kept;
+  commandPackage = command: let
+    commandWords = words command;
+    index = lib.lists.findFirstIndex (word: word == "-p") null commandWords;
+  in
+    builtins.elemAt commandWords (index + 1);
+  commandFor = test: let
+    matching = builtins.filter (command: commandPackage command == test.crateDir) cargoBuildCommands;
+    target =
+      if test.targetKind == "test"
+      then "--test ${test.targetName}"
+      else "--lib";
+  in
+    assert builtins.length matching == 1; "test ${lib.concatStringsSep " " (selectionWords (builtins.head matching))} ${target}";
+  release = builtins.any (command: builtins.elem "--release" (words command)) cargoBuildCommands;
+  executor = testGate.mkCrucibleBinaries {
     pname = "crucible-${name}-mode-executor";
-    version = "0";
-    src = source;
-    inherit cargoDeps cargoArtifactContract cargoBuildCommands;
-    cargoArtifacts = artifacts;
-    cargoEnv = cargoArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    cargoWorkspaceMembers = import ../../pkgs/tools/crucible/_workspace.nix {inherit lib;};
-    installBins = false;
-    doCheck = false;
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf] ++ sqliteInputs;
-    runtimeDeps = [pkgs.openssl] ++ sqliteInputs;
-    postInstall = ''
-      set -eu
-      messages="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
-      mkdir -p "$out/bin"
-
-      install_test() {
-        target_name="$1"
-        target_kind="$2"
-        crate_dir="$3"
-        destination="$4"
-        matches="$TMPDIR/$destination.matches"
-        jq -r --arg name "$target_name" --arg kind "$target_kind" --arg crate_dir "$crate_dir" '
-          select(
-            .reason == "compiler-artifact"
-            and .target.name == $name
-            and (.target.kind == [$kind])
-            and (.manifest_path | endswith("/" + $crate_dir + "/Cargo.toml"))
-            and .profile.test == true
-            and .executable != null
-          ) | .executable
-        ' "$messages" | sort -u > "$matches"
-        test "$(wc -l < "$matches" | tr -d ' ')" -eq 1
-        executable=$(cat "$matches")
-        test -x "$executable"
-        cp "$executable" "$out/bin/$destination"
-      }
-
-      ${lib.concatMapStringsSep "\n" (test: "install_test ${lib.escapeShellArg test.targetName} ${lib.escapeShellArg test.targetKind} ${lib.escapeShellArg test.crateDir} ${lib.escapeShellArg test.destination}") installedTests}
-    '';
+    builds =
+      if release
+      then [workspaceTests.apacheRelease workspaceTests.gplRelease]
+      else testGate.debugBuilds;
+    executables = builtins.listToAttrs (map (test: {
+        name = test.destination;
+        value = commandFor test;
+      })
+      installedTests);
   };
-  expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+  expectedConfigurationIdentity = system.config.aos.crucibleCampaign._runtimeIdentity;
   toplevel = system.config.system.build.toplevel;
   commands =
     map (command: {
@@ -101,6 +86,8 @@
       import json
       import os
       import shlex
+
+      ${builtins.readFile ./_phase9-campaign-mode-libtest.py}
 
       mode = ${builtins.toJSON mode}
       executor_derivation = os.environ["out"]
@@ -136,30 +123,15 @@
       transcripts = []
       evidence = []
       for command_spec in commands:
-          executable = command_spec["executable"]
-          arguments = command_spec["arguments"]
-          expected_count = command_spec["expectedCount"]
-          list_command = " ".join(
-              [shlex.quote(executable)]
-              + [shlex.quote(argument) for argument in arguments]
-              + ["--list", "--format", "terse"]
+          command, transcript, passed_evidence = run_campaign_mode_test(
+              command_spec["executable"],
+              command_spec["arguments"],
+              command_spec["evidence"],
+              command_spec["expectedCount"],
+              primary.succeed,
           )
-          listed = primary.succeed(list_command, timeout=900)
-          listed_count = sum(
-              1 for line in listed.splitlines() if line.endswith(": test")
-          )
-          assert listed_count == expected_count, (
-              command_spec["evidence"], listed_count, expected_count, listed
-          )
-
-          command = " ".join(
-              [shlex.quote(executable)]
-              + [shlex.quote(argument) for argument in arguments]
-              + ["--test-threads=1"]
-          )
-          transcript = primary.succeed(command, timeout=900)
           transcripts.append(f"$ {command}\n{transcript}")
-          evidence.append(f"{command_spec['evidence']}=PASS")
+          evidence.append(passed_evidence)
 
       raw_result = "\n".join([
           "PASS",
@@ -195,6 +167,12 @@ in
       pname = "crucible-phase9-campaign-mode-${name}-${mode}";
       version = "0";
       src = null;
+      passthru.campaignModeReceipt = {
+        schemaVersion = 1;
+        executor = fleet;
+        inherit mode gate toplevel;
+        configurationIdentity = expectedConfigurationIdentity;
+      };
       buildDeps = [authority fleet pkgs.coreutils pkgs.findutils pkgs.gawk pkgs.grep];
       phases = [
         {

@@ -10,39 +10,13 @@
   attrPath ? "checks.crucible.phase6.qemuHotForkChildVm",
   taskIds ? [],
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  probe = pkgs.mkDerivation {
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
+  probe = mkCrucibleBinaries {
     pname = "crucible-qemu-live-hot-fork-child";
-    version = "0";
-    src = source;
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
-    runtimeDeps = [pkgs.sqlite];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host --example crucible-qemu-live-hot-fork-child
-          mkdir -p "$out/bin"
-          cp "$TMPDIR/target/release/examples/crucible-qemu-live-hot-fork-child" "$out/bin/"
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-qemu-live-hot-fork-child = "build --release -p crucible-qemu-host --example crucible-qemu-live-hot-fork-child";
+    };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};
   # The flight attaches a debugger to a child that stalls before its private

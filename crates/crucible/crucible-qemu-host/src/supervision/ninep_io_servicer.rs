@@ -7,7 +7,7 @@
 //!
 //! ```text
 //!   pin request -> resolve signal phases -> COMPUTE response into in-flight queue
-//!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
+//!   advance_to_mapped_ring(guest_icount, response ring) -> DELIVER due responses
 //!   store_device_completion_deadline_tick(next_exact_local_event)
 //! ```
 //! A response is not published until its exact visibility and deliver phases
@@ -20,10 +20,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crucible_device::{
-    DeviceError, FsTree, IoCore, NinepDevice, NinepLatency, NinepObjectVersion,
+    DeviceError, FsTree, IoCore, NinepDevice, NinepEventEmission, NinepLatency, NinepObjectVersion,
     NinepRequestIdentity, NinepRequestOpportunity, NinepSnapshot, NinepVisibilityPolicy,
-    NinepVisibilityRelease, NinepVisibilityState, Node, Request, ResolvedNinepRequestDirective,
-    ResponseStatus,
+    NinepVisibilityRelease, NinepVisibilityState, NinepVisibilityUpdateKey, Node, Request,
+    ResolvedNinepRequestDirective, ResponseStatus,
 };
 use crucible_engine::model::ContentHash;
 use crucible_qemu_shmem::{
@@ -275,24 +275,53 @@ impl QemuLive9pIoServicer {
 
     /// Commits one scenario-owned object update.
     ///
+    /// `prior_emissions` are the already-consumed emissions of an
+    /// event-released update's event; see
+    /// [`NinepVisibilityState::commit`].
+    ///
     /// # Errors
     ///
     /// Returns [`QemuLive9pIoServicerError::Device`] for invalid or conflicting
     /// update state.
     pub fn commit_visibility_update(
         &mut self,
-        update_id: [u8; 32],
+        key: NinepVisibilityUpdateKey,
         object: NinepObjectVersion,
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
+        prior_emissions: &[NinepEventEmission],
     ) -> Result<u64, QemuLive9pIoServicerError> {
         self.device
-            .commit_visibility_update(update_id, object, policy, release, data_lag_nanos)
+            .commit_visibility_update(
+                key,
+                object,
+                policy,
+                release,
+                data_lag_nanos,
+                prior_emissions,
+            )
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
-    /// Advances object visibility from exact time and observed event identities.
+    /// Latches visibility updates from the retained signal emissions appended
+    /// since the last call, consuming every emission below `consumed_through`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLive9pIoServicerError::Device`] when `consumed_through`
+    /// precedes the emission cursor or cannot hold `emissions`.
+    pub fn observe_visibility_events(
+        &mut self,
+        emissions: &[NinepEventEmission],
+        consumed_through: u64,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        self.device
+            .observe_visibility_events(emissions, consumed_through)
+            .map_err(|source| QemuLive9pIoServicerError::Device { source })
+    }
+
+    /// Advances object visibility from exact time and latched event emissions.
     ///
     /// # Errors
     ///
@@ -300,10 +329,9 @@ impl QemuLive9pIoServicer {
     pub fn advance_visibility(
         &mut self,
         now_tick: u64,
-        events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), QemuLive9pIoServicerError> {
         self.device
-            .advance_visibility(now_tick, events)
+            .advance_visibility(now_tick)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })
     }
 
@@ -335,20 +363,14 @@ impl QemuLive9pIoServicer {
 
     /// Returns whether a visibility update already owns a retained version.
     #[must_use]
-    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
-        self.device.contains_visibility_update(update_id)
+    pub fn contains_visibility_update(&self, key: &NinepVisibilityUpdateKey) -> bool {
+        self.device.contains_visibility_update(key)
     }
 
     /// Returns the maximum fid growth one request can commit.
     #[must_use]
     pub fn potential_fid_growth(&self, frame: &[u8], object_result: bool) -> u64 {
         self.device.potential_fid_growth(frame, object_result)
-    }
-
-    /// Returns the retained-session growth one request can commit.
-    #[must_use]
-    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
-        self.device.potential_session_growth(frame)
     }
 
     /// Captures host-private state touched before one shared-ring commit.
@@ -545,7 +567,10 @@ impl QemuLive9pIoServicer {
     ) -> Result<QemuLive9pIoServicerCheckpoint, QemuLive9pIoServicerError> {
         let pause_requested = self.region.header_snapshot().pause_requested != 0;
         let pair = self.ring_pair()?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLive9pIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
         }
@@ -617,7 +642,10 @@ impl QemuLive9pIoServicer {
         validate_pending_fault_opportunities(checkpoint)?;
         let pause_requested = self.region.header_snapshot().pause_requested != 0;
         let pair = self.ring_pair()?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLive9pIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
         }
@@ -819,12 +847,7 @@ impl QemuLive9pIoServicer {
                 })
             })?;
         let delivery = device
-            .advance_to_shmem_with_commit_status(
-                guest_icount,
-                pair.second.header,
-                pair.second.entries,
-                pair.node_slot,
-            )
+            .advance_to_mapped_ring_with_commit_status(guest_icount, pair.second, pair.node_slot)
             .map_err(|failure| QemuLive9pIoCommitFailure {
                 shared_transition_started: failure.published > 0,
                 source: QemuLive9pIoServicerError::Device {
@@ -954,11 +977,6 @@ impl QemuLive9pIoServicer {
             entries: request_entries,
             ..
         } = first;
-        let MappedDirectedRingMut {
-            header: response_header,
-            entries: response_entries,
-            ..
-        } = second;
 
         let inbox = device
             .process_shmem_inbox(request_header, request_entries, node_slot)
@@ -981,7 +999,7 @@ impl QemuLive9pIoServicer {
         // until intake computes a canonical completion.
         let delivered = if device.core().next_exact_local_event().is_some() {
             device
-                .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
+                .advance_to_mapped_ring(guest_icount, second, node_slot)
                 .map_err(|source| QemuLive9pIoServicerError::Device { source })?
                 .delivered
         } else {
@@ -1015,6 +1033,21 @@ impl QemuLive9pIoServicer {
     #[must_use]
     pub const fn frames_delivered(&self) -> usize {
         self.frames_delivered
+    }
+
+    /// Copies the literal sorted completion head without delivering it.
+    pub(crate) fn completion_head_observation(
+        &self,
+    ) -> (
+        Option<u64>,
+        Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>,
+    ) {
+        let core = self.device.core();
+        (
+            core.next_exact_local_event(),
+            core.next_pending_response()
+                .map(|pending| (pending.key, pending.response.request_id)),
+        )
     }
 
     /// Returns the device's next completion icount, when a response is in flight.

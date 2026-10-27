@@ -7,16 +7,50 @@ use crucible_campaign::{
 };
 use crucible_engine::NetworkFaultSelectable;
 
+use super::attempt_progress::{
+    ATTEMPT_PROGRESS_ROW, AttemptProgressWatch, AttemptWaitLimits, reported_guest_progress,
+};
+
+#[path = "envoy_network/flight_limits.rs"]
+mod flight_limits;
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
+#[path = "envoy_network/route_diagnostics.rs"]
+mod route_diagnostics;
 
-const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
-const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
+use route_diagnostics::{
+    assert_hot_fork_tier, attempt_log_trace_directory, attempt_log_trace_window,
+    service_failure_rows,
+};
+// Admission reserves the measured five-guest profile for each retained world:
+// an anchor root at a network fault park and the hot child forked from it.
+const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
+// The campaign policy owns the modeled horizon: an absolute deadline from
+// scenario genesis that covers recovery measurement and the follow-up window
+// with room to spare. Every expected boundary must be reached before it.
+const ENVOY_POLICY_VIRTUAL_TIME_PS: u64 = 30_000_000_000_000;
 const WITHDRAW_THEN_RELEARN: [u8; 32] = [0x22; 32];
 const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
+
+/// Returns the wait limits every Envoy attempt shares.
+///
+/// The policy horizon above is the semantic bound on each attempt; waits
+/// fail on stalled progress rather than on a fixed host-time ceiling.
+pub(super) fn envoy_attempt_limits() -> AttemptWaitLimits {
+    AttemptWaitLimits::for_policy_horizon(ENVOY_POLICY_VIRTUAL_TIME_PS)
+}
+
+/// Reads the guest progress in the service's newest RUN progress row.
+fn service_guest_progress(service: &CampaignServiceChild) -> Option<String> {
+    service
+        .stderr_recent_lines_with_prefix(ATTEMPT_PROGRESS_ROW, 1, 8192)
+        .ok()?
+        .pop()
+        .and_then(|row| reported_guest_progress(&row))
+}
 
 pub(super) struct FlightProgress {
     pub(super) parent: String,
@@ -160,6 +194,11 @@ pub(super) fn start_envoy_campaign(
 #[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
 fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
+    // The pending-recovery proof captures an exact savepoint, and the measured
+    // recovery is retained by a pin; grant those two campaign operations
+    // before the service loads its policy.
+    super::single_guest::grant_savepoint_permission(&fixture)?;
+    grant_pin_permission(&fixture)?;
     let EnvoyCampaignFlight {
         generated,
         lineage,
@@ -176,10 +215,13 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         .declaration("fault.network")
         .ok_or("Envoy scenario omits fault.network")?;
     assert_eq!(fault_declaration, &NetworkFaultSelectable::declaration()?);
+    // The primary outage isolates router-b, which must still poll router-a
+    // and acknowledge the follow-up boundary over A-B. Three virtual seconds
+    // lets it rejoin well before follow-up readiness and the policy deadline.
     let fault = group_argument(NetworkFaultSelectable::selected_value(
         "link_down",
         "primary",
-        30_000_000,
+        3_000_000,
         0,
         0,
     )?);
@@ -206,7 +248,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &fixture,
         &mut service,
         discovery_attempt,
-        Duration::from_secs(900),
+        envoy_attempt_limits(),
     );
     stop_resource_sampling.store(true, std::sync::atomic::Ordering::Release);
     let resource_audit_result = resource_sampler
@@ -217,9 +259,9 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     let (discovery, resource_audit) =
         complete_envoy_discovery(discovery_result, resource_audit_result)?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
-    assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
+    require_bounded_primary_reached(&discovery, "next-choice")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, discovery_attempt_id)?;
     resource_audit.verify_source_dirty_growth()?;
     println!("envoy_five_node_hot_fork_resource_audit={resource_audit:?}");
     println!("envoy_five_node_hot_fork_resource_isolation_authenticated=true");
@@ -231,6 +273,9 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         configuration: json_string(&discovery["observation"], "child")?,
     };
 
+    // No root exists at the first park, so the router keeps an anchor root
+    // there and forks the disruption from it.
+    let first_park = progress.configuration.clone();
     let disruption = choose(
         &fixture,
         &mut service,
@@ -239,6 +284,16 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         &fault,
         "next-choice",
         0x73,
+    )?;
+    let disruption_id = json_string(&disruption["attempt"], "id")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, &disruption_id)?;
+    require_hot_fork_root_row(
+        &service,
+        ANCHOR_DIAGNOSTIC_PREFIX,
+        &disruption_id,
+        &first_park,
+        "decision=admitted reason=anchor-admitted",
     )?;
     let pending_recovery = guest_choice::wait_for_choice(
         &fixture,
@@ -285,6 +340,16 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_measured_backup_route(&response)?;
     println!("envoy_five_node_failover_response={response}");
 
+    // The fallback proof is complete. Restore hot-fork retention so both
+    // follow-up attempts fork from a root at the follow-up park instead of
+    // replaying the whole flight from genesis.
+    service.stop()?;
+    let hot_fork_deployment = product_hot_fork_deployment(&fixture)?;
+    service = start_packaged_network_service(&fixture, &authority, Some(&hot_fork_deployment))?;
+
+    // The restarted pool holds no published root, so the follow-up
+    // disruption keeps an anchor root at its own park and runs hot from it.
+    let followup_park = progress.configuration.clone();
     let followup_disruption = choose(
         &fixture,
         &mut service,
@@ -294,11 +359,46 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         "next-choice",
         0x75,
     )?;
-    let completion = choose(
+    let followup_disruption_id = json_string(&followup_disruption["attempt"], "id")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    assert_hot_fork_tier(
+        &fixture,
+        &service,
+        &materialization,
+        &followup_disruption_id,
+    )?;
+    require_hot_fork_root_row(
+        &service,
+        ANCHOR_DIAGNOSTIC_PREFIX,
+        &followup_disruption_id,
+        &followup_park,
+        "decision=admitted reason=anchor-admitted",
+    )?;
+
+    // RFC-0020 05 / RFC-0010 ADV-12: an exact capture at the pending guest
+    // choice refuses, because no checkpoint carries the held guest stop and
+    // its peers' RUN plans. The refusal must leave the choice untouched.
+    let followup_pending = guest_choice::wait_for_choice(
+        &fixture,
+        "recovery.response",
+        &progress.parent,
+        &progress.configuration,
+    )?;
+    prove_pending_recovery_refuses_exact_capture(
+        &fixture,
+        &mut service,
+        &followup_disruption,
+        &followup_pending,
+    )?;
+
+    // HFORK-26: a guest-choice boundary is never retained, so the completion
+    // forks from the follow-up anchor, replays the recorded suffix to the
+    // identical pending request, and applies the selected reply there.
+    let completion = choose_known(
         &fixture,
         &mut service,
         &mut progress,
-        "recovery.response",
+        &followup_pending,
         &followup_recovery,
         "boundary:campaign.complete",
         0x76,
@@ -311,15 +411,64 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     require_semantic_marker(&completion, "fault.followup.primary-probed", "router-a")?;
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
+    let completion_id = json_string(&completion["attempt"], "id")?;
+    let materialization = guest_choice::capture_materialization_events(&service)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, &completion_id)?;
+    require_hot_fork_root_row(
+        &service,
+        ANCESTOR_DIAGNOSTIC_PREFIX,
+        &completion_id,
+        &followup_park,
+        "decision=forked reason=ancestor-anchor-root",
+    )?;
+    println!("envoy_five_node_anchor_and_ancestor_hot_forks_authenticated=true");
     println!("envoy_five_node_completion={completion}");
 
-    prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
     println!("envoy_five_node_thin_replay_authenticated=true");
     println!("envoy_five_node_failover_and_recovery_authenticated=true");
 
     retain_and_complete_product_campaign(&fixture, &completion)?;
     service.stop()?;
     println!("envoy_five_node_graceful_completion_authenticated=true");
+    Ok(())
+}
+
+const ANCHOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCHOR-V1 ";
+const ANCESTOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCESTOR-V1 ";
+
+/// Requires one hot-fork root diagnostic for `attempt` at `anchor`.
+///
+/// Both row kinds open with `attempt=<id> anchor=<configuration>` and close
+/// with `decision=<decision> reason=<token>`; ancestor rows also carry a
+/// suffix length between them, which the flight does not pin.
+fn require_hot_fork_root_row(
+    service: &CampaignServiceChild,
+    prefix: &str,
+    attempt: &str,
+    anchor: &str,
+    outcome: &str,
+) -> Result<(), Box<dyn Error>> {
+    let rows = service.stderr_lines_with_prefix(prefix, 257, 512)?;
+    let head = format!("{prefix}attempt={attempt} anchor={anchor} ");
+    let tail = format!(" {outcome}");
+    if rows
+        .iter()
+        .any(|row| row.starts_with(&head) && row.ends_with(&tail))
+    {
+        return Ok(());
+    }
+    Err(format!("packaged QEMU did not report {head}... {outcome}; rows={rows:?}").into())
+}
+
+/// Grants this campaign's principal the pin operation its recovery step uses.
+fn grant_pin_permission(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+    let mut policy = fs::OpenOptions::new()
+        .append(true)
+        .open(&fixture.peer_policy)?;
+    writeln!(
+        policy,
+        "\n[[grants]]\nprincipal = {PRINCIPAL:?}\noperation = \"pin-campaign\"\ncampaign = {CAMPAIGN:?}"
+    )?;
     Ok(())
 }
 
@@ -455,11 +604,9 @@ pub(super) fn choose_known(
 ) -> Result<Value, Box<dyn Error>> {
     let submission = guest_choice::submit_choice(fixture, choice, value, stop, command_byte)?;
     let request = guest_choice::accepted_branch_request(&submission)?;
-    let explanation = wait_for_request_attempt(fixture, service, &request, value, ATTEMPT_WAIT)?;
-    assert_eq!(
-        explanation["observation"]["stop"],
-        format!("reached:{stop}")
-    );
+    let explanation =
+        wait_for_request_attempt(fixture, service, &request, value, envoy_attempt_limits())?;
+    require_bounded_primary_reached(&explanation, stop)?;
     println!("envoy_five_node_choice={explanation}");
 
     if stop == "next-choice" {
@@ -469,7 +616,31 @@ pub(super) fn choose_known(
     Ok(explanation)
 }
 
-fn prove_pending_recovery_exact_replay(
+/// Requires an attempt to reach `primary` before the policy deadline.
+///
+/// The policy bounds every attempt, so a reached boundary carries proof of
+/// its virtual-time coordinate rather than the unbounded `reached:` form.
+fn require_bounded_primary_reached(attempt: &Value, primary: &str) -> Result<(), Box<dyn Error>> {
+    let stop = json_string(&attempt["observation"], "stop")?;
+    let frontier = stop
+        .strip_prefix(&format!("bounded-primary-reached:{primary}:frontier-ps="))
+        .and_then(|rest| rest.split_once(":quanta="))
+        .and_then(|(frontier, _quanta)| frontier.parse::<u64>().ok())
+        .ok_or_else(|| {
+            format!("attempt did not reach {primary} before the policy bound: {stop}")
+        })?;
+    if frontier >= ENVOY_POLICY_VIRTUAL_TIME_PS {
+        return Err(format!("{primary} frontier {frontier} reached the policy deadline").into());
+    }
+    Ok(())
+}
+
+/// Proves an exact capture at a pending guest choice refuses and changes nothing.
+///
+/// The public capture status reports only `failed` by design today; it
+/// carries no reason. The named readiness reason is asserted through the
+/// service's refusal diagnostic row instead.
+fn prove_pending_recovery_refuses_exact_capture(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     disruption: &Value,
@@ -505,62 +676,65 @@ fn prove_pending_recovery_exact_replay(
     assert_eq!(capture["schema"], "crucible.cli.campaign-savepoint.v1");
     assert_eq!(capture["operation"], "capture-attempt");
     let request = json_string(&capture, "request")?;
-    let ready = wait_for_capture_ready(fixture, service, &request)?;
-    assert_eq!(ready["attempt"], attempt);
-    assert_eq!(ready["source_observation"], source_observation);
-    assert_eq!(ready["reached_configuration"], source_configuration);
-    let checkpoint = json_string(&ready, "checkpoint")?;
-
-    let head = campaign_status(fixture)?;
-    let selected = run_json(
-        connected_campaign(fixture)
-            .args([
-                "select-capture",
-                CAMPAIGN,
-                "--snapshot",
-                &json_string(&head, "snapshot")?,
-                "--request",
-                &request,
-                "--command",
-            ])
-            .arg("78".repeat(32))
-            .args(["--stop", "boundary:campaign.complete"]),
-        "select exact Envoy pending-choice continuation",
-    )?;
-    assert_eq!(selected["schema"], "crucible.cli.campaign-savepoint.v1");
-    assert_eq!(selected["operation"], "select-capture");
-    assert_eq!(selected["request"], request);
-    let continuation = AttemptId::parse(&json_string(&selected, "attempt")?)?;
-    let continuation_id = continuation.to_string();
-    let restored = wait_for_public_completed_attempt(fixture, service, continuation)?;
-    assert_eq!(restored["attempt"]["start"], "after-attempt");
-    assert_eq!(restored["attempt"]["origin"], attempt);
-    assert_eq!(restored["attempt"]["reached"], source_parent);
+    let resolved = wait_for_capture_resolution(fixture, service, &request)?;
     assert_eq!(
-        restored["observation"]["stop"],
-        "reached:boundary:campaign.complete"
+        resolved["outcome"], "failed",
+        "capture was not refused: {resolved}"
     );
-    assert_eq!(restored["runtime"]["phase"], "completed");
-    assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
-    assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
-    assert_eq!(restored["runtime"]["source_request"], request);
-    require_semantic_marker(&restored, "fault.transport.primary-probed", "router-a")?;
-    require_semantic_marker(&restored, "fault.transport.signaled", "router-a")?;
-    require_semantic_marker(&restored, "campaign.complete", "traffic-west")?;
-    let materialization = guest_choice::capture_materialization_events(service)?;
-    guest_choice::assert_materialization_tier(&materialization, continuation_id, "ExactRestore")?;
-    println!("envoy_five_node_exact_restore_authenticated=true");
-    println!("envoy_five_node_pending_choice_exact_replay={restored}");
+    assert_eq!(resolved["attempt"], attempt);
+    assert_eq!(resolved["source_observation"], source_observation);
+    assert_eq!(resolved["reached_configuration"], source_configuration);
+    assert!(
+        resolved["checkpoint"].is_null(),
+        "refused capture published a checkpoint: {resolved}"
+    );
+
+    let refusal = format!(
+        "{SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX}attempt={attempt} \
+         reason=unsettled-host-continuation node=none \
+         detail=physical checkpoint cannot retain held or unpublished host RUN outcomes"
+    );
+    let rows = service.stderr_lines_with_prefix(SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX, 257, 512)?;
+    if !rows.iter().any(|row| row == &refusal) {
+        return Err(format!("campaign service did not report {refusal}; rows={rows:?}").into());
+    }
+
+    // The refusal is operational: the semantic campaign, its materialized
+    // checkpoints and retained roots, and the pending choice are unchanged.
+    let after = campaign_status(fixture)?;
+    assert_eq!(after["state"], head["state"]);
+    assert_eq!(after["semantic"], head["semantic"]);
+    for counter in ["materialized_checkpoints", "retained_checkpoint_roots"] {
+        assert_eq!(
+            after["operational"][counter], head["operational"][counter],
+            "refused capture changed {counter}"
+        );
+    }
+    let requeried = guest_choice::wait_for_choice(
+        fixture,
+        "recovery.response",
+        &source_parent,
+        &source_configuration,
+    )?;
+    assert_eq!(&requeried, pending_recovery);
+    println!("envoy_five_node_exact_capture_refusal_authenticated=true");
     Ok(())
 }
 
-fn wait_for_capture_ready(
+const SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-SAVEPOINT-CAPTURE-REFUSAL-V1 ";
+
+/// Waits for a capture request to reach a terminal outcome and returns it.
+fn wait_for_capture_resolution(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     request: &str,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_process_observation(deadline, || {
+    let mut watch = AttemptProgressWatch::new(
+        format!("capture {request}"),
+        service.child.id(),
+        envoy_attempt_limits(),
+    );
+    let resolved = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before capture {request}: {status}"
@@ -569,6 +743,8 @@ fn wait_for_capture_ready(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        watch.sample_guest_progress(|| service_guest_progress(service));
+        watch.observe(&format!("snapshot={snapshot}"))?;
         let output = connected_campaign(fixture)
             .args([
                 "capture-status",
@@ -590,43 +766,12 @@ fn wait_for_capture_ready(
         assert_eq!(report["operation"], "capture-status");
         assert_eq!(report["request"], request);
         match report["outcome"].as_str() {
-            Some("ready") => Ok(Some(report)),
+            Some("ready" | "failed" | "canceled") => Ok(Some(report)),
             Some("pending") => Ok(None),
-            Some("failed" | "canceled") => {
-                Err(format!("Envoy capture {request} failed: {report}").into())
-            }
             _ => Err(format!("Envoy capture {request} has invalid outcome: {report}").into()),
         }
-    })?
-    .ok_or_else(|| format!("capture {request} did not become ready within {ATTEMPT_WAIT:?}").into())
-}
-
-fn wait_for_public_completed_attempt(
-    fixture: &FlightFixture,
-    service: &mut CampaignServiceChild,
-    attempt: AttemptId,
-) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + ATTEMPT_WAIT;
-    wait_for_process_observation(deadline, || {
-        if let Some(status) = service.child.try_wait()? {
-            return Err(format!(
-                "Envoy campaign service exited before exact continuation {attempt}: {status}"
-            )
-            .into());
-        }
-        let head = campaign_status(fixture)?;
-        let snapshot = json_string(&head, "snapshot")?;
-        let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
-        else {
-            return Ok(None);
-        };
-        Ok((!explanation["observation"].is_null()
-            && explanation["runtime"]["phase"] == "completed")
-            .then_some(explanation))
-    })?
-    .ok_or_else(|| {
-        format!("exact continuation {attempt} did not complete within {ATTEMPT_WAIT:?}").into()
-    })
+    })?;
+    resolved.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 pub(super) fn initial_discovery_attempt(
@@ -693,14 +838,15 @@ pub(super) fn wait_for_public_attempt(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     attempt: AttemptId,
-    timeout: Duration,
+    limits: AttemptWaitLimits,
 ) -> Result<Value, Box<dyn Error>> {
+    let mut watch =
+        AttemptProgressWatch::new(format!("attempt {attempt}"), service.child.id(), limits);
     let started = Instant::now();
-    let deadline = started + timeout;
     let mut next_progress = started + Duration::from_secs(30);
     let mut last_status = None;
     let mut last_explanation = None;
-    let explanation = wait_for_process_observation(deadline, || {
+    let explanation = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before attempt {attempt}: {status}"
@@ -708,12 +854,11 @@ pub(super) fn wait_for_public_attempt(
             .into());
         }
         if Instant::now() >= next_progress {
-            let stderr = service.stderr_tail();
-            let boot = stderr
-                .lines()
-                .rev()
-                .find(|line| line.starts_with("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 "))
-                .unwrap_or("none");
+            let boot = service
+                .stderr_recent_lines_with_prefix("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 ", 1, 4096)
+                .ok()
+                .and_then(|rows| rows.last().cloned())
+                .unwrap_or_else(|| String::from("none"));
             let boot = boot.chars().take(480).collect::<String>();
             let phase = last_explanation
                 .as_ref()
@@ -723,21 +868,109 @@ pub(super) fn wait_for_public_attempt(
                 "CRUCIBLE-ENVOY-WAIT-V1 elapsed_s={} phase={phase} boot={boot}",
                 started.elapsed().as_secs()
             );
+
+            // The service's own progress row carries per-node horizons,
+            // clocks and realized parallelism; forward the latest one so a
+            // slow attempt is diagnosable before it fails. Other service
+            // output can flood the bounded tail, so scan the whole stream.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ATTEMPT-PROGRESS-V1 ", 1, 4096)
+                && let Some(attempt_progress) = rows.last()
+            {
+                eprintln!("{attempt_progress}");
+            }
+
+            // A RUN set longer than the progress window closes no progress
+            // row; its dispatch row still names what runs and what is parked.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ATTEMPT-DISPATCH-V1 ", 1, 4096)
+                && let Some(dispatch) = rows.last()
+            {
+                eprintln!("{dispatch}");
+            }
+
+            // A traced plugin names why a zero-length advance went unanswered.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ZERO-LENGTH-QUERY-V1 ", 6, 512)
+            {
+                for row in rows {
+                    eprintln!("{row}");
+                }
+            }
+
+            // Bounded plugin witnesses name the publication and idle-plan
+            // paths a stalled node took after the diagnostic floor.
+            for prefix in ["CRUCIBLE-DEVICE-WAIT-V1 ", "CRUCIBLE-IDLE-PLAN-V1 "] {
+                if let Ok(rows) = service.stderr_recent_lines_with_prefix(prefix, 8, 768) {
+                    for row in rows {
+                        eprintln!("{row}");
+                    }
+                }
+            }
+
+            // Plugin rows name the writer that left an earlier advance's
+            // marker in a node slot, and guest TX taken during an idle advance.
+            for prefix in ["CRUCIBLE-SLOT-WRITER-V1 ", "CRUCIBLE-NETWORK-TX-PATH-V1 "] {
+                if let Ok(rows) = service.stderr_recent_lines_with_prefix(prefix, 16, 512) {
+                    for row in rows {
+                        eprintln!("{row}");
+                    }
+                }
+            }
+
+            // Work outside RUN dispatch, such as a checkpoint or capture after
+            // a choice, logs no progress row; the newest service lines name it.
+            let stderr = service.stderr_tail();
+            let recent = stderr.lines().rev().take(6).collect::<Vec<_>>();
+            for line in recent.into_iter().rev() {
+                eprintln!(
+                    "CRUCIBLE-ENVOY-SERVICE-TAIL-V1 {}",
+                    line.chars().take(600).collect::<String>()
+                );
+            }
+
+            // A host wait row names the publication the controller is blocked
+            // on; the latest one explains a crawl that the progress row only
+            // measures.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-HOST-WAIT-V1 ", 1, 4096)
+                && let Some(host_wait) = rows.last()
+            {
+                eprintln!("{}", host_wait.chars().take(1200).collect::<String>());
+            }
             next_progress = Instant::now() + Duration::from_secs(30);
         }
         let head = campaign_status(fixture)?;
         last_status = Some(head.clone());
+        let snapshot = json_string(&head, "snapshot")?;
         // This empty-frontier campaign can only admit discovery first. Wait
         // for its execution basis before requesting the snapshot explanation.
-        if !initial_discovery_admitted(&head)? {
-            return Ok(None);
+        let explanation = if initial_discovery_admitted(&head)? {
+            explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
+        } else {
+            None
+        };
+        if let Some(explanation) = &explanation {
+            last_explanation = Some(explanation.clone());
         }
-        let snapshot = json_string(&head, "snapshot")?;
-        let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
-        else {
+        let phase = last_explanation
+            .as_ref()
+            .and_then(|report: &Value| report["runtime"]["phase"].as_str())
+            .unwrap_or("unadmitted");
+        watch.sample_guest_progress(|| service_guest_progress(service));
+        if let Err(stall) = watch.observe(&format!("snapshot={snapshot} phase={phase}")) {
+            let diagnostics = initial_discovery_diagnostics(
+                fixture,
+                service,
+                attempt,
+                last_status.as_ref(),
+                last_explanation.as_ref(),
+            );
+            return Err(format!("{stall}; {diagnostics}").into());
+        }
+        let Some(explanation) = explanation else {
             return Ok(None);
         };
-        last_explanation = Some(explanation.clone());
         if explanation["runtime"]["phase"] == "terminal-failure" {
             let diagnostics = initial_discovery_diagnostics(
                 fixture,
@@ -761,9 +994,30 @@ pub(super) fn wait_for_public_attempt(
             last_status.as_ref(),
             last_explanation.as_ref(),
         );
-        format!("attempt {attempt} has no public observation within {timeout:?}; {diagnostics}")
-            .into()
+        format!("{}; {diagnostics}", watch.safety_cap_expired()).into()
     })
+}
+
+/// Prints the run's parallel-boot arming, RUN-window, and attempt-progress records.
+///
+/// The service stderr tail keeps only the last minutes of a long discovery;
+/// these bounded records cover the whole run so a timeout can be split into
+/// guest execution, host-parallel overlap, and scheduler work.
+fn emit_host_throughput_records(service: &CampaignServiceChild) {
+    for (prefix, maximum_lines) in [
+        ("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed=", 16),
+        ("CRUCIBLE-HOST-RUN-WINDOW-V1 ", 1_100),
+        ("CRUCIBLE-ATTEMPT-PROGRESS-V1 ", 1_100),
+    ] {
+        match service.stderr_lines_with_prefix(prefix, maximum_lines, 512) {
+            Ok(lines) => {
+                for line in lines {
+                    eprintln!("{line}");
+                }
+            }
+            Err(error) => eprintln!("host throughput records `{prefix}` unavailable: {error}"),
+        }
+    }
 }
 
 fn initial_discovery_diagnostics(
@@ -773,6 +1027,7 @@ fn initial_discovery_diagnostics(
     status: Option<&Value>,
     explanation: Option<&Value>,
 ) -> String {
+    emit_host_throughput_records(service);
     let public_status = status.map(|head| {
         serde_json::json!({
             "snapshot": head["snapshot"],
@@ -837,10 +1092,11 @@ pub(super) fn wait_for_request_attempt(
     service: &mut CampaignServiceChild,
     request: &str,
     value: &str,
-    timeout: Duration,
+    limits: AttemptWaitLimits,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
-    let completed = wait_for_process_observation(deadline, || {
+    let mut watch =
+        AttemptProgressWatch::new(format!("request {request}"), service.child.id(), limits);
+    let completed = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before request {request}: {status}"
@@ -849,6 +1105,7 @@ pub(super) fn wait_for_request_attempt(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        let mut state = format!("snapshot={snapshot}");
         let output = connected_campaign(fixture)
             .args([
                 "request-attempts",
@@ -865,6 +1122,7 @@ pub(super) fn wait_for_request_attempt(
             && String::from_utf8_lossy(&output.stderr)
                 .contains("campaign request used stale snapshot")
         {
+            watch.observe(&state)?;
             return Ok(None);
         }
         let page = parse_json_output(output, "query authenticated request attempts")?;
@@ -909,12 +1167,29 @@ pub(super) fn wait_for_request_attempt(
             if !explanation["observation"].is_null() {
                 return Ok(Some(explanation));
             }
+            if explanation["runtime"]["phase"] == "terminal-failure" {
+                // A terminal attempt never publishes an observation; report
+                // why it ended instead of waiting out the stall window.
+                let rows = service_failure_rows(service);
+                return Err(format!(
+                    "request {request} attempt {attempt} ended in terminal failure: {}; {rows}\n{}",
+                    explanation["runtime"],
+                    attempt_log_trace_window(fixture, &rows)
+                )
+                .into());
+            }
+            state.push_str(&format!(
+                " {attempt}={}",
+                explanation["runtime"]["phase"]
+                    .as_str()
+                    .unwrap_or("unknown")
+            ));
         }
+        watch.sample_guest_progress(|| service_guest_progress(service));
+        watch.observe(&state)?;
         Ok(None)
     })?;
-    completed.ok_or_else(|| {
-        format!("request {request} has no public completed attempt within {timeout:?}").into()
-    })
+    completed.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 pub(super) fn require_network_effect(
@@ -1080,6 +1355,9 @@ retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
 exact_user_pins = true
+
+[attempt_timeout]
+virtual_time_picoseconds = "{ENVOY_POLICY_VIRTUAL_TIME_PS}"
 "#,
             lineage.scenario().to_string(),
         ),
@@ -1135,14 +1413,15 @@ fn product_hot_fork_deployment_with_template_limit(
     let deployment = fixture._temporary.path().join(name);
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
 
-    // Admission reserves the measured source profile once for the retained
-    // five-guest world and again for its child. The 5 GiB guest-RAM baseline
-    // needs headroom for QEMU resident memory and measured private dirties.
-    // The deployment's independent 7 GiB resident ceiling remains enforced.
+    // Admission reserves the measured source profile once for each retained
+    // five-guest world and again for each child. The 5 GiB guest-RAM baseline
+    // per world needs headroom for QEMU resident memory and measured private
+    // dirties. The deployment's independent per-attempt 7 GiB resident
+    // ceiling remains enforced.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 16\nmaximum_descriptors = 24576\nmaximum_overlays = 24\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
@@ -1159,6 +1438,9 @@ pub(super) fn start_packaged_network_service(
         None => required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?,
     };
     let mut invocation = fixture.service_command(None);
+    let trace_directory = attempt_log_trace_directory(fixture);
+    fs::create_dir_all(&trace_directory)?;
+    invocation.env("CRUCIBLE_ATTEMPT_LOG_TRACE_DIR", &trace_directory);
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
     invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
     invocation

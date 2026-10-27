@@ -2,7 +2,7 @@
 
 use super::*;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write as _;
@@ -14,14 +14,24 @@ use crucible_qemu_shmem::{
     SchedulerPreemptionKind, authorize_advance_ceiling,
 };
 
+mod between_boundaries;
 mod block_wait;
-mod fault_event_control;
+mod block_wait_dispatch;
+mod clamp_answer;
+mod device_wait_observations;
+pub(super) mod fault_event_control;
+mod idle_plan_observations;
+mod native_block_wait;
+mod native_console_control;
 mod network_custody;
 mod network_output;
 mod preemption;
 mod preflight_cases;
+mod settlement;
+pub(super) mod zero_length_idle;
 
 pub(super) extern "C" fn test_icount_raw() -> u64 {
+    TEST_ICOUNT_RAW_READS.set(TEST_ICOUNT_RAW_READS.get() + 1);
     TEST_ICOUNT_RAW.get()
 }
 
@@ -35,10 +45,12 @@ thread_local! {
     static TEST_QUEUED_ADVANCE_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_REQUEST_VMSTOP_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(0) };
+    static TEST_ICOUNT_RAW_READS: Cell<u64> = const { Cell::new(0) };
     static TEST_ICOUNT_RAW: Cell<u64> = const { Cell::new(0) };
     pub(super) static TEST_SIM_TICK: Cell<i64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(1) };
+    static TEST_IDLE_WAKE_WORK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     static TEST_FINGERPRINT_CAPTURE_COUNT: Cell<u64> = const { Cell::new(0) };
     pub(crate) static TEST_FINGERPRINT_CAPTURE_SEED: Cell<u64> = const { Cell::new(0x10) };
 }
@@ -54,7 +66,7 @@ static TEST_NESTED_PRODUCER_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
 static TEST_NESTED_PRODUCER_DEFERRED: AtomicBool = AtomicBool::new(false);
 
-fn wait_for_fingerprint_sample(
+pub(super) fn wait_for_fingerprint_sample(
     slot: &FingerprintSampleSlot,
     capture_request: u32,
 ) -> crucible_qemu_shmem::FingerprintSample {
@@ -63,6 +75,9 @@ fn wait_for_fingerprint_sample(
         if slot.capture_request_generation() == acknowledged {
             return slot
                 .snapshot()
+                .unwrap_or_else(|error| {
+                    panic!("acknowledged fingerprint publication unavailable: {error}")
+                })
                 .unwrap_or_else(|| panic!("acknowledged fingerprint sample must be visible"));
         }
         std::thread::yield_now();
@@ -279,6 +294,10 @@ extern "C" fn test_wait_idle_wake(
     _expected: u32,
 ) -> std::os::raw::c_int {
     TEST_IDLE_WAKE_WAIT_CALLS.set(TEST_IDLE_WAKE_WAIT_CALLS.get() + 1);
+    let work = TEST_IDLE_WAKE_WORK.with_borrow_mut(Option::take);
+    if let Some(work) = work {
+        work();
+    }
     TEST_IDLE_WAKE_WAIT_STATUS.get()
 }
 
@@ -1058,8 +1077,12 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
-        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    // Only an exact-event ceiling wakes a node that has no wake of its own.
+    slot.publish_scheduler_advance(
+        ceiling,
+        crucible_qemu_shmem::AdvanceStopCondition::ExactEvent,
+    )
+    .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(46, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
@@ -1097,11 +1120,13 @@ fn live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier() {
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
-    TEST_CLOCK_DEADLINE_PS.set(-1);
+    // The timer gives the halted node a real wake at the ceiling.
+    TEST_CLOCK_DEADLINE_PS.set(10);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
 
     let result = state.on_vcpu_idle(0, 0);
     TEST_QUEUED_ADVANCE_STATUS.set(0);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
 
     result.unwrap_or_else(|error| panic!("busy QEMU barrier should defer the idle vCPU: {error}"));
     assert!(
@@ -1142,6 +1167,73 @@ fn live_idle_callback_queues_the_exact_timer_deadline() {
         .unwrap_or_else(|error| panic!("exact timer completion should commit: {error}"));
     assert_eq!(slot.snapshot().current_icount, 56);
     TEST_CLOCK_DEADLINE_PS.set(-1);
+}
+
+#[test]
+fn live_idle_exact_event_short_of_the_timer_advances_without_a_timer_witness() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 30, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling,
+        crucible_qemu_shmem::AdvanceStopCondition::ExactEvent,
+    )
+    .unwrap_or_else(|error| panic!("exact-event ceiling should publish: {error}"));
+    let state = test_live_state(150, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_PS.set(56);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
+
+    // The timer plan wakes at 56, but the exact event at 30 releases the
+    // node first. That advance cannot fire the timer, so arming QEMU's
+    // timer witness for it would be rejected and abort the node.
+    let idle = state.on_vcpu_idle(0, 0);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
+    idle.unwrap_or_else(|error| panic!("exact-event release should queue: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), 30);
+
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 30))
+        .unwrap_or_else(|error| panic!("exact-event completion should commit: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 30);
+}
+
+#[test]
+fn live_idle_callback_leaves_a_due_timer_to_qemu_without_publishing_a_quiesced_wake() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 56, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(151, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_PS.set(0);
+    TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
+
+    // A timer due at the current coordinate needs only QEMU's own timer
+    // pass. An idle wake equal to the current coordinate is the protocol's
+    // quiesced-boundary encoding, so publishing one would tell the host the
+    // node stopped there.
+    let idle = state.on_vcpu_idle(0, 0);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
+    idle.unwrap_or_else(|error| panic!("a due timer should return to QEMU: {error}"));
+
+    let snapshot = slot.snapshot();
+    assert!(
+        snapshot.status != STATUS_IDLE || snapshot.idle_wake_icount != snapshot.current_icount,
+        "a due timer published the quiesced encoding: {snapshot:?}"
+    );
+    assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 0);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+    assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
 }
 
 #[test]

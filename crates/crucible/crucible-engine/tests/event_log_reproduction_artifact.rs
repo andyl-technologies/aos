@@ -37,10 +37,11 @@ fn reproduction_scenario(world: &World) -> Result<crucible_engine::ScenarioDefFo
 }
 
 fn replay_decision(value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("event-log/reproduction-artifact"),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("event-log/reproduction-artifact"),
+        0,
         value,
-    })
+    ))
 }
 
 fn decision_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {
@@ -66,7 +67,7 @@ fn boundary_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
 fn artifact_decision(artifact: &ReproductionArtifact) -> Decision {
     artifact
         .schedule()
-        .decisions()
+        .decision_history()
         .first()
         .expect("test artifact should carry one replay decision")
         .clone()

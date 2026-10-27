@@ -17,6 +17,7 @@ use crucible_campaign::{
 use crucible_daemon::LinuxQemuAttemptHostConfig;
 use crucible_daemon::ProductionVmLifecycleConfig;
 use crucible_daemon::qemu_campaign_lifecycle::{
+    run_guarded_default_campaign_test_fixture_into_sink,
     run_guarded_default_campaign_test_fixture_with_choice_offer,
     run_guarded_default_campaign_test_fixture_with_trace_and_choice_offer,
 };

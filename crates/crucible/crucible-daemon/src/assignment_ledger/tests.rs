@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+mod scoped_completion;
+
 use std::fs;
 use std::os::unix::fs::symlink;
 
@@ -62,6 +64,171 @@ fn directory_ledger_fences_a_replaced_root_and_writer_lock() {
         )
         .expect("record");
         assert!(ledger.publish_assignment(&record).is_err());
+    }
+}
+
+#[test]
+fn public_inventory_observes_committed_state_during_actual_mutable_staging() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let mut ledger = DirectoryAssignmentLedger::open(directory.path()).expect("writer owner");
+    let request = request(0x16, 0x36, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+    let running = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x56),
+    };
+    ledger
+        .compare_exchange_attempt(key, None, Some(running))
+        .expect("committed state");
+    let path = ledger.attempt_path(key);
+    let staged = prepare_mutable_staging(
+        &ledger.authority,
+        &path,
+        &encode_attempt_state(key, running),
+    )
+    .expect("actual mutable producer staging");
+
+    let observed = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                assert!(DirectoryAssignmentLedger::open(directory.path()).is_err());
+                let mut observed = Vec::new();
+                assert!(
+                    visit_directory_attempt_states_bounded(
+                        directory.path(),
+                        10,
+                        &mut |key, state| {
+                            observed.push((key, state));
+                        }
+                    )
+                    .expect("public inventory during staged publication")
+                );
+                observed
+            })
+            .join()
+            .expect("public reader")
+    });
+    assert_eq!(observed, vec![(key, running)]);
+
+    ledger
+        .authority
+        .rename_file(&staged, &path, false, "publish-test-state")
+        .expect("publish staged original producer record");
+    ledger
+        .authority
+        .sync_parent(staged.path(), "sync-test-staging")
+        .expect("durable staging removal");
+    drop(ledger);
+    let reopened =
+        DirectoryAssignmentLedger::open(directory.path()).expect("restart after publication");
+    assert_eq!(
+        reopened.load_attempt(key).expect("committed record"),
+        Some(running)
+    );
+}
+
+#[test]
+fn abandoned_mutable_staging_refuses_restart_after_writer_lease_ends() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("writer owner");
+    let path = ledger.attempt_path(AttemptExecutionKey::for_request(&request(0x16, 0x36, 1)));
+    let staged = prepare_mutable_staging(&ledger.authority, &path, b"unfinished state")
+        .expect("actual producer staging");
+    assert_eq!(
+        staged.path().parent(),
+        Some(directory.path().join(STAGING_DIRECTORY).as_path())
+    );
+    drop(staged);
+    drop(ledger);
+
+    assert!(matches!(
+        DirectoryAssignmentLedger::open(directory.path()),
+        Err(AssignmentLedgerError::Corrupt {
+            reason: "ledger-stale-staging-entry"
+        })
+    ));
+}
+
+#[test]
+fn dedicated_staging_does_not_exempt_unknown_attempt_shard_entries() {
+    let directory = tempfile::tempdir().expect("ledger directory");
+    let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("writer owner");
+    let shard = directory.path().join("attempts/ab");
+    fs::create_dir_all(&shard).expect("attempt shard");
+    fs::write(shard.join(".unknown"), b"not a record").expect("unknown hidden entry");
+
+    assert!(matches!(
+        visit_directory_attempt_states_bounded(directory.path(), 10, &mut |_, _| {}),
+        Err(AssignmentLedgerError::Corrupt {
+            reason: "attempt-root-unknown-hidden-entry"
+        })
+    ));
+    drop(ledger);
+    assert!(DirectoryAssignmentLedger::open(directory.path()).is_err());
+}
+
+#[test]
+fn staging_directory_symlink_refuses_mutation_without_external_write() {
+    let parent = tempfile::tempdir().expect("ledger parent");
+    let root = parent.path().join("ledger");
+    let mut ledger = DirectoryAssignmentLedger::open(&root).expect("writer owner");
+    let staging = root.join(STAGING_DIRECTORY);
+    let outside = parent.path().join("outside");
+    fs::create_dir(&outside).expect("outside directory");
+    fs::remove_dir(&staging).expect("empty staging directory");
+    symlink(&outside, &staging).expect("staging symlink");
+    let request = request(0x16, 0x36, 1);
+    let key = AttemptExecutionKey::for_request(&request);
+    let running = AttemptRuntimeState::Running {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: execution(0x56),
+    };
+
+    assert!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(running))
+            .is_err()
+    );
+    assert!(
+        fs::read_dir(&outside)
+            .expect("outside inventory")
+            .next()
+            .is_none()
+    );
+    drop(ledger);
+    assert!(DirectoryAssignmentLedger::open(&root).is_err());
+}
+
+#[test]
+fn staged_record_requires_its_original_file_and_directory_binding() {
+    for replacement in ["missing-file", "replaced-directory"] {
+        let directory = tempfile::tempdir().expect("ledger directory");
+        let ledger = DirectoryAssignmentLedger::open(directory.path()).expect("writer owner");
+        let key = AttemptExecutionKey::for_request(&request(0x16, 0x36, 1));
+        let destination = ledger.attempt_path(key);
+        let staged = prepare_mutable_staging(&ledger.authority, &destination, b"staged state")
+            .expect("actual producer staging");
+        let staging = directory.path().join(STAGING_DIRECTORY);
+        if replacement == "missing-file" {
+            fs::remove_file(staged.path()).expect("remove original staging binding");
+        } else {
+            fs::rename(&staging, directory.path().join("detached-staging"))
+                .expect("detach original staging directory");
+            fs::create_dir(&staging).expect("replacement staging directory");
+            fs::write(staged.path(), b"foreign state").expect("replacement staged file");
+        }
+
+        assert!(
+            ledger
+                .authority
+                .rename_file(&staged, &destination, false, "publish-test-state")
+                .is_err()
+        );
+        assert!(!destination.exists());
     }
 }
 

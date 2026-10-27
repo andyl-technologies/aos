@@ -1,5 +1,10 @@
 //! Representative traffic and host-I/O scenario for native whole-world forks.
 
+#[path = "scenario/network_fault_anchor.rs"]
+mod network_fault_anchor;
+#[path = "scenario/profile_tests.rs"]
+mod profile_tests;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs::File;
@@ -11,9 +16,9 @@ use crucible_campaign::{
     IntegerRepresentation, IntegerValue, SelectableDeclaration,
 };
 use crucible_engine::model::{
-    Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
-    MeasurementId, MeasurementInstanceKey, MetricDefinition, MetricId, MetricSource,
-    MetricValueType, UnitId, WorldNodeDef,
+    Aggregation, BoundarySelector, CohortPolicy, GuestWorkloadBinary, MeasurementDefinition,
+    MeasurementDefinitions, MeasurementId, MeasurementInstanceKey, MetricDefinition, MetricId,
+    MetricSource, MetricValueType, UnitId, WorldNodeDef,
 };
 use crucible_engine::model::{
     BindingEventParent, BindingMapping, BindingObservabilityPolicy, BindingSampling,
@@ -35,6 +40,8 @@ use crucible_engine::{
     MarkerId, NodeId, Plan, Properties, Property, ScenarioDefForm, ScenarioSelectableLimits,
     ScenarioSelectables, Seed, SimDuration, World,
 };
+
+pub(super) use self::network_fault_anchor::build_network_fault_anchor;
 
 pub(super) const PERMANENT_FAILURE_NANOS: u64 = 30_000_000_000;
 pub(super) const NINEP_FAULT_WINDOW_NANOS: u64 = 5_000_000_000;
@@ -195,14 +202,22 @@ pub(super) fn build_single_node_equivalence(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
+    // The supported workload identifies the binary; the role selects its fixture behavior.
+    node.cmdline =
+        GuestWorkloadBinary::Benchmark.selected_cmdline("console=ttyS0 role=hot-fork-single");
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
     nodes.extend(world.io_nodes().cloned().map(|mut io| {
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
-    let world = World::from_node_defs_and_links(nodes, Vec::new())?;
+    // Keep the retained I/O contracts without disconnected multi-node network topology.
+    let world = World::from_node_defs_and_links(nodes, Vec::new())?.with_fault_topology(
+        crucible_engine::model::WorldFaultTopology {
+            storage_devices: world.fault_topology().storage_devices.clone(),
+            ..Default::default()
+        },
+    )?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -241,7 +256,8 @@ pub(super) fn build_single_node_equivalence_with_memory(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-single");
+    node.cmdline =
+        GuestWorkloadBinary::Benchmark.selected_cmdline("console=ttyS0 role=hot-fork-single");
     node.memory_mib = memory_mib;
     let owner = node.id.clone();
     let mut nodes = vec![WorldNodeDef::Vm(node)];
@@ -249,7 +265,13 @@ pub(super) fn build_single_node_equivalence_with_memory(
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
-    let world = World::from_node_defs_and_links(nodes, Vec::new())?;
+    // Keep the retained I/O contracts without disconnected multi-node network topology.
+    let world = World::from_node_defs_and_links(nodes, Vec::new())?.with_fault_topology(
+        crucible_engine::model::WorldFaultTopology {
+            storage_devices: world.fault_topology().storage_devices.clone(),
+            ..Default::default()
+        },
+    )?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -287,7 +309,8 @@ pub(super) fn build_single_node_scaling(
         .find(|node| node.id.name == "curl")
         .cloned()
         .ok_or("representative fixture has no curl VM")?;
-    node.cmdline = String::from("console=ttyS0 crucible.workload=hot-fork-scaling");
+    node.cmdline =
+        GuestWorkloadBinary::Benchmark.selected_cmdline("console=ttyS0 role=hot-fork-scaling");
     let world = World::from_node_defs_and_links(vec![WorldNodeDef::Vm(node)], Vec::new())?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(&world, Vec::new())?;
@@ -339,6 +362,15 @@ fn equivalence_measurements(
 }
 
 fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn Error>> {
+    Ok(ScenarioSelectables::new(
+        world,
+        ScenarioSelectableLimits::new(4, 8, 16, 32)?,
+        vec![guest_quanta_declaration()?],
+    )?)
+}
+
+/// Declares the curl guest's `hot-fork.retry-quanta` integer choice.
+fn guest_quanta_declaration() -> Result<SelectableDeclaration, Box<dyn Error>> {
     let retry_domain = ChoiceDomain::Integer(IntegerDomain::new(
         1,
         IntegerRepresentation::Unsigned64,
@@ -349,7 +381,7 @@ fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn
         ExactRational::new(1, 1)?,
         Vec::new(),
     )?);
-    let declaration = SelectableDeclaration::new(
+    Ok(SelectableDeclaration::new(
         "hot-fork.retry-quanta",
         ChoiceSource::Guest {
             node: String::from("curl"),
@@ -360,11 +392,6 @@ fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn
         ChoiceClassContext::new(BTreeSet::new())?,
         BTreeSet::new(),
         true,
-    )?;
-    Ok(ScenarioSelectables::new(
-        world,
-        ScenarioSelectableLimits::new(4, 8, 16, 32)?,
-        vec![declaration],
     )?)
 }
 

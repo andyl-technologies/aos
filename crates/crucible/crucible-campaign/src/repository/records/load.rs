@@ -1,4 +1,4 @@
-//! Authenticated loading and selection resolution for public campaign records.
+//! Authenticated loading for public campaign records.
 
 use super::*;
 
@@ -157,7 +157,7 @@ impl CampaignRepository {
         self.read_attempt(id.content_id())
     }
 
-    /// Loads one attempt followed by its complete bounded continuation ancestry.
+    /// Loads one attempt followed by its complete continuation ancestry.
     ///
     /// The returned vector is ordered from the requested attempt toward its
     /// oldest discovery or branch root. All entries are authenticated with one
@@ -166,7 +166,7 @@ impl CampaignRepository {
     /// # Errors
     ///
     /// Returns a store, codec, or integrity error when the attempt chain is
-    /// missing, corrupt, cyclic, too deep, or semantically inconsistent.
+    /// missing, corrupt, or semantically inconsistent.
     pub fn load_attempt_origin_chain(
         &self,
         id: AttemptId,
@@ -257,7 +257,7 @@ impl CampaignRepository {
         first: &PlannerStep,
     ) -> Result<(), CampaignRepositoryError> {
         let mut step = first.clone();
-        for _ in 0..MAX_SNAPSHOT_ANCESTRY {
+        for _ in 0..MAX_CAMPAIGN_SNAPSHOT_ANCESTRY {
             if matches!(step.disposition(), PlannerDisposition::Issue { .. }) {
                 return Err(integrity("planner-issue-requires-snapshot-owner"));
             }
@@ -389,215 +389,5 @@ impl CampaignRepository {
         id: ChoiceGroupId,
     ) -> Result<ChoiceGroup, CampaignRepositoryError> {
         self.read_group(id.content_id())
-    }
-
-    /// Loads a selection with the opportunity and domain needed to trust it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error for missing/corrupt records,
-    /// illegal values, or invalid self-contained provenance. Model samples
-    /// still require their pure model verifier before execution.
-    pub fn resolve_selection(
-        &self,
-        id: SelectionId,
-    ) -> Result<ResolvedSelection, CampaignRepositoryError> {
-        self.resolve_selections(&[id])?
-            .pop()
-            .ok_or_else(|| integrity("selection-resolution-empty"))
-    }
-
-    /// Resolves one exact duplicate-free selection batch with shared decoding.
-    ///
-    /// The result has the same order and cardinality as `ids`. This stricter
-    /// form is intended for immutable configuration admission, where a repeated
-    /// selection identity would make the schedule-to-record correspondence
-    /// ambiguous.
-    ///
-    /// # Errors
-    ///
-    /// Returns an integrity error for repeated input identities or an inexact
-    /// result, and otherwise returns the bounded store, codec, or dependency
-    /// error produced while authenticating the records.
-    pub fn resolve_distinct_selections(
-        &self,
-        ids: &[SelectionId],
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        if ids.len() > MAX_SELECTION_RESOLUTION_RECORDS {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "selection resolution batch exceeds record limit",
-            }
-            .into());
-        }
-        let distinct = ids.iter().copied().collect::<BTreeSet<_>>();
-        if distinct.len() != ids.len() {
-            return Err(integrity("configuration-selection-identity-repeated"));
-        }
-        let resolved = self.resolve_selections(ids)?;
-        if resolved.len() != ids.len() {
-            return Err(integrity("configuration-selection-resolution-inexact"));
-        }
-        Ok(resolved)
-    }
-
-    /// Resolves selections while decoding each unique dependency once.
-    pub(in crate::repository) fn resolve_selections(
-        &self,
-        ids: &[SelectionId],
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        self.resolve_selections_with_canonical_byte_limit(ids, MAX_SELECTION_RESOLUTION_BYTES)
-            .map_err(|error| match error {
-                CampaignRepositoryError::SelectionResolutionBudgetExceeded { .. } => {
-                    CampaignCodecError::InvalidValue {
-                        reason: "selection resolution exceeds canonical record byte limit",
-                    }
-                    .into()
-                }
-                error => error,
-            })
-    }
-
-    pub(in crate::repository) fn resolve_selections_with_canonical_byte_limit(
-        &self,
-        ids: &[SelectionId],
-        maximum_canonical_bytes: usize,
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        if ids.len() > MAX_SELECTION_RESOLUTION_RECORDS {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "selection resolution batch exceeds record limit",
-            }
-            .into());
-        }
-        let maximum_canonical_bytes = maximum_canonical_bytes.min(MAX_SELECTION_RESOLUTION_BYTES);
-
-        let mut charged = BTreeSet::new();
-        let mut charged_bytes = 0usize;
-        let mut selections = BTreeMap::<SelectionId, ResolvedSelection>::new();
-        let mut opportunities = BTreeMap::<ContentId, Arc<ChoiceOpportunity>>::new();
-        let mut declarations = BTreeMap::<ContentId, Arc<SelectableDeclaration>>::new();
-        let mut domains = BTreeMap::<ContentId, Arc<ChoiceDomain>>::new();
-        let mut resolved = Vec::with_capacity(ids.len());
-
-        for id in ids {
-            if let Some(selection) = selections.get(id) {
-                resolved.push(selection.clone());
-                continue;
-            }
-
-            let (selection_envelope, selection_envelope_bytes) = self
-                .require_record_kind_with_canonical_byte_limit(
-                    id.content_id(),
-                    crate::CampaignRecordKind::Selection,
-                    maximum_canonical_bytes.saturating_sub(charged_bytes),
-                    maximum_canonical_bytes,
-                )?;
-            charge_selection_resolution_record(
-                &selection_envelope,
-                selection_envelope_bytes,
-                &mut charged,
-                &mut charged_bytes,
-                maximum_canonical_bytes,
-            )?;
-            let selection = Selection::from_canonical_bytes(selection_envelope.body())?;
-            if selection.id()? != *id {
-                return Err(integrity("selection-envelope-shape"));
-            }
-
-            let opportunity_id = required_child(&selection_envelope, "opportunity")?;
-            let selection_domain_id = required_child(&selection_envelope, "domain")?;
-            let opportunity = if let Some(opportunity) = opportunities.get(&opportunity_id) {
-                Arc::clone(opportunity)
-            } else {
-                let (envelope, envelope_bytes) = self
-                    .require_record_kind_with_canonical_byte_limit(
-                        opportunity_id,
-                        crate::CampaignRecordKind::ChoiceOpportunity,
-                        maximum_canonical_bytes.saturating_sub(charged_bytes),
-                        maximum_canonical_bytes,
-                    )?;
-                charge_selection_resolution_record(
-                    &envelope,
-                    envelope_bytes,
-                    &mut charged,
-                    &mut charged_bytes,
-                    maximum_canonical_bytes,
-                )?;
-                let opportunity = crate::codec::decode::<ChoiceOpportunity>(envelope.body())?;
-                if opportunity.id()?.content_id() != opportunity_id {
-                    return Err(integrity("choice-opportunity-envelope-shape"));
-                }
-                Arc::new(opportunity)
-            };
-
-            let declaration_id = opportunity.declaration().content_id();
-            let declaration = if let Some(declaration) = declarations.get(&declaration_id) {
-                Arc::clone(declaration)
-            } else {
-                let (envelope, envelope_bytes) = self
-                    .require_record_kind_with_canonical_byte_limit(
-                        declaration_id,
-                        crate::CampaignRecordKind::SelectableDeclaration,
-                        maximum_canonical_bytes.saturating_sub(charged_bytes),
-                        maximum_canonical_bytes,
-                    )?;
-                charge_selection_resolution_record(
-                    &envelope,
-                    envelope_bytes,
-                    &mut charged,
-                    &mut charged_bytes,
-                    maximum_canonical_bytes,
-                )?;
-                let declaration = SelectableDeclaration::from_canonical_bytes(envelope.body())?;
-                if declaration.id()?.content_id() != declaration_id {
-                    return Err(integrity("selectable-envelope-shape"));
-                }
-                let declaration = Arc::new(declaration);
-                declarations.insert(declaration_id, Arc::clone(&declaration));
-                declaration
-            };
-
-            let domain_id = opportunity.domain().content_id();
-            if domain_id != selection_domain_id {
-                return Err(integrity("selection-envelope-domain-mismatch"));
-            }
-            let domain = if let Some(domain) = domains.get(&domain_id) {
-                Arc::clone(domain)
-            } else {
-                let (envelope, envelope_bytes) = self
-                    .require_record_kind_with_canonical_byte_limit(
-                        domain_id,
-                        crate::CampaignRecordKind::ChoiceDomain,
-                        maximum_canonical_bytes.saturating_sub(charged_bytes),
-                        maximum_canonical_bytes,
-                    )?;
-                charge_selection_resolution_record(
-                    &envelope,
-                    envelope_bytes,
-                    &mut charged,
-                    &mut charged_bytes,
-                    maximum_canonical_bytes,
-                )?;
-                let domain = ChoiceDomain::from_canonical_bytes(envelope.body())?;
-                if domain.id()?.content_id() != domain_id {
-                    return Err(integrity("choice-domain-envelope-shape"));
-                }
-                let domain = Arc::new(domain);
-                domains.insert(domain_id, Arc::clone(&domain));
-                domain
-            };
-
-            opportunity.validate_references(&declaration, &domain)?;
-            selection.validate_resolved_references(&opportunity, &domain)?;
-            opportunities.insert(opportunity_id, Arc::clone(&opportunity));
-            let selection = ResolvedSelection {
-                selection,
-                opportunity,
-                declaration,
-                domain,
-            };
-            selections.insert(*id, selection.clone());
-            resolved.push(selection);
-        }
-        Ok(resolved)
     }
 }

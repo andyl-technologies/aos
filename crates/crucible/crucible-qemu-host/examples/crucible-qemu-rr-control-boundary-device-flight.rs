@@ -28,7 +28,8 @@ use crucible_qemu_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity,
     QemuLiveNodeStepGateConfig, QemuNode, QemuProductionFreshLaunchAdmission,
     QemuRrControlBoundaryTracePhase, QemuRrControlBoundaryTraceRecord, QemuShutdownReport,
-    QemuShutdownRung, launch_qemu_production_fresh_node, parse_qemu_rr_control_boundary_trace,
+    QemuShutdownRung, QemuSpawnError, launch_qemu_production_fresh_node,
+    parse_qemu_rr_control_boundary_trace,
 };
 
 #[cfg(target_os = "linux")]
@@ -43,6 +44,10 @@ const COMPLETION_CEILING: u64 = 100_000_000_000;
 const RR_SWITCH_QUANTUM: u64 = 4096;
 #[cfg(target_os = "linux")]
 const BLOCK_COMPLETE_MARKER: &[u8] = b"CRUCIBLE_BLOCK_WRITE_COMPLETE";
+// One block write produces a few dozen rows; this is the launch's admitted
+// trace reservation, so the whole-trace parse below stays small.
+#[cfg(target_os = "linux")]
+const MAXIMUM_TRACE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[cfg(target_os = "linux")]
 fn main() -> ExitCode {
@@ -122,7 +127,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     let proven_reap = matches!(&shutdown, Ok(report) if report.reaped && !report.leaked);
     let retained_trace = if proven_reap {
         directory
-            .retain_rr_control_boundary_trace_after_reap()
+            .inspect_rr_control_boundary_trace_after_reap(MAXIMUM_TRACE_BYTES, |reader| {
+                let mut trace = String::new();
+                reader
+                    .read_to_string(&mut trace)
+                    .map_err(|source| QemuSpawnError::Io {
+                        operation: "read RR control-boundary trace",
+                        source,
+                    })?;
+                Ok::<_, QemuSpawnError>(trace)
+            })
             .map_err(|error| error.to_string())
     } else {
         Err(String::from(

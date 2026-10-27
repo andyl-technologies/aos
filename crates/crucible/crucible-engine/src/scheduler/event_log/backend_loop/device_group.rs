@@ -48,8 +48,10 @@ impl<B: SimulationBackend, I> BackendQuantumLoop<SingleScheduler, B, I> {
         }
         self.backend
             .device_group_opportunity_current(&observation)?;
+        // Any refusal returns before the staged copy replaces the live
+        // scheduler, so the import mutates it in place.
         let mut staged = self.loop_impl.clone();
-        staged.import_initial_io_inventory(observation.input_inventory().clone())?;
+        staged.import_initial_io_inventory_into_staged(observation.input_inventory().clone())?;
         let prepared = self
             .device_group_selection
             .prepare(&staged, observation.clone())?;

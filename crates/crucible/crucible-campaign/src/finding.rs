@@ -14,16 +14,12 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::policy::{MAX_IDENTIFIER_BYTES, validate_identifier};
 use crate::{
     CampaignCodecError, CampaignHash, CampaignRecordKind, CampaignSnapshotId, ChoiceOpportunityId,
-    ConfigurationArtifactId, ConfigurationId, ExactCheckpointId, FindingCandidateBundleId,
-    FindingId, ObjectEnvelope, ObservationId, ReproductionArtifactId, ScenarioArtifactId,
-    ScenarioDefId,
+    ConfigurationArtifactId, ExactCheckpointId, FindingCandidateBundleId, FindingId,
+    ObjectEnvelope, ObservationId, ReproductionArtifactId,
 };
 
-const RETENTION_SCHEMA_VERSION: u32 = 2;
 const CANDIDATE_OCCURRENCES_SCHEMA_VERSION: u32 = 4;
-const MINIMIZATION_POLICY_SCHEMA_VERSION: u32 = 3;
-const MAX_REPRODUCTION_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
-const MAX_REPRODUCTION_RECORD_BYTES: usize = 34 * 1024 * 1024;
+const MINIMIZATION_POLICY_SCHEMA_VERSION: u32 = 4;
 const MAX_FINDING_RECORD_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum causal evidence objects retained by one signature.
 pub const MAX_FINDING_CAUSAL_EVIDENCE: usize = 4_096;
@@ -42,7 +38,22 @@ pub const MAX_FINDING_MINIMIZATION_ATTEMPTS: usize = 4_096;
 /// Maximum execution-model policy bytes retained by one minimization trace.
 pub const MAX_FINDING_MINIMIZATION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum unique static bytes retained by one finding's replay captures.
+///
+/// Static bytes are the capture manifests and every scenario-bounded leaf:
+/// model reproductions, replay-closure roots, guest assets, and lifecycle
+/// objects.
 pub const MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES: u64 = 512 * 1024 * 1024;
+/// Maximum unique run-length leaf bytes retained by one finding's replay captures.
+///
+/// Replay-side scheduler log segments, resolved-effect trace segments, and
+/// replay-closure frames grow with the replayed run, so they are charged to
+/// their own per-finding allowance rather than the static one. The value
+/// admits the four capture roles' scheduler logs at the default 4 GiB attempt
+/// event-log bound after equal segments are shared across roles. Traces are
+/// charged separately against that same per-attempt bound, so four roles with
+/// full logs and full traces can exceed it; the role that crosses the
+/// allowance is recorded as `PublicationLimitExceeded` rather than truncated.
+pub const MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// Role-tagged exact-checkpoint accelerators retained by one finding cluster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -568,7 +579,9 @@ impl FindingMinimizationEvidence {
         attempts: Vec<FindingMinimizationAttempt>,
         final_replayed_state: CampaignHash,
     ) -> Result<Self, CampaignCodecError> {
-        if original.content_id().schema_version() != RETENTION_SCHEMA_VERSION {
+        if original.content_id().schema_version()
+            != crate::reproduction::REPRODUCTION_SCHEMA_VERSION
+        {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding minimization original is not current schema",
             });
@@ -670,279 +683,6 @@ impl Canonical for FindingMinimizationEvidence {
                 FindingMinimizationAttempt::decode,
             )?,
             CampaignHash::decode(decoder)?,
-        )
-    }
-}
-
-/// Authenticated identity basis shared by reproduction artifact constructors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReproductionArtifactBasis {
-    scenario: ScenarioDefId,
-    scenario_artifact: ScenarioArtifactId,
-    configuration: ConfigurationId,
-    configuration_artifact: ConfigurationArtifactId,
-    finding_fingerprint: CampaignHash,
-}
-
-impl ReproductionArtifactBasis {
-    /// Builds an identity basis from its semantic and exact artifact identities.
-    #[must_use]
-    pub const fn new(
-        scenario: ScenarioDefId,
-        scenario_artifact: ScenarioArtifactId,
-        configuration: ConfigurationId,
-        configuration_artifact: ConfigurationArtifactId,
-        finding_fingerprint: CampaignHash,
-    ) -> Self {
-        Self {
-            scenario,
-            scenario_artifact,
-            configuration,
-            configuration_artifact,
-            finding_fingerprint,
-        }
-    }
-}
-
-/// Self-contained execution-model reproduction bytes after adapter verification.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReproductionArtifact {
-    schema_version: u32,
-    scenario: ScenarioDefId,
-    scenario_artifact: ScenarioArtifactId,
-    configuration: ConfigurationId,
-    configuration_artifact: ConfigurationArtifactId,
-    finding_fingerprint: CampaignHash,
-    payload_schema: u32,
-    payload: Vec<u8>,
-    minimization: Option<FindingMinimizationEvidence>,
-}
-
-impl ReproductionArtifact {
-    /// Builds a bounded reproduction record after execution-model verification.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for a zero payload schema, empty payload,
-    /// or payload above 32 MiB.
-    pub fn new(
-        basis: ReproductionArtifactBasis,
-        payload_schema: u32,
-        payload: Vec<u8>,
-    ) -> Result<Self, CampaignCodecError> {
-        Self::new_current(basis, payload_schema, payload, None)
-    }
-
-    /// Builds a verifier-backed minimized reproduction with its exact trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for an invalid payload, an inconsistent
-    /// minimization target, or an encoded record above 34 MiB.
-    pub fn new_minimized(
-        basis: ReproductionArtifactBasis,
-        payload_schema: u32,
-        payload: Vec<u8>,
-        minimization: FindingMinimizationEvidence,
-    ) -> Result<Self, CampaignCodecError> {
-        if minimization.attempts().iter().any(|attempt| {
-            attempt.accepted() && attempt.observed_fingerprint() != Some(basis.finding_fingerprint)
-        }) {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding minimization accepted a different fingerprint",
-            });
-        }
-        Self::new_current(basis, payload_schema, payload, Some(minimization))
-    }
-
-    fn new_current(
-        basis: ReproductionArtifactBasis,
-        payload_schema: u32,
-        payload: Vec<u8>,
-        minimization: Option<FindingMinimizationEvidence>,
-    ) -> Result<Self, CampaignCodecError> {
-        if payload_schema == 0 || payload.is_empty() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding reproduction payload is empty or has no schema",
-            });
-        }
-        if payload.len() > MAX_REPRODUCTION_PAYLOAD_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-reproduction-payload-bytes",
-            });
-        }
-        let value = Self {
-            schema_version: RETENTION_SCHEMA_VERSION,
-            scenario: basis.scenario,
-            scenario_artifact: basis.scenario_artifact,
-            configuration: basis.configuration,
-            configuration_artifact: basis.configuration_artifact,
-            finding_fingerprint: basis.finding_fingerprint,
-            payload_schema,
-            payload,
-            minimization,
-        };
-        codec::ensure_encoded_size(
-            &value,
-            MAX_REPRODUCTION_RECORD_BYTES,
-            "finding-reproduction-encoded-bytes",
-        )?;
-        Ok(value)
-    }
-
-    /// Returns the canonical record-body and envelope schema version.
-    #[must_use]
-    pub const fn schema_version(&self) -> u32 {
-        self.schema_version
-    }
-
-    /// Returns the semantic scenario identity.
-    #[must_use]
-    pub const fn scenario(&self) -> ScenarioDefId {
-        self.scenario
-    }
-
-    /// Returns the exact scenario artifact used by the reproduction.
-    #[must_use]
-    pub const fn scenario_artifact(&self) -> ScenarioArtifactId {
-        self.scenario_artifact
-    }
-
-    /// Returns the semantic replay configuration identity.
-    #[must_use]
-    pub const fn configuration(&self) -> ConfigurationId {
-        self.configuration
-    }
-
-    /// Returns the exact configuration artifact used by the reproduction.
-    #[must_use]
-    pub const fn configuration_artifact(&self) -> ConfigurationArtifactId {
-        self.configuration_artifact
-    }
-
-    /// Returns the stable failure fingerprint verified during replay.
-    #[must_use]
-    pub const fn finding_fingerprint(&self) -> CampaignHash {
-        self.finding_fingerprint
-    }
-
-    /// Returns the execution-model payload schema.
-    #[must_use]
-    pub const fn payload_schema(&self) -> u32 {
-        self.payload_schema
-    }
-
-    /// Returns the self-contained canonical execution-model bytes.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
-    /// Returns retained deterministic minimization evidence, when present.
-    #[must_use]
-    pub const fn minimization(&self) -> Option<&FindingMinimizationEvidence> {
-        self.minimization.as_ref()
-    }
-
-    /// Returns strict canonical record-body bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        codec::encode(self)
-    }
-
-    /// Decodes strict canonical record-body bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] for malformed, noncanonical, invalid, or
-    /// oversized bytes.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, CampaignCodecError> {
-        if bytes.len() > MAX_REPRODUCTION_RECORD_BYTES {
-            return Err(CampaignCodecError::LimitExceeded {
-                limit: "finding-reproduction-encoded-bytes",
-            });
-        }
-        codec::decode(bytes)
-    }
-
-    /// Returns the exact stored reproduction identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignCodecError`] if canonical envelope construction fails.
-    pub fn id(&self) -> Result<ReproductionArtifactId, CampaignCodecError> {
-        ReproductionArtifactId::from_content_id(
-            ObjectEnvelope::for_record_versioned(
-                CampaignRecordKind::ReproductionArtifact,
-                self.schema_version,
-                crate::object::content_children(self.content_children())?,
-                self.canonical_bytes(),
-            )?
-            .content_id(),
-        )
-    }
-
-    pub(crate) fn content_children(&self) -> Vec<(String, ContentId)> {
-        let mut children = vec![
-            ("scenario".to_owned(), self.scenario_artifact.content_id()),
-            (
-                "configuration".to_owned(),
-                self.configuration_artifact.content_id(),
-            ),
-        ];
-        if let Some(minimization) = &self.minimization {
-            children.push((
-                "minimization.original".to_owned(),
-                minimization.original().content_id(),
-            ));
-        }
-        children
-    }
-}
-
-impl Canonical for ReproductionArtifact {
-    fn encode(&self, encoder: &mut Encoder) {
-        self.schema_version.encode(encoder);
-        self.scenario.encode(encoder);
-        self.scenario_artifact.encode(encoder);
-        self.configuration.encode(encoder);
-        self.configuration_artifact.encode(encoder);
-        self.finding_fingerprint.encode(encoder);
-        self.payload_schema.encode(encoder);
-        self.payload.encode(encoder);
-        self.minimization.encode(encoder);
-    }
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        let schema_version = u32::decode(decoder)?;
-        if schema_version != RETENTION_SCHEMA_VERSION {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "unsupported finding reproduction schema version",
-            });
-        }
-        let scenario = ScenarioDefId::decode(decoder)?;
-        let scenario_artifact = ScenarioArtifactId::decode(decoder)?;
-        let configuration = ConfigurationId::decode(decoder)?;
-        let configuration_artifact = ConfigurationArtifactId::decode(decoder)?;
-        let finding_fingerprint = CampaignHash::decode(decoder)?;
-        let payload_schema = u32::decode(decoder)?;
-        let payload = decoder.sequence_bounded(
-            MAX_REPRODUCTION_PAYLOAD_BYTES,
-            "finding-reproduction-payload-bytes",
-            u8::decode,
-        )?;
-        let minimization = Option::<FindingMinimizationEvidence>::decode(decoder)?;
-        Self::new_current(
-            ReproductionArtifactBasis::new(
-                scenario,
-                scenario_artifact,
-                configuration,
-                configuration_artifact,
-                finding_fingerprint,
-            ),
-            payload_schema,
-            payload,
-            minimization,
         )
     }
 }

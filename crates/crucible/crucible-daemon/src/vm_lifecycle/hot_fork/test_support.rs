@@ -182,6 +182,85 @@ pub fn prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_fo
     )
 }
 
+/// Builds one prepared source world paused after a recorded selection.
+///
+/// The built-in scenario's first `source_nodes.len()` VMs are running
+/// retained sources, as in [`prepared_multi_node_hot_fork_source_world_for_test`].
+/// Before preparation the scheduler records `selection` at its current
+/// boundary, so the source's configuration has a nonempty schedule.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario, the recorded
+/// selection, or any source-world boundary cannot be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_after_selection_for_test(
+    source_nodes: Vec<QemuNode>,
+    selection: SelectionDecision,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let source = crucible_engine::crash_restart_scenario()
+        .map_err(|error| test_support_error("construct built-in scenario", error))?
+        .scenario;
+    prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test(
+        &source,
+        source_nodes,
+        vec![selection],
+    )
+}
+
+/// Builds one prepared source world for `source` paused after `selections`.
+///
+/// This is [`prepared_multi_node_hot_fork_source_world_after_selection_for_test`]
+/// for an exact test scenario, such as one that also declares campaign
+/// selectables. The scheduler records each selection in order at its current
+/// boundary, so every prefix of `selections` names an ancestor boundary of
+/// the prepared source.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::LoopFactory`] when the scenario has too few VM
+/// nodes, a recorded selection is invalid, or any source-world boundary cannot
+/// be constructed.
+pub fn prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    selections: Vec<SelectionDecision>,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let (retained, mut lifecycle) = scripted_source_lifecycle(
+        source,
+        source_nodes,
+        &BTreeSet::new(),
+        SCRIPTED_SCHEDULER_TIME_LIMIT_TICKS,
+    )?;
+
+    for selection in selections {
+        let parent = lifecycle.inner.loop_impl().configuration().clone();
+        let selected = crucible_engine::try_step(&parent, Decision::Selection(selection.clone()))
+            .map_err(|error| test_support_error("step scripted selection", error))?;
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .apply_external_selection(&parent, selection, &selected, || Ok(()))
+            .map_err(|error| test_support_error("record scripted selection", error))?;
+    }
+
+    let source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .map_err(|error| test_support_error("prepare scripted hot-fork source world", error))?;
+    Ok((retained, source_world))
+}
+
 fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for_test(
     source: &ScenarioDefForm,
     source_nodes: Vec<QemuNode>,
@@ -191,6 +270,27 @@ fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for
     (
         Vec<(NodeId, ProductionVmNodeGeneration)>,
         ProductionVmHotForkSourceWorld,
+    ),
+    LifecycleApiError,
+> {
+    let (retained, lifecycle) =
+        scripted_source_lifecycle(source, source_nodes, powered_off_nodes, time_limit_ticks)?;
+    let source_world = lifecycle
+        .prepare_hot_fork_source_world()
+        .map_err(|error| test_support_error("prepare scripted hot-fork source world", error))?;
+    Ok((retained, source_world))
+}
+
+/// Builds the scripted lifecycle that test source worlds are prepared from.
+fn scripted_source_lifecycle(
+    source: &ScenarioDefForm,
+    source_nodes: Vec<QemuNode>,
+    powered_off_nodes: &BTreeSet<NodeId>,
+    time_limit_ticks: u64,
+) -> Result<
+    (
+        Vec<(NodeId, ProductionVmNodeGeneration)>,
+        ProductionVmLifecycleLoop,
     ),
     LifecycleApiError,
 > {
@@ -292,10 +392,7 @@ fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for
         retained.push((retained_node, generation));
     }
 
-    let source_world = lifecycle
-        .prepare_hot_fork_source_world()
-        .map_err(|error| test_support_error("prepare scripted hot-fork source world", error))?;
-    Ok((retained, source_world))
+    Ok((retained, lifecycle))
 }
 
 /// Builds a process-free production lifecycle with every VM permanently failed.
@@ -435,6 +532,7 @@ fn lifecycle_without_backends(
         source.plan().fault_signals().resource_limits(),
         source.world().fault_topology().clone(),
         source.world().links().to_vec(),
+        Arc::new(crucible_engine::segment_store::SharedSegmentStore::new()),
     );
     let run_directory = ProductionRunDirectory::temporary()
         .map_err(|error| test_support_error("construct temporary test run directory", error))?;
@@ -496,7 +594,8 @@ fn lifecycle_without_backends(
             transaction: 0,
             phase: ProductionLifecycleJournalPhase::Idle,
             nodes: Vec::new().into(),
-            completed_exits: Vec::new().into(),
+            exit_log: ProductionLifecycleExitLog::empty(),
+            pending_exits: Vec::new(),
         },
         lifecycle_persistence: LifecycleStatePersistence::new(run_directory.path())
             .map_err(|error| test_support_error("construct test lifecycle persistence", error))?,
@@ -519,6 +618,7 @@ fn lifecycle_without_backends(
         repository_exact_ram_rebase: None,
         recorded_controls: Vec::new(),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_segments: Arc::new(crucible_engine::segment_store::SharedSegmentStore::new()),
         debug_backend_paths: BTreeMap::new(),
         debug_gateway: None,
         debug_attach: None,

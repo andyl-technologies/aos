@@ -377,6 +377,7 @@ extern "C" fn callback_model_whitebox_translate(_tb: *mut QemuPluginTb, userdata
         CALLBACK_MODEL_COMBINED_ORDER.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst,),
         Ok(0),
     );
+    crate::runtime::live_callbacks::assert_original_translation_for_test();
 }
 
 extern "C" fn callback_model_ordered_tb_n_insns(tb: *const QemuPluginTb) -> usize {

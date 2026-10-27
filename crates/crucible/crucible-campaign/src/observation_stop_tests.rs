@@ -3,15 +3,23 @@
 // crucible-lint: allow panic-shortcut -- canonical fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_store::content_store::{ContentId, ObjectKind};
+use crucible_store::segment_store::MAX_MANIFEST_SEGMENTS;
 
 use super::codec::{self, decode};
 use super::*;
 
-#[test]
-fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
+fn trace_manifest(label: &[u8]) -> ContentId {
+    ContentId::for_bytes(ObjectKind::Trace, 4, label)
+}
+
+fn trace_segment(index: usize) -> ContentId {
+    ContentId::for_bytes(ObjectKind::Trace, 1, format!("segment-{index}").as_bytes())
+}
+
+fn traced_observation() -> Observation {
     let (artifact, child, path, measurements, properties, coverage) = fixture_ids();
     let attempt = AttemptId::from_content_id(ContentId::for_bytes(
         ObjectKind::CampaignFact,
@@ -19,7 +27,7 @@ fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
         b"trace-attempt",
     ))
     .expect("attempt identity");
-    let observation = Observation::new(
+    Observation::new(
         attempt,
         Observation::outcome(
             child,
@@ -32,28 +40,69 @@ fn observation_v14_binds_one_resolved_effect_trace_as_a_retained_child() {
         ),
         BTreeSet::new(),
     )
-    .expect("observation");
-    let trace = ContentId::for_bytes(ObjectKind::Trace, 1, b"canonical-trace");
-    let observation = observation
-        .with_resolved_effect_trace(trace)
+    .expect("observation")
+}
+
+#[test]
+fn observation_v16_binds_a_segmented_resolved_effect_trace_as_retained_children() {
+    let manifest = trace_manifest(b"canonical-trace");
+    let segments = vec![trace_segment(0), trace_segment(1)];
+    let trace = ResolvedEffectTraceRef::new(manifest, segments.clone()).expect("trace reference");
+    let observation = traced_observation()
+        .with_resolved_effect_trace(trace.clone())
         .expect("trace attachment");
 
-    assert_eq!(observation.resolved_effect_trace(), Some(trace));
-    assert_eq!(observation.schema_version(), 14);
-    assert!(
-        observation
-            .content_children()
-            .contains(&("resolved-effect-trace".to_owned(), trace))
-    );
+    assert_eq!(observation.resolved_effect_trace(), Some(&trace));
+    assert_eq!(observation.schema_version(), 16);
+    let children = observation.content_children();
+    assert!(children.contains(&("resolved-effect-trace".to_owned(), manifest)));
+    assert!(children.contains(&("resolved-effect-trace.segment.0000".to_owned(), segments[0])));
+    assert!(children.contains(&("resolved-effect-trace.segment.0001".to_owned(), segments[1])));
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes()).expect("round trip"),
         observation
     );
+
+    let other = ResolvedEffectTraceRef::new(trace_manifest(b"other"), Vec::new())
+        .expect("other trace reference");
+    assert!(observation.with_resolved_effect_trace(other).is_err());
+}
+
+#[test]
+fn resolved_effect_trace_references_require_exact_leaf_schemas() {
+    let manifest = trace_manifest(b"manifest");
+
+    assert!(ResolvedEffectTraceRef::new(manifest, Vec::new()).is_ok());
     assert!(
-        observation
-            .with_resolved_effect_trace(ContentId::for_bytes(ObjectKind::Trace, 1, b"other"))
-            .is_err()
+        ResolvedEffectTraceRef::new(
+            ContentId::for_bytes(ObjectKind::Trace, 1, b"v3"),
+            Vec::new()
+        )
+        .is_err()
     );
+    assert!(
+        ResolvedEffectTraceRef::new(
+            manifest,
+            vec![ContentId::for_bytes(ObjectKind::Trace, 4, b"not-a-segment")]
+        )
+        .is_err()
+    );
+    assert!(
+        ResolvedEffectTraceRef::new(manifest, vec![trace_segment(0), trace_segment(0)]).is_err()
+    );
+
+    let at_limit = (0..MAX_MANIFEST_SEGMENTS)
+        .map(trace_segment)
+        .collect::<Vec<_>>();
+    assert!(ResolvedEffectTraceRef::new(manifest, at_limit.clone()).is_ok());
+    let mut beyond = at_limit;
+    beyond.push(trace_segment(MAX_MANIFEST_SEGMENTS));
+    assert!(matches!(
+        ResolvedEffectTraceRef::new(manifest, beyond),
+        Err(crate::CampaignCodecError::LimitExceeded {
+            limit: "observation-resolved-effect-trace-segment-count"
+        })
+    ));
 }
 
 macro_rules! stored_id {
@@ -211,6 +260,12 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
     let outcome = StopOutcome::ObservationReached(Box::new(proof.clone()));
     assert!(outcome.reaches(&stop));
     assert!(!StopOutcome::Reached(stop.clone()).reaches(&stop));
+    let discovered = stored_id!(
+        ChoiceOpportunityId,
+        ObjectKind::CampaignFact,
+        1,
+        "observation-stop-opportunity"
+    );
     let observation = Observation::new(
         attempt.id().expect("attempt ID"),
         Observation::outcome(
@@ -222,10 +277,10 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
             properties,
             coverage,
         ),
-        BTreeSet::new(),
+        BTreeSet::from([discovered]),
     )
     .expect("observation-stop observation");
-    assert_eq!(observation.schema_version(), 14);
+    assert_eq!(observation.schema_version(), 16);
     assert_eq!(
         Observation::from_canonical_bytes(&observation.canonical_bytes())
             .expect("observation round trip"),
@@ -258,9 +313,9 @@ fn observation_stops_require_proofs_and_dedicated_enclosing_schemas() {
         "observation-stop-selection"
     );
     let selection_observation = observation
-        .with_produced_selections(BTreeSet::from([selection]))
+        .with_produced_selections(BTreeMap::from([(discovered, selection)]))
         .expect("selection observation");
-    assert_eq!(selection_observation.schema_version(), 14);
+    assert_eq!(selection_observation.schema_version(), 16);
 
     let discovery = DiscoveryRequest::new(
         CampaignCommandId::from_hash(CampaignHash::derive(

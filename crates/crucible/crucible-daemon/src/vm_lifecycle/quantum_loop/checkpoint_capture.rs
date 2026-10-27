@@ -1447,7 +1447,7 @@ mod tests {
             .get(&configuration)
             .and_then(|parent| parent.targets.get(&node))
             .map(|checkpoint| QmpCheckpointIdentity::from(checkpoint.identity))
-            .unwrap_or_else(|| panic!("retry should hydrate the v9 exact RAM parent"));
+            .unwrap_or_else(|| panic!("retry should hydrate the v11 exact RAM parent"));
         assert_eq!(committed.checkpoint(), configuration);
 
         let (parent_closure, parent) = retained_exact_ram_parent_for_committed(

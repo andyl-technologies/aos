@@ -32,7 +32,7 @@
 //! - [`subnode`]: the [`IoSubNode`] trait and the [`IoCore`] lifecycle engine
 //!   that ties the clock, rings, and in-flight queue together.
 //! - [`block`]: the block device sub-node (CS-IO-2, tasks T-IO-2..5) — a
-//!   read-only content-addressed base image, an in-memory 4 KiB copy-on-write
+//!   read-only content-addressed base image, a disk-backed 4 KiB copy-on-write
 //!   overlay with dirty tracking, the versioned little-endian block wire ABI,
 //!   the deterministic completion model, and snapshot/restore/materialize.
 //! - [`ninep`]: the 9p filesystem sub-node (CS-IO-3, tasks T-IO-6..8) — a
@@ -82,18 +82,19 @@ pub mod subnode;
 
 pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
-    BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockErrorCode, BlockLatency,
-    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockSnapshot,
-    BlockSnapshotCodecError, BlockStatus, BlockTransportPending, BlockTransportRequestIds,
-    BlockTransportReset, BlockTransportResolved, BlockTransportUnadmitted,
-    BlockTransportUndelivered, CowOverlay, OverlayDelta, PAGE_SIZE,
-    install_cross_device_misdirected_persistence,
+    BLOCK_REQUEST_ABI_VERSION, BLOCK_RESPONSE_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice,
+    BlockErrorCode, BlockLatency, BlockOp, BlockOverlayChunk, BlockOverlayChunkSource,
+    BlockOverlayImage, BlockPageStore, BlockRequest, BlockRequestIdentity, BlockResponse,
+    BlockSnapshot, BlockSnapshotCodecError, BlockStatus, BlockTransportPending,
+    BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
+    BlockTransportUnadmitted, BlockTransportUndelivered, CowOverlay, OVERLAY_CHUNK_BYTES,
+    PAGE_SIZE, install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ns_to_tick};
 /// Canonical source-delivery key retained by each computed device response.
 pub use crucible_qemu_shmem::FrameDeliveryKey;
 pub use error::DeviceError;
-pub use fault::{DeviceRng, Probability};
+pub use fault::{DeviceRng, LinkFrameDrawKey, Probability};
 pub use harness::{
     BUSY_POLL_SPIKE, BlockHarness, BusyPollSpike, DeliveryLog, DeliveryRecord, DivergedField,
     Divergence, HarnessDevice, IdleBusyPoll, LinkRequest, LogComparison, NetLinkHarness,
@@ -109,11 +110,12 @@ pub use netlink::{
     ResolvedNetworkFrameEffectsError, fragment_ethernet_ipv4, generate_network_response,
 };
 pub use ninep::{
-    FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepObjectVersion, NinepOperation,
-    NinepRequestIdentity, NinepRequestOpportunity, NinepResultDirective, NinepServer,
-    NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError, NinepVirtualFid,
-    NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease, NinepVisibilityScope,
-    NinepVisibilityState, NinepVisibilityUpdate, Node, Qid, QidType, ResolvedNinepRequestDirective,
+    FsTree, FsTreeDecodeError, NinepDevice, NinepEventCoordinate, NinepEventEmission, NinepLatency,
+    NinepObjectVersion, NinepOperation, NinepRequestIdentity, NinepRequestOpportunity,
+    NinepResultDirective, NinepServer, NinepServerSnapshot, NinepSnapshot, NinepSnapshotCodecError,
+    NinepVirtualFid, NinepVisibilityLookup, NinepVisibilityPolicy, NinepVisibilityRelease,
+    NinepVisibilityScope, NinepVisibilityState, NinepVisibilityUpdate, NinepVisibilityUpdateKey,
+    Node, Qid, QidType, ResolvedNinepRequestDirective,
 };
 pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,

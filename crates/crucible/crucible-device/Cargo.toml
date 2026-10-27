@@ -18,3 +18,6 @@ crucible-determinism = { path = "../crucible-determinism" }
 crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }
 serde = { workspace = true }
 ciborium = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

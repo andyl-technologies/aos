@@ -5,14 +5,25 @@ use crate::{DebugCoordinate, RuntimeState};
 use crucible_campaign::ChoiceDiscovery;
 use crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
+mod causal_digest;
 pub(super) use backend_loop::HeldDeliveryCeiling;
 pub(super) use backend_loop::HeldRunLineage;
+pub(crate) use causal_digest::causal_projection_entry;
+pub use causal_digest::{
+    EventLogCausalDigest, EventLogCausalSummary, first_event_log_causal_mismatch,
+    is_causal_event_log_entry,
+};
+mod coverage_fold;
 mod observation_append;
+mod sealed_segments;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
-    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
-    HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
+    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, FinalBoundaryRefusal,
+    HeldHostStopKind, HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
+pub use coverage_fold::{EventLogCoverageFold, EventLogCoverageSet};
+pub(super) use sealed_segments::{ConditionBatcher, entry_encodings, validate_segment_refs};
+pub use sealed_segments::{EVENT_LOG_SEAL_TARGET_BYTES, EventLogSegmentReader, EventLogSegmentRef};
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -684,12 +695,16 @@ pub trait QuantumLoop {
     /// Returns the exact resolved-effect trace retained by a live fault runtime.
     ///
     /// Loops without a signal-driven fault runtime return `None`. Production
-    /// loops return an unconsumed trace suitable for a reproduction artifact.
+    /// loops return a segmented trace handle suitable for a reproduction
+    /// artifact; its segments stay in the loop's segment store and are read
+    /// one at a time.
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerError`] when the runtime cannot encode a valid trace.
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    /// Returns [`SchedulerError`] when the runtime cannot export a valid trace.
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crate::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -742,6 +757,15 @@ pub trait QuantumLoop {
     /// Returns [`SchedulerError`] when shutdown cannot complete cleanly.
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         Ok(Vec::new())
+    }
+
+    /// Returns the store holding this loop's sealed event-log segments.
+    ///
+    /// Consumers that keep their own view of the log, such as a session's
+    /// subscriber hub, seal into the same store so equal segments are stored
+    /// once. Loops without a scheduler event log return `None`.
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        None
     }
 }
 
@@ -838,13 +862,47 @@ pub enum BackendNetworkAdmission {
 }
 
 /// Exact logical event tick and optional physical retirement witness.
+///
+/// A VM node has two clocks: scheduler time, shared by every node, and its
+/// physical QEMU counter. The node's time mapping anchors them at its ready
+/// point and is re-anchored on resume and restart, so the two differ whenever
+/// that anchor is not counter zero. Which clock [`tick`](Self::tick) carries
+/// depends on the entry's payload; [`retired`](Self::retired) is always
+/// physical.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTickStamp {
     /// Node to which the event applies, when node-local.
     pub node: Option<NodeId>,
     /// Exact logical tick, including any idle-time jump bias.
+    ///
+    /// The domain depends on the payload:
+    ///
+    /// - Resolved backend inputs, resolved I/O completions, node-local
+    ///   observables (console output, I/O completion, node state), coverage,
+    ///   memory samples, and guest markers carry scheduler time. I/O
+    ///   completions map their physical delivery counter through the target
+    ///   node's time mapping before recording it here.
+    /// - Preemption decisions carry the recorded physical counter
+    ///   [`PreemptionDecision::at`](crate::PreemptionDecision::at), not
+    ///   scheduler time.
+    /// - Every other payload (other decisions, triggers, fault observations,
+    ///   diagnostics, and evaluation boundaries) carries the entry's scheduler
+    ///   time.
+    ///
+    /// For a preemption decision the entry's
+    /// [`EventLogTime::virtual_time`] is the scheduler time planned for it
+    /// when the scheduler recorded one. Without a planned time, the scheduler's
+    /// decision-time helper (`scheduler_decision_event_log_time`) falls back to
+    /// the same physical counter, so that entry's virtual time is physical too.
+    /// Logs rebuilt from a search schedule
+    /// (`search_schedule_decision_event_time`) always use that counter.
     pub tick: SimInstant,
     /// Raw retired count when independently observed by the backend.
+    ///
+    /// This is always the node's physical QEMU counter. A resolved backend
+    /// input records here the counter at which the live VM received the
+    /// frame; coverage, memory samples, and guest markers record the counter
+    /// at which the guest produced them.
     pub retired: Option<Icount>,
 }
 
@@ -1488,7 +1546,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v5",
+                "crucible.scheduler.event-log.entry.v6",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,
@@ -1566,7 +1624,7 @@ impl EventLogSegmentStore {
         Self { store }
     }
 
-    fn put_segment(&self, bytes: &[u8]) -> Result<ContentHash, SchedulerError> {
+    pub(super) fn put_segment(&self, bytes: &[u8]) -> Result<ContentHash, SchedulerError> {
         let expected = ContentHash::from_bytes(bytes);
         let stored = self
             .store
@@ -1587,6 +1645,26 @@ impl EventLogSegmentStore {
         }
         Ok(stored)
     }
+
+    fn put_sealed_segment(&self, bytes: &[u8]) -> Result<ContentHash, SchedulerError> {
+        let expected = ContentHash::from_bytes(bytes);
+        let stored = self
+            .store
+            .put(bytes)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("event-log segment store rejected a sealed segment: {error}"),
+            })?;
+        if stored != expected {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "event-log segment store returned {} for a sealed segment, expected {}",
+                    stored.to_hex(),
+                    expected.to_hex()
+                ),
+            });
+        }
+        Ok(stored)
+    }
 }
 
 impl fmt::Debug for EventLogSegmentStore {
@@ -1600,10 +1678,22 @@ impl fmt::Debug for EventLogSegmentStore {
 /// `EventLog` is the owner of append sequencing, prefix content-addressing, and
 /// the condition-evaluation prefix derived from the same retained entries. All
 /// observability consumers take projections of this one stream.
+///
+/// Besides one binary segment per append, the log seals its entries into
+/// decodable segments of at most [`EVENT_LOG_SEAL_TARGET_BYTES`] and keeps the
+/// entries since the last seal as its open tail. A scheduler continuation
+/// names the sealed segments and carries only the tail.
 #[derive(Clone, Debug)]
 pub struct EventLog {
     pub(super) segment_store: EventLogSegmentStore,
-    pub(super) segment_dependencies: Vec<ContentHash>,
+    /// Sealed segments covering `condition_base_events` up to the tail.
+    pub(super) sealed: crate::History<EventLogSegmentRef>,
+    /// Entries since the last seal, dense up to `events`.
+    pub(super) tail: crate::History<SchedulerEventLogEntry>,
+    /// Summed entry encodings of `tail`.
+    pub(super) tail_bytes: u64,
+    /// Entry count of the latest append, zero before the first append.
+    pub(super) last_append_entries: u64,
     pub(super) prefix: ContentHash,
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
@@ -1660,7 +1750,10 @@ impl EventLog {
         let prefix = scheduler_event_log_prefix_for_resume(offset);
         Self {
             segment_store,
-            segment_dependencies: Vec::new(),
+            sealed: crate::History::new(),
+            tail: crate::History::new(),
+            tail_bytes: 0,
+            last_append_entries: 0,
             prefix,
             offset,
             bytes: offset.bytes,
@@ -1688,10 +1781,10 @@ impl EventLog {
     ///
     /// A scheduler created at run genesis retains a zero-based complete prefix.
     /// An offset-only continuation may retain only a suffix; callers must pair
-    /// this slice with [`Self::retained_base_events`] before treating it as a
+    /// this history with [`Self::retained_base_events`] before treating it as a
     /// complete run history.
     #[must_use]
-    pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
+    pub fn retained_entries(&self) -> &crate::History<SchedulerEventLogEntry> {
         self.condition_prefix.scheduler_entries()
     }
 
@@ -1765,6 +1858,7 @@ impl EventLog {
             }
         }
 
+        let entry_encodings = sealed_segments::entry_encodings(&entries)?;
         let segment_bytes = scheduler_event_log_segment_bytes(self.prefix, &entries);
         let segment_text = decode_scheduler_event_log_segment(&segment_bytes)
             .map(|segment| segment.text_view())
@@ -1797,6 +1891,7 @@ impl EventLog {
             EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
         let prefix =
             scheduler_event_log_prefix_after_append(self.prefix, segment_hash, bytes, events);
+        let sealing = self.stage_sealed_tail(&entries, &entry_encodings)?;
         self.condition_prefix
             .append_scheduler_entries(entries.clone())
             .map_err(|error| SchedulerError::BoundaryViolation {
@@ -1804,7 +1899,8 @@ impl EventLog {
             })?;
 
         self.prefix = prefix;
-        self.segment_dependencies.push(segment_hash);
+        (self.sealed, self.tail, self.tail_bytes) = sealing;
+        self.last_append_entries = appended_events;
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;
@@ -1817,6 +1913,54 @@ impl EventLog {
             segment_hash: Some(segment_hash),
             offset: current_offset,
         })
+    }
+}
+
+impl EventLog {
+    /// Stages the sealed segments and open tail after appending `entries`.
+    ///
+    /// Each seal is stored before the append commits; a refused append leaves
+    /// only content-addressed objects behind, never a changed log.
+    fn stage_sealed_tail(
+        &self,
+        entries: &[SchedulerEventLogEntry],
+        encodings: &[u64],
+    ) -> Result<
+        (
+            crate::History<EventLogSegmentRef>,
+            crate::History<SchedulerEventLogEntry>,
+            u64,
+        ),
+        SchedulerError,
+    > {
+        let mut sealed = self.sealed.clone();
+        let mut tail = self.tail.clone();
+        let mut tail_bytes = self.tail_bytes;
+        for (entry, entry_bytes) in entries.iter().zip(encodings) {
+            if sealed_segments::seals_before(tail_bytes, tail.is_empty(), *entry_bytes) {
+                sealed.push(sealed_segments::seal_segment(
+                    &self.segment_store,
+                    &tail.to_vec(),
+                )?);
+                tail = crate::History::new();
+                tail_bytes = 0;
+            }
+            tail.push(entry.clone());
+            tail_bytes = tail_bytes.saturating_add(*entry_bytes);
+        }
+        Ok((sealed, tail, tail_bytes))
+    }
+
+    /// Returns the sealed segments preceding [`Self::tail_entries`].
+    #[must_use]
+    pub fn sealed_segments(&self) -> &crate::History<EventLogSegmentRef> {
+        &self.sealed
+    }
+
+    /// Returns the open tail: the entries appended since the last seal.
+    #[must_use]
+    pub fn tail_entries(&self) -> &crate::History<SchedulerEventLogEntry> {
+        &self.tail
     }
 }
 
@@ -1962,20 +2106,12 @@ pub fn event_log_causal_projection(entries: &[SchedulerEventLogEntry]) -> EventL
     let entries = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry.class == SchedulerEventLogClass::Causal)
+        .filter(|(_, entry)| is_causal_event_log_entry(entry))
         .enumerate()
         .map(
             |(causal_index, (raw_index, entry))| EventLogCausalProjectionEntry {
                 raw_index,
-                entry: scheduler_event_log_entry_with_material(
-                    causal_index as u64,
-                    entry.at.clone(),
-                    entry.source.clone(),
-                    entry.level,
-                    SchedulerEventLogClass::Causal,
-                    entry.event_payload.clone(),
-                    entry.payload.clone(),
-                ),
+                entry: causal_projection_entry(causal_index as u64, entry),
             },
         )
         .collect::<Vec<_>>();
@@ -2155,27 +2291,11 @@ impl EventLogCoverageProjection {
 pub fn event_log_coverage_projection(
     entries: &[SchedulerEventLogEntry],
 ) -> EventLogCoverageProjection {
-    let entries = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(raw_index, entry)| event_log_coverage_entry(raw_index, entry))
-        .collect::<Vec<_>>();
-    let unique_material = entries
-        .iter()
-        .map(|entry| event_log_coverage_observation_material(&entry.observation))
-        .collect::<BTreeSet<_>>();
-    let content_hash = if unique_material.is_empty() {
-        ContentHash::default()
-    } else {
-        ContentHash::from_canonical_material(
-            "crucible.scheduler.event-log.coverage-projection.v1",
-            &unique_material.into_iter().collect::<Vec<_>>().join("\n"),
-        )
-    };
-    EventLogCoverageProjection {
-        entries,
-        content_hash,
+    let mut fold = EventLogCoverageFold::new();
+    for entry in entries {
+        fold.observe(entry);
     }
+    fold.into_projection()
 }
 
 /// Returns the checkpoint coverage fingerprint derived from `entries`.

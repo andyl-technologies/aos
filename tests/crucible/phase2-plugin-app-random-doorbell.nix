@@ -5,8 +5,7 @@
   taskIds ? [],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
@@ -261,103 +260,30 @@ in
   if failures != []
   then throw "crucible phase2 plugin app-random doorbell check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-app-random-doorbell";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-app-random-doorbell";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            run_exact_test() {
-              expected="$1"
-              filter="$2"
-              list_output=$(cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list 2>&1)
-              exact_count=$(printf '%s\n' "$list_output" | grep -c "^$expected: test$" || true)
-              if [ "$exact_count" -ne 1 ]; then
-                printf '%s\n' "$list_output" >&2
-                echo "expected exactly one test named $expected, found $exact_count" >&2
-                exit 1
-              fi
-
-              test_output=$(cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --nocapture 2>&1)
-              printf '%s\n' "$test_output"
-              if ! printf '%s\n' "$test_output" | grep -F "test result: ok. 1 passed;" >/dev/null; then
-                echo "exact test $expected did not report one passed test" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets; they run one at a time in a single exact libtest
+            # invocation that must report exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --nocapture --test-threads=1 \
               whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount \
-              whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount
-            run_exact_test \
               whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply \
-              whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply
-            run_exact_test \
               whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8 \
-              whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8
-            run_exact_test \
               whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply \
-              whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply
-            run_exact_test \
               whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply \
-              whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply
-            run_exact_test \
-              whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies \
               whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies
           '';
         }

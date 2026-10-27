@@ -1,692 +1,60 @@
-//! Canonical campaign-findings encoding for authenticated campaign evidence.
+//! Content-addressed campaign findings ledger and its folding loader.
 //!
-//! The campaign ledger embeds each canonical request and authenticated response
-//! as lowercase hexadecimal while keeping finding and occurrence counts explicit:
+//! A campaign findings ledger is a small manifest naming one evidence record
+//! per finding in canonical finding-ID order. Records, occurrence chunks,
+//! report projections, and every canonical request and response live beside
+//! it in the same evidence store, so the manifest's content address commits to
+//! all of them:
 //!
 //! ```text
-//! crucible.failure-triage.findings-ledger.v4
+//! crucible.failure-triage.findings-ledger.v5
 //! ledger_kind=campaign
 //! finding_count=1
-//! finding.0.campaign=nightly-search
-//! finding.0.campaign_snapshot=crucible-campaign-snapshot:...
-//! finding.0.campaign_membership_request_hex=...
-//! finding.0.campaign_membership_response_hex=...
-//! finding.0.campaign_occurrence_page_count=1
-//! finding.0.campaign_occurrence.0.request_hex=...
-//! finding.0.campaign_occurrence.0.response_hex=...
+//! finding.0=crucible.campaign.finding@... <record hash>
 //! ```
+//!
+//! Loading authenticates one finding at a time and one occurrence at a time.
+//! Only the clustering input stays resident: one signed `(artifact, signature)`
+//! pair per distinct reproduction artifact, plus where in the ledger each
+//! artifact's evidence lives. [`CampaignTriageEvidence`] re-reads a selected
+//! member's report and replays on demand.
 
-use super::service::{authenticate_campaign_triage_finding, validate_campaign_triage_finding};
+use super::record::CampaignFindingEvidenceRecord;
+use super::service::{
+    CampaignFindingAuthenticationContext, OccurrenceCursorCheck,
+    authenticate_campaign_finding_head, authenticate_campaign_occurrence,
+    authenticate_campaign_occurrences, validate_campaign_triage_finding,
+};
+use super::store::{parse_evidence_hash, put_evidence_blob, read_evidence_blob};
 use super::*;
 use crate::cli_triage_debug::ledger_format::{
-    ledger_hex, parse_reproduction_finding_evidence, parse_required_hash_field,
-    reproduction_findings_ledger_bytes, required_field,
+    parse_reproduction_finding_evidence, parse_required_hash_field,
 };
 
-const MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
+/// Manifest bound: about 150 bytes per finding for every triaged finding.
+const MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
-struct BoundedCampaignLedger {
-    bytes: Vec<u8>,
-    encoded_bytes: usize,
-    exceeded_limit: bool,
-    maximum_bytes: usize,
-}
+/// Report projection bound: its event frames are hexadecimal copies of a
+/// replay payload, which is itself bounded.
+const MAX_FINDING_REPORT_BYTES: usize =
+    2 * crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES + 1024 * 1024;
 
-impl BoundedCampaignLedger {
-    fn with_maximum_bytes(maximum_bytes: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            encoded_bytes: 0,
-            exceeded_limit: false,
-            maximum_bytes,
-        }
-    }
-
-    fn push(&mut self, line: String) {
-        if self.exceeded_limit {
-            return;
-        }
-        let Some(next_len) = self
-            .encoded_bytes
-            .checked_add(line.len())
-            .and_then(|length| length.checked_add(1))
-        else {
-            self.exceeded_limit = true;
-            return;
-        };
-        if next_len > self.maximum_bytes {
-            self.exceeded_limit = true;
-            return;
-        }
-
-        self.bytes.extend_from_slice(line.as_bytes());
-        self.bytes.push(b'\n');
-        self.encoded_bytes = next_len;
-    }
-
-    fn finish(self) -> Result<Vec<u8>, CliError> {
-        if self.exceeded_limit {
-            let maximum_bytes = self.maximum_bytes;
-            return Err(artifact_error(format!(
-                "campaign findings ledger exceeds {maximum_bytes} bytes"
-            )));
-        }
-        Ok(self.bytes)
-    }
-}
-
-fn parse_campaign_hex_bytes(index: usize, field: &str, value: &str) -> Result<Vec<u8>, CliError> {
-    let maximum_hex_bytes = crucible_campaign::MAX_CAMPAIGN_SERVICE_MESSAGE_BYTES
-        .checked_mul(2)
-        .ok_or_else(|| artifact_error("campaign service hex size bound overflow"))?;
-    if value.len() > maximum_hex_bytes {
-        return Err(artifact_error(format!(
-            "finding {index} `{field}` exceeds the campaign message bound"
-        )));
-    }
-    super::parse_hex_bytes(index, field, value)
-}
-
-pub(crate) fn parse_campaign_findings_ledger_bytes(
-    store: &crucible_engine::LocalDagStore,
-    bytes: &[u8],
-    text: &str,
-) -> Result<LoadedTriageFindings, CliError> {
-    if bytes.len() > MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES {
-        return Err(artifact_error(format!(
-            "campaign findings ledger exceeds {MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES} bytes"
-        )));
-    }
-
-    let mut lines = text.lines();
-    if lines.next() != Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA)
-        || lines.next() != Some("ledger_kind=campaign")
-    {
-        return Err(artifact_error(
-            "unsupported campaign findings ledger schema",
-        ));
-    }
-
-    let mut by_index = BTreeMap::<usize, BTreeMap<String, String>>::new();
-    let mut finding_count = None;
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("finding_count=") {
-            if finding_count
-                .replace(
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| artifact_error("malformed campaign findings count"))?,
-                )
-                .is_some()
-            {
-                return Err(artifact_error("duplicate campaign findings count"));
-            }
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("finding.") else {
-            return Err(artifact_error("malformed campaign findings ledger line"));
-        };
-        let Some((index, field_value)) = rest.split_once('.') else {
-            return Err(artifact_error("malformed campaign findings ledger field"));
-        };
-        let index = index
-            .parse::<usize>()
-            .map_err(|_| artifact_error("malformed campaign findings ledger index"))?;
-        let Some((field, value)) = field_value.split_once('=') else {
-            return Err(artifact_error("malformed campaign findings ledger value"));
-        };
-        if by_index
-            .entry(index)
-            .or_default()
-            .insert(field.to_owned(), value.to_owned())
-            .is_some()
-        {
-            return Err(artifact_error("duplicate campaign findings ledger field"));
-        }
-    }
-    let finding_count = finding_count
-        .ok_or_else(|| artifact_error("campaign findings ledger is missing finding count"))?;
-    if by_index.len() != finding_count || by_index.keys().copied().ne(0..finding_count) {
-        return Err(artifact_error(
-            "campaign findings ledger count or indices are not canonical",
-        ));
-    }
-
-    let mut signed_findings = Vec::new();
-    let mut report_evidence = BTreeMap::new();
-    let mut campaign_evidence = Vec::new();
-    let mut previous_finding_id = None;
-    for (index, fields) in by_index {
-        let item = parse_campaign_finding_evidence(store, index, &fields)?;
-        let finding_id = item
-            .finding
-            .id()
-            .map_err(|error| artifact_error(format!("finding {index} ID is invalid: {error}")))?;
-        if previous_finding_id.is_some_and(|previous| previous >= finding_id) {
-            return Err(artifact_error(
-                "campaign findings are not in canonical finding-ID order",
-            ));
-        }
-        previous_finding_id = Some(finding_id);
-        let mut occurrence_reports = Vec::new();
-        for occurrence in campaign_occurrences(&item) {
-            let Some(replays) =
-                campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-            else {
-                continue;
-            };
-            let report = triage_finding_evidence_from_replay(&replays.minimization_original);
-            let stored = store
-                .put(&report.finding.artifact.to_compact_binary())
-                .map_err(CliError::Store)?;
-            if stored != report.finding.artifact.id() {
-                return Err(artifact_error(format!(
-                    "finding {index} occurrence reproduction payload has the wrong identity"
-                )));
-            }
-            occurrence_reports.push(report);
-        }
-        if occurrence_reports
-            .iter()
-            .all(|report| report.finding.artifact.id() != item.report.finding.artifact.id())
-        {
-            // A current occurrence may omit triage replay evidence. Preserve
-            // the independently authenticated representative instead of
-            // projecting its signature onto another occurrence.
-            occurrence_reports.push(item.report.clone());
-        }
-        for report in occurrence_reports {
-            let artifact = report.finding.artifact.id();
-            match report_evidence.entry(artifact) {
-                Entry::Vacant(entry) => {
-                    signed_findings.push(crucible_engine::FailureClusterFinding::new(
-                        artifact,
-                        report.discovery_signature.clone(),
-                    ));
-                    entry.insert(report);
-                }
-                Entry::Occupied(entry)
-                    if entry.get().discovery_signature.report_material()
-                        == report.discovery_signature.report_material() => {}
-                Entry::Occupied(_) => {
-                    return Err(artifact_error(
-                        "campaign findings repeat a reproduction artifact with conflicting authenticated native signatures",
-                    ));
-                }
-            }
-        }
-        campaign_evidence.push(item);
-    }
-    let ledger = crucible_engine::FailureFindingsLedger::from_signed_findings(signed_findings)
-        .map_err(|_| artifact_error("campaign findings contain conflicting signatures"))?;
-    Ok(LoadedTriageFindings {
-        ledger,
-        evidence: report_evidence,
-        campaign_evidence,
-        artifact_bytes: bytes.to_vec(),
-    })
-}
-
-fn parse_campaign_finding_evidence(
-    store: &crucible_engine::LocalDagStore,
-    index: usize,
-    fields: &BTreeMap<String, String>,
-) -> Result<CampaignTriageFindingEvidence, CliError> {
-    let campaign = crucible_campaign::CampaignName::new(required_field(fields, "campaign")?)
-        .map_err(|error| artifact_error(format!("finding {index} campaign is invalid: {error}")))?;
-    let snapshot =
-        crucible_campaign::CampaignSnapshotId::parse(required_field(fields, "campaign_snapshot")?)
-            .map_err(|error| {
-                artifact_error(format!("finding {index} snapshot is invalid: {error}"))
-            })?;
-    let membership = CampaignFindingsMembershipProof {
-        request: crucible_campaign::QueryCampaignFindingsRequest::from_canonical_bytes(
-            &parse_campaign_hex_bytes(
-                index,
-                "campaign_membership_request_hex",
-                required_field(fields, "campaign_membership_request_hex")?,
-            )?,
-        )
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} membership request is invalid: {error}"
-            ))
-        })?,
-        response: crucible_campaign::QueryCampaignFindingsResponse::from_canonical_bytes(
-            &parse_campaign_hex_bytes(
-                index,
-                "campaign_membership_response_hex",
-                required_field(fields, "campaign_membership_response_hex")?,
-            )?,
-        )
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} membership response is invalid: {error}"
-            ))
-        })?,
-    };
-    let observation_proof = parse_campaign_finding_object_proof(
-        index,
-        fields,
-        "campaign_observation_request_hex",
-        "campaign_observation_response_hex",
-    )?;
-    let reproduction_proof = parse_campaign_finding_object_proof(
-        index,
-        fields,
-        "campaign_reproduction_request_hex",
-        "campaign_reproduction_response_hex",
-    )?;
-    let minimized_reproduction_proof =
-        match required_field(fields, "campaign_minimized_request_hex")? {
-            "none" => {
-                if required_field(fields, "campaign_minimized_response_hex")? != "none" {
-                    return Err(artifact_error(format!(
-                        "finding {index} minimized campaign proof is incomplete"
-                    )));
-                }
-                None
-            }
-            request => {
-                if required_field(fields, "campaign_minimized_response_hex")? == "none" {
-                    return Err(artifact_error(format!(
-                        "finding {index} minimized campaign proof is incomplete"
-                    )));
-                }
-                Some(parse_campaign_finding_object_proof_bytes(
-                    index,
-                    request,
-                    required_field(fields, "campaign_minimized_response_hex")?,
-                )?)
-            }
-        };
-    let occurrence_page_count = required_field(fields, "campaign_occurrence_page_count")?
-        .parse::<usize>()
-        .map_err(|_| artifact_error(format!("finding {index} occurrence page count is invalid")))?;
-    if occurrence_page_count > crucible_campaign::MAX_FINDING_OCCURRENCES as usize {
-        return Err(artifact_error(format!(
-            "finding {index} occurrence page count exceeds the campaign bound"
-        )));
-    }
-    let mut occurrence_proofs = Vec::with_capacity(occurrence_page_count);
-    for page in 0..occurrence_page_count {
-        let request_field = format!("campaign_occurrence.{page}.request_hex");
-        let response_field = format!("campaign_occurrence.{page}.response_hex");
-        let request_value = fields.get(&request_field).ok_or_else(|| {
-            artifact_error(format!("finding {index} is missing `{request_field}`"))
-        })?;
-        let response_value = fields.get(&response_field).ok_or_else(|| {
-            artifact_error(format!("finding {index} is missing `{response_field}`"))
-        })?;
-        let request =
-            crucible_campaign::QueryCampaignFindingOccurrencesRequest::from_canonical_bytes(
-                &parse_campaign_hex_bytes(index, &request_field, request_value)?,
-            )
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} occurrence page {page} request is invalid: {error}"
-                ))
-            })?;
-        let response =
-            crucible_campaign::QueryCampaignFindingOccurrencesResponse::from_canonical_bytes(
-                &parse_campaign_hex_bytes(index, &response_field, response_value)?,
-            )
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} occurrence page {page} response is invalid: {error}"
-                ))
-            })?;
-        let page_proof = CampaignFindingOccurrencesProof { request, response };
-        let observation =
-            parse_campaign_finding_occurrence_object_proof(index, page, fields, "observation")?;
-        let reproduction =
-            parse_campaign_finding_occurrence_object_proof(index, page, fields, "reproduction")?;
-        let minimized_reproduction =
-            parse_campaign_finding_occurrence_object_proof(index, page, fields, "minimized")?;
-        let triage_evidence = parse_campaign_finding_occurrence_triage_proof(
-            index,
-            page,
-            fields,
-            page_proof
-                .response
-                .entries()
-                .first()
-                .and_then(|entry| entry.bundle().triage_evidence())
-                .is_some(),
-        )?;
-        occurrence_proofs.push(CampaignFindingOccurrenceProof {
-            page: page_proof,
-            observation,
-            reproduction,
-            minimized_reproduction,
-            triage_evidence,
-        });
-    }
-    let finding = crucible_campaign::Finding::from_canonical_bytes(&parse_campaign_hex_bytes(
-        index,
-        "campaign_finding_hex",
-        required_field(fields, "campaign_finding_hex")?,
-    )?)
-    .map_err(|error| artifact_error(format!("finding {index} body is invalid: {error}")))?;
-    let observation = crucible_campaign::Observation::from_canonical_bytes(
-        &parse_campaign_hex_bytes(
-            index,
-            "campaign_observation_hex",
-            required_field(fields, "campaign_observation_hex")?,
-        )?,
-    )
-    .map_err(|error| artifact_error(format!("finding {index} observation is invalid: {error}")))?;
-    let reproduction =
-        crucible_campaign::ReproductionArtifact::from_canonical_bytes(&parse_campaign_hex_bytes(
-            index,
-            "campaign_reproduction_hex",
-            required_field(fields, "campaign_reproduction_hex")?,
-        )?)
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} campaign reproduction is invalid: {error}"
-            ))
-        })?;
-    let minimized_reproduction = match required_field(fields, "campaign_minimized_hex")? {
-        "none" => None,
-        value => Some(
-            crucible_campaign::ReproductionArtifact::from_canonical_bytes(
-                &parse_campaign_hex_bytes(index, "campaign_minimized_hex", value)?,
-            )
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} minimized campaign reproduction is invalid: {error}"
-                ))
-            })?,
-        ),
-    };
-    let expected_finding_id =
-        crucible_campaign::FindingId::parse(required_field(fields, "campaign_finding_id")?)
-            .map_err(|error| artifact_error(format!("finding {index} ID is invalid: {error}")))?;
-
-    let mut report_fields = fields.clone();
-    for field in [
-        "campaign",
-        "campaign_snapshot",
-        "campaign_finding_id",
-        "campaign_membership_request_hex",
-        "campaign_membership_response_hex",
-        "campaign_observation_request_hex",
-        "campaign_observation_response_hex",
-        "campaign_reproduction_request_hex",
-        "campaign_reproduction_response_hex",
-        "campaign_minimized_request_hex",
-        "campaign_minimized_response_hex",
-        "campaign_occurrence_page_count",
-        "campaign_finding_hex",
-        "campaign_observation_hex",
-        "campaign_reproduction_hex",
-        "campaign_minimized_hex",
-    ] {
-        report_fields.remove(field);
-    }
-    for page in 0..occurrence_page_count {
-        report_fields.remove(&format!("campaign_occurrence.{page}.request_hex"));
-        report_fields.remove(&format!("campaign_occurrence.{page}.response_hex"));
-        for object in ["observation", "reproduction", "minimized"] {
-            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_request_hex"));
-            report_fields.remove(&format!("campaign_occurrence.{page}.{object}_response_hex"));
-        }
-        for object in [
-            "minimization_original_triage",
-            "minimization_selected_triage",
-            "verification_original_triage",
-            "verification_selected_triage",
-        ] {
-            let count_field = format!("campaign_occurrence.{page}.{object}_segment_count");
-            if let Some(count) = report_fields.remove(&count_field)
-                && count != "none"
-            {
-                let count = count.parse::<usize>().map_err(|_| {
-                    artifact_error(format!(
-                        "finding {index} occurrence {page} {object} segment count is invalid"
-                    ))
-                })?;
-                for segment in 0..count {
-                    report_fields.remove(&format!(
-                        "campaign_occurrence.{page}.{object}.segment.{segment}.request_hex"
-                    ));
-                    report_fields.remove(&format!(
-                        "campaign_occurrence.{page}.{object}.segment.{segment}.response_hex"
-                    ));
-                }
-            }
-        }
-    }
-    let expected_model_artifact = parse_required_hash_field(&report_fields, "artifact")?;
-    let stored_model_artifact = store.put(reproduction.payload()).map_err(CliError::Store)?;
-    if stored_model_artifact != expected_model_artifact {
-        return Err(artifact_error(format!(
-            "finding {index} campaign reproduction payload differs from its report artifact"
-        )));
-    }
-    let report = parse_reproduction_finding_evidence(store, index, &report_fields)?;
-    let item = CampaignTriageFindingEvidence {
-        campaign,
-        snapshot,
-        membership,
-        observation_proof,
-        reproduction_proof,
-        minimized_reproduction_proof,
-        occurrence_proofs,
-        finding,
-        observation,
-        reproduction,
-        minimized_reproduction,
-        report,
-    };
-    authenticate_campaign_triage_finding(index, expected_finding_id, &item)?;
-    validate_campaign_triage_finding(index, expected_finding_id, &item)?;
-    Ok(item)
-}
-
-fn parse_campaign_finding_object_proof(
-    index: usize,
-    fields: &BTreeMap<String, String>,
-    request_field: &'static str,
-    response_field: &'static str,
-) -> Result<CampaignFindingObjectProof, CliError> {
-    parse_campaign_finding_object_proof_bytes(
-        index,
-        required_field(fields, request_field)?,
-        required_field(fields, response_field)?,
-    )
-}
-
-fn parse_campaign_finding_object_proof_bytes(
-    index: usize,
-    request: &str,
-    response: &str,
-) -> Result<CampaignFindingObjectProof, CliError> {
-    let request = crucible_campaign::GetCampaignFindingObjectRequest::from_canonical_bytes(
-        &parse_campaign_hex_bytes(index, "campaign object request", request)?,
-    )
-    .map_err(|error| {
-        artifact_error(format!(
-            "finding {index} campaign object request is invalid: {error}"
-        ))
-    })?;
-    let response = crucible_campaign::GetCampaignFindingObjectResponse::from_canonical_bytes(
-        &parse_campaign_hex_bytes(index, "campaign object response", response)?,
-    )
-    .map_err(|error| {
-        artifact_error(format!(
-            "finding {index} campaign object response is invalid: {error}"
-        ))
-    })?;
-    Ok(CampaignFindingObjectProof { request, response })
-}
-
-fn parse_campaign_finding_occurrence_object_proof(
-    index: usize,
-    occurrence: usize,
-    fields: &BTreeMap<String, String>,
-    object: &str,
-) -> Result<CampaignFindingOccurrenceObjectProof, CliError> {
-    let request_field = format!("campaign_occurrence.{occurrence}.{object}_request_hex");
-    let response_field = format!("campaign_occurrence.{occurrence}.{object}_response_hex");
-    let request = fields
-        .get(&request_field)
-        .ok_or_else(|| artifact_error(format!("finding {index} is missing `{request_field}`")))?;
-    let response = fields
-        .get(&response_field)
-        .ok_or_else(|| artifact_error(format!("finding {index} is missing `{response_field}`")))?;
-    let request =
-        crucible_campaign::GetCampaignFindingOccurrenceObjectRequest::from_canonical_bytes(
-            &parse_campaign_hex_bytes(index, &request_field, request)?,
-        )
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} occurrence {occurrence} {object} request is invalid: {error}"
-            ))
-        })?;
-    let response =
-        crucible_campaign::GetCampaignFindingOccurrenceObjectResponse::from_canonical_bytes(
-            &parse_campaign_hex_bytes(index, &response_field, response)?,
-        )
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} occurrence {occurrence} {object} response is invalid: {error}"
-            ))
-        })?;
-    Ok(CampaignFindingOccurrenceObjectProof { request, response })
-}
-
-fn parse_campaign_finding_occurrence_triage_proof(
-    index: usize,
-    occurrence: usize,
-    fields: &BTreeMap<String, String>,
-    expected: bool,
-) -> Result<Option<CampaignFindingOccurrenceTriageProof>, CliError> {
-    let parsed = [
-        "minimization_original_triage",
-        "minimization_selected_triage",
-        "verification_original_triage",
-        "verification_selected_triage",
-    ]
-    .map(|object| {
-        let count_field = format!("campaign_occurrence.{occurrence}.{object}_segment_count");
-        let count = fields.get(&count_field).ok_or_else(|| {
-            artifact_error(format!("finding {index} is missing `{count_field}`"))
-        })?;
-        if count == "none" {
-            return Ok(None);
-        }
-        let count = count.parse::<usize>().map_err(|_| {
-            artifact_error(format!(
-                "finding {index} occurrence {occurrence} {object} segment count is invalid"
-            ))
-        })?;
-        if count == 0 || count > 8 {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence {occurrence} {object} segment count exceeds its bound"
-            )));
-        }
-        let mut segments = Vec::with_capacity(count);
-        for segment in 0..count {
-            let request_field = format!(
-                "campaign_occurrence.{occurrence}.{object}.segment.{segment}.request_hex"
-            );
-            let response_field = format!(
-                "campaign_occurrence.{occurrence}.{object}.segment.{segment}.response_hex"
-            );
-            let request = fields.get(&request_field).ok_or_else(|| {
-                artifact_error(format!("finding {index} is missing `{request_field}`"))
-            })?;
-            let response = fields.get(&response_field).ok_or_else(|| {
-                artifact_error(format!("finding {index} is missing `{response_field}`"))
-            })?;
-            let request = crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::from_canonical_bytes(
-                &parse_campaign_hex_bytes(index, &request_field, request)?,
-            )
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} occurrence {occurrence} {object} segment {segment} request is invalid: {error}"
-                ))
-            })?;
-            let response = crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse::from_canonical_bytes(
-                &parse_campaign_hex_bytes(index, &response_field, response)?,
-            )
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} occurrence {occurrence} {object} segment {segment} response is invalid: {error}"
-                ))
-            })?;
-            segments.push(CampaignFindingTriageReplaySegmentProof { request, response });
-        }
-        Ok(Some(CampaignFindingTriageReplayProof { segments }))
-    });
-    let [
-        minimization_original,
-        minimization_selected,
-        verification_original,
-        verification_selected,
-    ] = parsed;
-    let complete = match (
-        minimization_original?,
-        minimization_selected?,
-        verification_original?,
-        verification_selected?,
-    ) {
-        (
-            Some(minimization_original),
-            Some(minimization_selected),
-            Some(verification_original),
-            Some(verification_selected),
-        ) => Some(CampaignFindingOccurrenceTriageProof {
-            minimization_original,
-            minimization_selected,
-            verification_original,
-            verification_selected,
-        }),
-        (None, None, None, None) => None,
-        _ => {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence {occurrence} has an incomplete triage replay set"
-            )));
-        }
-    };
-    if complete.is_some() != expected {
-        return Err(artifact_error(format!(
-            "finding {index} occurrence {occurrence} triage replay set disagrees with its bundle schema"
-        )));
-    }
-    Ok(complete)
-}
-
+/// Encodes the canonical ledger manifest for captured finding records.
+///
+/// Entries are sorted into canonical finding-ID order. A finding captured
+/// twice with the same record is written once.
+///
+/// # Errors
+///
+/// Returns an error when one finding has two different records or the
+/// manifest exceeds its bound.
 pub(crate) fn campaign_findings_ledger_bytes(
-    evidence: &[CampaignTriageFindingEvidence],
+    findings: &[(crucible_campaign::FindingId, crucible_engine::ContentHash)],
 ) -> Result<Vec<u8>, CliError> {
-    campaign_findings_ledger_bytes_with_limit(evidence, MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES)
-}
-
-fn campaign_findings_ledger_bytes_with_limit(
-    evidence: &[CampaignTriageFindingEvidence],
-    maximum_bytes: usize,
-) -> Result<Vec<u8>, CliError> {
-    let mut canonical_evidence = BTreeMap::new();
-    for item in evidence {
-        let finding_id = item
-            .finding
-            .id()
-            .map_err(|error| artifact_error(format!("campaign finding ID is invalid: {error}")))?;
-        authenticate_campaign_triage_finding(0, finding_id, item)?;
-        validate_campaign_triage_finding(0, finding_id, item)?;
-        let scope = (
-            item.campaign.as_str().to_owned(),
-            item.snapshot.to_text(),
-            finding_id.to_text(),
-        );
-        if let Some((_, existing)) = canonical_evidence.insert(scope, (finding_id, item))
-            && existing != item
+    let mut canonical = BTreeMap::new();
+    for (finding, record) in findings {
+        if let Some(existing) = canonical.insert(*finding, *record)
+            && existing != *record
         {
             return Err(artifact_error(
                 "cannot write conflicting evidence for one campaign snapshot finding",
@@ -694,191 +62,558 @@ fn campaign_findings_ledger_bytes_with_limit(
         }
     }
 
-    let mut lines = BoundedCampaignLedger::with_maximum_bytes(maximum_bytes);
-    lines.push(String::from(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA));
-    lines.push(String::from("ledger_kind=campaign"));
-    lines.push(format!("finding_count={}", canonical_evidence.len()));
-    for (index, (_, (finding_id, item))) in canonical_evidence.into_iter().enumerate() {
-        let prefix = format!("finding.{index}");
-        lines.push(format!("{prefix}.campaign={}", item.campaign.as_str()));
-        lines.push(format!(
-            "{prefix}.campaign_snapshot={}",
-            item.snapshot.to_text()
+    let mut text = format!(
+        "{FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA}\nledger_kind=campaign\nfinding_count={}\n",
+        canonical.len()
+    );
+    for (index, (finding, record)) in canonical.into_iter().enumerate() {
+        text.push_str(&format!(
+            "finding.{index}={} {}\n",
+            finding.to_text(),
+            record.to_hex()
         ));
-        lines.push(format!(
-            "{prefix}.campaign_finding_id={}",
-            finding_id.to_text()
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_membership_request_hex={}",
-            ledger_hex(&item.membership.request.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_membership_response_hex={}",
-            ledger_hex(&item.membership.response.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_observation_request_hex={}",
-            ledger_hex(&item.observation_proof.request.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_observation_response_hex={}",
-            ledger_hex(&item.observation_proof.response.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_reproduction_request_hex={}",
-            ledger_hex(&item.reproduction_proof.request.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_reproduction_response_hex={}",
-            ledger_hex(&item.reproduction_proof.response.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_minimized_request_hex={}",
-            item.minimized_reproduction_proof.as_ref().map_or_else(
-                || String::from("none"),
-                |proof| ledger_hex(&proof.request.canonical_bytes())
-            )
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_minimized_response_hex={}",
-            item.minimized_reproduction_proof.as_ref().map_or_else(
-                || String::from("none"),
-                |proof| ledger_hex(&proof.response.canonical_bytes())
-            )
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_occurrence_page_count={}",
-            item.occurrence_proofs.len()
-        ));
-        for (page, proof) in item.occurrence_proofs.iter().enumerate() {
-            lines.push(format!(
-                "{prefix}.campaign_occurrence.{page}.request_hex={}",
-                ledger_hex(&proof.page.request.canonical_bytes())
-            ));
-            lines.push(format!(
-                "{prefix}.campaign_occurrence.{page}.response_hex={}",
-                ledger_hex(&proof.page.response.canonical_bytes())
-            ));
-            for (object, object_proof) in [
-                ("observation", &proof.observation),
-                ("reproduction", &proof.reproduction),
-                ("minimized", &proof.minimized_reproduction),
-            ] {
-                lines.push(format!(
-                    "{prefix}.campaign_occurrence.{page}.{object}_request_hex={}",
-                    ledger_hex(&object_proof.request.canonical_bytes())
-                ));
-                lines.push(format!(
-                    "{prefix}.campaign_occurrence.{page}.{object}_response_hex={}",
-                    ledger_hex(&object_proof.response.canonical_bytes())
-                ));
-            }
-            let triage_objects = [
-                (
-                    "minimization_original_triage",
-                    proof
-                        .triage_evidence
-                        .as_ref()
-                        .map(|triage| &triage.minimization_original),
-                ),
-                (
-                    "minimization_selected_triage",
-                    proof
-                        .triage_evidence
-                        .as_ref()
-                        .map(|triage| &triage.minimization_selected),
-                ),
-                (
-                    "verification_original_triage",
-                    proof
-                        .triage_evidence
-                        .as_ref()
-                        .map(|triage| &triage.verification_original),
-                ),
-                (
-                    "verification_selected_triage",
-                    proof
-                        .triage_evidence
-                        .as_ref()
-                        .map(|triage| &triage.verification_selected),
-                ),
-            ];
-            for (object, object_proof) in triage_objects {
-                let count = object_proof
-                    .map(|proof| proof.segments.len().to_string())
-                    .unwrap_or_else(|| String::from("none"));
-                lines.push(format!(
-                    "{prefix}.campaign_occurrence.{page}.{object}_segment_count={count}"
-                ));
-                if let Some(proof) = object_proof {
-                    for (segment, proof) in proof.segments.iter().enumerate() {
-                        lines.push(format!(
-                            "{prefix}.campaign_occurrence.{page}.{object}.segment.{segment}.request_hex={}",
-                            ledger_hex(&proof.request.canonical_bytes())
-                        ));
-                        lines.push(format!(
-                            "{prefix}.campaign_occurrence.{page}.{object}.segment.{segment}.response_hex={}",
-                            ledger_hex(&proof.response.canonical_bytes())
-                        ));
-                    }
-                }
-            }
-        }
-        lines.push(format!(
-            "{prefix}.campaign_finding_hex={}",
-            ledger_hex(&item.finding.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_observation_hex={}",
-            ledger_hex(&item.observation.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_reproduction_hex={}",
-            ledger_hex(&item.reproduction.canonical_bytes())
-        ));
-        lines.push(format!(
-            "{prefix}.campaign_minimized_hex={}",
-            item.minimized_reproduction.as_ref().map_or_else(
-                || String::from("none"),
-                |reproduction| ledger_hex(&reproduction.canonical_bytes())
-            )
-        ));
+    }
+    if text.len() > MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES {
+        return Err(artifact_error(format!(
+            "campaign findings ledger exceeds {MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES} bytes"
+        )));
+    }
+    Ok(text.into_bytes())
+}
 
-        let projected = reproduction_findings_ledger_bytes(std::slice::from_ref(&item.report))?;
-        let projected = std::str::from_utf8(&projected).map_err(|_| {
-            artifact_error("internal reproduction-findings projection is not UTF-8")
-        })?;
-        for line in projected.lines().skip(3) {
-            let Some(suffix) = line.strip_prefix("finding.0") else {
-                if line.is_empty() {
-                    continue;
-                }
-                return Err(artifact_error(
-                    "internal reproduction-findings projection is malformed",
-                ));
-            };
-            lines.push(format!("{prefix}{suffix}"));
+/// Stores the ledger manifest and reports whether it was already present.
+///
+/// # Errors
+///
+/// Returns an error when the manifest cannot be encoded or stored.
+pub(crate) fn write_campaign_findings_ledger(
+    store: &crucible_engine::LocalDagStore,
+    findings: &[(crucible_campaign::FindingId, crucible_engine::ContentHash)],
+) -> Result<crucible_engine::FailureTriageStoredArtifact, CliError> {
+    let bytes = campaign_findings_ledger_bytes(findings)?;
+    let key = crucible_engine::ContentHash::from_bytes(&bytes);
+    let cache_hit = store.exists(&key).map_err(CliError::Store)?;
+    if put_evidence_blob(store, &bytes)? != key {
+        return Err(artifact_error(
+            "stored findings ledger key did not match content hash",
+        ));
+    }
+    Ok(crucible_engine::FailureTriageStoredArtifact {
+        key,
+        cache_hit,
+        size_bytes: bytes.len(),
+    })
+}
+
+/// Loads and authenticates the ledger stored under `manifest` in `evidence`.
+///
+/// Derived reproduction artifacts are written to `artifacts`, which may be
+/// the evidence store itself.
+///
+/// # Errors
+///
+/// Returns an error when the manifest or any blob it reaches is missing,
+/// noncanonical, or unauthenticated, or two findings bind one reproduction
+/// artifact to different native signatures.
+pub(crate) fn load_campaign_findings_ledger(
+    evidence: &crucible_engine::LocalDagStore,
+    artifacts: &crucible_engine::LocalDagStore,
+    manifest: crucible_engine::ContentHash,
+) -> Result<LoadedTriageFindings, CliError> {
+    let bytes = read_evidence_blob(
+        evidence,
+        manifest,
+        MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES,
+        "campaign findings ledger",
+    )?;
+    load_campaign_findings_ledger_bytes(evidence, artifacts, &bytes)
+}
+
+/// Loads and authenticates a ledger manifest supplied as bytes.
+///
+/// # Errors
+///
+/// Returns the same errors as [`load_campaign_findings_ledger`].
+pub(crate) fn load_campaign_findings_ledger_bytes(
+    evidence: &crucible_engine::LocalDagStore,
+    artifacts: &crucible_engine::LocalDagStore,
+    bytes: &[u8],
+) -> Result<LoadedTriageFindings, CliError> {
+    if bytes.len() > MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES {
+        return Err(artifact_error(format!(
+            "campaign findings ledger exceeds {MAX_CAMPAIGN_FINDINGS_MANIFEST_BYTES} bytes"
+        )));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| artifact_error("campaign findings ledger is not UTF-8"))?;
+    let body = text
+        .strip_suffix('\n')
+        .ok_or_else(|| artifact_error("campaign findings ledger does not end with a line feed"))?;
+    let mut lines = body.split('\n');
+    if lines.next() != Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA)
+        || lines.next() != Some("ledger_kind=campaign")
+    {
+        return Err(artifact_error(
+            "unsupported campaign findings ledger schema",
+        ));
+    }
+    let finding_count = lines
+        .next()
+        .and_then(|line| line.strip_prefix("finding_count="))
+        .and_then(|value| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|count| count.to_string() == value)
+        })
+        .ok_or_else(|| artifact_error("malformed campaign findings count"))?;
+
+    let mut fold = CampaignTriageFold::default();
+    let mut records = Vec::new();
+    let mut previous = None;
+    for index in 0..finding_count {
+        let (finding, record) = lines
+            .next()
+            .and_then(|line| line.strip_prefix(&format!("finding.{index}=")))
+            .and_then(|value| value.split_once(' '))
+            .ok_or_else(|| {
+                artifact_error("campaign findings ledger count or indices are not canonical")
+            })?;
+        let finding = crucible_campaign::FindingId::parse(finding)
+            .map_err(|error| artifact_error(format!("finding {index} ID is invalid: {error}")))?;
+        if previous.is_some_and(|previous| previous >= finding) {
+            return Err(artifact_error(
+                "campaign findings are not in canonical finding-ID order",
+            ));
+        }
+        previous = Some(finding);
+        let record = parse_evidence_hash("finding record", record)?;
+        fold_campaign_finding(evidence, artifacts, index, finding, record, &mut fold)?;
+        records.push(record);
+    }
+    if lines.next().is_some() {
+        return Err(artifact_error(
+            "campaign findings ledger count or indices are not canonical",
+        ));
+    }
+
+    let ledger = crucible_engine::FailureFindingsLedger::from_signed_findings(fold.signed)
+        .map_err(|_| artifact_error("campaign findings contain conflicting signatures"))?;
+    Ok(LoadedTriageFindings {
+        ledger,
+        evidence: CampaignTriageEvidence {
+            evidence_store: evidence.clone(),
+            artifact_store: artifacts.clone(),
+            records,
+            members: fold
+                .members
+                .into_iter()
+                .map(|(artifact, (_, location))| (artifact, location))
+                .collect(),
+        },
+    })
+}
+
+/// Authenticates one finding and adds its clustering members to `fold`.
+fn fold_campaign_finding(
+    evidence: &crucible_engine::LocalDagStore,
+    artifacts: &crucible_engine::LocalDagStore,
+    index: usize,
+    finding: crucible_campaign::FindingId,
+    record_key: crucible_engine::ContentHash,
+    fold: &mut CampaignTriageFold,
+) -> Result<(), CliError> {
+    let record = CampaignFindingEvidenceRecord::read(evidence, record_key)?;
+    if record.finding != finding {
+        return Err(artifact_error(format!(
+            "finding {index} evidence record names another finding"
+        )));
+    }
+    let item = authenticate_campaign_finding(evidence, artifacts, index, &record)?;
+    let report_artifact = item.report.finding.artifact.id();
+
+    // Each occurrence contributes its minimization-original replay. The
+    // finding's own report joins only when no occurrence covers it, so a
+    // representative without replay evidence is never projected onto another
+    // occurrence's signature.
+    let mut covered = false;
+    let context = CampaignFindingAuthenticationContext {
+        index,
+        record: &record,
+        finding: &item.finding,
+        template: &item.report,
+        evidence,
+    };
+    authenticate_campaign_occurrences(context, &mut |occurrence, role, native| {
+        if role != crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal {
+            return Ok(());
+        }
+        let artifact = native.finding().artifact.id();
+        let stored = artifacts
+            .put(&native.finding().artifact.to_compact_binary())
+            .map_err(CliError::Store)?;
+        if stored != artifact {
+            return Err(artifact_error(format!(
+                "finding {index} occurrence reproduction payload has the wrong identity"
+            )));
+        }
+        covered |= artifact == report_artifact;
+        fold.insert(
+            artifact,
+            native.signature().clone(),
+            CampaignTriageMemberLocation {
+                finding: index,
+                occurrence: Some(occurrence),
+            },
+        )
+    })?;
+    if !covered {
+        fold.insert(
+            report_artifact,
+            item.report.discovery_signature.clone(),
+            CampaignTriageMemberLocation {
+                finding: index,
+                occurrence: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Authenticates one record's finding-level exchanges and report projection.
+fn authenticate_campaign_finding(
+    evidence: &crucible_engine::LocalDagStore,
+    artifacts: &crucible_engine::LocalDagStore,
+    index: usize,
+    record: &CampaignFindingEvidenceRecord,
+) -> Result<CampaignTriageFindingEvidence, CliError> {
+    let head = authenticate_campaign_finding_head(index, evidence, record)?;
+    let report = load_campaign_finding_report(
+        evidence,
+        artifacts,
+        index,
+        record,
+        &head.reproduction_artifact,
+    )?;
+    let item = CampaignTriageFindingEvidence {
+        campaign: record.campaign.clone(),
+        snapshot: record.snapshot,
+        finding: head.finding,
+        observation: head.observation,
+        reproduction: head.reproduction,
+        minimized_reproduction: head.minimized_reproduction,
+        minimized_artifact: head.minimized_artifact,
+        report,
+        occurrence_count: record.occurrence_count,
+    };
+    validate_campaign_triage_finding(index, record.finding, &item)?;
+    Ok(item)
+}
+
+/// Reads one report projection and binds it to the authenticated
+/// reproduction's Crucible artifact.
+fn load_campaign_finding_report(
+    evidence: &crucible_engine::LocalDagStore,
+    artifacts: &crucible_engine::LocalDagStore,
+    index: usize,
+    record: &CampaignFindingEvidenceRecord,
+    reproduction: &crucible_engine::ReproductionArtifact,
+) -> Result<TriageFindingEvidence, CliError> {
+    let bytes = read_evidence_blob(
+        evidence,
+        record.report,
+        MAX_FINDING_REPORT_BYTES,
+        "finding report projection",
+    )?;
+    let fields = parse_finding_report_fields(&bytes)?;
+    let expected_model_artifact = parse_required_hash_field(&fields, "artifact")?;
+    let stored_model_artifact = artifacts
+        .put(&reproduction.to_compact_binary())
+        .map_err(CliError::Store)?;
+    if stored_model_artifact != expected_model_artifact {
+        return Err(artifact_error(format!(
+            "finding {index} campaign reproduction payload differs from its report artifact"
+        )));
+    }
+    parse_reproduction_finding_evidence(artifacts, index, &fields)
+}
+
+/// Parses a single-finding reproduction ledger into its report fields.
+fn parse_finding_report_fields(bytes: &[u8]) -> Result<BTreeMap<String, String>, CliError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| artifact_error("finding report projection is not UTF-8"))?;
+    let mut lines = text.lines();
+    if lines.next() != Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA)
+        || lines.next() != Some("ledger_kind=reproduction")
+        || lines.next() != Some("finding_count=1")
+    {
+        return Err(artifact_error(
+            "unsupported finding report projection schema",
+        ));
+    }
+    let mut fields = BTreeMap::new();
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (field, value) = line
+            .strip_prefix("finding.0.")
+            .and_then(|field_value| field_value.split_once('='))
+            .ok_or_else(|| artifact_error("malformed finding report projection field"))?;
+        if fields.insert(field.to_owned(), value.to_owned()).is_some() {
+            return Err(artifact_error("duplicate finding report projection field"));
         }
     }
-    lines.finish()
+    Ok(fields)
+}
+
+/// Where one clustered reproduction artifact's evidence lives in the ledger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CampaignTriageMemberLocation {
+    finding: usize,
+    /// `None` names the finding's own report projection.
+    occurrence: Option<u64>,
+}
+
+/// Clustering input accumulated while a ledger loads.
+#[derive(Default)]
+struct CampaignTriageFold {
+    signed: Vec<crucible_engine::FailureClusterFinding>,
+    members: BTreeMap<crucible_engine::ContentHash, (usize, CampaignTriageMemberLocation)>,
+}
+
+impl CampaignTriageFold {
+    /// Adds one member; the first location of an artifact wins.
+    fn insert(
+        &mut self,
+        artifact: crucible_engine::ContentHash,
+        signature: crucible_engine::FailureSignature,
+        location: CampaignTriageMemberLocation,
+    ) -> Result<(), CliError> {
+        match self.members.entry(artifact) {
+            Entry::Vacant(entry) => {
+                entry.insert((self.signed.len(), location));
+                self.signed
+                    .push(crucible_engine::FailureClusterFinding::new(
+                        artifact, signature,
+                    ));
+            }
+            Entry::Occupied(entry)
+                if self.signed.get(entry.get().0).is_some_and(|existing| {
+                    existing.signature.report_material() == signature.report_material()
+                }) => {}
+            Entry::Occupied(_) => {
+                return Err(artifact_error(
+                    "campaign findings repeat a reproduction artifact with conflicting authenticated native signatures",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Authenticated ledger evidence that loads members on demand.
+///
+/// Holds two store handles, one record key per finding, and one location per
+/// clustered artifact. Every accessor re-reads content-addressed blobs, so
+/// the bytes it decodes are exactly the ones authenticated at load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CampaignTriageEvidence {
+    evidence_store: crucible_engine::LocalDagStore,
+    artifact_store: crucible_engine::LocalDagStore,
+    records: Vec<crucible_engine::ContentHash>,
+    members: BTreeMap<crucible_engine::ContentHash, CampaignTriageMemberLocation>,
+}
+
+/// One clustered member's finding records, report, and native replays.
+pub(crate) struct CampaignTriageMember {
+    pub(crate) finding: CampaignTriageFindingEvidence,
+    /// Native replays of the member's occurrence; `None` when the member is
+    /// the finding's own report projection.
+    pub(super) replays: Option<CampaignOccurrenceNativeTriageReplays>,
+}
+
+impl CampaignTriageMember {
+    /// Reports whether the member was loaded with its occurrence's replays.
+    #[cfg(test)]
+    pub(crate) fn retains_occurrence_replays(&self) -> bool {
+        self.replays.is_some()
+    }
+
+    /// Returns the member's report evidence as clustered at load.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a retained replay's log can no longer be read.
+    pub(crate) fn report(&self) -> Result<TriageFindingEvidence, CliError> {
+        self.replays.as_ref().map_or_else(
+            || Ok(self.finding.report.clone()),
+            |replays| triage_finding_evidence_from_replay(&replays.minimization_original),
+        )
+    }
+}
+
+impl CampaignTriageEvidence {
+    /// Returns the number of findings in the ledger.
+    pub(crate) fn finding_count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Returns clustered reproduction artifacts in ascending order.
+    pub(crate) fn member_artifacts(
+        &self,
+    ) -> impl Iterator<Item = crucible_engine::ContentHash> + '_ {
+        self.members.keys().copied()
+    }
+
+    /// Re-reads and re-authenticates one finding's finding-level records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `index` is outside the ledger or its evidence can
+    /// no longer be read.
+    pub(crate) fn finding(&self, index: usize) -> Result<CampaignTriageFindingEvidence, CliError> {
+        let key = self
+            .records
+            .get(index)
+            .copied()
+            .ok_or_else(|| artifact_error("campaign finding index is outside its ledger"))?;
+        let record = CampaignFindingEvidenceRecord::read(&self.evidence_store, key)?;
+        authenticate_campaign_finding(&self.evidence_store, &self.artifact_store, index, &record)
+    }
+
+    /// Loads one clustered member, or `None` when `artifact` is not clustered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the member's evidence can no longer be read or
+    /// decoded.
+    pub(crate) fn member(
+        &self,
+        artifact: crucible_engine::ContentHash,
+    ) -> Result<Option<CampaignTriageMember>, CliError> {
+        let Some(location) = self.members.get(&artifact).copied() else {
+            return Ok(None);
+        };
+        let key =
+            self.records.get(location.finding).copied().ok_or_else(|| {
+                artifact_error("campaign member names a finding outside its ledger")
+            })?;
+        let record = CampaignFindingEvidenceRecord::read(&self.evidence_store, key)?;
+        let finding = authenticate_campaign_finding(
+            &self.evidence_store,
+            &self.artifact_store,
+            location.finding,
+            &record,
+        )?;
+        let replays = match location.occurrence {
+            None => None,
+            Some(occurrence) => {
+                let exchanges = record.read_occurrence(&self.evidence_store, occurrence)?;
+                let mut collected = CampaignOccurrenceReplayCollector::default();
+                authenticate_campaign_occurrence(
+                    CampaignFindingAuthenticationContext {
+                        index: location.finding,
+                        record: &record,
+                        finding: &finding.finding,
+                        template: &finding.report,
+                        evidence: &self.evidence_store,
+                    },
+                    occurrence,
+                    &exchanges,
+                    OccurrenceCursorCheck::Loaded,
+                    &mut |_, role, native| collected.insert(role, native),
+                )?;
+                Some(collected.finish()?)
+            }
+        };
+        Ok(Some(CampaignTriageMember { finding, replays }))
+    }
+
+    /// Loads one clustered member's report evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `artifact` is not clustered or its evidence can
+    /// no longer be read.
+    pub(crate) fn member_report(
+        &self,
+        artifact: crucible_engine::ContentHash,
+    ) -> Result<TriageFindingEvidence, CliError> {
+        self.member(artifact)?
+            .map(|member| member.report())
+            .ok_or_else(|| artifact_error("missing member evidence in findings ledger"))?
+    }
 }
 
 #[cfg(test)]
-mod bounded_ledger_tests {
+mod tests {
+    // crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
-    fn bounded_campaign_ledger_stops_before_aggregate_overflow() {
-        assert_eq!(MAX_CAMPAIGN_FINDINGS_LEDGER_BYTES, 1024 * 1024 * 1024);
+    fn manifest_orders_findings_and_rejects_conflicting_records() {
+        let finding = |label: &[u8]| {
+            crucible_campaign::FindingId::parse(&format!(
+                "crucible.campaign.finding@{}",
+                crucible_store::content_store::ContentId::for_bytes(
+                    crucible_campaign::CampaignRecordKind::Finding.object_kind(),
+                    crucible_campaign::CampaignRecordKind::Finding.schema_version(),
+                    label,
+                )
+            ))
+            .expect("finding ID")
+        };
+        let (first, second) = {
+            let left = finding(b"left");
+            let right = finding(b"right");
+            if left < right {
+                (left, right)
+            } else {
+                (right, left)
+            }
+        };
+        let record = crucible_engine::ContentHash::from_bytes(b"record");
+        let other = crucible_engine::ContentHash::from_bytes(b"other record");
 
-        let mut ledger = BoundedCampaignLedger::with_maximum_bytes(8);
-        ledger.push(String::from("abc"));
-        ledger.push(String::from("def"));
-        assert_eq!(ledger.bytes, b"abc\ndef\n");
+        let bytes =
+            campaign_findings_ledger_bytes(&[(second, other), (first, record), (first, record)])
+                .expect("manifest encodes");
+        let text = String::from_utf8(bytes).expect("manifest is UTF-8");
+        assert_eq!(
+            text,
+            format!(
+                "{FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA}\nledger_kind=campaign\nfinding_count=2\nfinding.0={} {}\nfinding.1={} {}\n",
+                first.to_text(),
+                record.to_hex(),
+                second.to_text(),
+                other.to_hex()
+            )
+        );
+        assert!(campaign_findings_ledger_bytes(&[(first, record), (first, other)]).is_err());
+    }
 
-        ledger.push(String::from("x"));
-        assert_eq!(ledger.bytes, b"abc\ndef\n");
-        assert!(ledger.finish().is_err());
+    #[test]
+    fn manifest_loader_rejects_old_and_noncanonical_headers_before_reading_records() {
+        let directory = tempfile::tempdir().expect("temporary store");
+        let store = crucible_engine::LocalDagStore::new(directory.path());
+        for rejected in [
+            "crucible.failure-triage.findings-ledger.v4\nledger_kind=campaign\nfinding_count=0\n",
+            "crucible.failure-triage.findings-ledger.v5\nledger_kind=reproduction\nfinding_count=0\n",
+            "crucible.failure-triage.findings-ledger.v5\nledger_kind=campaign\nfinding_count=00\n",
+            "crucible.failure-triage.findings-ledger.v5\nledger_kind=campaign\nfinding_count=0",
+            "crucible.failure-triage.findings-ledger.v5\nledger_kind=campaign\nfinding_count=0\nfinding.0=x y\n",
+        ] {
+            assert!(
+                load_campaign_findings_ledger_bytes(&store, &store, rejected.as_bytes()).is_err(),
+                "{rejected:?} must be rejected"
+            );
+        }
+        let empty = load_campaign_findings_ledger_bytes(
+            &store,
+            &store,
+            b"crucible.failure-triage.findings-ledger.v5\nledger_kind=campaign\nfinding_count=0\n",
+        )
+        .expect("an empty ledger loads");
+        assert_eq!(empty.evidence.finding_count(), 0);
     }
 }

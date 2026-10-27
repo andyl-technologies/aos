@@ -602,6 +602,17 @@ pub enum MeasurementDefinitionError {
         /// Metric whose source/type contract is invalid.
         metric: MetricId,
     },
+    /// A level source was paired with an aggregation that depends on how
+    /// finely the scheduler divided the run.
+    #[error(
+        "metric `{metric}` aggregates a level source with `{aggregation}`; level sources admit only first, last, event_delta, min, and max"
+    )]
+    LevelSourceAggregation {
+        /// Metric whose source/aggregation contract is invalid.
+        metric: MetricId,
+        /// Rejected aggregation tag.
+        aggregation: &'static str,
+    },
     /// A canonical representation could not be produced.
     #[error("measurement canonical encoding failed: {reason}")]
     CanonicalEncoding {
@@ -911,6 +922,31 @@ fn validate_metric(
         return Err(MeasurementDefinitionError::IncompatibleSource {
             metric: metric.id.clone(),
         });
+    }
+    // A level source reports a coordinate at every entry that carries one, so
+    // only a window's endpoints and extremes are independent of how many
+    // entries the scheduler produced (RFC-0020 CMEAS-23).
+    if matches!(
+        metric.source,
+        MetricSource::VirtualTime | MetricSource::NodeIcount { .. }
+    ) {
+        let rejected = match metric.aggregation {
+            Aggregation::Count => Some("count"),
+            Aggregation::Sum => Some("sum"),
+            Aggregation::ExactMean => Some("exact_mean"),
+            Aggregation::Histogram { .. } => Some("histogram"),
+            Aggregation::Min
+            | Aggregation::Max
+            | Aggregation::First
+            | Aggregation::Last
+            | Aggregation::EventDelta => None,
+        };
+        if let Some(aggregation) = rejected {
+            return Err(MeasurementDefinitionError::LevelSourceAggregation {
+                metric: metric.id.clone(),
+                aggregation,
+            });
+        }
     }
     if let Aggregation::Histogram { upper_bounds } = &mut metric.aggregation {
         if upper_bounds.is_empty() {

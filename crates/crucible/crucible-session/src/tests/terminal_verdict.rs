@@ -42,8 +42,10 @@ async fn terminal_quantum_verdict_is_not_reapplied_as_a_breakpoint_action() {
             SchedulerEvaluationBoundaryKind::Quantum,
         ),
     ];
+    let history = ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.clone())
+        .unwrap_or_else(|error| panic!("terminal history prefix must build: {error}"));
     engine
-        .evaluate_breakpoints(&entries, entries.len())
+        .evaluate_breakpoints(&history, entries.len())
         .unwrap_or_else(|error| panic!("terminal breakpoint evaluation must be inert: {error}"));
 
     assert!(matches!(

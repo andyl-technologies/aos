@@ -5,8 +5,7 @@
   taskIds ? ["T-GHC-13"],
   phase0S5 ? import ./phase0-s5.nix {inherit pkgs lib;},
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -215,47 +214,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-guest-host-virtual-memory-spike";
-      version = "0";
-      src = crucibleSrc;
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      buildDeps = [pkgs.coreutils pkgs.grep pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
-      runtimeDeps = [pkgs.sqlite];
+      buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-guest-host-virtual-memory-spike";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_line() {
               result="$1"
               line="$2"
@@ -291,11 +257,7 @@ in
             require_line "$s5_result" "side_effect_free_fingerprint_match=true"
             require_line "$s5_result" "physical_pinned_fallback_adopted=false"
             require_line "$s5_result" "s5_complete=true"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-virtual-memory-spike-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib \
               -- --list > "$TMPDIR/plugin-tests"
@@ -311,11 +273,7 @@ in
             require_listed \
               "$TMPDIR/plugin-tests" \
               "whitebox_doorbell::tests::whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolution"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-virtual-memory-spike-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib whitebox_guest_memory_addressing \
               -- --test-threads=1

@@ -5,7 +5,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
     use crucible_qemu_host::{
         QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
         QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
-        QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
+        QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
@@ -59,7 +59,6 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
         ),
         ("child-files", QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION),
         ("child-qmp", QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION),
-        ("child-console", QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION),
         (
             "child-diagnostics",
             QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
@@ -68,7 +67,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
     for (name, version) in schemas {
         let row = format!(
-            "crucible.qemu.hot-fork.{name}\t{version}\tcrucible-qemu::qmp::hot_fork\tprocess-protocol-message\t"
+            "crucible.qemu.hot-fork.{name}\t{version}\tcrucible-qemu-host::qmp::hot_fork\tprocess-protocol-message\t"
         );
         assert!(
             registry.lines().any(|line| line.starts_with(&row)),
@@ -78,7 +77,9 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
     let registered = registry
         .lines()
-        .filter(|line| line.contains("\tcrucible-qemu::qmp::hot_fork\tprocess-protocol-message\t"))
+        .filter(|line| {
+            line.contains("\tcrucible-qemu-host::qmp::hot_fork\tprocess-protocol-message\t")
+        })
         .filter_map(|line| line.split_once('\t'))
         .map(|(name, _)| name)
         .filter(|name| name.starts_with("crucible.qemu.hot-fork."))
@@ -233,10 +234,6 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         (
             "crucible-hot-fork-child-qmp",
             "crucible.qemu.hot-fork.child-qmp",
-        ),
-        (
-            "crucible-hot-fork-child-console",
-            "crucible.qemu.hot-fork.child-console",
         ),
         (
             "crucible-checkpoint-capture",

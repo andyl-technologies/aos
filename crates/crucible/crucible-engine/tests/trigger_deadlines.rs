@@ -26,7 +26,7 @@ fn evaluate(
         |_leaf: crucible_engine::ConditionLeaf<'_>| false,
     )
     .with_timer_fires(timers.clone());
-    Ok(pass.evaluate_event_graph(graph, state))
+    Ok(pass.evaluate_event_graph(graph, state)?)
 }
 
 #[test]
@@ -232,17 +232,17 @@ fn leading_node_prefix_cannot_consume_a_global_time_trigger() -> TestResult {
     let mut state = EventGraphState::new();
     let before = state.to_compact_binary();
     assert!(
-        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 0 })
+        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 0 })?
             .is_empty()
     );
     assert_eq!(state.to_compact_binary(), before);
     assert_eq!(
-        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })?
             .len(),
         1
     );
     assert!(
-        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })
+        pass.evaluate_event_graph_at_frontier(&graph, &mut state, VirtualTime { ticks: 7 })?
             .is_empty()
     );
     Ok(())

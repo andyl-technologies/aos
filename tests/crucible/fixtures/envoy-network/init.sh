@@ -66,6 +66,13 @@ wait_for_local_health() {
   done
 }
 
+# Each VM parks at its phase marker as soon as it emits it, so every boundary
+# hand-off adds its poll interval to the virtual time before the last marker.
+# Short polls keep the staggered markers inside the attempt's run ceiling; the
+# attempt count keeps the original 90 seconds of sleep budget.
+boundary_poll_seconds=0.1
+boundary_poll_attempts=900
+
 wait_for_control_boundary() {
   boundary=$1
   attempts=0
@@ -74,11 +81,11 @@ wait_for_control_boundary() {
     "$control_url/$boundary" 2>/dev/null) \
     && [ "$status" = 204 ]; do
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 90 ]; then
+    if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
       echo "$role did not observe $boundary" >&2
       return 1
     fi
-    sleep 1
+    sleep "$boundary_poll_seconds"
   done
 }
 
@@ -89,12 +96,57 @@ acknowledge_control_boundary() {
     --show-error --fail --request POST --data '' \
     "$control_url/ready/$phase/$role" >/dev/null 2>&1; do
     attempts=$((attempts + 1))
-    if [ "$attempts" -ge 90 ]; then
+    if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
       echo "$role could not acknowledge $phase readiness" >&2
       return 1
     fi
-    sleep 1
+    sleep "$boundary_poll_seconds"
   done
+}
+
+# East reaches A's control listener only through C's /control/ route. C must
+# not park at its marker until A has recorded east's acknowledgement, or the
+# relay would stop with east's request still behind it. C waits before its own
+# acknowledgement: A parks once every acknowledgement is present, after which
+# C could no longer observe east's through A.
+wait_for_relayed_east_ack() {
+  phase=$1
+  [ "$role" = router-c ] || return 0
+  wait_for_control_boundary "ready/$phase/traffic-east"
+}
+
+# A parked VM consumes no frames, and the host refuses a phase boundary while
+# any frame is still in flight. A VM therefore emits its marker only after each
+# TCP close handshake that still owes it a frame has finished: no socket may be
+# connecting, half-closed, or awaiting the peer's final FIN or ACK. Established
+# keep-alive and listening sockets are idle and remain open.
+tcp_teardown_pending() {
+  for table in /proc/net/tcp /proc/net/tcp6; do
+    [ -r "$table" ] || continue
+    while read -r _slot _local _remote state _rest; do
+      case "$state" in
+        02|03|04|05|08|09|0B) return 0 ;;
+      esac
+    done < "$table"
+  done
+  return 1
+}
+
+teardown_poll_seconds=0.01
+teardown_poll_attempts=1000
+
+emit_phase_marker() {
+  marker=$1
+  attempts=0
+  while tcp_teardown_pending; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge "$teardown_poll_attempts" ]; then
+      echo "$role retained TCP teardown before $marker" >&2
+      return 1
+    fi
+    sleep "$teardown_poll_seconds"
+  done
+  crucible-guest event "$marker"
 }
 
 wait_for_peer_acks() {
@@ -103,11 +155,11 @@ wait_for_peer_acks() {
     attempts=0
     until [ -e "/run/ready-$phase-$peer" ]; do
       attempts=$((attempts + 1))
-      if [ "$attempts" -ge 90 ]; then
+      if [ "$attempts" -ge "$boundary_poll_attempts" ]; then
         echo "router-a did not receive $phase readiness from $peer" >&2
         return 1
       fi
-      sleep 1
+      sleep "$boundary_poll_seconds"
     done
   done
 }
@@ -179,7 +231,7 @@ $selected
 EOF
   case "$strategy_id" in
     1111111111111111111111111111111111111111111111111111111111111111) strategy=retain_and_probe ;;
-    2222222222222222222222222222222222222222222222222222222222222) strategy=withdraw_then_relearn ;;
+    2222222222222222222222222222222222222222222222222222222222222222) strategy=withdraw_then_relearn ;;
     3333333333333333333333333333333333333333333333333333333333333333) strategy=restart_adjacency ;;
     4444444444444444444444444444444444444444444444444444444444444444) strategy=recompute_all ;;
     ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff) strategy=unsafe_short_circuit ;;
@@ -211,14 +263,16 @@ run_router() {
     wait_for_local_health
     crucible-guest event boot.local-healthy
     wait_for_control_boundary converged
+    wait_for_relayed_east_ack transport
     acknowledge_control_boundary transport
-    crucible-guest event fault.transport.ready
+    emit_phase_marker fault.transport.ready
     wait_for_control_boundary followup-ready
+    wait_for_relayed_east_ack followup
     acknowledge_control_boundary followup
-    crucible-guest event fault.followup.ready
+    emit_phase_marker fault.followup.ready
     wait "$envoy_pid" || :
     crucible-guest unreachable control-plane-crash-or-deadlock \
-      'An Envoy router exited during the campaign'
+      'control-plane processes must not crash or deadlock'
     return
   fi
 
@@ -230,19 +284,19 @@ run_router() {
   crucible-guest event boot.route-ready
   while [ ! -e /run/converged ]; do sleep 0.1; done
   wait_for_peer_acks transport
-  crucible-guest event fault.transport.ready
+  emit_phase_marker fault.transport.ready
   choose_recovery transport/one 1 transport
   touch /run/transport-applied
   crucible-guest semantic-marker fault.transport.signaled instance-1
   while [ ! -e /run/followup-ready ]; do sleep 0.1; done
   wait_for_peer_acks followup
-  crucible-guest event fault.followup.ready
+  emit_phase_marker fault.followup.ready
   choose_recovery followup/one 2 followup
   crucible-guest sometimes selection-acknowledged-once \
-    'Both guest response envelopes were acknowledged' 1
+    'every delivered selection is acknowledged exactly once' 1
   wait "$envoy_pid" || :
   crucible-guest unreachable control-plane-crash-or-deadlock \
-    'Envoy router A exited during the campaign'
+    'control-plane processes must not crash or deadlock'
 }
 
 run_east() {
@@ -253,10 +307,10 @@ run_east() {
   crucible-guest event boot.local-healthy
   wait_for_control_boundary converged
   acknowledge_control_boundary transport
-  crucible-guest event fault.transport.ready
+  emit_phase_marker fault.transport.ready
   wait_for_control_boundary followup-ready
   acknowledge_control_boundary followup
-  crucible-guest event fault.followup.ready
+  emit_phase_marker fault.followup.ready
   wait "$server_pid"
 }
 

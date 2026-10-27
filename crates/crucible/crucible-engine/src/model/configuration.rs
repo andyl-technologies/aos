@@ -1,5 +1,9 @@
 //! Scenario forms, configurations, decisions, and schedules.
 
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
+
+use super::persistent_set::PersistentSet;
 use super::*;
 
 /// A fully materialized scenario definition form for storage and exchange.
@@ -323,9 +327,31 @@ impl Configuration {
     /// The configuration identity is a pure function of the immutable scenario
     /// definition and the recorded schedule prefix. Runtime caches and
     /// materialized checkpoints do not contribute to this identity.
+    ///
+    /// The hash rereads every recorded decision, so the schedule memoizes the
+    /// result: repeated calls on an unchanged configuration, or on clones of
+    /// it, cost O(1) after the first.
     #[must_use]
     pub fn content_hash(&self) -> ContentHash {
-        canonical::configuration_hash(self)
+        let def = self.def.id();
+        let seed = self.def.seed();
+        let memo = self
+            .schedule
+            .configuration_id
+            .get_or_init(|| ConfigurationIdMemo {
+                def,
+                seed,
+                id: canonical::configuration_hash(self),
+            });
+
+        // `def` is a public field, so the same schedule can be paired with
+        // another definition. The memo answers only for the definition it
+        // was computed with; any other pairing hashes afresh.
+        if memo.def == def && memo.seed == seed {
+            memo.id
+        } else {
+            canonical::configuration_hash(self)
+        }
     }
 
     /// Computes the RFC-named content-addressed configuration id.
@@ -335,6 +361,15 @@ impl Configuration {
     #[must_use]
     pub fn id(&self) -> ContentHash {
         self.content_hash()
+    }
+
+    /// Binds the definition and exact schedule in constant time.
+    ///
+    /// Per-quantum admission contexts use this instead of [`Self::id`], whose
+    /// canonical hash rereads every recorded decision. It is an in-process
+    /// identity and never a persisted configuration id.
+    pub(crate) fn admission_digest(&self) -> ContentHash {
+        canonical::configuration_admission_digest(self)
     }
 }
 
@@ -349,6 +384,7 @@ impl Configuration {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionDecision {
     canonical_selection: Vec<u8>,
+    opportunity: crucible_campaign::ChoiceOpportunityId,
     app_random_model_sample: bool,
     campaign_branch: bool,
     preemption_config: Option<Box<PreemptionBranchConfig>>,
@@ -360,6 +396,7 @@ impl SelectionDecision {
     pub fn new(selection: &crucible_campaign::Selection) -> Self {
         Self {
             canonical_selection: selection.canonical_bytes(),
+            opportunity: selection.opportunity(),
             app_random_model_sample: crate::decision::is_app_random_model_selection(selection),
             campaign_branch: matches!(
                 selection.origin(),
@@ -405,6 +442,15 @@ impl SelectionDecision {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_selection
+    }
+
+    /// Returns the choice opportunity this decision selects.
+    ///
+    /// The identity is derived from the canonical selection bytes and is not
+    /// a separate serialized field.
+    #[must_use]
+    pub const fn opportunity(&self) -> crucible_campaign::ChoiceOpportunityId {
+        self.opportunity
     }
 
     /// Returns whether this decision uses the standardized app-random model.
@@ -528,18 +574,72 @@ impl Decision {
 }
 
 /// A totally ordered sequence of [`Decision`] values.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+///
+/// Decisions are stored in a structurally shared [`crate::History`], so a
+/// configuration can be cloned and extended once per quantum without copying
+/// everything recorded before it. [`Schedule::decision_history`] reads that
+/// storage directly; the schedule never keeps a second, contiguous copy.
+#[derive(Clone, Default)]
 pub struct Schedule {
-    pub(super) decisions: Vec<Decision>,
+    decisions: crate::History<Decision>,
+    // Standardized app-random selections among `decisions`. It is a pure
+    // function of the decisions, maintained on append so draw-cap validation
+    // never rescans the recorded history.
+    app_random_decisions: u64,
+    // Running digest of `decisions` in order, also maintained on append, so
+    // per-quantum admission binds the exact schedule without rehashing it.
+    decision_chain: ContentHash,
+    // Opportunities chosen by selection decisions among `decisions`, also
+    // maintained on append, so stop checks never rescan the history.
+    selected_opportunities: PersistentSet<crucible_campaign::ChoiceOpportunityId>,
+    // Canonical configuration id computed over exactly `decisions`. Clones
+    // share it until one of them appends, which discards its own handle. It
+    // never leaves the process: equality, hashing, and every codec ignore it.
+    configuration_id: Arc<OnceLock<ConfigurationIdMemo>>,
+}
+
+/// A memoized [`Configuration::id`] for one schedule value.
+///
+/// The definition id and seed are the only definition inputs of the
+/// configuration hash, so they key the memo.
+#[derive(Clone, Copy, Debug)]
+struct ConfigurationIdMemo {
+    def: ContentHash,
+    seed: Seed,
+    id: ContentHash,
+}
+
+// Equality, hashing, and debug output cover the decisions alone; the count,
+// the decision chain, the selected opportunities, and the memoized
+// configuration id are derived from them.
+impl PartialEq for Schedule {
+    fn eq(&self, other: &Self) -> bool {
+        self.decisions == other.decisions
+    }
+}
+
+impl Eq for Schedule {}
+
+impl Hash for Schedule {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.decisions.hash(state);
+    }
+}
+
+impl fmt::Debug for Schedule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Schedule")
+            .field("decisions", &self.decisions)
+            .finish()
+    }
 }
 
 impl Schedule {
     /// Builds an empty schedule.
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            decisions: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Builds a schedule from decisions in recorded order.
@@ -551,11 +651,11 @@ impl Schedule {
     where
         I: IntoIterator<Item = Decision>,
     {
-        decisions
-            .into_iter()
-            .fold(Self::empty(), |schedule, decision| {
-                schedule.appended(decision)
-            })
+        let mut schedule = Self::empty();
+        for decision in decisions {
+            schedule.push(decision);
+        }
+        schedule
     }
 
     /// Returns whether the schedule has no decisions.
@@ -570,10 +670,53 @@ impl Schedule {
         self.decisions.len()
     }
 
-    /// Returns the decisions in their canonical order.
+    /// Returns the decisions in their canonical order without copying them.
     #[must_use]
-    pub fn decisions(&self) -> &[Decision] {
+    pub fn decision_history(&self) -> &crate::History<Decision> {
         &self.decisions
+    }
+
+    /// Returns the decision at `index`, or `None` when it is out of bounds.
+    #[must_use]
+    pub fn decision(&self, index: usize) -> Option<&Decision> {
+        self.decisions.get(index)
+    }
+
+    /// Returns whether this schedule's first decisions are exactly `prefix`.
+    ///
+    /// A schedule is a prefix of itself.
+    #[must_use]
+    pub fn starts_with(&self, prefix: &Self) -> bool {
+        self.decisions.starts_with(&prefix.decisions)
+    }
+
+    /// Returns whether the decisions from `start` onward begin with `run`.
+    #[must_use]
+    pub fn has_decisions_at(&self, start: usize, run: &[Decision]) -> bool {
+        self.decisions.has_run_at(start, run)
+    }
+
+    /// Returns the running digest of every decision in recorded order.
+    ///
+    /// The digest is an in-process identity maintained on append;
+    /// [`Schedule::content_hash`] remains the canonical schedule identity.
+    pub(crate) fn decision_chain(&self) -> ContentHash {
+        self.decision_chain
+    }
+
+    /// Returns whether a recorded selection decision chose `opportunity`.
+    ///
+    /// The schedule maintains its selected opportunities on append, so the
+    /// lookup costs time logarithmic in the number of recorded selections
+    /// instead of decoding the history.
+    #[must_use]
+    pub fn has_selected(&self, opportunity: crucible_campaign::ChoiceOpportunityId) -> bool {
+        self.selected_opportunities.contains(&opportunity)
+    }
+
+    /// Returns the number of standardized app-random selections recorded.
+    pub(crate) fn app_random_decisions(&self) -> u64 {
+        self.app_random_decisions
     }
 
     /// Returns the latest virtual-time coordinate carried by recorded decisions.
@@ -600,21 +743,48 @@ impl Schedule {
 
     /// Returns a schedule containing the first `len` decisions.
     ///
+    /// The prefix shares this schedule's sealed decision storage (see
+    /// [`crate::History::prefix`]), so a prefix of a long schedule copies at
+    /// most one partial chunk of decisions.
+    ///
     /// # Errors
     ///
     /// Returns [`ScheduleError::PrefixTooLong`] when `len` is greater than the
     /// number of decisions in this schedule.
     pub fn prefix(&self, len: usize) -> Result<Self, ScheduleError> {
-        if len > self.decisions.len() {
-            return Err(ScheduleError::PrefixTooLong {
+        let decisions = self
+            .decisions
+            .prefix(len)
+            .ok_or(ScheduleError::PrefixTooLong {
                 requested: len,
                 available: self.decisions.len(),
-            });
-        }
+            })?;
 
-        Ok(Self {
-            decisions: self.decisions[..len].to_vec(),
-        })
+        Ok(Self::over_decisions(decisions))
+    }
+
+    /// Builds a schedule over existing decision storage.
+    ///
+    /// The values derived on append are recomputed in one pass exactly as
+    /// [`Schedule::push`] maintains them, without copying the decisions.
+    fn over_decisions(decisions: crate::History<Decision>) -> Self {
+        let mut schedule = Self::empty();
+        let mut previous = None;
+        for decision in decisions.iter() {
+            if crate::decision::is_app_random_decision_after(previous, decision) {
+                schedule.app_random_decisions = schedule.app_random_decisions.saturating_add(1);
+            }
+            schedule.decision_chain =
+                canonical::decision_chain_step(&schedule.decision_chain, decision);
+            if let Decision::Selection(selection) = decision {
+                schedule
+                    .selected_opportunities
+                    .insert(selection.opportunity());
+            }
+            previous = Some(decision);
+        }
+        schedule.decisions = decisions;
+        schedule
     }
 
     /// Returns the suffix after the first `len` decisions.
@@ -631,17 +801,31 @@ impl Schedule {
             });
         }
 
-        Ok(Self {
-            decisions: self.decisions[len..].to_vec(),
-        })
+        Ok(Self::from_decisions(
+            self.decisions.iter().skip(len).cloned(),
+        ))
     }
 
     /// Returns a new schedule with `decision` appended.
     #[must_use]
     pub fn appended(&self, decision: Decision) -> Self {
-        let mut decisions = self.decisions.clone();
-        decisions.push(decision);
-        Self { decisions }
+        let mut schedule = self.clone();
+        schedule.push(decision);
+        schedule
+    }
+
+    pub(super) fn push(&mut self, decision: Decision) {
+        if crate::decision::is_app_random_decision_after(self.decisions.last(), &decision) {
+            self.app_random_decisions = self.app_random_decisions.saturating_add(1);
+        }
+        self.decision_chain = canonical::decision_chain_step(&self.decision_chain, &decision);
+        if let Decision::Selection(selection) = &decision {
+            self.selected_opportunities.insert(selection.opportunity());
+        }
+        self.decisions.push(decision);
+
+        // The memoized configuration id no longer matches the decisions.
+        reset_derived_cell(&mut self.configuration_id);
     }
 
     /// Computes the canonical identity of this schedule.
@@ -653,12 +837,14 @@ impl Schedule {
         canonical::schedule_hash(self)
     }
 
-    /// Serializes this schedule as compact canonical bytes.
+    /// Serializes this schedule as its self-contained segmented transport.
+    ///
+    /// The bytes carry the [`ScheduleManifest`] followed by every segment in
+    /// order, so a reader decodes one segment at a time. Carriers with a
+    /// segment store keep only the manifest; see [`Schedule::write_segments`].
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V4);
-        write_schedule_binary(self, &mut writer);
-        writer.finish()
+        schedule_v6_bytes(self)
     }
 
     /// Parses and validates a compact binary schedule.
@@ -666,12 +852,23 @@ impl Schedule {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed input, a
-    /// schedule identity mismatch, or any schema other than current version 4.
+    /// segment that does not derive its reference, a schedule identity
+    /// mismatch, or any schema other than current version 5.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V4)?;
-        let schedule = read_schedule_binary(&mut reader)?;
-        reader.finish()?;
-        Ok(schedule)
+        schedule_from_v5_bytes(bytes)
+    }
+}
+
+/// Empties a schedule-derived cache after the schedule changed.
+///
+/// An unshared cell is reused; a shared one is left to the clones whose
+/// decisions it still matches.
+fn reset_derived_cell<T>(cell: &mut Arc<OnceLock<T>>) {
+    match Arc::get_mut(cell) {
+        Some(cell) => {
+            cell.take();
+        }
+        None => *cell = Arc::default(),
     }
 }
 

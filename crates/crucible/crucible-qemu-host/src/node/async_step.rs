@@ -42,11 +42,24 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
             .start_quantum(horizon, self.stop_condition)
     }
 
+    fn advance_initial_state(&self, pending: &Self::PendingQuantum) -> Option<QemuNodeIdleState> {
+        pending.initial_state()
+    }
+
     fn advance_completion_fence(
         &self,
         pending: &Self::PendingQuantum,
     ) -> Option<QemuAdvanceCompletionFence> {
         pending.completion_fence()
+    }
+
+    fn retain_completed_quantum_boundary(
+        &mut self,
+        pending: &mut Self::PendingQuantum,
+        boundary: Option<crate::QemuCompletedQuantumBoundary>,
+    ) -> Result<(), QemuNodeChannelError> {
+        pending.completed_boundary = boundary;
+        Ok(())
     }
 
     fn finish_quantum(

@@ -19,6 +19,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,6 +68,9 @@ mod midpoint_debug;
 mod packaged;
 #[path = "campaign_store_process/service_diagnostics.rs"]
 mod service_diagnostics;
+#[cfg(test)]
+#[path = "campaign_store_process/service_progress.rs"]
+mod service_progress;
 
 use service_diagnostics::{
     append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
@@ -522,7 +527,14 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     );
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.base.journal)?;
-        assert!(journal.roots().iter().any(|root| root == policy));
+        assert!(
+            journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == policy)
+        );
     }
 
     let applied = run_json(
@@ -558,7 +570,14 @@ fn public_composed_store_flight_evicts_cache_and_flushes_write_back() -> Result<
     assert_eq!(after_maintenance["plan_version"], "v1");
     {
         let journal = DirectoryCampaignGcJournal::open(&fixture.after_maintenance_gc_journal)?;
-        assert!(!journal.roots().iter().any(|root| root == policy));
+        assert!(
+            !journal
+                .roots()
+                .iter()?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|root| root == policy)
+        );
     }
 
     let mut restarted = fixture.base.start_service(None)?;
@@ -614,6 +633,10 @@ mod archive_transfer;
 #[path = "campaign_store_process/live_s3_product.rs"]
 mod live_s3_product;
 
+#[cfg(feature = "destructive-recovery-faults")]
+#[path = "campaign_store_process/write_back_interruption.rs"]
+mod write_back_interruption;
+
 struct FlightFixture {
     _temporary: TempDir,
     fixture: PathBuf,
@@ -627,6 +650,8 @@ struct FlightFixture {
     tls_cert: PathBuf,
     tls_key: PathBuf,
     service_mode: FlightServiceMode,
+    #[cfg(test)]
+    live_progress: OnceLock<Option<Arc<service_progress::ProgressOutput>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1087,6 +1112,8 @@ root = {objects:?}
             tls_cert,
             tls_key,
             service_mode: FlightServiceMode::Campaign,
+            #[cfg(test)]
+            live_progress: OnceLock::new(),
         })
     }
 
@@ -1131,18 +1158,49 @@ root = {objects:?}
         mut command: Command,
         timeout: Duration,
     ) -> Result<CampaignServiceChild, Box<dyn Error>> {
-        let stderr = NamedTempFile::new_in(self._temporary.path())?;
+        let stderr_directory = service_stderr_directory();
+        let stderr = service_stderr_file(stderr_directory.as_deref(), self._temporary.path())?;
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr.reopen()?));
         let child = command.spawn()?;
+        if let Some(directory) = &stderr_directory {
+            // Advisory: without the live name, Drop still copies the final log.
+            if let Err(error) = publish_service_stderr(directory, child.id(), &stderr) {
+                eprintln!("campaign service stderr is not visible live: {error}");
+            }
+        }
         let mut child = CampaignServiceChild {
             child,
             #[cfg(feature = "packaged-midpoint-flight")]
             daemon_url: String::new(),
             stderr,
             kill_on_drop: true,
+            #[cfg(test)]
+            live_progress: None,
         };
+        #[cfg(test)]
+        {
+            let output = self.live_progress.get_or_init(|| {
+                service_progress::ProgressOutput::from_environment().unwrap_or_else(|error| {
+                    eprintln!("advisory live progress unavailable: {error}");
+                    None
+                })
+            });
+            if let Some(output) = output {
+                child.live_progress = child
+                    .stderr
+                    .reopen()
+                    .and_then(|source| {
+                        service_progress::OwnedProgressObserver::start(
+                            source,
+                            child.child.id(),
+                            Arc::clone(output),
+                        )
+                    })
+                    .ok();
+            }
+        }
         let stdout = child
             .child
             .stdout
@@ -1220,6 +1278,8 @@ struct CampaignServiceChild {
     daemon_url: String,
     stderr: NamedTempFile,
     kill_on_drop: bool,
+    #[cfg(test)]
+    live_progress: Option<service_progress::OwnedProgressObserver>,
 }
 
 impl CampaignServiceChild {
@@ -1238,6 +1298,10 @@ impl CampaignServiceChild {
         }
         signal.map_err(|error| format!("{error}; stderr={stderr}"))?;
         let status = status.map_err(|error| format!("{error}; stderr={stderr}"))?;
+        #[cfg(test)]
+        if let Some(observer) = &mut self.live_progress {
+            observer.stop(&format!("owned-service-exit={status}"));
+        }
         if !status.success() {
             return Err(format!("campaign service failed: {status}; stderr={stderr}").into());
         }
@@ -1303,6 +1367,7 @@ impl CampaignServiceChild {
 
 impl Drop for CampaignServiceChild {
     fn drop(&mut self) {
+        retain_service_stderr(self.child.id(), &self.stderr);
         if self.kill_on_drop {
             let signal = send_sigterm(&mut self.child);
             let graceful = wait_for_exit(&mut self.child, Duration::from_secs(45));
@@ -1320,7 +1385,84 @@ impl Drop for CampaignServiceChild {
                 );
             }
         }
+        #[cfg(test)]
+        if let Some(observer) = &mut self.live_progress {
+            let reason = match self.child.try_wait() {
+                Ok(Some(status)) => format!("owned-service-exit={status}"),
+                Ok(None) => "owned-service-status=still-running-after-original-cleanup".into(),
+                Err(error) => format!("owned-service-status-unavailable={error}"),
+            };
+            observer.stop(&reason);
+        }
     }
+}
+
+/// Names the opt-in directory that keeps each service's complete stderr.
+///
+/// Failure reports carry only a bounded stderr tail, and the temporary file
+/// disappears with its fixture. A long VM flight sets
+/// `CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR` so the whole service log is
+/// readable while the service runs and survives the test process. Both are
+/// advisory and never affect the result.
+fn service_stderr_directory() -> Option<PathBuf> {
+    std::env::var_os("CRUCIBLE_CAMPAIGN_SERVICE_STDERR_DIR").map(PathBuf::from)
+}
+
+/// Creates a service's stderr capture inside the opt-in directory when set.
+///
+/// The capture must share that directory's filesystem so it can be linked
+/// under the service PID once the process exists.
+fn service_stderr_file(
+    directory: Option<&Path>,
+    fallback: &Path,
+) -> std::io::Result<NamedTempFile> {
+    match directory {
+        Some(directory) => {
+            fs::create_dir_all(directory)?;
+            NamedTempFile::new_in(directory)
+        }
+        None => NamedTempFile::new_in(fallback),
+    }
+}
+
+/// Returns the stable per-service name of a retained stderr log.
+fn service_stderr_path(directory: &Path, service_pid: u32) -> PathBuf {
+    directory.join(format!("campaign-service-{service_pid}.stderr"))
+}
+
+/// Links a running service's stderr capture under its stable name.
+///
+/// A stall sampler watches these names for host wait rows while QEMU is
+/// still alive; the link keeps the complete log after the capture closes.
+fn publish_service_stderr(
+    directory: &Path,
+    service_pid: u32,
+    stderr: &NamedTempFile,
+) -> std::io::Result<()> {
+    fs::hard_link(stderr.path(), service_stderr_path(directory, service_pid))
+}
+
+/// Keeps a service's complete stderr in the opt-in diagnostic directory.
+fn retain_service_stderr(service_pid: u32, stderr: &NamedTempFile) {
+    if let Some(directory) = service_stderr_directory() {
+        retain_service_stderr_in(&directory, service_pid, stderr);
+    }
+}
+
+/// Copies the final stderr unless the live link already names the capture.
+fn retain_service_stderr_in(directory: &Path, service_pid: u32, stderr: &NamedTempFile) {
+    let destination = service_stderr_path(directory, service_pid);
+    // Copying onto a hard link of the source would truncate the log first.
+    let same_file = match (fs::metadata(&destination), stderr.as_file().metadata()) {
+        (Ok(retained), Ok(capture)) => {
+            retained.dev() == capture.dev() && retained.ino() == capture.ino()
+        }
+        _ => false,
+    };
+    if same_file {
+        return;
+    }
+    let _ = fs::create_dir_all(directory).and_then(|()| fs::copy(stderr.path(), destination));
 }
 
 fn connected_campaign(fixture: &FlightFixture) -> Command {
@@ -1360,6 +1502,7 @@ fn command(arguments: &[&str]) -> Command {
     // The hermetic VM copies both built executables into its store closure;
     // the build-time Cargo target path itself is not available in the guest.
     let binary = std::env::var_os("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_crucible"))
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_crucible").into());
     let mut command = Command::new(binary);
     command.args(arguments);
@@ -1512,6 +1655,37 @@ fn wait_for_campaign_socket(
 }
 
 #[test]
+fn service_stderr_is_readable_live_and_retained_after_its_capture_closes()
+-> Result<(), Box<dyn Error>> {
+    const ROW: &str = "CRUCIBLE-HOST-WAIT-V1 phase=advance-pending node=probe\n";
+    let directory = tempfile::tempdir()?;
+    let unused_fallback = directory.path().join("unused");
+    let stderr = service_stderr_file(Some(directory.path()), &unused_fallback)?;
+    publish_service_stderr(directory.path(), 4242, &stderr)?;
+    let published = service_stderr_path(directory.path(), 4242);
+
+    // A sampler sees the row while the service still holds its stderr.
+    let mut writer = stderr.reopen()?;
+    writer.write_all(ROW.as_bytes())?;
+    assert_eq!(fs::read_to_string(&published)?, ROW);
+
+    // Retention at Drop must not truncate the live link it would copy onto.
+    retain_service_stderr_in(directory.path(), 4242, &stderr);
+    drop(stderr);
+    assert_eq!(fs::read_to_string(&published)?, ROW);
+
+    // Without a live link, retention still copies the final log.
+    let unlinked = service_stderr_file(Some(directory.path()), &unused_fallback)?;
+    unlinked.reopen()?.write_all(ROW.as_bytes())?;
+    retain_service_stderr_in(directory.path(), 4343, &unlinked);
+    assert_eq!(
+        fs::read_to_string(service_stderr_path(directory.path(), 4343))?,
+        ROW
+    );
+    Ok(())
+}
+
+#[test]
 fn campaign_socket_wait_reports_exited_service_without_waiting_for_deadline()
 -> Result<(), Box<dyn Error>> {
     let temporary = tempfile::tempdir()?;
@@ -1526,6 +1700,8 @@ fn campaign_socket_wait_reports_exited_service_without_waiting_for_deadline()
         daemon_url: String::new(),
         stderr: NamedTempFile::new_in(temporary.path())?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
     let error = wait_for_campaign_socket(
         &temporary.path().join("unbound.sock"),
@@ -1572,6 +1748,8 @@ fn campaign_socket_wait_rejects_a_stale_socket_inode() -> Result<(), Box<dyn Err
         daemon_url: String::new(),
         stderr: NamedTempFile::new_in(temporary.path())?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
 
     let child_deadline = Instant::now() + Duration::from_secs(5);
@@ -1670,6 +1848,8 @@ fn campaign_service_stop_accepts_an_already_reaped_child() -> Result<(), Box<dyn
         daemon_url: String::new(),
         stderr: NamedTempFile::new()?,
         kill_on_drop: true,
+        #[cfg(test)]
+        live_progress: None,
     };
     service.stop()?;
 

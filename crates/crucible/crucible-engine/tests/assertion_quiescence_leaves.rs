@@ -156,6 +156,7 @@ fn assertion_state_observes_current_causal_entry() {
     assert!(
         evaluator(42, vec![wrong_time, wrong_state, wrong_assertion, matching])
             .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
     );
 }
 
@@ -174,6 +175,7 @@ fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
             )],
         )
         .evaluate_assertion_condition(&condition)
+        .expect("console matchers are declared")
     );
     assert!(
         !evaluator(
@@ -185,6 +187,7 @@ fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
             )],
         )
         .evaluate_assertion_condition(&condition)
+        .expect("console matchers are declared")
     );
     assert!(
         !evaluator(
@@ -196,6 +199,7 @@ fn assertion_state_rejects_wrong_state_assertion_and_time_in_isolation() {
             )],
         )
         .evaluate_assertion_condition(&condition)
+        .expect("console matchers are declared")
     );
 }
 
@@ -231,13 +235,19 @@ fn quiescent_uses_scheduler_owned_evidence() {
         support::evaluation_at(60, NoNamedLeaves)
             .with_scheduler_quiescence(quiescent)
             .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
     );
     assert!(
         !support::evaluation_at(60, NoNamedLeaves)
             .with_scheduler_quiescence(non_quiescent)
             .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
     );
-    assert!(!support::evaluation_at(60, NoNamedLeaves).evaluate_assertion_condition(&condition));
+    assert!(
+        !support::evaluation_at(60, NoNamedLeaves)
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -252,6 +262,7 @@ fn quiescent_leaf_consumes_scheduler_computed_quiescence() {
         support::evaluation_at(scheduler.frontier().ticks, NoNamedLeaves)
             .with_scheduler_quiescence(quiescence)
             .evaluate_assertion_condition(&Predicate::quiescent())
+            .expect("console matchers are declared")
     );
 }
 

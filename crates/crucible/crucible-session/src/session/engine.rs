@@ -68,6 +68,8 @@ pub struct Engine<L> {
     pub(super) next_boundary_control_batch: u64,
     pub(super) scheduler_quiescence: Option<SchedulerQuiescence>,
     pub(super) breakpoint_firings: Vec<BreakpointFiring>,
+    /// Trace exported by the latest manifest query, serving segment queries.
+    pub(super) published_effect_trace: Option<crucible_engine::model::ResolvedEffectTrace>,
     pub(super) next_breakpoint_firing_sequence: u64,
     pub(super) white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
     pub(super) breakpoint_host_metadata: BreakpointHostMetadata,
@@ -107,6 +109,7 @@ impl<L> Engine<L> {
             next_boundary_control_batch: 0,
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
+            published_effect_trace: None,
             next_breakpoint_firing_sequence: 0,
             white_box_policies: BTreeMap::new(),
             breakpoint_host_metadata: BreakpointHostMetadata::new(),
@@ -173,6 +176,7 @@ impl<L> Engine<L> {
             next_boundary_control_batch: 0,
             scheduler_quiescence: None,
             breakpoint_firings: Vec::new(),
+            published_effect_trace: None,
             next_breakpoint_firing_sequence: 0,
             white_box_policies: BTreeMap::new(),
             breakpoint_host_metadata: BreakpointHostMetadata::new(),
@@ -247,6 +251,15 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn frontier(&self) -> VirtualTime {
         self.frontier
+    }
+
+    /// Returns the store holding the quantum loop's sealed event-log segments.
+    #[must_use]
+    pub fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>>
+    where
+        L: QuantumLoop,
+    {
+        self.quantum_loop.sealed_event_log_store()
     }
 
     /// Returns the canonical event-log length observed so far.
@@ -339,6 +352,7 @@ impl<L> Engine<L> {
     ) -> Result<SessionFork<C>, SessionError>
     where
         I: IntoIterator<Item = Decision>,
+        C: QuantumLoop,
     {
         let parent_state = self.state.clone();
         if !matches!(
@@ -395,7 +409,7 @@ impl<L> Engine<L> {
     ///
     /// Returns [`SessionError::Engine`] when the checkpoint or its configuration
     /// is not recorded, or when temporal-graph resume cannot instantiate it.
-    pub fn resume_session_from_checkpoint<C>(
+    pub fn resume_session_from_checkpoint<C: QuantumLoop>(
         &mut self,
         checkpoint: ContentHash,
         session_quantum_loop: C,
@@ -459,6 +473,7 @@ impl<L> Engine<L> {
     ) -> Result<SessionFork<C>, SessionError>
     where
         L: QuantumLoop,
+        C: QuantumLoop,
     {
         let parent_state = self.state.clone();
         if !matches!(
@@ -475,7 +490,7 @@ impl<L> Engine<L> {
         self.build_checkpoint_child(parent_state, checkpoint.id, child_quantum_loop)
     }
 
-    pub(super) fn build_checkpoint_child<C>(
+    pub(super) fn build_checkpoint_child<C: QuantumLoop>(
         &mut self,
         parent_state: EngineState,
         checkpoint: ContentHash,
@@ -885,23 +900,23 @@ impl<L> Engine<L> {
         self.next_boundary_control_batch
     }
 
+    /// Evaluates armed breakpoints after a quantum.
+    ///
+    /// `history` is the condition prefix over the session's whole history,
+    /// with every pattern of [`Self::breakpoint_console_patterns`] declared.
     pub(super) fn evaluate_breakpoints(
         &mut self,
-        event_log_entries: &[SchedulerEventLogEntry],
+        history: &ConditionEventLogPrefix,
         emitted_event_log_entries: usize,
     ) -> Result<(), SessionError>
     where
         L: QuantumLoop,
     {
-        if matches!(self.state, EngineState::Stopped { .. }) || self.breakpoints.is_empty() {
+        if !self.breakpoints_armed() {
             return Ok(());
         }
 
-        let Some(prefix) =
-            self.breakpoint_condition_prefix(event_log_entries, emitted_event_log_entries)?
-        else {
-            return Ok(());
-        };
+        let prefix = self.breakpoint_condition_prefix(history, emitted_event_log_entries)?;
         let evaluations = self
             .breakpoints
             .iter()
@@ -917,16 +932,20 @@ impl<L> Engine<L> {
                 if let Some(quiescence) = self.scheduler_quiescence.clone() {
                     pass = pass.with_scheduler_quiescence(quiescence);
                 }
-                let is_true = pass.evaluate_assertion_condition(&spec.predicate);
-                (
+                let is_true =
+                    pass.evaluate_assertion_condition(&spec.predicate)
+                        .map_err(|undeclared| SessionError::BreakpointConditionPrefix {
+                            reason: undeclared.to_string(),
+                        })?;
+                Ok((
                     id,
                     spec.clone(),
                     was_true,
                     is_true,
                     pass.once_latches().to_vec(),
-                )
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, SessionError>>()?;
 
         for (id, spec, was_true, is_true, once_latches) in evaluations {
             if is_true && !was_true {
@@ -1112,6 +1131,33 @@ impl Engine<SingleScheduler> {
         let scheduler = SingleScheduler::from_world(scenario, world, store, policy)?;
         let configuration = scheduler.configuration().clone();
         Ok(Self::new(configuration, graph, scheduler).with_world_white_box_policies(world))
+    }
+}
+
+impl<L> Engine<L> {
+    /// Reads one segment of the trace exported by the latest manifest query.
+    ///
+    /// Only segments that manifest lists are served; any other identity, or a
+    /// query before any manifest query, returns `None`.
+    fn published_effect_trace_segment(
+        &self,
+        segment: crucible_engine::segment_store::ContentId,
+    ) -> Result<Option<Vec<u8>>, crucible_engine::SchedulerError> {
+        let Some(trace) = &self.published_effect_trace else {
+            return Ok(None);
+        };
+        if !trace
+            .manifest()
+            .segment_ids()
+            .any(|listed| listed == segment)
+        {
+            return Ok(None);
+        }
+        crucible_engine::segment_store::SegmentSource::segment(trace.segments(), segment)
+            .map(Some)
+            .map_err(|error| crucible_engine::SchedulerError::BoundaryViolation {
+                message: format!("read resolved-effect trace segment: {error}"),
+            })
     }
 }
 
@@ -1744,7 +1790,12 @@ impl<L: QuantumLoop> Engine<L> {
                 }
             }
             SessionCommand::Query { kind, reply } => {
-                if matches!(self.state, EngineState::Running) {
+                // A segment query continues the manifest query that admitted
+                // and recorded the read; paging a long trace must not grow the
+                // boundary control log.
+                let continues_trace_read =
+                    matches!(kind, QueryKind::ResolvedEffectTraceSegment { .. });
+                if matches!(self.state, EngineState::Running) && !continues_trace_read {
                     self.admit_control_operation(ControlOperationKind::Query);
                     self.record_boundary_control(&command, Some(ControlOperationKind::Query));
                 }
@@ -1765,7 +1816,25 @@ impl<L: QuantumLoop> Engine<L> {
                         pending_branch_choices: self.quantum_loop.pending_search_branch_choices(),
                     },
                     QueryKind::ResolvedEffectTrace => {
-                        QueryResult::ResolvedEffectTrace(self.quantum_loop.resolved_effect_trace()?)
+                        self.published_effect_trace = self.quantum_loop.resolved_effect_trace()?;
+                        QueryResult::ResolvedEffectTrace(
+                            self.published_effect_trace
+                                .as_ref()
+                                .map(|trace| trace.manifest().canonical_bytes())
+                                .transpose()
+                                .map_err(|error| {
+                                    crucible_engine::SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "encode resolved-effect trace manifest: {error}"
+                                        ),
+                                    }
+                                })?,
+                        )
+                    }
+                    QueryKind::ResolvedEffectTraceSegment { segment } => {
+                        QueryResult::ResolvedEffectTraceSegment(
+                            self.published_effect_trace_segment(*segment)?,
+                        )
                     }
                     QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
                         self.quantum_loop.sample_fingerprint(node.clone())?,
@@ -2027,10 +2096,7 @@ impl<L: QuantumLoop> Engine<L> {
         let step_completion = if let Some(step) = self.active_step.as_ref() {
             Some((
                 step.mode,
-                step.is_complete(&outcome, current_event_log_len)
-                    .map_err(|error| SessionError::BreakpointConditionPrefix {
-                        reason: error.to_string(),
-                    })?,
+                step.is_complete(&outcome, current_event_log_len)?,
             ))
         } else {
             None

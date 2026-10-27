@@ -30,7 +30,8 @@ use crucible_engine::ScenarioDefForm;
 use crucible_qemu_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverError,
     QemuAsyncDriverPolicy, QemuHotForkChildProcessOwner, QemuLaunchArtifactIdentity,
-    QemuLaunchArtifactIdentityError, QemuShutdownPolicy, QemuVmRealizationError,
+    QemuLaunchArtifactIdentityError, QemuShutdownPolicy, QemuStoppedRestoreAckCapability,
+    QemuStoppedRestoreAckCapabilityError, QemuVmRealizationError,
 };
 use crucible_store::content_store::ImmutableBlobBackend;
 
@@ -48,8 +49,8 @@ use crate::qemu_campaign_lifecycle::{
     QemuAttemptExecutionEvidence, QemuObservedFreshAttemptLifecycleFactory,
     QemuTerminalEvidenceExecutionRunner,
 };
-use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::qemu_hot_fork_world_factory::QemuHotForkSourceWorldProvider;
+use crate::qemu_hot_fork_world_factory::{AttemptWorkerFailureExt, note_hot_fork_decline_with};
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,
@@ -95,7 +96,7 @@ mod exact_pin_materializer;
 mod hot_fork;
 mod status;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use exact_pin_materializer::PackagedExactPinMaterializerError;
 use exact_pin_materializer::{
@@ -153,6 +154,7 @@ pub(crate) fn packaged_finding_replay_runner<F>(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackagedQemuHotForkConfig {
     launch: QemuLaunchArtifactIdentity,
+    stopped_restore_ack: QemuStoppedRestoreAckCapability,
     limits: HotCheckpointLimits,
     initial_signals: HotCheckpointHotnessSignals,
     shutdown_policy: QemuShutdownPolicy,
@@ -165,7 +167,8 @@ impl PackagedQemuHotForkConfig {
     /// # Errors
     ///
     /// Returns [`PackagedQemuHotForkConfigError`] when the selected QEMU and
-    /// plugin markers do not authenticate, or a host timeout is zero.
+    /// plugin markers do not authenticate, stopped-Restore notification support
+    /// is missing or unsupported, or a host timeout is zero.
     pub fn authenticate(
         lifecycle: &ProductionVmLifecycleConfig,
         limits: HotCheckpointLimits,
@@ -199,37 +202,50 @@ impl PackagedQemuHotForkConfig {
             .validate()
             .map_err(PackagedQemuHotForkConfigError::HostIo)?;
 
-        Ok(Self::new(
+        Self::new(
             launch,
             limits,
             initial_signals,
             shutdown_policy,
             async_policy,
-        ))
+        )
     }
 
     /// Creates an already-authenticated retained-source policy internally.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected launch lacks supported stopped-Restore
+    /// ACK notification. Authentication alone remains sufficient for cold use.
     pub(crate) fn new(
         launch: QemuLaunchArtifactIdentity,
         limits: HotCheckpointLimits,
         initial_signals: HotCheckpointHotnessSignals,
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, PackagedQemuHotForkConfigError> {
+        let stopped_restore_ack = launch
+            .stopped_restore_ack_capability()
+            .map_err(PackagedQemuHotForkConfigError::StoppedRestoreAck)?;
+        Ok(Self {
             launch,
+            stopped_restore_ack,
             limits,
             initial_signals,
             shutdown_policy,
             async_policy,
-        }
+        })
     }
 
     /// Returns the marker-authenticated QEMU and plugin launch identity.
     #[must_use]
     pub(crate) const fn launch_identity(&self) -> &QemuLaunchArtifactIdentity {
         &self.launch
+    }
+
+    /// Returns operation support authenticated for this exact launch pair.
+    pub(crate) const fn stopped_restore_ack(&self) -> &QemuStoppedRestoreAckCapability {
+        &self.stopped_restore_ack
     }
 
     /// Returns the process-wide retained-source and fork-rate ceilings.
@@ -260,6 +276,9 @@ impl PackagedQemuHotForkConfig {
 /// Invalid packaged retained-source deployment policy.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuHotForkConfigError {
+    /// The selected plugin cannot notify a stopped Restore completion.
+    #[error("authenticate stopped-Restore ACK operation: {0}")]
+    StoppedRestoreAck(#[source] QemuStoppedRestoreAckCapabilityError),
     /// The selected QEMU and plugin markers did not authenticate.
     #[error("authenticate packaged QEMU launch pair: {0}")]
     Launch(#[source] QemuLaunchArtifactIdentityError),
@@ -298,6 +317,7 @@ pub struct PackagedQemuExecutorConfig {
     hot_fork: Option<PackagedQemuHotForkConfig>,
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticConfig>,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
 }
 
 impl PackagedQemuExecutorConfig {
@@ -360,6 +380,7 @@ impl PackagedQemuExecutorConfig {
             hot_fork: None,
             guest_selectable_boundary_diagnostics: None,
             verify_determinism_findings: false,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
         })
     }
 
@@ -378,6 +399,32 @@ impl PackagedQemuExecutorConfig {
     ) -> Self {
         self.guest_selectable_boundary_diagnostics = Some(diagnostics);
         self
+    }
+
+    /// Replaces the operational bound on one attempt's encoded event log.
+    ///
+    /// The bound defaults to [`crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES`] and
+    /// never enters production or campaign identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackagedQemuExecutorConfigError::ZeroEventLogBytes`] when
+    /// `maximum_bytes` is zero.
+    pub fn with_maximum_event_log_bytes(
+        mut self,
+        maximum_bytes: u64,
+    ) -> Result<Self, PackagedQemuExecutorConfigError> {
+        if maximum_bytes == 0 {
+            return Err(PackagedQemuExecutorConfigError::ZeroEventLogBytes);
+        }
+        self.maximum_event_log_bytes = maximum_bytes;
+        Ok(self)
+    }
+
+    /// Returns the operational bound on one attempt's encoded event log.
+    #[must_use]
+    pub const fn maximum_event_log_bytes(&self) -> u64 {
+        self.maximum_event_log_bytes
     }
 
     /// Enables paired private replay for automatic determinism findings.
@@ -461,6 +508,9 @@ pub enum PackagedQemuExecutorConfigError {
     /// No exact checkpoint can fit the configured immutable store.
     #[error("packaged QEMU executor checkpoint byte ceiling is zero")]
     ZeroCheckpointBytes,
+    /// No attempt event log can fit the configured storage bound.
+    #[error("packaged QEMU executor event-log byte ceiling is zero")]
+    ZeroEventLogBytes,
 }
 
 /// Prepared packaged executor pool bound to one exact campaign repository.
@@ -1228,6 +1278,19 @@ where
         resource_ceiling,
     ));
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    // Retired with the other native namespaces above, so it starts empty.
+    let event_log_root = config
+        .lifecycle
+        .run_state_root()
+        .join(PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE);
+    let event_log_namespace =
+        crate::AttemptLogNamespace::create(&event_log_root).map_err(|source| {
+            PackagedNativeCatalogRecoveryError::Io {
+                operation: "create",
+                path: event_log_root.clone(),
+                source,
+            }
+        })?;
     let worker_state_root = config.lifecycle.run_state_root().join("campaign-workers");
     let finding_replay_state_root = config
         .lifecycle
@@ -1360,7 +1423,9 @@ where
                 inner: RepositoryAttemptWorker::new(store.clone(), model)
                     .with_guest_selectable_boundary_diagnostics(
                         guest_selectable_diagnostics.clone(),
-                    ),
+                    )
+                    .with_maximum_event_log_bytes(config.maximum_event_log_bytes)
+                    .with_event_log_namespace(Arc::clone(&event_log_namespace)),
                 lifecycles: lifecycles.clone(),
             }
         })
@@ -1422,10 +1487,13 @@ where
 }
 
 // These are every ephemeral native lifecycle tree created by the packaged
-// composition. Durable exact/thin fallback records live under the campaign
-// service state directory and are deliberately outside this restart cleanup.
-const PACKAGED_NATIVE_NAMESPACES: [&str; 7] = [
+// composition, including running attempts' event-log segments. Durable
+// exact/thin fallback records live under the campaign service state directory,
+// and prepared-result journals hold their own segment copies, so both are
+// deliberately outside this restart cleanup.
+const PACKAGED_NATIVE_NAMESPACES: [&str; 8] = [
     "campaign-workers",
+    PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE,
     "campaign-finding-replays",
     "campaign-checkpoint-promotions",
     "campaign-baked-genesis",
@@ -1434,6 +1502,7 @@ const PACKAGED_NATIVE_NAMESPACES: [&str; 7] = [
     "campaign-hot-fork-demanded",
 ];
 const PACKAGED_PREPARED_RESULT_NAMESPACE: &str = "campaign-prepared-results";
+const PACKAGED_ATTEMPT_EVENT_LOG_NAMESPACE: &str = "campaign-attempt-event-logs";
 
 fn prepare_packaged_prepared_result_namespace(
     run_state_root: &Path,
@@ -1679,6 +1748,9 @@ fn completion_validation_failure(error: CampaignRepositoryError) -> CompletionVa
 /// Failure to acquire or compose one packaged local QEMU executor.
 #[derive(Debug, thiserror::Error)]
 pub enum PackagedQemuExecutorError {
+    /// A retained operation receipt differs from the selected launch pair.
+    #[error("authenticate packaged stopped-Restore operation: {0}")]
+    StoppedRestoreAck(#[source] QemuStoppedRestoreAckCapabilityError),
     /// The internal deployment contract named no campaign.
     #[error("packaged QEMU executor has no campaign")]
     NoCampaigns,

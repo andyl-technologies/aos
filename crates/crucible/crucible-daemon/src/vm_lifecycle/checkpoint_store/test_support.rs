@@ -20,7 +20,7 @@ pub struct AuthenticatedProductionCheckpointCodecFixture {
     vmstate_bytes: u64,
 }
 
-/// Authenticated v9 closure containing a direct RAM base and one delta.
+/// Authenticated v12 closure containing a direct RAM base and one delta.
 pub struct AuthenticatedProductionExactRamCodecFixture {
     source: ScenarioDefForm,
     configuration: Configuration,
@@ -127,7 +127,7 @@ pub fn build_streaming_production_checkpoint_codec_fixture(
     build_production_checkpoint_codec_fixture(run_state_root, FixtureArtifactShape::Streaming)
 }
 
-/// Builds a v9 closure with a retained direct RAM base and one delta layer.
+/// Builds a v12 closure with a retained direct RAM base and one delta layer.
 ///
 /// The fixture passes through the production staging, manifest, publication,
 /// open, and resume-basis paths. Its compact CRUCRAM placeholders model the
@@ -622,8 +622,11 @@ fn build_production_checkpoint_codec_fixture(
         identity: ContentHash::default(),
         configuration: configuration.clone(),
         scheduler: Arc::new(scheduler_checkpoint),
-        event_log_objects: Arc::new(BTreeMap::new()),
+        event_log_segments: ProductionEventLogSegments::store(Arc::new(
+            crucible_engine::MemoryDagStore::new(),
+        )),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),
         assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
         terminal_verdict: None,

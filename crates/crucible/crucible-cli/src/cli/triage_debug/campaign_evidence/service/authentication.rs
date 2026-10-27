@@ -1,360 +1,300 @@
 //! Authenticated campaign finding, occurrence, and replay-set validation.
+//!
+//! Authentication is a fold over one finding's evidence record. Finding-level
+//! exchanges are checked first; occurrences are then authenticated one at a
+//! time with only the page cursor, the position, and two bundle flags carried
+//! between them. No complete occurrence or proof set is ever resident; within
+//! an occurrence, one triage replay is reassembled at a time.
 
+use super::super::record::{
+    CampaignFindingEvidenceRecord, CampaignOccurrenceExchanges, MAX_OCCURRENCES_PER_CHUNK,
+    TRIAGE_REPLAY_ROLES, read_occurrence_chunk,
+};
+use super::super::reproduction::{
+    authenticate_finding_reproduction, authenticate_occurrence_reproduction,
+};
+use super::super::store::CampaignExchangeRef;
+use super::super::triage_segments::authenticate_occurrence_triage_log_segments;
 use super::*;
 
-pub(crate) fn authenticate_campaign_triage_finding(
+/// Largest reassembled triage replay transfer accepted for one role.
+const MAX_TRIAGE_REPLAY_TRANSFER_BYTES: usize = 256 * 1024 * 1024;
+
+/// Finding-level campaign records recovered from authenticated responses.
+pub(crate) struct AuthenticatedCampaignFindingHead {
+    pub(crate) finding: crucible_campaign::Finding,
+    pub(crate) observation: crucible_campaign::Observation,
+    pub(crate) reproduction: crucible_campaign::ReproductionArtifact,
+    pub(crate) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    /// Crucible artifact decoded from the reproduction's authenticated segments.
+    pub(crate) reproduction_artifact: crucible_engine::ReproductionArtifact,
+    /// Crucible artifact of the minimized reproduction, present with it.
+    pub(crate) minimized_artifact: Option<crucible_engine::ReproductionArtifact>,
+}
+
+/// Everything one occurrence authentication reads besides its own exchanges.
+#[derive(Clone, Copy)]
+pub(crate) struct CampaignFindingAuthenticationContext<'a> {
+    /// Finding position in its ledger, used only in diagnostics.
+    pub(crate) index: usize,
+    pub(crate) record: &'a CampaignFindingEvidenceRecord,
+    pub(crate) finding: &'a crucible_campaign::Finding,
+    /// Report projection whose discovery path and fingerprint frame replays.
+    pub(crate) template: &'a TriageFindingEvidence,
+    pub(crate) evidence: &'a crucible_engine::LocalDagStore,
+}
+
+/// How an occurrence page request's cursor is checked.
+#[derive(Clone, Copy)]
+pub(crate) enum OccurrenceCursorCheck {
+    /// The request must continue the chain at exactly this cursor.
+    Chained(Option<crucible_campaign::CampaignHash>),
+    /// The chain was authenticated when the ledger loaded; a later on-demand
+    /// read of the same content-addressed occurrence does not repeat it.
+    Loaded,
+}
+
+/// Bundle identity and continuation cursor of one authenticated occurrence.
+pub(crate) struct AuthenticatedCampaignOccurrence {
+    pub(crate) bundle: crucible_campaign::FindingCandidateBundleId,
+    pub(crate) next_after: Option<crucible_campaign::CampaignHash>,
+}
+
+/// Authenticates the membership and finding-object exchanges of one record.
+///
+/// # Errors
+///
+/// Returns an error when a request names another campaign dependency, a
+/// response fails its checked binding, or the finding is not admitted.
+pub(crate) fn authenticate_campaign_finding_head(
     index: usize,
-    expected_finding_id: crucible_campaign::FindingId,
-    item: &CampaignTriageFindingEvidence,
-) -> Result<(), CliError> {
-    if item.membership.request.campaign() != &item.campaign
-        || item.membership.request.snapshot() != item.snapshot
+    evidence: &crucible_engine::LocalDagStore,
+    record: &CampaignFindingEvidenceRecord,
+) -> Result<AuthenticatedCampaignFindingHead, CliError> {
+    let expected_finding_id = record.finding;
+    let membership_request = decode_request(
+        evidence,
+        record.membership,
+        crucible_campaign::QueryCampaignFindingsRequest::from_canonical_bytes,
+        index,
+        "membership",
+    )?;
+    if membership_request.campaign() != &record.campaign
+        || membership_request.snapshot() != record.snapshot
     {
         return Err(artifact_error(format!(
             "finding {index} membership request names another campaign snapshot"
         )));
     }
-    for (proof, kind) in [
-        (
-            &item.observation_proof,
-            crucible_campaign::CampaignFindingObjectKind::Observation,
-        ),
-        (
-            &item.reproduction_proof,
-            crucible_campaign::CampaignFindingObjectKind::Reproduction,
-        ),
-    ] {
-        if proof.request.campaign() != &item.campaign
-            || proof.request.snapshot() != item.snapshot
-            || proof.request.finding() != expected_finding_id
-            || proof.request.kind() != kind
+    let object_request = |exchange: CampaignExchangeRef,
+                          kind: crucible_campaign::CampaignFindingObjectKind,
+                          label: &str| {
+        let request = decode_request(
+            evidence,
+            exchange,
+            crucible_campaign::GetCampaignFindingObjectRequest::from_canonical_bytes,
+            index,
+            label,
+        )?;
+        if request.campaign() != &record.campaign
+            || request.snapshot() != record.snapshot
+            || request.finding() != expected_finding_id
+            || request.kind() != kind
         {
             return Err(artifact_error(format!(
-                "finding {index} object request names another campaign dependency"
+                "finding {index} {label} request names another campaign dependency"
             )));
         }
-    }
-    if let Some(proof) = &item.minimized_reproduction_proof
-        && (proof.request.campaign() != &item.campaign
-            || proof.request.snapshot() != item.snapshot
-            || proof.request.finding() != expected_finding_id
-            || proof.request.kind()
-                != crucible_campaign::CampaignFindingObjectKind::MinimizedReproduction)
-    {
-        return Err(artifact_error(format!(
-            "finding {index} minimized request names another campaign dependency"
-        )));
-    }
-    let mut objects = vec![
-        item.observation_proof.clone(),
-        item.reproduction_proof.clone(),
-    ];
-    objects.extend(item.minimized_reproduction_proof.iter().cloned());
-    let occurrences = item
-        .occurrence_proofs
-        .iter()
-        .map(|proof| proof.page.clone())
-        .collect();
-    let mut occurrence_objects = Vec::new();
-    let mut triage_segments = Vec::new();
-    for proof in &item.occurrence_proofs {
-        occurrence_objects.extend([
-            proof.observation.clone(),
-            proof.reproduction.clone(),
-            proof.minimized_reproduction.clone(),
-        ]);
-        if let Some(triage) = &proof.triage_evidence {
-            for replay in [
-                &triage.minimization_original,
-                &triage.minimization_selected,
-                &triage.verification_original,
-                &triage.verification_selected,
-            ] {
-                triage_segments.extend(replay.segments.iter().cloned());
-            }
-        }
-    }
-    let client = crucible_campaign::CampaignClient::new(ImportedCampaignFindingService {
-        membership: item.membership.clone(),
-        objects,
-        occurrences,
-        occurrence_objects,
-        triage_segments,
-    });
+        Ok(request)
+    };
+    let observation_request = object_request(
+        record.observation,
+        crucible_campaign::CampaignFindingObjectKind::Observation,
+        "object",
+    )?;
+    let reproduction_request = object_request(
+        record.reproduction,
+        crucible_campaign::CampaignFindingObjectKind::Reproduction,
+        "object",
+    )?;
+    let minimized_request = record
+        .minimized
+        .map(|exchange| {
+            object_request(
+                exchange,
+                crucible_campaign::CampaignFindingObjectKind::MinimizedReproduction,
+                "minimized",
+            )
+        })
+        .transpose()?;
+
+    let client = crucible_campaign::CampaignClient::new(StoredCampaignFindingService::for_finding(
+        evidence, record,
+    ));
     let membership = client
-        .query_campaign_findings(&item.membership.request)
+        .query_campaign_findings(&membership_request)
         .map_err(|error| {
             artifact_error(format!(
                 "finding {index} campaign membership proof was rejected: {error}"
             ))
         })?;
-    let authenticated_finding = membership
+    let finding = membership
         .entries()
         .iter()
         .find(|finding| finding.id() == Ok(expected_finding_id))
+        .cloned()
         .ok_or_else(|| {
             artifact_error(format!(
                 "finding {index} is not admitted by the campaign snapshot"
             ))
         })?;
-    if authenticated_finding != &item.finding {
-        return Err(artifact_error(format!(
-            "finding {index} body differs from its admitted campaign member"
-        )));
-    }
 
-    let observation = client
-        .get_campaign_finding_object(&item.observation_proof.request)
+    let observation = match client
+        .get_campaign_finding_object(&observation_request)
         .map_err(|error| {
             artifact_error(format!(
                 "finding {index} campaign observation proof was rejected: {error}"
             ))
-        })?;
-    let crucible_campaign::CampaignFindingObject::Observation(observation) = observation.object()
-    else {
-        return Err(artifact_error(format!(
-            "finding {index} campaign observation proof has the wrong object kind"
-        )));
+        })?
+        .object()
+    {
+        crucible_campaign::CampaignFindingObject::Observation(observation) => observation.clone(),
+        _ => {
+            return Err(artifact_error(format!(
+                "finding {index} campaign observation proof has the wrong object kind"
+            )));
+        }
     };
-    if observation != &item.observation {
-        return Err(artifact_error(format!(
-            "finding {index} observation differs from its campaign proof"
-        )));
-    }
-
-    let reproduction = client
-        .get_campaign_finding_object(&item.reproduction_proof.request)
+    let reproduction = match client
+        .get_campaign_finding_object(&reproduction_request)
         .map_err(|error| {
             artifact_error(format!(
                 "finding {index} campaign reproduction proof was rejected: {error}"
             ))
-        })?;
-    let crucible_campaign::CampaignFindingObject::Reproduction(reproduction) =
-        reproduction.object()
-    else {
-        return Err(artifact_error(format!(
-            "finding {index} campaign reproduction proof has the wrong object kind"
-        )));
+        })?
+        .object()
+    {
+        crucible_campaign::CampaignFindingObject::Reproduction(reproduction) => {
+            reproduction.clone()
+        }
+        _ => {
+            return Err(artifact_error(format!(
+                "finding {index} campaign reproduction proof has the wrong object kind"
+            )));
+        }
     };
-    if reproduction != &item.reproduction {
-        return Err(artifact_error(format!(
-            "finding {index} reproduction differs from its campaign proof"
-        )));
-    }
-
-    let proved_minimized = item
-        .minimized_reproduction_proof
-        .as_ref()
-        .map(|proof| {
-            client
-                .get_campaign_finding_object(&proof.request)
+    let minimized_reproduction = minimized_request
+        .map(|request| {
+            match client
+                .get_campaign_finding_object(&request)
                 .map_err(|error| {
                     artifact_error(format!(
                         "finding {index} minimized reproduction proof was rejected: {error}"
                     ))
-                })
+                })?
+                .object()
+            {
+                crucible_campaign::CampaignFindingObject::MinimizedReproduction(reproduction) => {
+                    Ok(reproduction.clone())
+                }
+                _ => Err(artifact_error(format!(
+                    "finding {index} minimized campaign proof has the wrong object kind"
+                ))),
+            }
         })
         .transpose()?;
-    match (
-        proved_minimized.as_ref(),
-        item.minimized_reproduction.as_ref(),
-    ) {
-        (Some(response), Some(expected)) => {
-            let crucible_campaign::CampaignFindingObject::MinimizedReproduction(actual) =
-                response.object()
-            else {
-                return Err(artifact_error(format!(
-                    "finding {index} minimized campaign proof has the wrong object kind"
-                )));
-            };
-            if actual != expected {
-                return Err(artifact_error(format!(
-                    "finding {index} minimized reproduction differs from its campaign proof"
-                )));
-            }
-        }
-        (None, None) => {}
+
+    let reproduction_artifact = authenticate_finding_reproduction(
+        evidence,
+        record,
+        false,
+        &reproduction,
+        record.reproduction_segments,
+    )?;
+    let minimized_artifact = match (&minimized_reproduction, record.minimized_segments) {
+        (Some(minimized), Some(segments)) => Some(authenticate_finding_reproduction(
+            evidence, record, true, minimized, segments,
+        )?),
+        (None, None) => None,
         _ => {
             return Err(artifact_error(format!(
-                "finding {index} minimized reproduction is missing its campaign proof"
+                "finding {index} minimized reproduction and its segment list disagree"
             )));
         }
-    }
-    authenticate_campaign_occurrences(index, expected_finding_id, item, &client)
+    };
+
+    Ok(AuthenticatedCampaignFindingHead {
+        finding,
+        observation,
+        reproduction,
+        minimized_reproduction,
+        reproduction_artifact,
+        minimized_artifact,
+    })
 }
 
-fn authenticate_campaign_occurrences(
-    index: usize,
-    expected_finding_id: crucible_campaign::FindingId,
-    item: &CampaignTriageFindingEvidence,
-    client: &crucible_campaign::CampaignClient<ImportedCampaignFindingService>,
+/// Authenticates every occurrence of one finding as a fold over its chunks.
+///
+/// `on_replay` receives each occurrence's four native replays, one at a time,
+/// in [`TRIAGE_REPLAY_ROLES`] order. Uniqueness of candidate bundles needs no
+/// resident set: each page request continues at the previous page's
+/// exclusive cursor, and the checked Merkle scan proof admits only strictly
+/// later index keys, so a bundle cannot recur in an authenticated chain.
+///
+/// # Errors
+///
+/// Returns an error when the record lists another occurrence count, a page
+/// breaks the canonical chain, any occurrence fails authentication, or the
+/// chain omits the finding's representative or latest candidate bundle.
+pub(crate) fn authenticate_campaign_occurrences(
+    context: CampaignFindingAuthenticationContext<'_>,
+    on_replay: &mut dyn FnMut(
+        u64,
+        crucible_campaign::CampaignFindingTriageReplayRole,
+        crucible_engine::FailureTriageReplayEvidence,
+    ) -> Result<(), CliError>,
 ) -> Result<(), CliError> {
-    let expected_count = usize::try_from(item.finding.candidate_occurrence_count())
-        .map_err(|_| artifact_error(format!("finding {index} occurrence count is invalid")))?;
-    if item.occurrence_proofs.len() != expected_count {
+    let index = context.index;
+    let record = context.record;
+    let expected_count = u64::from(context.finding.candidate_occurrence_count());
+    if record.occurrence_count != expected_count {
         return Err(artifact_error(format!(
             "finding {index} does not retain one proof page per candidate occurrence"
         )));
     }
 
     let mut after = None;
-    let mut bundle_ids = BTreeSet::new();
-    for (page, occurrence_proof) in item.occurrence_proofs.iter().enumerate() {
-        let page_proof = &occurrence_proof.page;
-        if page_proof.request.campaign() != &item.campaign
-            || page_proof.request.snapshot() != item.snapshot
-            || page_proof.request.finding() != expected_finding_id
-            || page_proof.request.after() != after
-            || page_proof.request.limit()
-                != crucible_campaign::MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS
-        {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence page {page} request breaks the canonical page chain"
-            )));
-        }
-        let response = client
-            .query_campaign_finding_occurrences(&page_proof.request)
-            .map_err(|error| {
-                artifact_error(format!(
-                    "finding {index} occurrence page {page} proof was rejected: {error}"
-                ))
-            })?;
-        if response.finding() != &item.finding || response.entries().len() != 1 {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence page {page} has an incomplete body"
-            )));
-        }
-        let bundle = campaign_occurrence_bundle(occurrence_proof)?;
-        let bundle_id = bundle.id().map_err(|error| {
-            artifact_error(format!(
-                "finding {index} occurrence page {page} bundle ID is invalid: {error}"
-            ))
-        })?;
-
-        let object_proofs = [
-            (
-                &occurrence_proof.observation,
-                crucible_campaign::CampaignFindingOccurrenceObjectKind::Observation,
-            ),
-            (
-                &occurrence_proof.reproduction,
-                crucible_campaign::CampaignFindingOccurrenceObjectKind::Reproduction,
-            ),
-            (
-                &occurrence_proof.minimized_reproduction,
-                crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
-            ),
-        ];
-        match (&occurrence_proof.triage_evidence, bundle.triage_evidence()) {
-            (Some(triage), Some(evidence)) => {
-                let context = CampaignTriageReplayAuthenticationContext {
-                    finding_index: index,
-                    page_index: page,
-                    item,
-                    finding: expected_finding_id,
-                    bundle: bundle_id,
-                };
-                authenticate_campaign_triage_replay(
-                    context,
-                    crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
-                    evidence.minimization_original(),
-                    &triage.minimization_original,
-                    client,
-                )?;
-                authenticate_campaign_triage_replay(
-                    context,
-                    crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected,
-                    evidence.minimization_selected(),
-                    &triage.minimization_selected,
-                    client,
-                )?;
-                authenticate_campaign_triage_replay(
-                    context,
-                    crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
-                    evidence.verification_original(),
-                    &triage.verification_original,
-                    client,
-                )?;
-                authenticate_campaign_triage_replay(
-                    context,
-                    crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
-                    evidence.verification_selected(),
-                    &triage.verification_selected,
-                    client,
-                )?;
-            }
-            (None, None) => {}
-            _ => {
+    let mut seen_candidate = false;
+    let mut seen_latest = false;
+    let mut page = 0_u64;
+    for (chunk_index, chunk) in (0_u64..).zip(&record.chunks) {
+        let first = chunk_index * MAX_OCCURRENCES_PER_CHUNK;
+        let occurrences = read_occurrence_chunk(
+            context.evidence,
+            *chunk,
+            first,
+            record.chunk_len(chunk_index)?,
+        )?;
+        for exchanges in &occurrences {
+            let occurrence = authenticate_campaign_occurrence(
+                context,
+                page,
+                exchanges,
+                OccurrenceCursorCheck::Chained(after),
+                on_replay,
+            )?;
+            seen_candidate |= occurrence.bundle == context.finding.candidate_bundle();
+            seen_latest |= occurrence.bundle == context.finding.latest_candidate_bundle();
+            after = occurrence.next_after;
+            if after.is_none() && page + 1 != expected_count {
                 return Err(artifact_error(format!(
-                    "finding {index} occurrence page {page} triage replay set disagrees with its bundle"
+                    "finding {index} occurrence pages claim an early end of index"
                 )));
             }
-        }
-        for (object_proof, kind) in object_proofs {
-            if object_proof.request.campaign() != &item.campaign
-                || object_proof.request.snapshot() != item.snapshot
-                || object_proof.request.finding() != expected_finding_id
-                || object_proof.request.bundle() != bundle_id
-                || object_proof.request.kind() != kind
-            {
-                return Err(artifact_error(format!(
-                    "finding {index} occurrence page {page} object request names another dependency"
-                )));
-            }
-            let object_response = client
-                .get_campaign_finding_occurrence_object(&object_proof.request)
-                .map_err(|error| {
-                    artifact_error(format!(
-                        "finding {index} occurrence page {page} object proof was rejected: {error}"
-                    ))
-                })?;
-            if object_response.finding() != &item.finding
-                || object_response.bundle() != bundle
-                || object_response.object().kind() != kind
-            {
-                return Err(artifact_error(format!(
-                    "finding {index} occurrence page {page} object proof disagrees with its bundle"
-                )));
-            }
-        }
-
-        let minimized = campaign_occurrence_minimized_reproduction(occurrence_proof)?;
-        let minimization = minimized.minimization().ok_or_else(|| {
-            artifact_error(format!(
-                "finding {index} occurrence page {page} minimized reproduction has no trace"
-            ))
-        })?;
-        let signature_replays = bundle.signature_minimization();
-        let validated_replays = crucible_campaign::FindingSignatureMinimizationEvidence::new(
-            item.finding.signature(),
-            minimization,
-            signature_replays.minimization_pass().to_vec(),
-            signature_replays.verification_pass().to_vec(),
-        )
-        .map_err(|error| {
-            artifact_error(format!(
-                "finding {index} occurrence page {page} replay evidence is invalid: {error}"
-            ))
-        })?;
-        if bundle.signature() != item.finding.signature()
-            || &validated_replays != signature_replays
-            || !bundle_ids.insert(bundle_id)
-        {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence page {page} disagrees with its finding"
-            )));
-        }
-        after = response.next_after();
-        if after.is_none() && page + 1 != expected_count {
-            return Err(artifact_error(format!(
-                "finding {index} occurrence pages claim an early end of index"
-            )));
+            page += 1;
         }
     }
-    if after.is_some()
-        || !bundle_ids.contains(&item.finding.candidate_bundle())
-        || !bundle_ids.contains(&item.finding.latest_candidate_bundle())
-    {
+    if page != expected_count || after.is_some() || !seen_candidate || !seen_latest {
         return Err(artifact_error(format!(
             "finding {index} occurrence proof chain is incomplete"
         )));
@@ -362,26 +302,306 @@ fn authenticate_campaign_occurrences(
     Ok(())
 }
 
-fn authenticate_campaign_triage_replay(
-    context: CampaignTriageReplayAuthenticationContext<'_>,
+/// Authenticates one occurrence and decodes its native replays.
+///
+/// Returns the occurrence's bundle identity and the cursor the next page
+/// request must continue from.
+///
+/// # Errors
+///
+/// Returns an error when a request names another dependency, a response
+/// fails its checked binding or disagrees with the finding, or a replay is
+/// incomplete, reordered, substituted, or semantically unbound.
+pub(crate) fn authenticate_campaign_occurrence(
+    context: CampaignFindingAuthenticationContext<'_>,
+    page: u64,
+    exchanges: &CampaignOccurrenceExchanges,
+    cursor: OccurrenceCursorCheck,
+    on_replay: &mut dyn FnMut(
+        u64,
+        crucible_campaign::CampaignFindingTriageReplayRole,
+        crucible_engine::FailureTriageReplayEvidence,
+    ) -> Result<(), CliError>,
+) -> Result<AuthenticatedCampaignOccurrence, CliError> {
+    let index = context.index;
+    let record = context.record;
+    let finding = context.finding;
+    let expected_finding_id = record.finding;
+
+    let page_request = decode_request(
+        context.evidence,
+        exchanges.page,
+        crucible_campaign::QueryCampaignFindingOccurrencesRequest::from_canonical_bytes,
+        index,
+        "occurrence page",
+    )?;
+    let after_matches = match cursor {
+        OccurrenceCursorCheck::Chained(after) => page_request.after() == after,
+        OccurrenceCursorCheck::Loaded => true,
+    };
+    if page_request.campaign() != &record.campaign
+        || page_request.snapshot() != record.snapshot
+        || page_request.finding() != expected_finding_id
+        || !after_matches
+        || page_request.limit()
+            != crucible_campaign::MAX_CAMPAIGN_FINDING_OCCURRENCE_QUERY_PAGE_ITEMS
+    {
+        return Err(artifact_error(format!(
+            "finding {index} occurrence page {page} request breaks the canonical page chain"
+        )));
+    }
+    let client = crucible_campaign::CampaignClient::new(
+        StoredCampaignFindingService::for_occurrence(context.evidence, exchanges),
+    );
+    let response = client
+        .query_campaign_finding_occurrences(&page_request)
+        .map_err(|error| {
+            artifact_error(format!(
+                "finding {index} occurrence page {page} proof was rejected: {error}"
+            ))
+        })?;
+    if response.finding() != finding || response.entries().len() != 1 {
+        return Err(artifact_error(format!(
+            "finding {index} occurrence page {page} has an incomplete body"
+        )));
+    }
+    let bundle = response
+        .entries()
+        .first()
+        .map(crucible_campaign::CampaignFindingOccurrence::bundle)
+        .ok_or_else(|| artifact_error("campaign occurrence page has no candidate bundle"))?;
+    let bundle_id = bundle.id().map_err(|error| {
+        artifact_error(format!(
+            "finding {index} occurrence page {page} bundle ID is invalid: {error}"
+        ))
+    })?;
+
+    let mut objects = Vec::with_capacity(3);
+    for (exchange, kind) in [
+        (
+            exchanges.observation,
+            crucible_campaign::CampaignFindingOccurrenceObjectKind::Observation,
+        ),
+        (
+            exchanges.reproduction,
+            crucible_campaign::CampaignFindingOccurrenceObjectKind::Reproduction,
+        ),
+        (
+            exchanges.minimized,
+            crucible_campaign::CampaignFindingOccurrenceObjectKind::MinimizedReproduction,
+        ),
+    ] {
+        let request = decode_request(
+            context.evidence,
+            exchange,
+            crucible_campaign::GetCampaignFindingOccurrenceObjectRequest::from_canonical_bytes,
+            index,
+            "occurrence object",
+        )?;
+        if request.campaign() != &record.campaign
+            || request.snapshot() != record.snapshot
+            || request.finding() != expected_finding_id
+            || request.bundle() != bundle_id
+            || request.kind() != kind
+        {
+            return Err(artifact_error(format!(
+                "finding {index} occurrence page {page} object request names another dependency"
+            )));
+        }
+        let object_response = client
+            .get_campaign_finding_occurrence_object(&request)
+            .map_err(|error| {
+                artifact_error(format!(
+                    "finding {index} occurrence page {page} object proof was rejected: {error}"
+                ))
+            })?;
+        if object_response.finding() != finding
+            || object_response.bundle() != bundle
+            || object_response.object().kind() != kind
+        {
+            return Err(artifact_error(format!(
+                "finding {index} occurrence page {page} object proof disagrees with its bundle"
+            )));
+        }
+        objects.push(object_response);
+    }
+    let reproduction = match objects.get(1).map(|response| response.object()) {
+        Some(crucible_campaign::CampaignFindingOccurrenceObject::Reproduction(reproduction)) => {
+            reproduction
+        }
+        _ => {
+            return Err(artifact_error(
+                "campaign occurrence reproduction proof has another object kind",
+            ));
+        }
+    };
+    let minimized = match objects.get(2).map(|response| response.object()) {
+        Some(crucible_campaign::CampaignFindingOccurrenceObject::MinimizedReproduction(
+            reproduction,
+        )) => reproduction,
+        _ => {
+            return Err(artifact_error(
+                "campaign occurrence minimized proof has another object kind",
+            ));
+        }
+    };
+
+    let minimization = minimized.minimization().ok_or_else(|| {
+        artifact_error(format!(
+            "finding {index} occurrence page {page} minimized reproduction has no trace"
+        ))
+    })?;
+    let signature_replays = bundle.signature_minimization();
+    let validated_replays = crucible_campaign::FindingSignatureMinimizationEvidence::new(
+        finding.signature(),
+        minimization,
+        signature_replays.minimization_pass().to_vec(),
+        signature_replays.verification_pass().to_vec(),
+    )
+    .map_err(|error| {
+        artifact_error(format!(
+            "finding {index} occurrence page {page} replay evidence is invalid: {error}"
+        ))
+    })?;
+    if bundle.signature() != finding.signature() || &validated_replays != signature_replays {
+        return Err(artifact_error(format!(
+            "finding {index} occurrence page {page} disagrees with its finding"
+        )));
+    }
+
+    // Both reproductions' segments are authenticated for every occurrence,
+    // so no captured evidence goes unchecked.
+    let original_artifact = authenticate_occurrence_reproduction(
+        context.evidence,
+        record,
+        bundle_id,
+        false,
+        reproduction,
+        exchanges.reproduction_segments,
+    )?;
+    let selected_artifact = authenticate_occurrence_reproduction(
+        context.evidence,
+        record,
+        bundle_id,
+        true,
+        minimized,
+        exchanges.minimized_segments,
+    )?;
+
+    match (&exchanges.triage, bundle.triage_evidence()) {
+        (Some(roles), Some(evidence_set)) => {
+            let original = campaign_model_finding_reproduction(
+                &context.template.finding,
+                reproduction,
+                original_artifact,
+            )?;
+            let selected = campaign_model_finding_reproduction(
+                &context.template.finding,
+                minimized,
+                selected_artifact,
+            )?;
+            for ((role, _), exchanges) in TRIAGE_REPLAY_ROLES.iter().zip(roles) {
+                let evidence_id = triage_role_evidence(&evidence_set, *role);
+                let replay = authenticate_campaign_triage_replay(
+                    context,
+                    TriageReplayPosition {
+                        page,
+                        bundle: bundle_id,
+                        role: *role,
+                        evidence: evidence_id,
+                    },
+                    &exchanges.segments,
+                    &client,
+                )?;
+                let log_segments = authenticate_occurrence_triage_log_segments(
+                    context.evidence,
+                    record,
+                    bundle_id,
+                    *role,
+                    &replay,
+                    exchanges.log_segments,
+                )?;
+                let (reproduction, model_finding) = if triage_role_is_selected(*role) {
+                    (minimized, selected.clone())
+                } else {
+                    (reproduction, original.clone())
+                };
+                let native = decode_campaign_triage_replay_record(
+                    &replay,
+                    reproduction,
+                    model_finding,
+                    log_segments,
+                )?;
+                drop(replay);
+                on_replay(page, *role, native)?;
+            }
+        }
+        (None, None) => {}
+        _ => {
+            return Err(artifact_error(format!(
+                "finding {index} occurrence page {page} triage replay set disagrees with its bundle"
+            )));
+        }
+    }
+
+    Ok(AuthenticatedCampaignOccurrence {
+        bundle: bundle_id,
+        next_after: response.next_after(),
+    })
+}
+
+/// Occurrence, bundle, role, and evidence one replay transfer must name.
+#[derive(Clone, Copy)]
+struct TriageReplayPosition {
+    page: u64,
+    bundle: crucible_campaign::FindingCandidateBundleId,
     role: crucible_campaign::CampaignFindingTriageReplayRole,
     evidence: crucible_campaign::FindingTriageReplayEvidenceId,
-    proof: &CampaignFindingTriageReplayProof,
-    client: &crucible_campaign::CampaignClient<ImportedCampaignFindingService>,
+}
+
+/// Authenticates one role's ordered segment transcript and reassembles it.
+///
+/// Only this replay's envelopes are resident while it is reassembled.
+fn authenticate_campaign_triage_replay(
+    context: CampaignFindingAuthenticationContext<'_>,
+    position: TriageReplayPosition,
+    segments: &[CampaignExchangeRef],
+    client: &crucible_campaign::CampaignClient<StoredCampaignFindingService>,
 ) -> Result<crucible_campaign::FindingTriageReplayEvidence, CliError> {
-    let CampaignTriageReplayAuthenticationContext {
-        finding_index,
-        page_index,
-        item,
-        finding,
+    let finding_index = context.index;
+    let TriageReplayPosition {
+        page: page_index,
         bundle,
-    } = context;
-    let first = proof.segments.first().ok_or_else(|| {
+        role,
+        evidence,
+    } = position;
+    let record = context.record;
+    let fetch = |exchange: CampaignExchangeRef| {
+        let request = decode_request(
+            context.evidence,
+            exchange,
+            crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest::from_canonical_bytes,
+            finding_index,
+            "triage replay segment",
+        )?;
+        let response = client
+            .get_campaign_finding_triage_replay_segment(&request)
+            .map_err(|error| {
+                artifact_error(format!(
+                    "finding {finding_index} occurrence page {page_index} triage replay segment proof was rejected: {error}"
+                ))
+            })?;
+        Ok::<_, CliError>((request, response))
+    };
+
+    let first = segments.first().copied().ok_or_else(|| {
         artifact_error(format!(
             "finding {finding_index} occurrence page {page_index} has an empty triage replay transfer"
         ))
     })?;
-    let description = first.response.description().clone();
+    let (_, first_response) = fetch(first)?;
+    let description = first_response.description().clone();
+    drop(first_response);
     if description.evidence() != evidence {
         return Err(artifact_error(format!(
             "finding {finding_index} occurrence page {page_index} triage replay description names another evidence record"
@@ -399,71 +619,49 @@ fn authenticate_campaign_triage_replay(
         total_envelope_bytes = total_envelope_bytes
             .checked_add(object_bytes)
             .ok_or_else(|| artifact_error("campaign triage replay transfer size overflows"))?;
-        let count = object
-            .stored_envelope_bytes()
-            .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
-            .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
-            / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
-        expected_segments =
-            expected_segments
-                .checked_add(usize::try_from(count).map_err(|_| {
-                    artifact_error("campaign triage replay segment count is invalid")
-                })?)
-                .ok_or_else(|| artifact_error("campaign triage replay segment count overflows"))?;
+        expected_segments = expected_segments
+            .checked_add(
+                usize::try_from(object_segment_count(object.stored_envelope_bytes())?).map_err(
+                    |_| artifact_error("campaign triage replay segment count is invalid"),
+                )?,
+            )
+            .ok_or_else(|| artifact_error("campaign triage replay segment count overflows"))?;
     }
-    if total_envelope_bytes > 256 * 1024 * 1024 || proof.segments.len() != expected_segments {
+    if total_envelope_bytes > MAX_TRIAGE_REPLAY_TRANSFER_BYTES
+        || segments.len() != expected_segments
+    {
         return Err(artifact_error(format!(
             "finding {finding_index} occurrence page {page_index} triage replay transfer bounds are invalid"
         )));
     }
 
     let mut envelopes = Vec::with_capacity(description.objects().len());
-    let mut segment_position = 0;
+    let mut remaining = segments.iter().copied();
     for object in description.objects() {
         let object_bytes = usize::try_from(object.stored_envelope_bytes())
             .map_err(|_| artifact_error("campaign triage replay envelope length is invalid"))?;
         let mut envelope = Vec::with_capacity(object_bytes);
-        let segment_count = object
-            .stored_envelope_bytes()
-            .checked_add(crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES - 1)
-            .ok_or_else(|| artifact_error("campaign triage segment count overflows"))?
-            / crucible_campaign::MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES;
-        for segment_index in 0..u32::try_from(segment_count)
-            .map_err(|_| artifact_error("campaign triage segment count is invalid"))?
-        {
-            let segment = proof.segments.get(segment_position).ok_or_else(|| {
+        for segment_index in 0..object_segment_count(object.stored_envelope_bytes())? {
+            let exchange = remaining.next().ok_or_else(|| {
                 artifact_error("campaign triage replay transfer ended before its description")
             })?;
-            let request = &segment.request;
-            if request.campaign() != &item.campaign
-                || request.snapshot() != item.snapshot
-                || request.finding() != finding
+            let (request, response) = fetch(exchange)?;
+            if request.campaign() != &record.campaign
+                || request.snapshot() != record.snapshot
+                || request.finding() != record.finding
                 || request.bundle() != bundle
                 || request.role() != role
                 || request.evidence() != evidence
                 || request.object_ordinal() != object.ordinal()
                 || request.object() != object.content()
                 || request.segment_index() != segment_index
-                || segment.response.description() != &description
+                || response.description() != &description
             {
                 return Err(artifact_error(format!(
                     "finding {finding_index} occurrence page {page_index} triage replay segment is reordered or substituted"
                 )));
             }
-            let response = client
-                .get_campaign_finding_triage_replay_segment(request)
-                .map_err(|error| {
-                    artifact_error(format!(
-                        "finding {finding_index} occurrence page {page_index} triage replay segment proof was rejected: {error}"
-                    ))
-                })?;
-            if response != segment.response {
-                return Err(artifact_error(format!(
-                    "finding {finding_index} occurrence page {page_index} triage replay segment response was substituted"
-                )));
-            }
             envelope.extend_from_slice(response.range_bytes());
-            segment_position += 1;
         }
         if envelope.len() != object_bytes {
             return Err(artifact_error(format!(
@@ -490,6 +688,35 @@ fn authenticate_campaign_triage_replay(
     Ok(replay)
 }
 
+/// Reads and decodes one stored request blob.
+fn decode_request<T>(
+    evidence: &crucible_engine::LocalDagStore,
+    exchange: CampaignExchangeRef,
+    decode: impl FnOnce(&[u8]) -> Result<T, crucible_campaign::CampaignCodecError>,
+    index: usize,
+    label: &str,
+) -> Result<T, CliError> {
+    decode(&exchange.read_request(evidence)?).map_err(|error| {
+        artifact_error(format!(
+            "finding {index} {label} request is invalid: {error}"
+        ))
+    })
+}
+
+fn triage_role_is_selected(role: crucible_campaign::CampaignFindingTriageReplayRole) -> bool {
+    matches!(
+        role,
+        crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected
+            | crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected
+    )
+}
+
+/// Checks that finding-level records agree with each other and the report.
+///
+/// # Errors
+///
+/// Returns an error when any identity, configuration, fingerprint, payload,
+/// or failure kind disagrees.
 pub(crate) fn validate_campaign_triage_finding(
     index: usize,
     expected_finding_id: crucible_campaign::FindingId,
@@ -536,9 +763,6 @@ pub(crate) fn validate_campaign_triage_finding(
         ) => true,
         _ => false,
     };
-    for occurrence in campaign_occurrences(item) {
-        let _ = campaign_occurrence_native_triage_replays(occurrence, &item.report)?;
-    }
     if finding_id != expected_finding_id
         || item.finding.observation() != observation_id
         || item.finding.reproduction() != reproduction_id
@@ -548,7 +772,10 @@ pub(crate) fn validate_campaign_triage_finding(
         || item.reproduction.finding_fingerprint() != item.finding.signature().fingerprint()
         || item.reproduction.finding_fingerprint() != report_fingerprint
         || item.reproduction.configuration().as_hash() != report_configuration
-        || item.reproduction.payload() != item.report.finding.artifact.to_compact_binary()
+        || crucible_daemon::crucible_reproduction_payload(&item.report.finding.artifact)
+            .ok()
+            .as_ref()
+            != Some(item.reproduction.reproduction_payload())
         || !report_failure_matches
     {
         return Err(artifact_error(format!(

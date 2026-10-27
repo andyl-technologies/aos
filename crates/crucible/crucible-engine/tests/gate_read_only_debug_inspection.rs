@@ -198,10 +198,11 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(stream),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(stream),
+            0,
             value,
-        })),
+        ))),
     )
 }
 

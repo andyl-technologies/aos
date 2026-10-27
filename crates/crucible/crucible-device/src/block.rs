@@ -5,9 +5,13 @@
 //!
 //! - [`codec`]: the versioned, little-endian, bounds-checked block wire ABI
 //!   ([`BlockRequest`] / [`BlockResponse`], [IO-8], [IO-9]).
-//! - [`overlay`]: the read-only [`BaseImage`] and its in-memory 4 KiB
-//!   copy-on-write [`CowOverlay`] with dirty-page tracking and materialize
+//! - [`overlay`]: the read-only [`BaseImage`] and its 4 KiB copy-on-write
+//!   [`CowOverlay`] with dirty-page tracking and streaming materialize
 //!   ([IO-5], [IO-6], [IO-7], [IO-12]).
+//! - [`page_store`]: the [`BlockPageStore`] holding copied-up page bytes,
+//!   normally a private file in the run's quota-accounted directory.
+//! - [`overlay_image`]: the immutable, chunked, content-addressed
+//!   [`BlockOverlayImage`] a snapshot carries instead of page bytes.
 //! - [`device`]: the [`BlockDevice`] [`IoSubNode`](crate::subnode::IoSubNode)
 //!   implementation, its [`BlockLatency`] completion model, and its
 //!   [`BlockSnapshot`] device-half `MaterializedState` ([IO-10], [IO-11],
@@ -25,12 +29,14 @@ pub mod fault;
 pub mod flash;
 pub mod media;
 pub mod overlay;
+pub mod overlay_image;
+pub mod page_store;
 pub mod persistence;
 pub mod service;
 
 pub use codec::{
-    BLOCK_ABI_VERSION, BlockCodecError, BlockErrorCode, BlockOp, BlockRequest,
-    BlockRequestIdentity, BlockResponse, BlockStatus, BlockTransportPending,
+    BLOCK_REQUEST_ABI_VERSION, BLOCK_RESPONSE_ABI_VERSION, BlockCodecError, BlockErrorCode,
+    BlockOp, BlockRequest, BlockRequestIdentity, BlockResponse, BlockStatus, BlockTransportPending,
     BlockTransportRequestIds, BlockTransportReset, BlockTransportResolved,
     BlockTransportUnadmitted, BlockTransportUndelivered, REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
@@ -41,7 +47,11 @@ pub use device::{
 pub use fault::*;
 pub use flash::*;
 pub use media::*;
-pub use overlay::{BaseImage, CowOverlay, OverlayDelta, PAGE_SIZE};
+pub use overlay::{BaseImage, CowOverlay, OVERLAY_CHUNK_BYTES, OVERLAY_CHUNK_PAGES, PAGE_SIZE};
+pub use overlay_image::{
+    BlockOverlayChunk, BlockOverlayChunkSource, BlockOverlayImage, ChunkPageBits,
+};
+pub use page_store::BlockPageStore;
 pub use persistence::{
     BlockPersistenceGraph, BlockPersistenceNode, BlockPersistenceOrdering,
     BlockPersistenceReadyKey, BlockPersistenceTransformationEvidence, BlockWriteFragmentId,
@@ -55,6 +65,9 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "block_overlay_codec_test.rs"]
 mod overlay_codec_tests;
+#[cfg(test)]
+#[path = "block_overlay_store_test.rs"]
+mod overlay_store_tests;
 #[cfg(test)]
 #[path = "block_service_test.rs"]
 mod service_tests;

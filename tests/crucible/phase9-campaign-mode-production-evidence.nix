@@ -12,6 +12,9 @@
   authority,
   requiredEvidence,
   semanticEvidence,
+  # A raw VM test's result is only PASS; its evidence is a framed block in
+  # serial.log. Name the frame markers to authenticate that block instead.
+  authoritySerialFrame ? null,
 }: let
   selected = campaignComposition != null;
   mode =
@@ -24,15 +27,18 @@
     else null;
   configurationIdentity =
     if selected
-    then system.config.aos.services.crucibleCampaign._runtimeIdentity
+    then system.config.aos.crucibleCampaign._runtimeIdentity
     else null;
   toplevel =
     if selected
     then system.config.system.build.toplevel
     else null;
+  readsSerialFrame = !selected && authoritySerialFrame != null;
   authorityResult =
     if selected
     then "${authority}/raw-result"
+    else if readsSerialFrame
+    then "${authority}/serial.log"
     else "${authority}/result";
   semanticResult = builtins.concatStringsSep "\n" ([
       "PASS"
@@ -48,13 +54,24 @@ in
     pname = "crucible-${name}";
     version = "0";
     src = null;
-    buildDeps = [authority pkgs.coreutils pkgs.grep] ++ dependencies;
+    buildDeps = [authority pkgs.coreutils pkgs.gawk pkgs.grep] ++ dependencies;
     phases = [
       {
         name = "authenticate-production-evidence";
         script = ''
           set -eu
           source_result=${lib.escapeShellArg authorityResult}
+          ${lib.optionalString readsSerialFrame ''
+            # Retain only the unique authenticated result frame from the console.
+            tr -d '\r' < "$source_result" > "$TMPDIR/authority-serial"
+            . ${./_phase9-campaign-mode-frame.sh}
+            extract_campaign_mode_result_frame \
+              "$TMPDIR/authority-serial" \
+              ${lib.escapeShellArg authoritySerialFrame.begin} \
+              ${lib.escapeShellArg authoritySerialFrame.end} \
+              "$TMPDIR/authority-evidence"
+            source_result="$TMPDIR/authority-evidence"
+          ''}
 
           require_exact_line() {
             line="$1"

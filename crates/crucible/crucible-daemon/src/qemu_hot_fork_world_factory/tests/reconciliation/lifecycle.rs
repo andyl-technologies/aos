@@ -66,7 +66,33 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     };
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
-    assert!(lifecycle.start_materialization().is_ok());
+    // The retained log is compared by its entries, not its segment layout.
+    let start_parts = |materialization: crate::QemuFreshStartMaterialization| {
+        let (log, quanta, frontier, quiescence, verdict) = materialization.into_parts();
+        (
+            log.materialize().expect("readable adopted start log"),
+            quanta,
+            frontier,
+            quiescence,
+            verdict,
+        )
+    };
+    let before = start_parts(lifecycle.start_materialization().expect("adopted start"));
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(input.start().configuration())
+            .expect("adopted owner publication query")
+            .is_none()
+    );
+    assert_eq!(lifecycle.completed_quanta(), before.1);
+    assert_eq!(
+        start_parts(
+            lifecycle
+                .start_materialization()
+                .expect("unchanged adopted start")
+        ),
+        before
+    );
     let first_directories = observations
         .prepared_run_directories
         .lock()
@@ -305,7 +331,11 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     )
     .expect("source resource profile");
     let parent_and_two_children = HotCheckpointResourceProfile::new(
-        source_resources.template_bytes() * 3,
+        // A child reserves its dirty bound as bytes; that bound includes
+        // live procfs samples, so allow one MiB of allocator slack.
+        source_resources.template_bytes()
+            + source_resources.expected_private_dirty_bytes() * 2
+            + 1024 * 1024,
         source_resources.expected_private_dirty_bytes() * 3,
         source_resources.process_count() * 3,
         source_resources.virtual_cpu_count() * 3,

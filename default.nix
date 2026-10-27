@@ -1045,7 +1045,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     );
 
   crucibleChecksBase = import ./tests/crucible {
-    inherit pkgs lib mkSystem testing;
+    inherit pkgs lib mkSystem mkFixtureSystem testing;
   };
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
@@ -1730,6 +1730,10 @@ in rec {
       aos-test-targets = pkgs.aos.passthru.testTargets;
       systemd-native-unit-parser = import ./tests/abilities/systemd-native-unit-parser.nix {inherit pkgs;};
       crucible-controller = pkgs.crucible-controller;
+      # The controller workspace's test suite, Clippy, rustdoc, and doctests.
+      # The native package copies its executables from the release family
+      # and does not wait for this check.
+      crucible-controller-qualification = pkgs.crucible-controller.passthru.qualification;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
@@ -2044,6 +2048,7 @@ in rec {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
     };
+    headless-timeout = import ./lib/testing/headless-timeout.nix {inherit pkgs lib;};
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;

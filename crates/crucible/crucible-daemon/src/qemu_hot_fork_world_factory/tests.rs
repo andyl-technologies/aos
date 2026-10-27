@@ -445,9 +445,9 @@ impl QemuFreshAttemptDriver for ScriptedPublishedObservationDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, _bytes, _completed_quanta, _frontier, _terminal_quiescence, _terminal_verdict) =
+        let (events, _completed_quanta, _frontier, _terminal_quiescence, _terminal_verdict) =
             materialization.into_parts();
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 0);
         self.drives.fetch_add(1, Ordering::SeqCst);
         Ok(QemuFreshDriveOutcome::Observation(
             self.result.observation().clone(),
@@ -477,6 +477,10 @@ struct BranchReplayObservations {
     recoveries: Arc<AtomicUsize>,
     recovery_failures_remaining: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    /// Trace the scripted lifecycle exports for the attempt's applied effects.
+    effect_trace: Arc<Mutex<Option<crucible_engine::model::ResolvedEffectTrace>>>,
+    /// Trace each seal received, in order.
+    sealed_traces: Arc<Mutex<Vec<Option<crucible_engine::model::ResolvedEffectTrace>>>>,
 }
 
 impl BranchReplayObservations {
@@ -490,6 +494,8 @@ impl BranchReplayObservations {
             recoveries: Arc::new(AtomicUsize::new(0)),
             recovery_failures_remaining: Arc::new(AtomicUsize::new(0)),
             quarantines: Arc::new(AtomicUsize::new(0)),
+            effect_trace: Arc::new(Mutex::new(None)),
+            sealed_traces: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -555,6 +561,10 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
 
     fn completed_quanta(&self) -> u64 {
         self.completed_quanta
+    }
+
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible_engine::QuantumTerminalVerdict> {
@@ -646,8 +656,15 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         })
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
-        Ok(None)
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
+        Ok(self
+            .observations
+            .effect_trace
+            .lock()
+            .expect("branch replay effect trace")
+            .clone())
     }
 
     fn shutdown(
@@ -668,8 +685,11 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     ) -> Result<crate::QemuFreshStartMaterialization, crucible_engine::SchedulerError> {
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
-            Vec::new(),
-            0,
+            crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+                crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+                Vec::new(),
+            )
+            .expect("dense test start log"),
             self.completed_quanta,
             crucible_engine::VirtualTime::default(),
             SchedulerQuiescence::default(),
@@ -682,6 +702,10 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
         _disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        QemuHotForkStartOrigin::Exact
     }
 }
 
@@ -803,6 +827,10 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         self.completed_quanta
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible_engine::QuantumTerminalVerdict> {
         None
     }
@@ -884,7 +912,9 @@ impl QemuFreshAttemptLifecycleOwner for InheritedBoundaryLifecycle {
         })
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         Ok(None)
     }
 
@@ -904,15 +934,13 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     fn start_materialization(
         &self,
     ) -> Result<crate::QemuFreshStartMaterialization, crucible_engine::SchedulerError> {
-        let event_log_bytes = self
-            .start_events
-            .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
-            self.start_events.clone(),
-            event_log_bytes,
+            crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+                crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+                self.start_events.clone(),
+            )
+            .expect("dense test start log"),
             self.completed_quanta,
             self.frontier,
             SchedulerQuiescence::default(),
@@ -925,6 +953,10 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
         _disposition: AttemptExecutionDisposition,
     ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError> {
         Ok(AttemptExecutionReconciliationStep::Complete)
+    }
+
+    fn start_origin(&self) -> QemuHotForkStartOrigin {
+        QemuHotForkStartOrigin::Exact
     }
 }
 
@@ -981,10 +1013,9 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, bytes, completed_quanta, _frontier, quiescence, verdict) =
+        let (events, completed_quanta, _frontier, quiescence, verdict) =
             materialization.into_parts();
-        assert!(events.is_empty());
-        assert_eq!(bytes, 0);
+        assert_eq!(events.len(), 0);
         assert_eq!(
             quiescence,
             (completed_quanta == 0).then(SchedulerQuiescence::default)
@@ -1014,11 +1045,27 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
             self.result.clone(),
         ))
     }
+
+    fn seal_with_trace(
+        &mut self,
+        candidate: Self::Pending,
+        final_events: Vec<crucible_engine::SchedulerEventLogEntry>,
+        resolved_effect_trace: Option<crucible_engine::model::ResolvedEffectTrace>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        self.observations
+            .sealed_traces
+            .lock()
+            .expect("branch replay sealed traces")
+            .push(resolved_effect_trace);
+        self.seal(candidate, final_events)
+    }
 }
 
 struct NeverFallbackRunner {
     calls: Arc<AtomicUsize>,
 }
+
+impl crate::QemuAnchorRootMaterializer for NeverFallbackRunner {}
 
 impl CrucibleExecutionRunner for NeverFallbackRunner {
     type Error = &'static str;
@@ -1244,6 +1291,8 @@ struct RecordingFallbackRunner {
     calls: Arc<AtomicUsize>,
     reconciliations: Arc<AtomicUsize>,
 }
+
+impl crate::QemuAnchorRootMaterializer for RecordingFallbackRunner {}
 
 impl CrucibleExecutionRunner for RecordingFallbackRunner {
     type Error = Infallible;
@@ -1518,6 +1567,14 @@ fn branch_replay_guest_pending(
     )
 }
 
+#[path = "tests/ancestor_failures.rs"]
+mod ancestor_failures;
+#[path = "tests/ancestor_policy.rs"]
+mod ancestor_policy;
+#[path = "tests/ancestor_runner.rs"]
+mod ancestor_runner;
+#[path = "tests/anchor_router.rs"]
+mod anchor_router;
 #[path = "tests/branch_runner.rs"]
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]

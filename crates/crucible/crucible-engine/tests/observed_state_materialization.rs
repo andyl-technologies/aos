@@ -46,10 +46,11 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             payload_entry(
                 3,
                 time(6),
-                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                    stream: RngStreamId::from_name("ignored-rng"),
-                    value: 0xfeed_beef,
-                })),
+                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                    RngStreamId::from_name("ignored-rng"),
+                    0,
+                    0xfeed_beef,
+                ))),
             ),
             payload_entry(
                 4,
@@ -78,10 +79,11 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             payload_entry(
                 6,
                 time(6),
-                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                    stream: RngStreamId::from_name("ignored-app-random"),
-                    value: 0x1234_5678,
-                })),
+                SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                    RngStreamId::from_name("ignored-app-random"),
+                    0,
+                    0x1234_5678,
+                ))),
             ),
             boundary_entry(7, time(6)),
         ])
@@ -148,7 +150,9 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     )
     .expect("initial boundary should validate");
     let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
-    let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
+    let initial_firings = initial_pass
+        .evaluate_event_graph(&initial, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     let firing = initial_firings.as_slice()[0].clone();
     let prefix =
         crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
@@ -191,8 +195,18 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     assert_eq!(borrowed.point(), owned.point());
     assert_eq!(borrowed.observed_state(), owned.observed_state());
     for (condition, expected) in conditions {
-        assert_eq!(owned.evaluate_assertion_condition(&condition), expected);
-        assert_eq!(borrowed.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(
+            owned
+                .evaluate_assertion_condition(&condition)
+                .expect("console matchers are declared"),
+            expected
+        );
+        assert_eq!(
+            borrowed
+                .evaluate_assertion_condition(&condition)
+                .expect("console matchers are declared"),
+            expected
+        );
     }
     assert_eq!(borrowed.once_latches(), &[Condition::at(time(13))]);
     assert_eq!(borrowed.once_latches(), owned.once_latches());
@@ -205,8 +219,12 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     .expect("completion graph should validate");
     let mut owned_state = EventGraphState::new();
     let mut borrowed_state = EventGraphState::new();
-    let borrowed_firings = borrowed.evaluate_event_graph(&graph, &mut borrowed_state);
-    let owned_firings = owned.evaluate_event_graph(&graph, &mut owned_state);
+    let borrowed_firings = borrowed
+        .evaluate_event_graph(&graph, &mut borrowed_state)
+        .expect("console matchers are declared");
+    let owned_firings = owned
+        .evaluate_event_graph(&graph, &mut owned_state)
+        .expect("console matchers are declared");
     assert_eq!(borrowed_firings.len(), 1);
     assert_eq!(borrowed_firings.as_slice()[0].action(), &Action::Pass);
     assert_eq!(borrowed_firings, owned_firings);
@@ -223,7 +241,11 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     .expect("later boundary should validate");
     let mut restored = ConditionEvaluationPass::from_log_prefix_ref(&later, NoLeaves)
         .with_once_latches(borrowed.once_latches().to_vec());
-    assert!(restored.evaluate_assertion_condition(&once));
+    assert!(
+        restored
+            .evaluate_assertion_condition(&once)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]

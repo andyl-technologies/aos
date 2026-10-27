@@ -55,125 +55,147 @@ fn exact_restore_defers_network_fault_replay_to_checkpoint_identity()
     Ok(())
 }
 
+/// Raw console bytes per append; four appends seal one event-log segment.
+///
+/// A console entry encodes its bytes twice, so each append encodes to about
+/// 5/16 of the seal target.
+const SEALING_CHUNK_BYTES: usize = crucible_engine::EVENT_LOG_SEAL_TARGET_BYTES * 5 / 32;
+
+fn sealing_runtime(label: &str) -> SchedulerLivenessScenario {
+    SchedulerLivenessScenario::from_canonical_material(
+        label,
+        8,
+        SimInstant { ticks: 8 },
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+/// Builds a store-backed scheduler whose log has sealed one segment.
+fn sealed_source(runtime: SchedulerLivenessScenario, store: Arc<dyn DagStore>) -> SingleScheduler {
+    let mut source = SingleScheduler::new_with_event_log_segment_store(runtime, store)
+        .unwrap_or_else(|error| panic!("source scheduler is valid: {error}"));
+    for _ in 0..4 {
+        QuantumLoop::append_backend_observable_events(
+            &mut source,
+            vec![ObservableEvent::console_output(
+                VirtualTime { ticks: 0 },
+                NodeId {
+                    name: String::from("resumed-node"),
+                },
+                vec![7; SEALING_CHUNK_BYTES],
+            )],
+        )
+        .unwrap_or_else(|error| panic!("source observation is retained: {error}"));
+    }
+    source
+}
+
 #[test]
 fn resumed_capture_reads_authenticated_event_log_segments_from_new_run_store() {
     let scenario = ScenarioDef::from_canonical_material(
         "crucible.test.production-event-log-restore",
         "resumed-capture",
     );
-    let runtime = SchedulerLivenessScenario::from_canonical_material(
-        "resumed-capture-runtime",
-        8,
-        SimInstant { ticks: 8 },
-        Vec::new(),
-        Vec::new(),
-    )
-    .with_scenario_def(scenario);
+    let runtime = sealing_runtime("resumed-capture-runtime").with_scenario_def(scenario);
     let source_store: Arc<dyn DagStore> = Arc::new(MemoryDagStore::new());
-    let mut source = SingleScheduler::new_with_event_log_segment_store(
-        runtime.clone(),
-        Arc::clone(&source_store),
-    )
-    .unwrap_or_else(|error| panic!("source scheduler is valid: {error}"));
-
-    QuantumLoop::append_backend_observable_events(
-        &mut source,
-        vec![ObservableEvent::console_output(
-            VirtualTime { ticks: 0 },
-            NodeId {
-                name: String::from("resumed-node"),
-            },
-            b"retained-before-resume".to_vec(),
-        )],
-    )
-    .unwrap_or_else(|error| panic!("source observation is retained: {error}"));
+    let source = sealed_source(runtime.clone(), Arc::clone(&source_store));
     let checkpoint = source
         .checkpoint()
         .unwrap_or_else(|error| panic!("source scheduler captures: {error}"));
-    let expected_segments = source
-        .event_log_dependency_objects()
-        .unwrap_or_else(|error| panic!("source segments are readable: {error}"));
-    assert!(!expected_segments.is_empty());
-    let authenticated_objects = expected_segments
-        .iter()
-        .cloned()
-        .collect::<BTreeMap<_, _>>();
+    assert_eq!(checkpoint.event_log_segments().len(), 1);
 
+    // Restore reads the sealed segments from the new run's own store, so it
+    // refuses until they are hydrated there.
     let resumed_store: Arc<dyn DagStore> = Arc::new(MemoryDagStore::new());
     let mut resumed =
         SingleScheduler::new_with_event_log_segment_store(runtime, Arc::clone(&resumed_store))
             .unwrap_or_else(|error| panic!("resumed scheduler is valid: {error}"));
+    assert!(checkpoint.restore_into(&mut resumed).is_err());
+
+    ProductionEventLogSegments::store(source_store)
+        .hydrate(&checkpoint, resumed_store.as_ref())
+        .unwrap_or_else(|error| {
+            panic!("authenticated segments hydrate the new run store: {error}")
+        });
     checkpoint
         .restore_into(&mut resumed)
         .unwrap_or_else(|error| panic!("scheduler continuation restores: {error}"));
-    assert!(resumed.event_log_dependency_objects().is_err());
-
-    hydrate_checkpoint_event_log_dependencies(
-        &checkpoint,
-        &authenticated_objects,
-        resumed_store.as_ref(),
-    )
-    .unwrap_or_else(|error| panic!("authenticated segments hydrate the new run store: {error}"));
     let recaptured = resumed
         .checkpoint()
         .unwrap_or_else(|error| panic!("resumed scheduler captures: {error}"));
     assert_eq!(
-        recaptured.event_log_segment_dependencies(),
-        checkpoint.event_log_segment_dependencies(),
+        recaptured.event_log_segments(),
+        checkpoint.event_log_segments()
     );
-    assert_eq!(
-        resumed
-            .event_log_dependency_objects()
-            .unwrap_or_else(|error| {
-                panic!("resumed capture reads the complete event-log closure: {error}")
-            }),
-        expected_segments,
-    );
+    resumed
+        .verify_event_log_segments()
+        .unwrap_or_else(|error| panic!("resumed capture names present segments: {error}"));
 }
 
 #[test]
 fn event_log_hydration_rejects_changed_bytes_before_writing() {
-    let runtime = SchedulerLivenessScenario::from_canonical_material(
-        "changed-event-log-runtime",
-        8,
-        SimInstant { ticks: 8 },
-        Vec::new(),
-        Vec::new(),
-    );
     let source_store: Arc<dyn DagStore> = Arc::new(MemoryDagStore::new());
-    let mut source = SingleScheduler::new_with_event_log_segment_store(runtime, source_store)
-        .unwrap_or_else(|error| panic!("source scheduler is valid: {error}"));
-    QuantumLoop::append_backend_observable_events(
-        &mut source,
-        vec![ObservableEvent::console_output(
-            VirtualTime { ticks: 0 },
-            NodeId {
-                name: String::from("resumed-node"),
-            },
-            b"retained-before-resume".to_vec(),
-        )],
-    )
-    .unwrap_or_else(|error| panic!("source observation is retained: {error}"));
+    let source = sealed_source(
+        sealing_runtime("changed-event-log-runtime"),
+        Arc::clone(&source_store),
+    );
     let checkpoint = source
         .checkpoint()
         .unwrap_or_else(|error| panic!("source scheduler captures: {error}"));
-    let mut objects = source
-        .event_log_dependency_objects()
-        .unwrap_or_else(|error| panic!("source segments are readable: {error}"))
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    let identity = *checkpoint
-        .event_log_segment_dependencies()
+    let identity = checkpoint
+        .event_log_segments()
         .first()
-        .unwrap_or_else(|| panic!("source checkpoint retains a segment"));
-    objects
-        .get_mut(&identity)
-        .unwrap_or_else(|| panic!("segment exists"))
-        .push(0);
+        .map(|segment| segment.object)
+        .unwrap_or_else(|| panic!("source checkpoint references a segment"));
+
+    // A repository opener that returns the stored bytes with one byte changed.
+    let changed: super::checkpoint_event_log::ClosureObjectOpener = Arc::new(move |object| {
+        let mut bytes = source_store.get(&object).map_err(std::io::Error::other)?;
+        if let Some(last) = bytes.last_mut() {
+            *last ^= 1;
+        }
+        Ok(Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::Read + Send>)
+    });
 
     let resumed_store = MemoryDagStore::new();
     assert!(
-        hydrate_checkpoint_event_log_dependencies(&checkpoint, &objects, &resumed_store).is_err()
+        ProductionEventLogSegments::repository(changed)
+            .hydrate(&checkpoint, &resumed_store)
+            .is_err()
     );
     assert!(resumed_store.get(&identity).is_err());
+}
+
+#[test]
+fn branch_plan_launch_window_keeps_only_servable_entries() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crucible_qemu_protocol::app_random_branch_plan::{
+        AppRandomBranchPlan, AppRandomBranchPlanEntry,
+    };
+
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    let stream =
+        crucible_qemu_protocol::app_random_transport::app_random_stream_name(&node.name, "b");
+    let entries = [0_u64, 3, 7]
+        .into_iter()
+        .map(|draw| AppRandomBranchPlanEntry::new(draw, draw, draw + 1, [0x5a; 32], stream.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan = AppRandomBranchPlan::new(entries)?;
+
+    let genesis = branch_plan_launch_window(&plan, 0, &node)?;
+    let resumed = branch_plan_launch_window(&plan, 3, &node)?;
+    let exhausted = branch_plan_launch_window(&plan, 8, &node)?;
+
+    assert_eq!(genesis, plan);
+    let served = resumed
+        .entries()
+        .iter()
+        .map(AppRandomBranchPlanEntry::draw_index)
+        .collect::<Vec<_>>();
+    assert_eq!(served, [3, 7]);
+    assert!(exhausted.entries().is_empty());
+    Ok(())
 }

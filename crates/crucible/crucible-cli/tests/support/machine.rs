@@ -10,9 +10,8 @@ pub(super) fn savepoint_handle_text(
     let scenario = form.scenario_def();
     let scenario_payload = form.to_compact_binary();
     let schedule_payload = schedule.to_compact_binary();
-    let replay_closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-        b"CCRC\0\0\0\x01\0\0\0\0",
-    )?;
+    let replay_closure =
+        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty();
     replay_closure.validate_for_schedule(form, schedule)?;
     let replay_closure = replay_closure.to_canonical_bytes()?;
     let boundary_predicate = crucible_engine::Predicate::quiescent().to_compact_binary();

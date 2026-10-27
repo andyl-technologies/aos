@@ -1,4 +1,14 @@
 //! Proof-bearing planner-ranking chain queries and reports.
+//!
+//! The CLI follows a planner-step chain page by page and keeps only the
+//! candidates it will report. With `--top`, a bounded best-first selection
+//! holds at most that many candidates per comparable basis and reproduces the
+//! stable best-first sort exactly. The aggregate response-byte budget ends a
+//! chain like the page bound does: the report stops at the current step and
+//! names it as `next_step` for continuation.
+
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 use super::object::campaign_choice_value_label;
 use super::*;
@@ -105,7 +115,7 @@ struct CollectedPolicyRankingGroup {
     newest_step: PlannerStepId,
     oldest_step: PlannerStepId,
     pages: u32,
-    candidates: Vec<RankedPageCandidate>,
+    candidates: BestFirstSelection<RankedPageCandidate>,
 }
 
 pub(super) fn validate_campaign_rankings_command(
@@ -182,7 +192,7 @@ where
     let mut seen = BTreeSet::new();
     let mut pages = 0_u32;
     let mut response_bytes = 0_usize;
-    let mut candidates = Vec::new();
+    let mut candidates = BestFirstSelection::new(args.top)?;
     let mut policy_groups = Vec::new();
     let mut chain_basis = None;
     while pages < args.pages {
@@ -204,14 +214,13 @@ where
         let response = client
             .get_campaign_planner_rankings(&request)
             .map_err(|error| backend_error(format!("campaign ranking query failed: {error}")))?;
-        response_bytes = response_bytes
-            .checked_add(response.canonical_bytes().len())
-            .ok_or_else(|| backend_error("campaign ranking response byte count overflowed"))?;
-        if response_bytes > MAX_CAMPAIGN_RANKING_RESPONSE_BYTES {
-            return Err(backend_error(
-                "campaign ranking chain exceeds the 128 MiB response budget",
-            ));
-        }
+        let Some(charged) =
+            charge_ranking_response(response_bytes, response.canonical_bytes().len(), pages)
+        else {
+            step = Some(current);
+            break;
+        };
+        response_bytes = charged;
         let response_step = response.step();
         let page_basis = RankingBasis {
             policy: response_step.policy(),
@@ -235,24 +244,27 @@ where
             .map(|ranking| RankedPageCandidate {
                 step: current,
                 ranking,
-            })
-            .collect::<Vec<_>>();
+            });
         if args.policy_groups {
-            collect_policy_ranking_page(&mut policy_groups, page_basis, current, page_candidates)?;
+            collect_policy_ranking_page(
+                &mut policy_groups,
+                page_basis,
+                current,
+                args.top,
+                page_candidates,
+            )?;
         } else {
-            candidates.extend(page_candidates);
+            candidates.extend(page_candidates)?;
         }
         step = response.parent();
         pages += 1;
     }
 
     let (matched_candidates, rankings, policy_groups) = if args.policy_groups {
-        let (matched, groups) = finish_policy_ranking_groups(policy_groups, args.top)?;
+        let (matched, groups) = finish_policy_ranking_groups(policy_groups)?;
         (matched, Vec::new(), groups)
     } else {
-        sort_ranked_candidates(&mut candidates);
-        let matched = candidate_count(candidates.len())?;
-        truncate_ranked_candidates(&mut candidates, args.top)?;
+        let (matched, candidates) = candidates.into_best_first();
         (matched, ranking_entries(candidates)?, Vec::new())
     };
     Ok(CampaignRankingReport {
@@ -278,6 +290,20 @@ where
     })
 }
 
+/// Charges one response against the chain's aggregate byte budget.
+///
+/// Returns the new total, or `None` when the response must end the chain at
+/// its step for continuation. The budget bounds network work, not memory:
+/// each response is dropped after projection. The first page is always
+/// admitted so that every invocation makes progress.
+fn charge_ranking_response(total: usize, response: usize, pages: u32) -> Option<usize> {
+    match total.checked_add(response) {
+        Some(charged) if charged <= MAX_CAMPAIGN_RANKING_RESPONSE_BYTES => Some(charged),
+        _ if pages == 0 => Some(MAX_CAMPAIGN_RANKING_RESPONSE_BYTES),
+        _ => None,
+    }
+}
+
 fn ranking_basis_boundary(
     policy_groups: bool,
     current: Option<RankingBasis>,
@@ -290,7 +316,8 @@ fn collect_policy_ranking_page(
     groups: &mut Vec<CollectedPolicyRankingGroup>,
     basis: RankingBasis,
     step: PlannerStepId,
-    candidates: Vec<RankedPageCandidate>,
+    top: Option<u32>,
+    candidates: impl IntoIterator<Item = RankedPageCandidate>,
 ) -> Result<(), CliError> {
     if let Some(group) = groups.last_mut().filter(|group| group.basis == basis) {
         group.oldest_step = step;
@@ -298,14 +325,16 @@ fn collect_policy_ranking_page(
             .pages
             .checked_add(1)
             .ok_or_else(|| backend_error("campaign policy-ranking page count overflowed"))?;
-        group.candidates.extend(candidates);
+        group.candidates.extend(candidates)?;
     } else {
+        let mut selection = BestFirstSelection::new(top)?;
+        selection.extend(candidates)?;
         groups.push(CollectedPolicyRankingGroup {
             basis,
             newest_step: step,
             oldest_step: step,
             pages: 1,
-            candidates,
+            candidates: selection,
         });
     }
     Ok(())
@@ -313,17 +342,14 @@ fn collect_policy_ranking_page(
 
 fn finish_policy_ranking_groups(
     groups: Vec<CollectedPolicyRankingGroup>,
-    top: Option<u32>,
 ) -> Result<(u64, Vec<CampaignPolicyRankingGroup>), CliError> {
     let mut total_matched = 0_u64;
     let mut policy_groups = Vec::<CampaignPolicyRankingGroup>::new();
-    for mut group in groups {
-        sort_ranked_candidates(&mut group.candidates);
-        let matched_candidates = candidate_count(group.candidates.len())?;
+    for group in groups {
+        let (matched_candidates, candidates) = group.candidates.into_best_first();
         total_matched = total_matched
             .checked_add(matched_candidates)
             .ok_or_else(|| backend_error("campaign policy-ranking match count overflowed"))?;
-        truncate_ranked_candidates(&mut group.candidates, top)?;
 
         let policy = group.basis.policy.to_string();
         let policy_group = if policy_groups
@@ -374,35 +400,120 @@ fn finish_policy_ranking_groups(
             oldest_step: group.oldest_step.to_string(),
             pages: group.pages,
             matched_candidates,
-            rankings: ranking_entries(group.candidates)?,
+            rankings: ranking_entries(candidates)?,
         });
     }
     Ok((total_matched, policy_groups))
 }
 
-fn sort_ranked_candidates(candidates: &mut [RankedPageCandidate]) {
-    candidates.sort_by(|left, right| {
-        left.ranking
-            .best_first_cmp(&right.ranking)
-            .then_with(|| left.step.cmp(&right.step))
-    });
+/// Total best-first order used to rank candidates across pages.
+trait BestFirst {
+    /// Orders `self` before `other` when it ranks better.
+    fn best_first_cmp(&self, other: &Self) -> Ordering;
 }
 
-fn candidate_count(count: usize) -> Result<u64, CliError> {
-    u64::try_from(count).map_err(|_| backend_error("campaign ranking match count does not fit u64"))
-}
-
-fn truncate_ranked_candidates(
-    candidates: &mut Vec<RankedPageCandidate>,
-    top: Option<u32>,
-) -> Result<(), CliError> {
-    if let Some(top) = top {
-        let top = usize::try_from(top)
-            .map_err(|_| backend_error("campaign ranking top count does not fit usize"))?;
-        candidates.truncate(top);
+impl BestFirst for RankedPageCandidate {
+    /// Applies the packaged planner's score, edge, and position order, then
+    /// the step ID so equal rankings from different steps stay deterministic.
+    fn best_first_cmp(&self, other: &Self) -> Ordering {
+        self.ranking
+            .best_first_cmp(&other.ranking)
+            .then_with(|| self.step.cmp(&other.step))
     }
-    Ok(())
 }
+
+/// Best-first selection of at most `top` items with an exact match count.
+///
+/// The result equals a stable best-first sort of every offered item followed
+/// by truncation to `top`: arrival order breaks the remaining ties, exactly
+/// as the stable sort would. Memory is bounded by `top` when it is set.
+struct BestFirstSelection<T> {
+    top: Option<usize>,
+    matched: u64,
+    kept: BinaryHeap<ArrivalOrdered<T>>,
+}
+
+impl<T: BestFirst> BestFirstSelection<T> {
+    fn new(top: Option<u32>) -> Result<Self, CliError> {
+        let top = top
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| backend_error("campaign ranking top count does not fit usize"))?;
+        Ok(Self {
+            top,
+            matched: 0,
+            kept: BinaryHeap::new(),
+        })
+    }
+
+    fn extend(&mut self, items: impl IntoIterator<Item = T>) -> Result<(), CliError> {
+        items.into_iter().try_for_each(|item| self.offer(item))
+    }
+
+    fn offer(&mut self, item: T) -> Result<(), CliError> {
+        let candidate = ArrivalOrdered {
+            arrival: self.matched,
+            item,
+        };
+        self.matched = self
+            .matched
+            .checked_add(1)
+            .ok_or_else(|| backend_error("campaign ranking match count overflowed"))?;
+
+        if self.top.is_none_or(|top| self.kept.len() < top) {
+            self.kept.push(candidate);
+            return Ok(());
+        }
+        // The heap's maximum is the worst kept item. A strictly better
+        // arrival replaces it, and `PeekMut` restores the heap on drop; a
+        // later arrival never displaces an equal-ranked earlier one.
+        if let Some(mut worst) = self.kept.peek_mut()
+            && candidate < *worst
+        {
+            *worst = candidate;
+        }
+        Ok(())
+    }
+
+    /// Returns the exact match count and the kept items, best first.
+    fn into_best_first(self) -> (u64, Vec<T>) {
+        let items = self
+            .kept
+            .into_sorted_vec()
+            .into_iter()
+            .map(|candidate| candidate.item)
+            .collect();
+        (self.matched, items)
+    }
+}
+
+/// An item tagged with its arrival index, which breaks best-first ties.
+struct ArrivalOrdered<T> {
+    arrival: u64,
+    item: T,
+}
+
+impl<T: BestFirst> Ord for ArrivalOrdered<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.item
+            .best_first_cmp(&other.item)
+            .then_with(|| self.arrival.cmp(&other.arrival))
+    }
+}
+
+impl<T: BestFirst> PartialOrd for ArrivalOrdered<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: BestFirst> PartialEq for ArrivalOrdered<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl<T: BestFirst> Eq for ArrivalOrdered<T> {}
 
 fn ranking_entries(
     candidates: Vec<RankedPageCandidate>,
@@ -640,6 +751,68 @@ mod tests {
         assert!(validate_campaign_rankings_command(&CampaignCommand::Rankings(args)).is_err());
     }
 
+    /// Test item ranked by `key` alone, so equal keys exercise tie-breaking.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct KeyedItem {
+        key: u8,
+        label: usize,
+    }
+
+    impl BestFirst for KeyedItem {
+        fn best_first_cmp(&self, other: &Self) -> Ordering {
+            self.key.cmp(&other.key)
+        }
+    }
+
+    #[test]
+    fn bounded_selection_matches_the_stable_sort_including_ties() {
+        // Deterministic keys with many duplicates, arriving out of order.
+        let items = (0..97)
+            .map(|label| KeyedItem {
+                key: u8::try_from((label * 37 + 11) % 13).expect("small key"),
+                label,
+            })
+            .collect::<Vec<_>>();
+        let mut sorted = items.clone();
+        sorted.sort_by(BestFirst::best_first_cmp);
+
+        for top in [
+            None,
+            Some(1),
+            Some(2),
+            Some(13),
+            Some(96),
+            Some(97),
+            Some(500),
+        ] {
+            let mut selection = BestFirstSelection::new(top).expect("selection");
+            selection
+                .extend(items.iter().copied())
+                .expect("offer items");
+
+            let (matched, selected) = selection.into_best_first();
+
+            let limit = top.map_or(sorted.len(), |top| sorted.len().min(top as usize));
+            assert_eq!(matched, 97, "top {top:?}");
+            assert_eq!(selected, sorted[..limit], "top {top:?}");
+        }
+    }
+
+    #[test]
+    fn response_budget_stops_the_chain_after_progress_instead_of_failing() {
+        let budget = MAX_CAMPAIGN_RANKING_RESPONSE_BYTES;
+
+        assert_eq!(charge_ranking_response(0, 10, 0), Some(10));
+        assert_eq!(charge_ranking_response(budget - 10, 10, 3), Some(budget));
+        assert_eq!(charge_ranking_response(budget - 10, 11, 3), None);
+        assert_eq!(charge_ranking_response(usize::MAX, 1, 3), None);
+        assert_eq!(
+            charge_ranking_response(0, budget + 1, 0),
+            Some(budget),
+            "an oversized first page is still admitted so continuation progresses"
+        );
+    }
+
     #[test]
     fn ranking_reports_render_machine_and_human_views() {
         let report = CampaignRankingReport {
@@ -713,24 +886,25 @@ mod tests {
             first_changed_view
         ));
         let mut groups = Vec::new();
-        collect_policy_ranking_page(&mut groups, first, first_newest, Vec::new())
+        collect_policy_ranking_page(&mut groups, first, first_newest, Some(1), Vec::new())
             .expect("first policy page");
-        collect_policy_ranking_page(&mut groups, first, first_oldest, Vec::new())
+        collect_policy_ranking_page(&mut groups, first, first_oldest, Some(1), Vec::new())
             .expect("second page in first policy");
         collect_policy_ranking_page(
             &mut groups,
             first_changed_view,
             first_changed_view_step,
+            Some(1),
             Vec::new(),
         )
         .expect("changed basis in first policy");
-        collect_policy_ranking_page(&mut groups, second, second_step, Vec::new())
+        collect_policy_ranking_page(&mut groups, second, second_step, Some(1), Vec::new())
             .expect("second policy page");
-        collect_policy_ranking_page(&mut groups, first, resumed_first_step, Vec::new())
+        collect_policy_ranking_page(&mut groups, first, resumed_first_step, Some(1), Vec::new())
             .expect("resumed first policy page");
 
         let (matched, groups) =
-            finish_policy_ranking_groups(groups, Some(1)).expect("finished policy groups");
+            finish_policy_ranking_groups(groups).expect("finished policy groups");
         assert_eq!(matched, 0);
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].pages, 3);

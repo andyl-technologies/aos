@@ -38,13 +38,23 @@
 //!               for each completion with delivery_icount <= consumer_icount, in
 //!               (delivery_icount, src_node, seq) order:
 //!                 emit IoCompletion @ delivery_icount ; append its buffered decisions
+//!               retire the delivered completions from the bridge and the device
 //! ```
+//!
+//! # Retention
+//!
+//! A delivered completion is retired at once from the bridge's modeled and
+//! pending sets and from the held device's in-flight queue, so the bridge and
+//! its checkpoint hold only undelivered completions. The device never re-offers
+//! a retired key, and every delivery decision is emitted exactly once.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::WorldCompletionDurability;
 use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig};
 use crucible_device::{
-    BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, FsTree, FsTreeDecodeError,
-    IoCore, NinepDevice, NinepLatency, PendingResponse,
+    BaseImage, BlockDevice, BlockLatency, BlockRequest, DeviceError, FrameDeliveryKey, FsTree,
+    FsTreeDecodeError, IoCore, NinepDevice, NinepLatency, PendingResponse,
 };
 
 use crate::scheduler::IoCompletion;
@@ -103,8 +113,6 @@ struct PendingCompletion {
     payload: Option<Vec<u8>>,
     /// Scheduler decisions attached by the producing adapter.
     decisions: Vec<Decision>,
-    /// Whether this item has already been drained through RESOLVE.
-    delivered: bool,
 }
 
 impl PendingCompletion {
@@ -315,10 +323,10 @@ pub struct DeviceSchedulingSubNode {
     target: NodeId,
     device_id: DeviceId,
     device: ScheduledDevice,
-    /// The exact modeled completions, kept in delivery-key order.
-    modeled: Vec<ModeledCompletion>,
-    /// Every pending completion in `(delivery_icount, src_node, seq)` order.
-    resolved: Vec<PendingCompletion>,
+    /// Undelivered modeled completions, keyed by their modeled key.
+    modeled: BTreeMap<ModeledKey, ModeledCompletion>,
+    /// Undelivered completions, keyed by `(delivery_icount, src_node, seq)`.
+    resolved: BTreeMap<ModeledKey, PendingCompletion>,
 }
 
 impl DeviceSchedulingSubNode {
@@ -605,8 +613,8 @@ impl DeviceSchedulingSubNode {
             target,
             device_id,
             device: ScheduledDevice::Block(Box::new(device)),
-            modeled: Vec::new(),
-            resolved: Vec::new(),
+            modeled: BTreeMap::new(),
+            resolved: BTreeMap::new(),
         }
     }
 
@@ -628,8 +636,8 @@ impl DeviceSchedulingSubNode {
             target,
             device_id,
             device: ScheduledDevice::Ninep(Box::new(device)),
-            modeled: Vec::new(),
-            resolved: Vec::new(),
+            modeled: BTreeMap::new(),
+            resolved: BTreeMap::new(),
         }
     }
 
@@ -721,9 +729,9 @@ impl DeviceSchedulingSubNode {
 
     /// Pulls newly modeled completions out of the held device in canonical order.
     fn collect_modeled_completions(&mut self) {
-        // Pull every modeled completion the device has COMPUTEd into the modeled
-        // set (deduplicated by delivery key), keeping it in delivery-key order so
-        // fault resolution is submit-order-independent.
+        // The device's in-flight queue holds only undelivered responses, because
+        // delivery retires them there too. An already-collected key keeps its
+        // first payload, so fault resolution is submit-order-independent.
         for modeled in self.device.inflight() {
             let candidate = ModeledCompletion {
                 modeled_icount: modeled.key.delivery_icount,
@@ -731,48 +739,33 @@ impl DeviceSchedulingSubNode {
                 seq: modeled.key.seq,
                 payload: modeled.response.payload,
             };
-            if self.modeled.iter().any(|existing| {
-                existing.modeled_icount == candidate.modeled_icount
-                    && existing.src_node == candidate.src_node
-                    && existing.seq == candidate.seq
-            }) {
-                continue;
-            }
-            let pos = self.modeled.partition_point(|existing| {
-                (existing.modeled_icount, existing.src_node, existing.seq)
-                    <= (candidate.modeled_icount, candidate.src_node, candidate.seq)
-            });
-            self.modeled.insert(pos, candidate);
+            self.modeled.entry(candidate.key()).or_insert(candidate);
         }
     }
 
-    /// Rebuilds exact pending completions in canonical delivery order.
+    /// Adds a pending completion for every modeled completion that lacks one.
     fn resolve_all(&mut self) {
-        let mut resolved = self
+        let resolved_keys = self
             .resolved
-            .iter()
-            .filter(|completion| completion.delivered)
-            .cloned()
-            .collect::<Vec<_>>();
-        for modeled in &self.modeled {
-            if resolved
-                .iter()
-                .any(|completion| completion.modeled_key == modeled.key())
-            {
+            .values()
+            .map(|completion| completion.modeled_key)
+            .collect::<BTreeSet<_>>();
+        for modeled in self.modeled.values() {
+            if resolved_keys.contains(&modeled.key()) {
                 continue;
             }
-            resolved.push(PendingCompletion {
+            let completion = PendingCompletion {
                 modeled_key: modeled.key(),
                 delivery_icount: modeled.modeled_icount,
                 src_node: modeled.src_node,
                 seq: modeled.seq,
                 payload: Some(modeled.payload.clone()),
                 decisions: Vec::new(),
-                delivered: false,
-            });
+            };
+            self.resolved
+                .entry(completion.delivery_key())
+                .or_insert(completion);
         }
-        resolved.sort_by_key(PendingCompletion::delivery_key);
-        self.resolved = resolved;
     }
 
     /// Returns the next not-yet-delivered completion's final delivery icount: the
@@ -786,8 +779,8 @@ impl DeviceSchedulingSubNode {
     #[must_use]
     pub fn next_exact_local_event(&self) -> Option<u64> {
         self.resolved
-            .iter()
-            .find(|completion| !completion.delivered)
+            .values()
+            .next()
             .map(|head| head.delivery_icount)
     }
 
@@ -803,41 +796,75 @@ impl DeviceSchedulingSubNode {
     /// appended in the §8.6 total order ([SCHED-30]). Future completions stay in
     /// flight at their exact icounts.
     ///
+    /// Delivered completions are retired from this bridge and from the held
+    /// device's in-flight queue, so neither the completion nor its decisions can
+    /// be emitted again.
+    ///
     /// Returns the `(event, decisions)` pairs in delivery order.
-    #[must_use]
-    pub fn deliver_due(&mut self, consumer_icount: u64) -> Vec<DeviceDelivery> {
-        let mut delivered = Vec::new();
-        for completion in &mut self.resolved {
-            if completion.delivered {
-                continue;
-            }
-            if completion.delivery_icount > consumer_icount {
-                break;
-            }
-            let event = completion.payload.as_ref().map(|payload| IoCompletion {
-                sub_node: self.sub_node.clone(),
-                target: self.target.clone(),
-                delivery_tick: crate::SimInstant {
-                    ticks: completion.delivery_icount,
-                },
-                source_delivery: crucible_device::FrameDeliveryKey {
-                    delivery_icount: completion.delivery_icount,
-                    src_node: completion.src_node,
-                    seq: completion.seq,
-                },
-                payload: payload.clone(),
-            });
-            delivered.push(DeviceDelivery {
-                delivery_icount: completion.delivery_icount,
-                sub_node: self.sub_node.clone(),
-                source_node: completion.src_node,
-                sequence: completion.seq,
-                completion: event,
-                decisions: completion.decisions.clone(),
-            });
-            completion.delivered = true;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] when the held device
+    /// cannot record the retirement; no completion is delivered or retired.
+    pub fn deliver_due(
+        &mut self,
+        consumer_icount: u64,
+    ) -> Result<Vec<DeviceDelivery>, DeviceError> {
+        let due = self
+            .resolved
+            .range(..=(consumer_icount, u32::MAX, u32::MAX))
+            .map(|(key, completion)| (*key, completion.modeled_key))
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return Ok(Vec::new());
         }
-        delivered
+
+        // Retire from the device first: it is the only fallible step, so a
+        // failure leaves the bridge and the device unchanged.
+        let device_keys = due
+            .iter()
+            .map(|(_delivery_key, modeled_key)| FrameDeliveryKey {
+                delivery_icount: modeled_key.0,
+                src_node: modeled_key.1,
+                seq: modeled_key.2,
+            })
+            .collect::<BTreeSet<_>>();
+        self.device.retire_delivered(&device_keys)?;
+
+        let mut delivered = Vec::with_capacity(due.len());
+        for (delivery_key, modeled_key) in due {
+            self.modeled.remove(&modeled_key);
+            let Some(completion) = self.resolved.remove(&delivery_key) else {
+                continue;
+            };
+            delivered.push(self.delivery(completion));
+        }
+        Ok(delivered)
+    }
+
+    /// Builds the scheduler-visible delivery item for one due completion.
+    fn delivery(&self, completion: PendingCompletion) -> DeviceDelivery {
+        let event = completion.payload.map(|payload| IoCompletion {
+            sub_node: self.sub_node.clone(),
+            target: self.target.clone(),
+            delivery_tick: crate::SimInstant {
+                ticks: completion.delivery_icount,
+            },
+            source_delivery: FrameDeliveryKey {
+                delivery_icount: completion.delivery_icount,
+                src_node: completion.src_node,
+                seq: completion.seq,
+            },
+            payload,
+        });
+        DeviceDelivery {
+            delivery_icount: completion.delivery_icount,
+            sub_node: self.sub_node.clone(),
+            source_node: completion.src_node,
+            sequence: completion.seq,
+            completion: event,
+            decisions: completion.decisions,
+        }
     }
 }
 
@@ -897,6 +924,15 @@ impl ScheduledDevice {
             ScheduledDevice::Ninep(device) => device.core().snapshot().inflight,
         }
     }
+
+    /// Retires responses the scheduler bridge already delivered.
+    fn retire_delivered(&mut self, keys: &BTreeSet<FrameDeliveryKey>) -> Result<(), DeviceError> {
+        match self {
+            ScheduledDevice::Block(device) => device.core_mut().retire_delivered(keys)?,
+            ScheduledDevice::Ninep(device) => device.core_mut().retire_delivered(keys)?,
+        };
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -912,6 +948,8 @@ mod tests {
     };
 
     use crate::SchedulingNodeKind;
+
+    mod retention;
 
     fn device_id(name: &str) -> DeviceId {
         DeviceId {
@@ -1002,6 +1040,15 @@ mod tests {
         bytes
     }
 
+    fn deliver(
+        sub_node: &mut DeviceSchedulingSubNode,
+        consumer_icount: u64,
+    ) -> Vec<DeviceDelivery> {
+        sub_node
+            .deliver_due(consumer_icount)
+            .unwrap_or_else(|error| panic!("delivery should retire completions: {error}"))
+    }
+
     fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
         let mut body = msize.to_le_bytes().to_vec();
         body.extend_from_slice(&string_bytes(version));
@@ -1023,7 +1070,8 @@ mod tests {
         // The earlier request completes first (lower delivery icount).
         let second = disk
             .resolved
-            .get(1)
+            .values()
+            .nth(1)
             .unwrap_or_else(|| panic!("two completions in flight"))
             .delivery_icount;
         assert!(head < second, "head is the earliest completion");
@@ -1039,9 +1087,9 @@ mod tests {
             .unwrap_or_else(|| panic!("a completion must be in flight"));
 
         // Below the delivery icount: nothing is visible.
-        assert!(disk.deliver_due(delivery - 1).is_empty());
+        assert!(deliver(&mut disk, delivery - 1).is_empty());
         // At exactly the delivery icount: the completion becomes visible.
-        let delivered = disk.deliver_due(delivery);
+        let delivered = deliver(&mut disk, delivery);
         assert_eq!(delivered.len(), 1);
         let event = delivered[0]
             .completion

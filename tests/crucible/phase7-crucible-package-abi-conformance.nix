@@ -90,16 +90,16 @@
     ]
     ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" (normalizeCargoFormatting abiConformanceCheck) (map normalizeCargoRequirement [
       {
-        label = "AOS mkDerivation check";
-        needle = "pkgs.mkDerivation";
+        label = "shared Crucible test gate";
+        needle = "mkCrucibleTestGate {";
       }
       {
-        label = "vendored cargo dependencies";
-        needle = "cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};";
+        label = "prebuilt vendored workspace tests";
+        needle = "inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;";
       }
       {
-        label = "frozen offline cargo gate";
-        needle = "cargo test \\\n              --frozen \\\n              --offline";
+        label = "prebuilt cargo test runner";
+        needle = "crucible-cargo test \\\n                -p crucible-test-support";
       }
       {
         label = "ABI owners fail closed on zero registered tests";

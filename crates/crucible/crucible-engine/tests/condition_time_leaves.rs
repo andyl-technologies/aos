@@ -60,9 +60,21 @@ fn at_leaf_is_true_only_at_the_exact_virtual_time() {
     let mut exact = evaluator(10);
     let mut after = evaluator(11);
 
-    assert!(!before.evaluate_assertion_condition(&condition));
-    assert!(exact.evaluate_assertion_condition(&condition));
-    assert!(!after.evaluate_assertion_condition(&condition));
+    assert!(
+        !before
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        exact
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !after
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -77,10 +89,25 @@ fn after_leaf_is_relative_to_known_event_firing_history() {
     let mut late = evaluator(13).with_event_firings(firings);
     let mut no_history = evaluator(12);
 
-    assert!(due.evaluate_assertion_condition(&condition));
-    assert!(!early.evaluate_assertion_condition(&condition));
-    assert!(!late.evaluate_assertion_condition(&condition));
-    assert!(!no_history.evaluate_assertion_condition(&condition));
+    assert!(
+        due.evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !early
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !late
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !no_history
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]
@@ -95,10 +122,25 @@ fn timer_leaf_is_true_at_evaluator_supplied_timer_fire_time() {
     let mut late = evaluator(31).with_timer_fires(timers);
     let mut no_timer = evaluator(30);
 
-    assert!(due.evaluate_assertion_condition(&condition));
-    assert!(!early.evaluate_assertion_condition(&condition));
-    assert!(!late.evaluate_assertion_condition(&condition));
-    assert!(!no_timer.evaluate_assertion_condition(&condition));
+    assert!(
+        due.evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !early
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !late
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
+    assert!(
+        !no_timer
+            .evaluate_assertion_condition(&condition)
+            .expect("console matchers are declared")
+    );
 }
 
 #[test]

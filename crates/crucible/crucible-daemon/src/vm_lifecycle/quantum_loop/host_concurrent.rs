@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn merge_host_concurrent_outcomes(
+pub(in crate::vm_lifecycle) fn merge_host_concurrent_outcomes(
     outcomes: Vec<QuantumOutcome>,
 ) -> Result<QuantumOutcome, SchedulerError> {
     let mut outcomes = outcomes.into_iter();

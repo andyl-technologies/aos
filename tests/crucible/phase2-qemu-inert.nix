@@ -668,7 +668,7 @@
       grep -Fxq 'campaign_mode=${campaignComposition.mode}' "$PATCH_MICROTESTS_RESULT" \
         || fail "mode-specific patch-microtests mode is absent"
       grep -Fxq \
-        'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' \
+        'campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}' \
         "$PATCH_MICROTESTS_RESULT" \
         || fail "mode-specific patch-microtests configuration identity is absent"
       grep -Fxq 'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' \
@@ -969,7 +969,6 @@
     crucible-hot-fork-async-worker-barrier
     crucible-hot-fork-block-barrier
     crucible-hot-fork-block-seal
-    crucible-hot-fork-child-console
     crucible-hot-fork-child-diagnostics
     crucible-hot-fork-child-files
     crucible-hot-fork-child-process

@@ -4,55 +4,86 @@
 //! The logical payload has its own canonical form inside that current storage
 //! layout; it is never published as a root object.
 //!
+//! The replayed attempt logs are not in the payload. The execution-model
+//! payload references their segments, and the record names each one as a
+//! trace-leaf child of the manifest, so the segments live exactly as long as
+//! the record and are read one at a time (RFC-0020 CMEAS-27).
+//!
 //! ```text
-//! logical payload v1:
-//!   u32 schema-version = 1
+//! logical payload v2:
+//!   u32 schema-version = 2
 //!   ReproductionArtifactId reproduction
 //!   FindingSignature observed-signature
 //!   u32 payload-schema
 //!   bytes payload
+//!   sequence (ContentId segment, u64 segment-bytes)   // log trace leaves
 //!
-//! manifest body v2:
-//!   u32 schema-version = 2
+//! manifest body v3:
+//!   u32 schema-version = 3
 //!   ReproductionArtifactId reproduction
 //!   FindingSignature observed-signature
 //!   u32 payload-schema
 //!   u64 payload-bytes
 //!   sequence (ContentId chunk, u32 chunk-bytes)
+//!   sequence (ContentId segment, u64 segment-bytes)   // children
+//!           log.segment.<index> for every segment
 //!
 //! chunk body v1:
 //!   u32 schema-version = 1
 //!   bytes payload
 //! ```
 
+use std::collections::BTreeSet;
+
 use crucible_store::content_store::{ByteRange, ContentId, ObjectKind};
+use crucible_store::segment_store::MAX_MANIFEST_SEGMENTS;
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     CampaignCodecError, CampaignRecordKind, FindingSignature, FindingTriageReplayEvidenceId,
-    ObjectEnvelope, ReproductionArtifactId,
+    ObjectEnvelope, ReproductionArtifactId, ReproductionPayloadSegment,
 };
 
-const LOGICAL_PAYLOAD_SCHEMA_VERSION: u32 = 1;
-const MANIFEST_SCHEMA_VERSION: u32 = 2;
+const LOGICAL_PAYLOAD_SCHEMA_VERSION: u32 = 2;
+const MANIFEST_SCHEMA_VERSION: u32 = 3;
 const CHUNK_SCHEMA_VERSION: u32 = 1;
-const MAX_RECORD_BYTES: usize = 84 * 1024 * 1024;
 const PAYLOAD_CHUNK_BYTES: usize = 32 * 1024 * 1024;
-const MAX_PAYLOAD_CHUNKS: usize = 3;
+pub(crate) const MAX_PAYLOAD_CHUNKS: usize =
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES.div_ceil(PAYLOAD_CHUNK_BYTES);
 const STORAGE_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
 const MAX_STORAGE_OBJECTS: usize = MAX_PAYLOAD_CHUNKS + 1;
 const MAX_STORED_ENVELOPE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum opaque execution-model payload retained by one replay record.
-pub const MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES: usize = 80 * 1024 * 1024;
+///
+/// The payload references its logs instead of embedding them, so this bound
+/// does not grow with run length; it mirrors the execution model's own
+/// replay-evidence bound and fits one storage chunk.
+pub const MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+
+/// Largest number of log segments one replay record names: one complete
+/// manifest for each of the two logs paired divergence retains.
+pub const MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS: usize = 2 * MAX_MANIFEST_SEGMENTS;
+
+/// One attempt-log segment a replay record names, as a trace leaf.
+///
+/// It has the same shape and checks as a reproduction payload segment.
+pub type FindingTriageReplayLogSegment = ReproductionPayloadSegment;
+
+// The payload, the bounded segment list, and a fixed metadata allowance for
+// the reproduction identity and observed signature.
+const MAX_LOG_SEGMENT_LIST_BYTES: usize = MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS * 64;
+const MAX_RECORD_BYTES: usize =
+    MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES + MAX_LOG_SEGMENT_LIST_BYTES + 1024 * 1024;
 
 /// Maximum bytes returned by one replay-storage range read.
 pub const MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Authenticated physical layout of one logical replay-evidence record.
 ///
-/// The manifest root is followed by one to three payload chunks in logical
-/// payload order.
+/// The manifest root is followed by its payload chunks in logical payload
+/// order. Log segments are trace leaves read by their own request, not
+/// described envelopes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingTriageReplayStorageDescription {
     evidence: FindingTriageReplayEvidenceId,
@@ -465,21 +496,49 @@ pub struct FindingTriageReplayEvidence {
     observed_signature: FindingSignature,
     payload_schema: u32,
     payload: Vec<u8>,
+    log_segments: Vec<FindingTriageReplayLogSegment>,
 }
 
 impl FindingTriageReplayEvidence {
-    /// Builds one bounded replay-evidence record.
+    /// Builds one bounded replay-evidence record that names no log segments.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignCodecError`] when the payload schema is zero, the
-    /// payload is empty or exceeds 80 MiB, or the complete record exceeds its
-    /// canonical size bound.
+    /// Returns the errors of [`Self::new_with_log_segments`].
     pub fn new(
         reproduction: ReproductionArtifactId,
         observed_signature: FindingSignature,
         payload_schema: u32,
         payload: Vec<u8>,
+    ) -> Result<Self, CampaignCodecError> {
+        Self::new_with_log_segments(
+            reproduction,
+            observed_signature,
+            payload_schema,
+            payload,
+            Vec::new(),
+        )
+    }
+
+    /// Builds one bounded replay-evidence record naming the attempt-log
+    /// segments its payload references, in payload order.
+    ///
+    /// The record checks the segment list's shape; the execution model checks
+    /// that it is exactly the list the payload references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignCodecError`] when the payload schema is zero, the
+    /// payload is empty or exceeds
+    /// [`MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES`], the segment list repeats a
+    /// segment or exceeds [`MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS`], or the
+    /// complete record exceeds its canonical size bound.
+    pub fn new_with_log_segments(
+        reproduction: ReproductionArtifactId,
+        observed_signature: FindingSignature,
+        payload_schema: u32,
+        payload: Vec<u8>,
+        log_segments: Vec<FindingTriageReplayLogSegment>,
     ) -> Result<Self, CampaignCodecError> {
         if payload_schema == 0 || payload.is_empty() {
             return Err(CampaignCodecError::InvalidValue {
@@ -491,11 +550,13 @@ impl FindingTriageReplayEvidence {
                 limit: "finding-triage-replay-payload-bytes",
             });
         }
+        validate_log_segments(&log_segments)?;
         let value = Self {
             reproduction,
             observed_signature,
             payload_schema,
             payload,
+            log_segments,
         };
         value.validate_encoded_size()?;
         Ok(value)
@@ -525,6 +586,22 @@ impl FindingTriageReplayEvidence {
         &self.payload
     }
 
+    /// Returns the attempt-log segments the payload references, in payload
+    /// order.
+    #[must_use]
+    pub fn log_segments(&self) -> &[FindingTriageReplayLogSegment] {
+        &self.log_segments
+    }
+
+    /// Returns the named log segment whose identity is `segment`, if any.
+    #[must_use]
+    pub fn names_log_segment(&self, segment: ContentId) -> Option<FindingTriageReplayLogSegment> {
+        self.log_segments
+            .iter()
+            .copied()
+            .find(|candidate| candidate.content() == segment)
+    }
+
     /// Returns strict canonical logical record bytes.
     ///
     /// These are the logical payload bytes reconstructed from the current
@@ -550,64 +627,69 @@ impl FindingTriageReplayEvidence {
 
     /// Reassembles logical evidence from its authenticated stored envelopes.
     ///
-    /// `envelopes` must follow the exact root-then-payload order in
-    /// `description`. Every canonical envelope, content identity, record kind,
-    /// schema version, chunk position, chunk length, and final logical evidence
-    /// identity is recomputed before the value is returned.
+    /// `envelopes` must yield the exact root-then-payload order in
+    /// `description`. They are consumed one at a time, so a caller may load
+    /// each envelope lazily; each chunk is appended to the reserved payload
+    /// and dropped. Every canonical envelope, content identity, record kind,
+    /// schema version, chunk position, chunk length, and final logical
+    /// evidence identity is recomputed before the value is returned.
     ///
     /// # Errors
     ///
     /// Returns [`CampaignCodecError`] when the description or any envelope is
     /// malformed, missing, reordered, corrupt, inconsistent, or oversized.
-    pub fn from_storage_envelopes(
+    pub fn from_storage_envelopes<B: AsRef<[u8]>>(
         description: &FindingTriageReplayStorageDescription,
-        envelopes: &[Vec<u8>],
+        envelopes: impl IntoIterator<Item = B>,
     ) -> Result<Self, CampaignCodecError> {
-        if envelopes.len() != description.objects.len() {
-            return Err(CampaignCodecError::InvalidValue {
-                reason: "finding triage replay stored envelope count is invalid",
-            });
-        }
-        let root = description.authenticated_root(&envelopes[0])?;
-
-        let evidence = {
-            let manifest = root;
-            let payload_bytes = manifest.payload_bytes()?;
-            let mut payload = Vec::new();
-            payload.try_reserve_exact(payload_bytes).map_err(|_| {
-                CampaignCodecError::LimitExceeded {
-                    limit: "finding-triage-replay-payload-allocation",
-                }
-            })?;
-            for (index, _) in manifest.chunks().iter().enumerate() {
-                let object = &description.objects[index + 1];
-                let FindingTriageReplayStorageObjectRole::PayloadChunk {
-                    logical_payload_bytes,
-                    ..
-                } = object.role
-                else {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "finding triage replay storage chunk role is invalid",
-                    });
-                };
-                let chunk = authenticated_storage_envelope(object, &envelopes[index + 1])?;
-                if chunk.record_kind() != CampaignRecordKind::FindingTriageReplayEvidenceChunk
-                    || chunk.schema_version() != CHUNK_SCHEMA_VERSION
-                {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "finding triage replay storage chunk envelope is invalid",
-                    });
-                }
-                let bytes = FindingTriageReplayChunk::from_canonical_bytes(chunk.body())?.payload;
-                if bytes.len() != logical_payload_bytes as usize {
-                    return Err(CampaignCodecError::InvalidValue {
-                        reason: "finding triage replay storage chunk length is invalid",
-                    });
-                }
-                payload.extend_from_slice(&bytes);
-            }
-            manifest.into_evidence(payload)?
+        let count_error = || CampaignCodecError::InvalidValue {
+            reason: "finding triage replay stored envelope count is invalid",
         };
+        let mut envelopes = envelopes.into_iter();
+        let root = envelopes.next().ok_or_else(count_error)?;
+        let manifest = description.authenticated_root(root.as_ref())?;
+        drop(root);
+
+        let payload_bytes = manifest.payload_bytes()?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(payload_bytes).map_err(|_| {
+            CampaignCodecError::LimitExceeded {
+                limit: "finding-triage-replay-payload-allocation",
+            }
+        })?;
+        for object in &description.objects[1..] {
+            let FindingTriageReplayStorageObjectRole::PayloadChunk {
+                logical_payload_bytes,
+                ..
+            } = object.role
+            else {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "finding triage replay storage chunk role is invalid",
+                });
+            };
+            let envelope = envelopes.next().ok_or_else(count_error)?;
+            let chunk = authenticated_storage_envelope(object, envelope.as_ref())?;
+            drop(envelope);
+            if chunk.record_kind() != CampaignRecordKind::FindingTriageReplayEvidenceChunk
+                || chunk.schema_version() != CHUNK_SCHEMA_VERSION
+            {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "finding triage replay storage chunk envelope is invalid",
+                });
+            }
+            let bytes = FindingTriageReplayChunk::from_canonical_bytes(chunk.body())?.payload;
+            if bytes.len() != logical_payload_bytes as usize {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "finding triage replay storage chunk length is invalid",
+                });
+            }
+            payload.extend_from_slice(&bytes);
+        }
+        if envelopes.next().is_some() {
+            return Err(count_error());
+        }
+
+        let evidence = manifest.into_evidence(payload)?;
         if evidence.payload.len() as u64 != description.logical_payload_bytes
             || evidence.id()?.content_id() != description.evidence.content_id()
         {
@@ -657,7 +739,7 @@ impl FindingTriageReplayEvidence {
             .ok_or(CampaignCodecError::InvalidValue {
                 reason: "finding triage replay payload chunk range is invalid",
             })?;
-        let envelope = FindingTriageReplayChunk::new(bytes.to_vec())?.envelope()?;
+        let envelope = FindingTriageReplayChunk::envelope_for(bytes)?;
         if envelope.content_id() != expected.content() {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding triage replay payload chunk identity disagrees with plan",
@@ -689,6 +771,7 @@ impl FindingTriageReplayEvidence {
         self.observed_signature.encode(&mut metadata);
         self.payload_schema.encode(&mut metadata);
         0_u64.encode(&mut metadata);
+        self.log_segments.encode(&mut metadata);
         let encoded_bytes = metadata
             .finish()
             .len()
@@ -705,9 +788,11 @@ impl FindingTriageReplayEvidence {
     }
 
     fn chunked_storage_plan(&self) -> Result<FindingTriageReplayStoragePlan, CampaignCodecError> {
+        // Chunk identities are derived from payload slices one at a time; the
+        // envelopes themselves are rebuilt during publication.
         let mut chunks = Vec::with_capacity(MAX_PAYLOAD_CHUNKS);
         for bytes in self.payload.chunks(PAYLOAD_CHUNK_BYTES) {
-            let envelope = FindingTriageReplayChunk::new(bytes.to_vec())?.envelope()?;
+            let envelope = FindingTriageReplayChunk::envelope_for(bytes)?;
             chunks.push(FindingTriageReplayChunkDescriptor::new(
                 envelope.content_id(),
                 u32::try_from(bytes.len()).map_err(|_| CampaignCodecError::LimitExceeded {
@@ -721,6 +806,7 @@ impl FindingTriageReplayEvidence {
             self.payload_schema,
             self.payload.len(),
             chunks.clone(),
+            self.log_segments.clone(),
         )?;
         let root = ObjectEnvelope::for_record_versioned(
             CampaignRecordKind::FindingTriageReplayEvidence,
@@ -749,6 +835,7 @@ impl Canonical for FindingTriageReplayEvidence {
         self.observed_signature.encode(encoder);
         self.payload_schema.encode(encoder);
         self.payload.encode(encoder);
+        self.log_segments.encode(encoder);
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -757,7 +844,7 @@ impl Canonical for FindingTriageReplayEvidence {
                 reason: "unsupported finding triage replay evidence schema version",
             });
         }
-        Self::new(
+        Self::new_with_log_segments(
             ReproductionArtifactId::decode(decoder)?,
             FindingSignature::decode(decoder)?,
             u32::decode(decoder)?,
@@ -766,8 +853,44 @@ impl Canonical for FindingTriageReplayEvidence {
                 "finding-triage-replay-payload-bytes",
                 u8::decode,
             )?,
+            decode_log_segments(decoder)?,
         )
     }
+}
+
+/// Checks a log-segment list's count and that no segment repeats.
+///
+/// Every segment becomes its own envelope child, so identities must be
+/// distinct. Paired divergence logs that share a prefix name each shared
+/// segment once.
+fn validate_log_segments(
+    segments: &[FindingTriageReplayLogSegment],
+) -> Result<(), CampaignCodecError> {
+    if segments.len() > MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "finding-triage-replay-log-segments",
+        });
+    }
+    let distinct = segments
+        .iter()
+        .map(|segment| segment.content())
+        .collect::<BTreeSet<_>>();
+    if distinct.len() != segments.len() {
+        return Err(CampaignCodecError::InvalidValue {
+            reason: "finding triage replay record repeats a log segment",
+        });
+    }
+    Ok(())
+}
+
+fn decode_log_segments(
+    decoder: &mut Decoder<'_>,
+) -> Result<Vec<FindingTriageReplayLogSegment>, CampaignCodecError> {
+    decoder.sequence_bounded(
+        MAX_FINDING_TRIAGE_REPLAY_LOG_SEGMENTS,
+        "finding-triage-replay-log-segments",
+        FindingTriageReplayLogSegment::decode,
+    )
 }
 
 pub(crate) struct FindingTriageReplayStoragePlan {
@@ -799,7 +922,7 @@ mod tests {
     fn fixture() -> (ReproductionArtifactId, FindingSignature) {
         let reproduction = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"triage-replay-reproduction",
         ))
         .expect("reproduction ID");
@@ -837,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn maximum_replay_evidence_has_three_bounded_chunks() {
+    fn maximum_replay_evidence_has_one_bounded_chunk() {
         let (reproduction, signature) = fixture();
         let evidence = FindingTriageReplayEvidence::new(
             reproduction,
@@ -846,8 +969,10 @@ mod tests {
             vec![b'm'; MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES],
         )
         .expect("maximum replay evidence");
+        // With log entries referenced by segment, the largest logical record
+        // fits within one generic canonical message.
         let logical_bytes = evidence.canonical_bytes();
-        assert!(logical_bytes.len() > codec::MAX_CANONICAL_BYTES);
+        assert!(logical_bytes.len() <= codec::MAX_CANONICAL_BYTES);
         assert_eq!(
             FindingTriageReplayEvidence::from_canonical_bytes(&logical_bytes)
                 .expect("decode maximum logical evidence"),
@@ -857,16 +982,56 @@ mod tests {
         let plan = evidence.storage_plan().expect("maximum storage plan");
 
         assert_eq!(plan.root.schema_version(), MANIFEST_SCHEMA_VERSION);
+        assert_eq!(MAX_PAYLOAD_CHUNKS, 1);
         assert_eq!(plan.chunks.len(), MAX_PAYLOAD_CHUNKS);
         assert_eq!(plan.chunks[0].logical_bytes(), PAYLOAD_CHUNK_BYTES as u32);
-        assert_eq!(plan.chunks[1].logical_bytes(), PAYLOAD_CHUNK_BYTES as u32);
-        assert_eq!(plan.chunks[2].logical_bytes(), 16 * 1024 * 1024);
         assert_eq!(
             plan.chunks
                 .iter()
                 .map(|chunk| chunk.logical_bytes() as usize)
                 .sum::<usize>(),
             MAX_FINDING_TRIAGE_REPLAY_PAYLOAD_BYTES
+        );
+    }
+
+    #[test]
+    fn replay_evidence_names_log_segments_as_children_and_rejects_repeats() {
+        let (reproduction, signature) = fixture();
+        let segment = |label: &[u8]| {
+            FindingTriageReplayLogSegment::new(
+                ContentId::for_bytes(ObjectKind::Trace, 1, label),
+                label.len() as u64,
+            )
+            .expect("log segment")
+        };
+        let segments = vec![segment(b"first"), segment(b"second")];
+        let evidence = FindingTriageReplayEvidence::new_with_log_segments(
+            reproduction,
+            signature.clone(),
+            4,
+            b"segment-referencing payload".to_vec(),
+            segments.clone(),
+        )
+        .expect("triage replay evidence");
+
+        let decoded =
+            FindingTriageReplayEvidence::from_canonical_bytes(&evidence.canonical_bytes())
+                .expect("decode triage replay evidence");
+        assert_eq!(decoded.log_segments(), segments.as_slice());
+        let plan = evidence.storage_plan().expect("storage plan");
+        let children = FindingTriageReplayEvidence::storage_content_children(plan.root.body())
+            .expect("manifest children");
+        assert!(children.contains(&(String::from("log.segment.1"), segments[1].content())));
+
+        assert!(
+            FindingTriageReplayEvidence::new_with_log_segments(
+                reproduction,
+                signature,
+                4,
+                b"payload".to_vec(),
+                vec![segments[0], segments[0]],
+            )
+            .is_err()
         );
     }
 
@@ -888,6 +1053,7 @@ mod tests {
                 1,
                 PAYLOAD_CHUNK_BYTES + 1,
                 vec![last, first],
+                Vec::new(),
             )
             .is_err()
         );
@@ -903,6 +1069,7 @@ mod tests {
                 1,
                 1,
                 vec![wrong_kind],
+                Vec::new(),
             )
             .is_err()
         );
@@ -913,6 +1080,7 @@ mod tests {
                 1,
                 PAYLOAD_CHUNK_BYTES,
                 vec![first, last],
+                Vec::new(),
             )
             .is_err()
         );
@@ -923,6 +1091,7 @@ mod tests {
                 1,
                 4,
                 vec![last; MAX_PAYLOAD_CHUNKS + 1],
+                Vec::new(),
             )
             .is_err()
         );
@@ -932,6 +1101,9 @@ mod tests {
     fn replay_chunk_decoder_rejects_corrupt_and_oversized_bodies() {
         let chunk =
             FindingTriageReplayChunk::new(b"authenticated chunk".to_vec()).expect("chunk record");
+        let envelope =
+            FindingTriageReplayChunk::envelope_for(b"authenticated chunk").expect("chunk envelope");
+        assert_eq!(envelope.body(), chunk.canonical_bytes().as_slice());
         let mut corrupt = chunk.canonical_bytes();
         corrupt.push(0);
         assert!(FindingTriageReplayEvidence::chunk_from_canonical_bytes(&corrupt).is_err());

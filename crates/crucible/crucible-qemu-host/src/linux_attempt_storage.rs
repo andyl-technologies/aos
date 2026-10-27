@@ -153,6 +153,12 @@ impl LinuxQemuAttemptStorageConfig {
     pub(crate) const fn maximum_inodes(&self) -> u64 {
         self.maximum_inodes
     }
+
+    /// Returns how many attempt storage owners may exist at once.
+    #[must_use]
+    pub(crate) const fn project_id_count(&self) -> u32 {
+        self.project_id_count
+    }
 }
 
 /// Exclusive allocator for one private ext4 QEMU run root.
@@ -260,6 +266,7 @@ impl LinuxQemuAttemptStorageFactory {
             child_group_id: self.config.child_group_id,
             maximum_inodes: limits.maximum_inodes(),
             next_generation: Some(1),
+            removed_artifacts: None,
             removed: false,
             released: false,
         };
@@ -286,6 +293,7 @@ pub(crate) struct LinuxQemuAttemptStorageOwner {
     child_group_id: u32,
     maximum_inodes: u64,
     next_generation: Option<u64>,
+    removed_artifacts: Option<RemovedArtifacts>,
     removed: bool,
     released: bool,
 }
@@ -562,7 +570,7 @@ impl LinuxQemuAttemptStorageOwner {
                     Err(error) => {
                         let (source, reservation) = error.into_parts();
                         self.quota = Some(reservation);
-                        return Err(LinuxQemuAttemptStorageError::ProjectQuota(source));
+                        return Err(self.released_quota_error(source));
                     }
                 }
             }
@@ -594,7 +602,25 @@ impl LinuxQemuAttemptStorageOwner {
             "retain QEMU run directory for artifact cleanup",
             &self.path,
         )?;
-        cleanup_directory_contents(root, &self.path, self.maximum_inodes)
+        self.removed_artifacts = Some(cleanup_directory_contents(
+            root,
+            &self.path,
+            self.maximum_inodes,
+        )?);
+        Ok(())
+    }
+
+    /// Names the removed artifacts when released usage outlives cleanup.
+    fn released_quota_error(&self, source: LinuxProjectQuotaError) -> LinuxQemuAttemptStorageError {
+        match (&source, &self.removed_artifacts) {
+            (LinuxProjectQuotaError::ReleasedProjectInUse { .. }, Some(removed)) => {
+                LinuxQemuAttemptStorageError::ReleasedArtifactsInUse {
+                    source,
+                    removed: removed.describe(),
+                }
+            }
+            _ => LinuxQemuAttemptStorageError::ProjectQuota(source),
+        }
     }
 
     fn pin_directory(&mut self) -> Result<(), LinuxQemuAttemptStorageError> {
@@ -798,6 +824,15 @@ pub(crate) enum LinuxQemuAttemptStorageError {
     /// The ext4 project-quota transaction failed.
     #[error(transparent)]
     ProjectQuota(#[from] LinuxProjectQuotaError),
+    /// Accounted usage outlived the artifacts this cleanup removed.
+    #[error("{source}; removed artifacts: {removed}")]
+    ReleasedArtifactsInUse {
+        /// Exact released-usage failure from the quota reservation.
+        #[source]
+        source: LinuxProjectQuotaError,
+        /// Bounded description of the artifacts cleanup unlinked.
+        removed: String,
+    },
     /// One filesystem operation failed.
     #[error("{operation} failed for {path}: {source}")]
     Io {
@@ -1207,6 +1242,46 @@ mod tests {
         assert_eq!(
             must_succeed(std::fs::read_dir(root.path()), "read cleaned root").count(),
             0
+        );
+    }
+
+    #[test]
+    fn cleanup_names_the_largest_removed_artifacts() {
+        let root = must_succeed(tempfile::tempdir(), "temporary cleanup root");
+        must_succeed(
+            std::fs::write(root.path().join("overlay.qcow2"), vec![7_u8; 64 * 1024]),
+            "large artifact",
+        );
+        must_succeed(
+            std::fs::write(root.path().join("small"), b"s"),
+            "small artifact",
+        );
+        let inode = must_succeed(
+            std::fs::metadata(root.path().join("overlay.qcow2")),
+            "inspect large artifact",
+        );
+        let directory = must_succeed(
+            open(
+                root.path(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ),
+            "open cleanup root",
+        );
+
+        let removed = must_succeed(
+            cleanup_directory_contents(directory, root.path(), 3),
+            "bounded cleanup",
+        )
+        .describe();
+
+        assert!(removed.starts_with("2 removed, "), "{removed}");
+        assert!(
+            removed.contains(&format!(
+                "largest [overlay.qcow2 inode {} allocated ",
+                std::os::unix::fs::MetadataExt::ino(&inode)
+            )),
+            "{removed}"
         );
     }
 

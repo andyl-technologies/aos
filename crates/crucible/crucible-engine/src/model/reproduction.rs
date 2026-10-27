@@ -68,9 +68,8 @@ impl Error for FindingReproductionArtifactError {
 /// Configuration for deterministic finding minimization.
 ///
 /// Candidate enumeration is additionally bounded by
-/// [`MAX_MINIMIZATION_CANDIDATES`] and
-/// [`MAX_MINIMIZATION_CANDIDATE_WORK_BYTES`]. Those compiled limits are part
-/// of the minimization policy retained by campaign adapters.
+/// [`MAX_MINIMIZATION_CANDIDATES`]. That compiled limit is part of the
+/// minimization policy retained by campaign adapters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinimizationConfig {
     /// Seed used to order candidate removals with content-address tie-breaks.
@@ -79,9 +78,10 @@ pub struct MinimizationConfig {
 }
 
 /// Maximum replay candidates considered by one deterministic minimization.
+///
+/// Candidates are held as compact kept-index descriptors and materialized one
+/// at a time for replay, so this bound does not depend on schedule length.
 pub const MAX_MINIMIZATION_CANDIDATES: usize = 4_096;
-/// Maximum conservative candidate-copy work admitted by one minimization.
-pub const MAX_MINIMIZATION_CANDIDATE_WORK_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum terminal schedule decisions exposed by automatic finding minimization.
 pub const MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS: usize = 64;
 
@@ -149,11 +149,12 @@ impl MinimizationConfig {
     pub fn automatic_interesting_suffix(seed: Seed, schedule: &Schedule) -> Self {
         let end = schedule.len();
         let bounded_start = end.saturating_sub(MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS);
-        let latest_branch = schedule.decisions()[bounded_start..]
-            .iter()
-            .rposition(|decision| {
-                matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
-            })
+        // Scan only the bounded suffix of the shared history; the contiguous
+        // `Schedule::decisions` view would copy the whole schedule first.
+        let latest_branch = schedule
+            .decision_history()
+            .iter_from(bounded_start)
+            .rposition(is_campaign_branch)
             .map(|offset| bounded_start + offset);
         let (start, basis) = latest_branch.map_or(
             (
@@ -182,31 +183,32 @@ impl MinimizationConfig {
 
     pub(super) fn validates_schedule(self, schedule: &Schedule) -> bool {
         self.interesting_window.is_none_or(|window| {
+            // `end == len` below, so the window is exactly the history suffix
+            // starting at `start`.
+            let mut window_decisions = schedule.decision_history().iter_from(window.start);
             window.original_schedule_len == schedule.len()
                 && window.end == schedule.len()
                 && window.start <= window.end
                 && window.end.saturating_sub(window.start)
                     <= MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS
                 && match window.basis {
-                    InterestingScheduleWindowBasis::LatestCampaignBranch => schedule.decisions()
-                        [window.start..window.end]
-                        .iter()
-                        .rposition(|decision| {
-                            matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
-                        })
-                        == Some(0),
+                    InterestingScheduleWindowBasis::LatestCampaignBranch => {
+                        window_decisions.rposition(is_campaign_branch) == Some(0)
+                    }
                     InterestingScheduleWindowBasis::TerminalSuffix => {
                         window.start
                             == window
                                 .end
                                 .saturating_sub(MAX_AUTOMATIC_INTERESTING_WINDOW_DECISIONS)
-                            && !schedule.decisions()[window.start..window.end].iter().any(
-                                |decision| matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch()),
-                            )
+                            && !window_decisions.any(is_campaign_branch)
                     }
                 }
         })
     }
+}
+
+fn is_campaign_branch(decision: &Decision) -> bool {
+    matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
 }
 
 /// One replay-validated candidate considered by minimization.
@@ -215,9 +217,10 @@ pub struct MinimizationAttempt {
     /// Deterministic attempt sequence number.
     pub sequence: u64,
     /// Original schedule decision indexes removed for this candidate.
-    pub removed_indices: Vec<usize>,
-    /// Original schedule decisions removed for this candidate.
-    pub removed_decisions: Vec<Decision>,
+    ///
+    /// The removed decisions themselves are read from the original schedule
+    /// with [`MinimizationAttempt::removed_decisions`].
+    pub removed_indices: ScheduleIndexRanges,
     /// Candidate self-contained artifact id.
     pub candidate_artifact: ContentHash,
     /// Candidate schedule content address.
@@ -228,6 +231,24 @@ pub struct MinimizationAttempt {
     pub observed_fingerprint: Option<ContentHash>,
     /// Whether the candidate preserved the target failure and was accepted.
     pub accepted: bool,
+}
+
+impl MinimizationAttempt {
+    /// Returns the decisions of `original` that this candidate removed.
+    ///
+    /// `original` is the schedule of the run's original artifact,
+    /// `run.original.artifact.schedule()`. Removed indexes at or beyond its
+    /// length yield nothing.
+    pub fn removed_decisions<'a>(
+        &'a self,
+        original: &'a Schedule,
+    ) -> impl Iterator<Item = &'a Decision> + 'a {
+        let history = original.decision_history();
+        self.removed_indices
+            .ranges()
+            .iter()
+            .flat_map(move |range| history.iter_from(range.start).take(range.len()))
+    }
 }
 
 /// Result of deterministic failure-preserving minimization.
@@ -270,14 +291,6 @@ impl MinimizationRun {
     pub fn shrank(&self) -> bool {
         self.minimized.artifact.schedule().len() < self.original.artifact.schedule().len()
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct MinimizationCandidate {
-    pub(super) removed_indices: Vec<usize>,
-    pub(super) removed_decisions: Vec<Decision>,
-    pub(super) schedule: Schedule,
-    pub(super) order_key: ContentHash,
 }
 
 /// Successful replay-oracle verification of a reproduction artifact.

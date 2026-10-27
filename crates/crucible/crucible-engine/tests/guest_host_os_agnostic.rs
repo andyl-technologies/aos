@@ -11,10 +11,10 @@ use std::collections::BTreeSet;
 use crucible_engine::{
     Action, AssertionDef, AssertionId, BLACK_BOX_OBSERVATION_CONTRACTS,
     BLACK_BOX_OBSERVATION_KINDS, BlackBoxObservationKind, BlackBoxObservationSource, CodePoint,
-    ContentAddressedBlobRef, ContentHash, Event, EventGraph, EventGraphState, FramePredicate,
-    Icount, IoEventKind, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, Predicate,
-    Properties, Property, ReadyPoint, RegexProgram, ResolvedMemPlace, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode,
+    ConditionEvaluationPass, ContentAddressedBlobRef, ContentHash, Event, EventGraph,
+    EventGraphState, FramePredicate, Icount, IoEventKind, NodeId, NodeLifecycle, NodeTemplate,
+    ObservableEvent, Predicate, Properties, Property, ReadyPoint, RegexProgram, ResolvedMemPlace,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 const AARCH64_BARE_METAL_NON_LINUX_IMAGE: &[u8] = &[
@@ -184,8 +184,15 @@ fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
     }
 
     assert!(
-        support::evaluation_with_observables(30, black_box_events(), NoGuestSoftwareLeaves,)
-            .evaluate_assertion_condition(&predicate)
+        ConditionEvaluationPass::from_log_prefix(
+            support::with_console_matchers(
+                support::observable_prefix(30, black_box_events()),
+                [&predicate],
+            ),
+            NoGuestSoftwareLeaves,
+        )
+        .evaluate_assertion_condition(&predicate)
+        .expect("console matchers are declared")
     );
 
     let graph = EventGraph::new_for_world(
@@ -201,7 +208,16 @@ fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
     let firings = support::evaluate_graph(
         &graph,
         &mut state,
-        support::evaluation_with_observables(30, black_box_events(), NoGuestSoftwareLeaves),
+        ConditionEvaluationPass::from_log_prefix(
+            support::with_console_matchers(
+                support::observable_prefix(30, black_box_events()),
+                graph
+                    .events()
+                    .iter()
+                    .filter_map(|event| event.trigger.as_ref()),
+            ),
+            NoGuestSoftwareLeaves,
+        ),
     );
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].event().name, "pass-on-opaque-image-observation");

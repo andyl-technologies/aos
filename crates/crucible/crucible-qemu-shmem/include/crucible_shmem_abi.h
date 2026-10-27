@@ -16,11 +16,14 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 30u
+#define CRUCIBLE_SHMEM_ABI_VERSION 33u
+#define CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES 525184u
 #define CRUCIBLE_SHMEM_TICKS_PER_NS 1000u
 #define CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION 50u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING 0u
 #define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE 1u
+#define CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT 2u
+#define CRUCIBLE_SHMEM_IDLE_WAKE_NONE UINT64_C(0xffffffffffffffff)
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -106,7 +109,7 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET 124u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET 128u
 #define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET 136u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET 140u
+#define CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET 140u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET 144u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET 152u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET 160u
@@ -117,7 +120,11 @@
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET 200u
 #define CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET 204u
 #define CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET 208u
-#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 216u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET 216u
+#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET 224u
+#define CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET 232u
+#define CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET 236u
+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 240u
 
 #define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 #define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
@@ -248,7 +255,7 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint32_t logical_time_restore_ack;
     _Atomic uint64_t control_boundary_fault_command_frontier;
     _Atomic uint32_t control_boundary_capture_request;
-    uint8_t pad3[4];
+    _Atomic uint32_t control_boundary_publication_claim;
     _Atomic uint64_t timer_witness_generation;
     _Atomic uint64_t timer_witness_deadline_ps;
     _Atomic uint64_t timer_witness_deadline_tick;
@@ -259,7 +266,11 @@ typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_node_slot {
     _Atomic uint32_t timer_witness_completed;
     _Atomic uint32_t timer_witness_reserved;
     _Atomic uint64_t advance_publication_sequence;
-    uint8_t pad4[40];
+    _Atomic uint64_t settled_ceiling_tick;
+    _Atomic uint64_t settled_publication_sequence;
+    _Atomic uint32_t host_publication_signal;
+    _Atomic uint32_t host_publication_waiters;
+    uint8_t pad4[16];
 } crucible_shmem_node_slot;
 
 CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -291,7 +302,7 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_res
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, logical_time_restore_ack) == CRUCIBLE_SHMEM_NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET, "crucible_shmem_node_slot.logical_time_restore_ack offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_fault_command_frontier) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET, "crucible_shmem_node_slot.control_boundary_fault_command_frontier offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_capture_request) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET, "crucible_shmem_node_slot.control_boundary_capture_request offset");
-CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad3) == CRUCIBLE_SHMEM_NODE_SLOT_PAD3_OFFSET, "crucible_shmem_node_slot.pad3 offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, control_boundary_publication_claim) == CRUCIBLE_SHMEM_NODE_SLOT_CONTROL_BOUNDARY_PUBLICATION_CLAIM_OFFSET, "crucible_shmem_node_slot.control_boundary_publication_claim offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_generation) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET, "crucible_shmem_node_slot.timer_witness_generation offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_ps) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_ps offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET, "crucible_shmem_node_slot.timer_witness_deadline_tick offset");
@@ -302,6 +313,10 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_fi
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_completed) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET, "crucible_shmem_node_slot.timer_witness_completed offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, timer_witness_reserved) == CRUCIBLE_SHMEM_NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET, "crucible_shmem_node_slot.timer_witness_reserved offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.advance_publication_sequence offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_ceiling_tick) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET, "crucible_shmem_node_slot.settled_ceiling_tick offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.settled_publication_sequence offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, host_publication_signal) == CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET, "crucible_shmem_node_slot.host_publication_signal offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, host_publication_waiters) == CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET, "crucible_shmem_node_slot.host_publication_waiters offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad4) == CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET, "crucible_shmem_node_slot.pad4 offset");
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
@@ -1227,6 +1242,8 @@ typedef struct crucible_shmem_guest_introspection_layout {
     uint64_t selectable_reply_ring_hdr_off;
     uint64_t selectable_reply_ring_data_off;
     uint64_t selectable_reply_entry_stride;
+    uint64_t native_console_off;
+    uint64_t native_console_stride;
     uint64_t region_size;
 } crucible_shmem_guest_introspection_layout;
 
@@ -1318,6 +1335,8 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     uint64_t accelerator_data_end;
     uint64_t selectable_reply_hdr_off;
     uint64_t selectable_reply_data_off;
+    uint64_t selectable_reply_data_end;
+    uint64_t native_console_off;
     uint64_t computed_region_size;
     uint32_t guest_ring_count;
     uint32_t accelerator_ring_count;
@@ -1409,7 +1428,10 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
         || crucible_shmem_u64_checked_add(selectable_reply_hdr_off, byte_len, &selectable_reply_data_off) != 0
         || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY, &count) != 0
         || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
-        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &computed_region_size) != 0
+        || crucible_shmem_u64_checked_add(selectable_reply_data_off, byte_len, &selectable_reply_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(selectable_reply_data_end, 128u, &native_console_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(native_console_off, byte_len, &computed_region_size) != 0
         || computed_region_size != advertised_region_size) {
         return -1;
     }
@@ -1429,6 +1451,8 @@ static inline int crucible_shmem_guest_introspection_layout_compute(
     out->selectable_reply_ring_hdr_off = selectable_reply_hdr_off;
     out->selectable_reply_ring_data_off = selectable_reply_data_off;
     out->selectable_reply_entry_stride = CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE;
+    out->native_console_off = native_console_off;
+    out->native_console_stride = CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES;
     out->region_size = computed_region_size;
     return 0;
 }

@@ -348,6 +348,7 @@ fn first_stop_rejects_an_already_completed_quantum() -> Result<(), Box<dyn Error
 #[test]
 fn completed_quantum_error_preserves_the_effective_boundary() {
     let completion = crate::QemuAsyncQuantumCompletion {
+        completed_boundary: None,
         ceiling: crucible_engine::Icount { retired: 8_000_001 },
         outcome: crucible_engine::AdvanceOutcome::Paused {
             at: crucible_engine::Icount { retired: 4_000_001 },

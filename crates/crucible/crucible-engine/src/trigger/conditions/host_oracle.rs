@@ -1,23 +1,110 @@
 //! Host assertion predicates, oracle adapters, and harness-source lint.
 
 use super::*;
+use crate::trigger::assertion_fold::{decode_named_state, encode_named_state};
+use crate::trigger::{AssertionFoldFailure, NamedLeaf, NamedPredicateError, ObservedBatch};
 
-/// Host-authored resolver for assertion leaves over materialized observed state.
+/// Host-authored named predicate, folded as a pure accumulator.
+///
+/// A predicate never sees the attempt's history. For each declared leaf the
+/// evaluator starts from [`Self::initial`], folds one [`ObservedBatch`] per
+/// scheduler entry through [`Self::step`], and answers the leaf from the
+/// folded state with [`Self::leaf_is_true`]. The evaluator owns the states,
+/// stores them as canonical CBOR, and carries them in its checkpoint, so live
+/// and offline evaluation reach identical states (RFC-0020 CMEAS-17).
 ///
 /// Implementations do not grade runs directly. Wrap them in
 /// [`LintedHostAssertionOracle`] with a [`HostAssertionHarnessLint`] proof first,
 /// so custom host predicate source cannot bypass `gate:harness-lint`.
+///
+/// A closure `Fn(NamedLeaf<'_>, &ObservedBatch<'_>) -> bool` is a memoryless
+/// predicate: its leaf holds exactly when the closure held for the latest
+/// batch, and its initial value is the closure applied to
+/// [`ObservedBatch::genesis`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use crucible_engine::{
+///     HostAssertionPredicate, NamedLeaf, NamedPredicateError, ObservableEventPayload,
+///     ObservedBatch,
+/// };
+///
+/// /// Holds once any console output has been observed.
+/// struct SawConsole;
+///
+/// impl HostAssertionPredicate for SawConsole {
+///     type State = bool;
+///
+///     fn initial(&self, _leaf: NamedLeaf<'_>) -> bool {
+///         false
+///     }
+///
+///     fn step(
+///         &self,
+///         _leaf: NamedLeaf<'_>,
+///         saw: &bool,
+///         batch: &ObservedBatch<'_>,
+///     ) -> Result<bool, NamedPredicateError> {
+///         Ok(*saw
+///             || batch.observable_events().iter().any(|event| {
+///                 matches!(event.payload(), ObservableEventPayload::ConsoleOutput { .. })
+///             }))
+///     }
+///
+///     fn leaf_is_true(&self, _leaf: NamedLeaf<'_>, saw: &bool) -> bool {
+///         *saw
+///     }
+/// }
+/// ```
 pub trait HostAssertionPredicate {
-    /// Returns whether one host-side assertion leaf is true at `observed`.
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool;
+    /// Accumulator state for one leaf; encoded into the evaluator checkpoint.
+    ///
+    /// Its canonical CBOR encoding must not exceed
+    /// [`crate::MAX_NAMED_PREDICATE_STATE_BYTES`].
+    type State: serde::Serialize + serde::de::DeserializeOwned;
+
+    /// Returns the state before any entry has been folded.
+    fn initial(&self, leaf: NamedLeaf<'_>) -> Self::State;
+
+    /// Folds one scheduler entry's observations into `state`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NamedPredicateError`] when the predicate cannot fold the
+    /// batch; the evaluator then fails closed.
+    fn step(
+        &self,
+        leaf: NamedLeaf<'_>,
+        state: &Self::State,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<Self::State, NamedPredicateError>;
+
+    /// Returns whether the leaf holds in `state`.
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, state: &Self::State) -> bool;
 }
 
 impl<F> HostAssertionPredicate for F
 where
-    F: for<'log, 'leaf> Fn(ObservedState<'log>, ConditionLeaf<'leaf>) -> bool,
+    F: for<'leaf, 'batch> Fn(NamedLeaf<'leaf>, &ObservedBatch<'batch>) -> bool,
 {
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        self(observed, leaf)
+    type State = bool;
+
+    fn initial(&self, leaf: NamedLeaf<'_>) -> bool {
+        self(leaf, &ObservedBatch::genesis())
+    }
+
+    fn step(
+        &self,
+        leaf: NamedLeaf<'_>,
+        _state: &bool,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<bool, NamedPredicateError> {
+        Ok(self(leaf, batch))
+    }
+
+    fn leaf_is_true(&self, _leaf: NamedLeaf<'_>, state: &bool) -> bool {
+        *state
     }
 }
 
@@ -81,10 +168,47 @@ mod host_assertion_oracle_sealed {
 ///
 /// This trait is sealed so external host predicate code must flow through
 /// [`LintedHostAssertionOracle`] instead of implementing the evaluator-facing
-/// oracle directly.
+/// oracle directly. Its states are the canonical encodings the evaluator
+/// stores and checkpoints.
 pub trait HostAssertionOracle: host_assertion_oracle_sealed::Sealed {
-    /// Returns whether one host-side assertion leaf is true at `observed`.
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool;
+    /// Returns the encoded initial state for `leaf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssertionFoldFailure`] when the state cannot be encoded
+    /// within its bound.
+    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure>;
+
+    /// Folds one batch into an encoded state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssertionFoldFailure`] when the predicate refuses the batch
+    /// or the state does not decode or encode within its bound.
+    fn step_named_state(
+        &self,
+        leaf: NamedLeaf<'_>,
+        state: &[u8],
+        batch: &ObservedBatch<'_>,
+    ) -> Result<Vec<u8>, AssertionFoldFailure>;
+
+    /// Returns whether `leaf` holds in an encoded state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssertionFoldFailure`] when the state does not decode.
+    fn named_leaf_is_true(
+        &mut self,
+        leaf: NamedLeaf<'_>,
+        state: &[u8],
+    ) -> Result<bool, AssertionFoldFailure>;
+
+    /// Returns whether states change with batches.
+    ///
+    /// Oracles whose answers ignore the log skip folding entirely.
+    fn folds_named_batches(&self) -> bool {
+        true
+    }
 }
 
 /// Default zero-guest-cooperation assertion oracle.
@@ -98,10 +222,29 @@ pub struct BlackBoxHostOracle;
 impl host_assertion_oracle_sealed::Sealed for BlackBoxHostOracle {}
 
 impl HostAssertionOracle for BlackBoxHostOracle {
-    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { .. } | ConditionLeaf::GuestMarker { .. } => false,
-        }
+    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
+        Ok(Vec::new())
+    }
+
+    fn step_named_state(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        state: &[u8],
+        _batch: &ObservedBatch<'_>,
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
+        Ok(state.to_vec())
+    }
+
+    fn named_leaf_is_true(
+        &mut self,
+        _leaf: NamedLeaf<'_>,
+        _state: &[u8],
+    ) -> Result<bool, AssertionFoldFailure> {
+        Ok(false)
+    }
+
+    fn folds_named_batches(&self) -> bool {
+        false
     }
 }
 
@@ -198,20 +341,37 @@ impl<'truths> SearchScheduleNamedPredicateHostOracle<'truths> {
 impl host_assertion_oracle_sealed::Sealed for SearchScheduleNamedPredicateHostOracle<'_> {}
 
 impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
-    fn leaf_is_true(&mut self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                let key = SearchScheduleNamedPredicateKey::new(name.to_owned(), nodes.to_vec());
-                match self.truths.truth_for(&key) {
-                    Some(value) => value,
-                    None => {
-                        self.missing_truths.insert(key);
-                        false
-                    }
-                }
+    fn initial_named_state(&self, _leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
+        Ok(Vec::new())
+    }
+
+    fn step_named_state(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        state: &[u8],
+        _batch: &ObservedBatch<'_>,
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
+        Ok(state.to_vec())
+    }
+
+    fn named_leaf_is_true(
+        &mut self,
+        leaf: NamedLeaf<'_>,
+        _state: &[u8],
+    ) -> Result<bool, AssertionFoldFailure> {
+        let key =
+            SearchScheduleNamedPredicateKey::new(leaf.name().to_owned(), leaf.nodes().to_vec());
+        Ok(match self.truths.truth_for(&key) {
+            Some(value) => value,
+            None => {
+                self.missing_truths.insert(key);
+                false
             }
-            ConditionLeaf::GuestMarker { .. } => false,
-        }
+        })
+    }
+
+    fn folds_named_batches(&self) -> bool {
+        false
     }
 }
 
@@ -224,8 +384,31 @@ impl<O> HostAssertionOracle for LintedHostAssertionOracle<O>
 where
     O: HostAssertionPredicate,
 {
-    fn leaf_is_true(&mut self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        HostAssertionPredicate::leaf_is_true(&self.oracle, observed, leaf)
+    fn initial_named_state(&self, leaf: NamedLeaf<'_>) -> Result<Vec<u8>, AssertionFoldFailure> {
+        encode_named_state(leaf, &self.oracle.initial(leaf))
+    }
+
+    fn step_named_state(
+        &self,
+        leaf: NamedLeaf<'_>,
+        state: &[u8],
+        batch: &ObservedBatch<'_>,
+    ) -> Result<Vec<u8>, AssertionFoldFailure> {
+        let state = decode_named_state::<O::State>(leaf, state)?;
+        let next = self
+            .oracle
+            .step(leaf, &state, batch)
+            .map_err(|error| AssertionFoldFailure::refused(leaf, error))?;
+        encode_named_state(leaf, &next)
+    }
+
+    fn named_leaf_is_true(
+        &mut self,
+        leaf: NamedLeaf<'_>,
+        state: &[u8],
+    ) -> Result<bool, AssertionFoldFailure> {
+        let state = decode_named_state::<O::State>(leaf, state)?;
+        Ok(self.oracle.leaf_is_true(leaf, &state))
     }
 }
 

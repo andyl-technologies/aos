@@ -389,19 +389,46 @@ pub enum CampaignFindingOccurrenceObjectKind {
     VerificationOriginalTriageEvidence,
     /// The verification pass replay of the selected reproduction.
     VerificationSelectedTriageEvidence,
+    /// One run-length payload segment of the candidate's original or
+    /// minimized reproduction, selected by its position in the record's
+    /// segment list.
+    ReproductionPayloadSegment {
+        /// Whether the segment belongs to the minimized reproduction.
+        minimized: bool,
+        /// Zero-based position in the reproduction's payload segments.
+        index: u32,
+    },
+    /// One attempt-log segment named by one of the candidate's triage replay
+    /// records, selected by its position in that record's log segments.
+    TriageReplayLogSegment {
+        /// The triage replay record naming the segment.
+        role: CampaignFindingTriageReplayRole,
+        /// Zero-based position in the record's log segments.
+        index: u32,
+    },
 }
 
 impl Canonical for CampaignFindingOccurrenceObjectKind {
     fn encode(&self, encoder: &mut Encoder) {
-        encoder.u8(match self {
-            Self::Observation => 0,
-            Self::Reproduction => 1,
-            Self::MinimizedReproduction => 2,
-            Self::MinimizationOriginalTriageEvidence => 3,
-            Self::MinimizationSelectedTriageEvidence => 4,
-            Self::VerificationOriginalTriageEvidence => 5,
-            Self::VerificationSelectedTriageEvidence => 6,
-        });
+        match self {
+            Self::Observation => encoder.u8(0),
+            Self::Reproduction => encoder.u8(1),
+            Self::MinimizedReproduction => encoder.u8(2),
+            Self::MinimizationOriginalTriageEvidence => encoder.u8(3),
+            Self::MinimizationSelectedTriageEvidence => encoder.u8(4),
+            Self::VerificationOriginalTriageEvidence => encoder.u8(5),
+            Self::VerificationSelectedTriageEvidence => encoder.u8(6),
+            Self::ReproductionPayloadSegment { minimized, index } => {
+                encoder.u8(7);
+                encoder.bool(*minimized);
+                encoder.u32(*index);
+            }
+            Self::TriageReplayLogSegment { role, index } => {
+                encoder.u8(8);
+                role.encode(encoder);
+                encoder.u32(*index);
+            }
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -413,6 +440,14 @@ impl Canonical for CampaignFindingOccurrenceObjectKind {
             4 => Ok(Self::MinimizationSelectedTriageEvidence),
             5 => Ok(Self::VerificationOriginalTriageEvidence),
             6 => Ok(Self::VerificationSelectedTriageEvidence),
+            7 => Ok(Self::ReproductionPayloadSegment {
+                minimized: decoder.bool()?,
+                index: decoder.u32()?,
+            }),
+            8 => Ok(Self::TriageReplayLogSegment {
+                role: CampaignFindingTriageReplayRole::decode(decoder)?,
+                index: decoder.u32()?,
+            }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-finding-occurrence-object-kind",
                 tag,
@@ -438,6 +473,30 @@ pub enum CampaignFindingOccurrenceObject {
     VerificationOriginalTriageEvidence(FindingTriageReplayEvidence),
     /// The verification pass replay of the selected reproduction.
     VerificationSelectedTriageEvidence(FindingTriageReplayEvidence),
+    /// One authenticated reproduction payload segment.
+    ///
+    /// The service authenticates the bytes against the segment the record
+    /// names; a client checks them against the record it read before.
+    ReproductionPayloadSegment {
+        /// Whether the segment belongs to the minimized reproduction.
+        minimized: bool,
+        /// Zero-based position in the reproduction's payload segments.
+        index: u32,
+        /// Exact segment bytes.
+        bytes: Vec<u8>,
+    },
+    /// One authenticated attempt-log segment of a triage replay record.
+    ///
+    /// The service authenticates the bytes against the segment the record
+    /// names; a client checks them against the record it read before.
+    TriageReplayLogSegment {
+        /// The triage replay record naming the segment.
+        role: CampaignFindingTriageReplayRole,
+        /// Zero-based position in the record's log segments.
+        index: u32,
+        /// Exact segment bytes.
+        bytes: Vec<u8>,
+    },
 }
 
 impl CampaignFindingOccurrenceObject {
@@ -462,6 +521,18 @@ impl CampaignFindingOccurrenceObject {
             Self::VerificationSelectedTriageEvidence(_) => {
                 CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence
             }
+            Self::ReproductionPayloadSegment {
+                minimized, index, ..
+            } => CampaignFindingOccurrenceObjectKind::ReproductionPayloadSegment {
+                minimized: *minimized,
+                index: *index,
+            },
+            Self::TriageReplayLogSegment { role, index, .. } => {
+                CampaignFindingOccurrenceObjectKind::TriageReplayLogSegment {
+                    role: *role,
+                    index: *index,
+                }
+            }
         }
     }
 }
@@ -478,6 +549,8 @@ impl Canonical for CampaignFindingOccurrenceObject {
             | Self::MinimizationSelectedTriageEvidence(value)
             | Self::VerificationOriginalTriageEvidence(value)
             | Self::VerificationSelectedTriageEvidence(value) => value.encode(encoder),
+            Self::ReproductionPayloadSegment { bytes, .. }
+            | Self::TriageReplayLogSegment { bytes, .. } => bytes.encode(encoder),
         }
     }
 
@@ -507,6 +580,29 @@ impl Canonical for CampaignFindingOccurrenceObject {
             CampaignFindingOccurrenceObjectKind::VerificationSelectedTriageEvidence => {
                 FindingTriageReplayEvidence::decode(decoder)
                     .map(Self::VerificationSelectedTriageEvidence)
+            }
+            CampaignFindingOccurrenceObjectKind::ReproductionPayloadSegment {
+                minimized,
+                index,
+            } => Ok(Self::ReproductionPayloadSegment {
+                minimized,
+                index,
+                bytes: decoder.sequence_bounded(
+                    crucible_store::segment_store::MAX_SEGMENT_BYTES,
+                    "campaign-finding-occurrence-reproduction-segment-bytes",
+                    u8::decode,
+                )?,
+            }),
+            CampaignFindingOccurrenceObjectKind::TriageReplayLogSegment { role, index } => {
+                Ok(Self::TriageReplayLogSegment {
+                    role,
+                    index,
+                    bytes: decoder.sequence_bounded(
+                        crucible_store::segment_store::MAX_SEGMENT_BYTES,
+                        "campaign-finding-occurrence-triage-log-segment-bytes",
+                        u8::decode,
+                    )?,
+                })
             }
         }
     }
@@ -849,5 +945,15 @@ fn finding_occurrence_object_matches(
         CampaignFindingOccurrenceObject::VerificationSelectedTriageEvidence(value) => Ok(bundle
             .triage_evidence()
             .is_some_and(|evidence| value.id().ok() == Some(evidence.verification_selected()))),
+        // A segment's identity lives in the reproduction record, so the
+        // client authenticates the bytes against the record it read through
+        // this same snapshot.
+        CampaignFindingOccurrenceObject::ReproductionPayloadSegment { bytes, .. } => {
+            Ok(!bytes.is_empty())
+        }
+        // Likewise, a log segment's identity lives in the triage record.
+        CampaignFindingOccurrenceObject::TriageReplayLogSegment { role, bytes, .. } => {
+            Ok(role.evidence(bundle).is_some() && !bytes.is_empty())
+        }
     }
 }

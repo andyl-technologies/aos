@@ -6,10 +6,7 @@ use std::path::Path;
 
 use crucible_store::content_store::ContentId;
 
-use super::{
-    CampaignTransferJournalError, MAX_TRANSFER_RECORD_BYTES, MAX_TRANSFER_RECORDS,
-    STAGING_DIRECTORY,
-};
+use super::{CampaignTransferJournalError, MAX_TRANSFER_RECORD_BYTES, MAX_TRANSFER_RECORDS};
 
 pub(super) fn encode_content_id(
     id: ContentId,
@@ -46,16 +43,17 @@ pub(super) fn read_bounded_file(path: &Path) -> Result<Vec<u8>, CampaignTransfer
     Ok(bytes)
 }
 
-pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CampaignTransferJournalError> {
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or(CampaignTransferJournalError::Corrupt)?;
-    let stem = path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or(CampaignTransferJournalError::Corrupt)?;
-    let temporary = root.join(STAGING_DIRECTORY).join(format!("{stem}.staging"));
+/// Publishes `bytes` at `path` through `<staging>/<stem>.staging`.
+///
+/// The staged file is fsynced, renamed into place, and then both the target
+/// directory and the staging directory are fsynced.
+pub(super) fn write_atomic(
+    staging: &Path,
+    stem: &str,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), CampaignTransferJournalError> {
+    let temporary = staging.join(format!("{stem}.staging"));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -68,7 +66,26 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CampaignTran
     fs::rename(&temporary, path)
         .map_err(|source| io_error("rename-transfer-record", path, source))?;
     sync_directory(path.parent().ok_or(CampaignTransferJournalError::Corrupt)?)?;
-    sync_directory(&root.join(STAGING_DIRECTORY))
+    sync_directory(staging)
+}
+
+/// Creates `path` with `bytes` and fsyncs the file, but not its directory.
+///
+/// Used for record pages, which become reachable only through the header.
+pub(super) fn write_new_file(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), CampaignTransferJournalError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| io_error("create-transfer-page", path, source))?;
+    if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(path);
+        return Err(io_error("write-transfer-page", path, source));
+    }
+    Ok(())
 }
 
 pub(super) fn create_journal_directory(path: &Path) -> Result<(), CampaignTransferJournalError> {
@@ -151,7 +168,17 @@ pub(super) fn hash_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 
 pub(super) fn sync_directory(path: &Path) -> Result<(), CampaignTransferJournalError> {
     #[cfg(test)]
-    if super::FAIL_NEXT_DIRECTORY_SYNC.with(|fail| fail.replace(false)) {
+    if super::FAIL_DIRECTORY_SYNC_AFTER.with(|fail| match fail.get() {
+        Some(0) => {
+            fail.set(None);
+            true
+        }
+        Some(remaining) => {
+            fail.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    }) {
         return Err(io_error(
             "sync-transfer-directory",
             path,
@@ -165,7 +192,13 @@ pub(super) fn sync_directory(path: &Path) -> Result<(), CampaignTransferJournalE
 
 #[cfg(test)]
 pub(super) fn fail_next_directory_sync() {
-    super::FAIL_NEXT_DIRECTORY_SYNC.with(|fail| fail.set(true));
+    fail_directory_sync_after(0);
+}
+
+/// Fails the directory sync after the next `syncs` successful ones.
+#[cfg(test)]
+pub(super) fn fail_directory_sync_after(syncs: u32) {
+    super::FAIL_DIRECTORY_SYNC_AFTER.with(|fail| fail.set(Some(syncs)));
 }
 
 pub(super) fn io_error(

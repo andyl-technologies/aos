@@ -3,6 +3,11 @@
 //! The types in this module are the mutable spine shared by production
 //! adapters. Every state item that can affect a later opportunity is bounded,
 //! ordered, content-addressed, and represented in [`FaultRuntimeCheckpoint`].
+//!
+//! The resolved-effect trace grows with every evaluated boundary and
+//! opportunity, so it is retained as content-addressed segments
+//! ([`ResolvedEffectTraceWriter`], [`ResolvedEffectTrace`]) and checkpoints
+//! carry only its position and replay cursor.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -17,15 +22,28 @@ mod search;
 #[cfg(test)]
 mod tests;
 mod trace_codec;
+mod trace_format;
+mod trace_log;
+mod trace_reader;
 
 pub use error::FaultRuntimeError;
 pub use observation::*;
 pub use search::*;
+pub use trace_format::{
+    MAX_RESOLVED_EFFECT_TRACE_ITEM_BYTES, MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES,
+    RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA,
+    ResolvedEffectTraceManifest, ResolvedEffectTraceSegmentRef,
+    decode_resolved_effect_trace_segment, resolved_effect_trace_segment_id,
+};
+pub(crate) use trace_log::WIDEST_CONTENT_HASH;
+pub use trace_log::{ResolvedEffectTracePosition, ResolvedEffectTraceWriter};
+pub use trace_reader::{
+    ResolvedEffectReplayCursor, ResolvedEffectTrace, ResolvedEffectTraceItems,
+    ResolvedEffectTraceReader,
+};
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 6;
-
-const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v3\0";
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 7;
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -539,198 +557,6 @@ impl ResolvedReplayWorkItem {
     }
 }
 
-/// Ordered replay work-item trace and its next-item cursor.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedEffectTrace {
-    /// Replay mode encoded in the reproduction artifact.
-    pub mode: FaultReplayMode,
-    /// Exact ordered boundaries and opportunities, including pass outcomes.
-    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
-    pub work_items: Vec<ResolvedReplayWorkItem>,
-    /// Next work item to consume.
-    pub cursor: usize,
-}
-
-impl ResolvedEffectTrace {
-    /// Encodes this trace as deterministic CBOR for artifact and RPC transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::CheckpointEncoding`] when serialization fails.
-    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaultRuntimeError> {
-        trace_codec::encode(self, FaultResourceLimits::compiled_maximum())
-    }
-
-    /// Decodes and validates a deterministic CBOR trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError`] when decoding fails or the trace violates
-    /// the supplied scenario resource contract.
-    pub fn from_canonical_bytes(
-        bytes: &[u8],
-        resource_limits: FaultResourceLimits,
-    ) -> Result<Self, FaultRuntimeError> {
-        let payload = bytes
-            .strip_prefix(RESOLVED_EFFECT_TRACE_MAGIC)
-            .ok_or(FaultRuntimeError::VersionOrIdentityMismatch)?;
-        checkpoint_codec::admit_input(bytes, resource_limits)?;
-        let scratch_bytes = trace_codec::preflight(payload, resource_limits)?;
-        let trace = trace_codec::decode(payload, resource_limits, scratch_bytes)?;
-        trace.validate(resource_limits)?;
-        if trace_codec::encode(&trace, resource_limits)?.as_slice() != bytes {
-            return Err(FaultRuntimeError::CheckpointEncoding);
-        }
-        Ok(trace)
-    }
-
-    /// Validates trace bounds and every replay work item.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError`] for an oversized trace, invalid cursor,
-    /// invalid work item, or non-network item in outcome-only network mode.
-    pub fn validate(&self, resource_limits: FaultResourceLimits) -> Result<(), FaultRuntimeError> {
-        if self.cursor > self.work_items.len() {
-            return Err(FaultRuntimeError::InvalidReplayTrace);
-        }
-        let work_items = u64::try_from(self.work_items.len())
-            .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
-        resource_limits
-            .reserve("thin_replay_events", 0, work_items)
-            .map_err(FaultRuntimeError::ResourceLimit)?;
-        let mut records = 0_u64;
-        for item in &self.work_items {
-            item.validate()?;
-            let additional = u64::try_from(item.records.len())
-                .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
-            records = records
-                .checked_add(additional)
-                .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
-            resource_limits
-                .reserve("resolved_effect_records", 0, records)
-                .map_err(FaultRuntimeError::ResourceLimit)?;
-            if let FaultReplayMode::OutcomeOnlyNetwork(alignment) = self.mode
-                && (item.network_frame_key.is_none()
-                    || matches!(
-                        alignment,
-                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos: 0 }
-                    )
-                    || item
-                        .records
-                        .iter()
-                        .any(|record| record.effect.descriptor().adapter != FaultAdapter::Network))
-            {
-                return Err(FaultRuntimeError::InvalidReplayTrace);
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns the next work item after enforcing its selected alignment.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::ReplayMismatch`] when the next recorded
-    /// context does not align with the observed work item.
-    pub fn work_item_for_context(
-        &self,
-        coordinate: FaultCoordinate,
-        same_coordinate_sequence: u64,
-        opportunity: Option<&FaultOpportunity>,
-    ) -> Result<Option<&ResolvedReplayWorkItem>, FaultRuntimeError> {
-        if matches!(self.mode, FaultReplayMode::OutcomeOnlyNetwork(_))
-            && opportunity
-                .and_then(FaultOpportunity::network_frame_key)
-                .is_none()
-        {
-            return Ok(None);
-        }
-        let Some(first) = self.work_items.get(self.cursor) else {
-            return Err(FaultRuntimeError::ReplayExhausted);
-        };
-        let observed = opportunity.map(FaultOpportunity::id).unwrap_or_default();
-        let matches = match self.mode {
-            FaultReplayMode::RecomputedCause | FaultReplayMode::LockedEffect => {
-                first.coordinate == coordinate
-                    && first.same_coordinate_sequence == same_coordinate_sequence
-                    && first.opportunity == opportunity.map(FaultOpportunity::id)
-            }
-            FaultReplayMode::OutcomeOnlyNetwork(alignment) => {
-                let opportunity = opportunity.ok_or(FaultRuntimeError::InvalidReplayTrace)?;
-                let compatible = first.target.as_ref() == Some(opportunity.target())
-                    && first.operation == Some(opportunity.operation())
-                    && first.phase == Some(opportunity.phase())
-                    && first.direction == opportunity.direction();
-                compatible
-                    && match alignment {
-                        NetworkOutcomeAlignment::ExactFrameKey => {
-                            first.network_frame_key == opportunity.network_frame_key()
-                        }
-                        NetworkOutcomeAlignment::ProducerDirectionSequence => {
-                            first.network_producer_direction_key
-                                == opportunity.network_producer_direction_key()
-                        }
-                        NetworkOutcomeAlignment::ExactEventCoordinate => {
-                            first.coordinate == coordinate
-                                && first.same_coordinate_sequence == same_coordinate_sequence
-                        }
-                        NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => {
-                            if width_nanos == 0 {
-                                false
-                            } else {
-                                let width_ticks =
-                                    u128::from(width_nanos) * u128::from(SIM_TICKS_PER_NS);
-                                u128::from(first.coordinate.virtual_ticks) / width_ticks
-                                    == u128::from(coordinate.virtual_ticks) / width_ticks
-                            }
-                        }
-                    }
-            }
-        };
-        if !matches {
-            return Err(FaultRuntimeError::ReplayMismatch {
-                index: self.cursor,
-                expected: first.opportunity,
-                observed,
-            });
-        }
-        Ok(Some(first))
-    }
-
-    /// Advances after one fully verified work item.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::ReplayExhausted`] at the end of the trace.
-    pub fn advance(&mut self) -> Result<(), FaultRuntimeError> {
-        self.cursor = self
-            .cursor
-            .checked_add(1)
-            .filter(|cursor| *cursor <= self.work_items.len())
-            .ok_or(FaultRuntimeError::ReplayExhausted)?;
-        Ok(())
-    }
-
-    /// Requires every replay work item to have been consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::ReplayMismatch`] when work items remain.
-    pub fn require_exhausted(&self) -> Result<(), FaultRuntimeError> {
-        if self.cursor == self.work_items.len() {
-            Ok(())
-        } else {
-            Err(FaultRuntimeError::ReplayMismatch {
-                index: self.cursor,
-                expected: self.work_items[self.cursor].opportunity,
-                observed: ContentHash::default(),
-            })
-        }
-    }
-}
-
 /// Canonical adapter-owned checkpoint payload.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -800,11 +626,17 @@ pub struct FaultRuntimeCheckpoint {
     pub binding_runtime: BindingRuntimeCheckpoint,
     /// Production-adapter mutable state.
     pub adapters: BTreeMap<FaultAdapter, AdapterCheckpointState>,
-    /// Replay trace and cursor, when replaying.
-    pub replay: Option<ResolvedEffectTrace>,
-    /// Complete evaluated work items and their resolved effects.
-    #[serde(deserialize_with = "super::fallible_decode::deserialize_vec")]
-    pub recorded_work_items: Vec<ResolvedReplayWorkItem>,
+    /// Replay trace manifest and cursor, when replaying.
+    ///
+    /// The cursor names the trace's segments by identity; the items stay in
+    /// the segment stores and are never copied into the checkpoint.
+    pub replay: Option<ResolvedEffectReplayCursor>,
+    /// Position of the recorded resolved-effect trace.
+    ///
+    /// The position holds sealed segment references, the chain, running
+    /// counters, and the open tail, so its size is bounded by the seal size
+    /// rather than by the number of evaluated work items.
+    pub recorded: ResolvedEffectTracePosition,
     /// Resolved-effect objects retained as checkpoint dependencies.
     pub retained_effects: BTreeSet<ContentHash>,
     /// Parent branch provenance for debugger edits.

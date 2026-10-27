@@ -9,8 +9,12 @@ use std::num::NonZeroU64;
 use super::*;
 use crate::ExecutionHorizon;
 
+#[path = "run_admission/exact_event.rs"]
+mod exact_event;
 #[path = "run_admission/input_replan.rs"]
 mod input_replan;
+
+pub use exact_event::RunCeilingStop;
 
 /// Complete scheduler-owned input inventory frozen for one dispatch revision.
 #[derive(Clone, Debug)]
@@ -99,9 +103,17 @@ pub struct PreparedRunAdmission {
     owner: Arc<PreparedRunOwner>,
     input_inventory: PreparedRunInputInventory,
     dispatch_horizon: ExecutionHorizon,
+    // Derived from the scheduler state that sealed this dispatch horizon.
+    dispatch_stop: RunCeilingStop,
 }
 
 impl PreparedRunAdmission {
+    // Only scheduler-private evidence maintenance may inspect this sealed
+    // original source; refreshed input inventories never replace it.
+    pub(super) fn original_source(&self) -> &SingleScheduler {
+        &self.owner._source
+    }
+
     pub(super) fn shares_semantic_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.owner, &other.owner)
     }
@@ -122,6 +134,33 @@ impl PreparedRunAdmission {
     #[must_use]
     pub fn context(&self) -> [u64; 4] {
         self.owner.context
+    }
+
+    /// Retains the original RUN and ready-point maps for native console origins.
+    ///
+    /// Logical generation zero is valid for a cold installation. The caller
+    /// must authenticate that generation through its installed native owner;
+    /// this lease supplies scheduler projection, never execution permission.
+    /// Both maps come from this semantic RUN's retained scheduler, so later
+    /// backend rebasing cannot move an already retained origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the original RUN does not name one VM in
+    /// its retained scheduler inventory.
+    pub fn retain_native_console_mapping(
+        &self,
+        logical_generation: u64,
+    ) -> Result<crate::NativeConsoleMappingLease, SchedulerError> {
+        let source = &self.owner._source;
+        let index = source.vm_node_index(self.node())?;
+        let node = &source.nodes[index];
+        Ok(crate::NativeConsoleMappingLease::from_admitted_run(
+            self.node().clone(),
+            logical_generation,
+            node.time_mapping,
+            node.ready_point_mapping,
+        ))
     }
 
     /// Returns the complete input enumeration for the current dispatch revision.
@@ -192,6 +231,18 @@ impl PreparedRunAdmission {
     pub const fn dispatch_horizon(&self) -> ExecutionHorizon {
         self.dispatch_horizon
     }
+
+    /// Returns how the backend must end this RUN at its dispatch horizon.
+    ///
+    /// [`RunCeilingStop::ExactEvent`] means the dispatch horizon is a modeled
+    /// event for this node, such as a fault-timed topology swap that changes
+    /// one of its links (RFC-0010 SCHED-39). A halted node must arrive there
+    /// exactly; a runnable node may settle through it at its last boundary
+    /// below. Otherwise the horizon is an upper bound (SCHED-12).
+    #[must_use]
+    pub const fn dispatch_stop(&self) -> RunCeilingStop {
+        self.dispatch_stop
+    }
 }
 
 impl PartialEq for PreparedRunAdmission {
@@ -201,6 +252,7 @@ impl PartialEq for PreparedRunAdmission {
             && self.input_inventory.generation == other.input_inventory.generation
             && self.input_inventory.next_input == other.input_inventory.next_input
             && self.dispatch_horizon == other.dispatch_horizon
+            && self.dispatch_stop == other.dispatch_stop
     }
 }
 
@@ -305,7 +357,7 @@ impl SingleScheduler {
                 .map(|edge| (&edge.from, &edge.to, edge.minimum_latency.ticks))
                 .collect::<Vec<_>>();
             let material = serde_json::to_vec(&(
-                self.configuration.id(),
+                self.configuration.admission_digest(),
                 self.configuration.def.id(),
                 edges,
                 self.topology_epoch,
@@ -343,6 +395,7 @@ impl SingleScheduler {
                     retired: plan.target_counter,
                 },
             },
+            dispatch_stop: self.run_ceiling_stop(node, plan.target_counter)?,
         })
     }
 
@@ -384,6 +437,7 @@ impl SingleScheduler {
             ));
         }
         let time = self.node_time_for_counter(node, NodeCounter { ticks: target })?;
+        let dispatch_stop = self.run_ceiling_stop(node, target)?;
         let subdivision = self.planned_run_subdivision(&run.plan.node, run.plan.before, target)?;
         let publication =
             self.publish_run_ceiling(run.plan.node.clone(), run.plan.before, target, time)?;
@@ -402,6 +456,7 @@ impl SingleScheduler {
             dispatch_horizon: ExecutionHorizon {
                 icount: Icount { retired: target },
             },
+            dispatch_stop,
         };
 
         run.plan.target_counter = target;
@@ -451,9 +506,12 @@ impl SingleScheduler {
         }
         // The planner's device horizon must still match the actual complete
         // device/link enumeration. A stale cache cannot mint known absence.
-        let mut checked = self.clone();
-        checked.refresh_device_horizons()?;
-        if checked.device_horizons != self.device_horizons {
+        let complete_horizons = self.complete_device_horizons()?;
+        if !complete_horizons
+            .iter()
+            .map(|(target, instant)| (target, instant))
+            .eq(self.device_horizons.iter())
+        {
             return Err(admission_error(
                 "RUN input inventory has stale device horizons",
             ));

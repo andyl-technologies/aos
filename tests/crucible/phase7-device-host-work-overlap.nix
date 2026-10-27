@@ -7,29 +7,28 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  # The campaign-mode guest runs the same prebuilt test executable as the
+  # host gate; only that executable enters the guest closure.
+  vmRuntime = testGate.mkCrucibleVmRuntime {
+    src = source;
+    subset = testGate.mkCrucibleTestSubset {
+      pname = "crucible-device-host-work-overlap-tests";
+      requests = ["crucible-qemu-host"];
+      targets = ["lib:crucible_qemu_host"];
+    };
+  };
   taskList = builtins.concatStringsSep "," taskIds;
   exactTest = "supervision::device_host_work::tests::synchronous_host_wins_and_guest_wins_preserve_completion_and_canonical_log";
   verifyScript = ''
     set -eu
     exact_test=${lib.escapeShellArg exactTest}
-    export CARGO_HOME="$TMPDIR/cargo"
-    mkdir -p "$CARGO_HOME" .cargo
-    sed "s|@vendor@|${cargoDeps}|g" \
-      "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
 
-    listing=$(cargo test --frozen --offline \
-      --manifest-path crates/Cargo.toml \
-      --target-dir "$TMPDIR/target" \
-      -p crucible-qemu-host --lib "$exact_test" \
+    listing=$(crucible-cargo test -p crucible-qemu-host --lib "$exact_test" \
       -- --list)
     test "$(printf '%s\n' "$listing" | grep -Fxc "$exact_test: test")" -eq 1
-    cargo test --frozen --offline \
-      --manifest-path crates/Cargo.toml \
-      --target-dir "$TMPDIR/target" \
-      -p crucible-qemu-host --lib "$exact_test" \
+    crucible-cargo test -p crucible-qemu-host --lib "$exact_test" \
       -- --exact --nocapture
 
     mkdir -p "$out"
@@ -52,24 +51,13 @@
     guest_wins_race_proven=true
     RESULT
   '';
-  authoritativeGate = pkgs.mkDerivation {
+  authoritativeGate = testGate.mkCrucibleTestGate {
     pname = "crucible-phase7-device-host-work-overlap";
-    version = "0";
     src = source;
 
-    runtimeDeps = [pkgs.sqlite];
-
-    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust] ++ dependencies;
+    buildDeps = [pkgs.coreutils pkgs.grep] ++ dependencies;
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
       {
         name = "verify-production-device-host-work";
         script = verifyScript;
@@ -77,9 +65,7 @@
     ];
   };
   modeScript = ''
-    cp -R ${source} source
-    chmod -R u+w source
-    cd source
+    ${vmRuntime.script}
     ${verifyScript}
   '';
 in
@@ -92,9 +78,8 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "device-host-work-overlap";
-      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs ++ dependencies;
-      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
-      runtimeClosures = [source cargoDeps];
+      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.sed] ++ dependencies;
+      runtimeClosures = vmRuntime.closures;
       runtimeScript = modeScript;
       timeout = 1800;
       memoryMiB = 4096;

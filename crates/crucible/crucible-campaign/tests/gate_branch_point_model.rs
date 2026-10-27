@@ -564,13 +564,19 @@ fn statistical_estimate_only_includes_policy_predeclared_executions() -> Result<
         .project_statistical_estimate(STATISTICAL_CAMPAIGN, statistical_observed)?
         .endpoints()[0]
         .observation();
-    let statistical_basis = repository
-        .collect_finite_statistical_evidence(STATISTICAL_CAMPAIGN, statistical_observed)?
-        .draws()[0]
-        .execution()
-        .execution_basis()
-        .admission()
-        .id()?;
+    let evidence_manifest = repository
+        .collect_statistical_evidence_manifest(STATISTICAL_CAMPAIGN, statistical_observed)?;
+    let first_chunk = repository.collect_statistical_evidence_chunk(
+        STATISTICAL_CAMPAIGN,
+        statistical_observed,
+        &evidence_manifest.chunks()[0],
+    )?;
+    let Some(crucible_campaign::StatisticalEvidenceItem::Draw(first_draw)) =
+        first_chunk.items().first()
+    else {
+        return Err("statistical evidence must start with a stage-zero draw".into());
+    };
+    let statistical_basis = first_draw.execution().execution_basis().admission().id()?;
 
     let operator_request = intervention_request(
         &statistical_request,

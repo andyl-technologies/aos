@@ -275,8 +275,11 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     );
     let expected_opportunity_id = expected_opportunity.id().expect("expected opportunity id");
     assert_eq!(
-        published_observation.discovered_choices(),
-        &BTreeSet::from([expected_opportunity_id])
+        repository
+            .discovered_choices(&published_observation)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("published discovered choices"),
+        [expected_opportunity_id]
     );
     assert_eq!(
         repository

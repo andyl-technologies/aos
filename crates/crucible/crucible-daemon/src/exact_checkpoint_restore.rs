@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use crate::{
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
-    ProductionVmExactHotForkSourceBoundary, ProductionVmExactNodeRestoreAdmissions,
+    ProductionEventLogSegments, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmExactNodeRestoreAdmissions,
 };
 use crucible_control_api::LifecycleApiError;
 use crucible_engine::{
@@ -36,6 +37,7 @@ pub(crate) struct InstalledProductionAttemptCheckpoint {
     loaded: Arc<crate::LoadedProductionExactCheckpoint>,
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    event_log_segments: ProductionEventLogSegments,
     decoded: Option<DecodedProductionExactCheckpoint>,
 }
 
@@ -62,6 +64,7 @@ impl AuthenticatedProductionAttemptResume {
 pub(crate) struct AuthenticatedProductionAttemptBoundary {
     configuration: Configuration,
     scheduler: SingleSchedulerCheckpoint,
+    event_log_segments: ProductionEventLogSegments,
     hot_fork_source: ProductionVmExactHotForkSourceBoundary,
 }
 
@@ -72,6 +75,11 @@ impl AuthenticatedProductionAttemptBoundary {
 
     pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    /// Returns read access to the sealed event-log segments the scheduler names.
+    pub(crate) const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     pub(crate) fn into_hot_fork_source(self) -> ProductionVmExactHotForkSourceBoundary {
@@ -127,6 +135,14 @@ impl InstalledProductionAttemptCheckpoint {
     #[must_use]
     pub(crate) const fn scheduler(&self) -> &SingleSchedulerCheckpoint {
         &self.scheduler
+    }
+
+    /// Returns read access to the sealed event-log segments the scheduler names.
+    ///
+    /// The handle stays valid after the node-restore admissions are taken.
+    #[must_use]
+    pub(crate) const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     pub(crate) fn take_node_restore_admissions(
@@ -244,6 +260,7 @@ pub(crate) fn authenticate_attempt_production_resume_boundary(
     let boundary = AuthenticatedProductionAttemptBoundary {
         configuration: resume.decoded.configuration().clone(),
         scheduler: resume.decoded.scheduler().clone(),
+        event_log_segments: resume.decoded.event_log_segments().clone(),
         hot_fork_source: resume.decoded.hot_fork_source_boundary()?,
     };
     Ok(boundary)
@@ -392,11 +409,13 @@ fn install_attempt_production_exact_checkpoint_inner(
     validate_production_attempt_continuation(effective_start, decoded.configuration(), checkpoint)?;
     let configuration = decoded.configuration().clone();
     let scheduler = decoded.scheduler().clone();
+    let event_log_segments = decoded.event_log_segments().clone();
     Ok(InstalledProductionAttemptCheckpoint {
         checkpoint,
         loaded,
         configuration,
         scheduler,
+        event_log_segments,
         decoded: Some(decoded),
     })
 }
@@ -620,12 +639,12 @@ fn validate_production_attempt_continuation(
     restored: &Configuration,
     checkpoint: ExactCheckpointId,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
-    let prefix = effective_start.schedule.decisions();
-    let decisions = restored.schedule.decisions();
+    let prefix = effective_start.schedule.decision_history();
+    let decisions = restored.schedule.decision_history();
     if effective_start.def != restored.def || !decisions.starts_with(prefix) {
         return Err(ProductionAttemptCheckpointRestoreError::AttemptPrefixMismatch { checkpoint });
     }
-    if decisions[prefix.len()..].iter().any(|decision| {
+    if decisions.iter_from(prefix.len()).any(|decision| {
         matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())
     }) {
         return Err(ProductionAttemptCheckpointRestoreError::NestedCampaignBranch {
@@ -639,8 +658,8 @@ fn validate_production_post_selection(
     initial: &Configuration,
     selected: &Configuration,
 ) -> Result<(), ProductionAttemptCheckpointRestoreError> {
-    let prefix = initial.schedule.decisions();
-    let decisions = selected.schedule.decisions();
+    let prefix = initial.schedule.decision_history();
+    let decisions = selected.schedule.decision_history();
     let expected_length = prefix
         .len()
         .checked_add(1)
@@ -690,14 +709,16 @@ mod captured_source_tests {
             .unwrap_or_else(|error| panic!("build production resume scenario: {error}"))
             .scenario
             .scenario_def();
-        let first = Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resume-prefix"),
-            value: 1,
-        });
-        let second = Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resume-suffix"),
-            value: 2,
-        });
+        let first = Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resume-prefix"),
+            0,
+            1,
+        ));
+        let second = Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resume-suffix"),
+            0,
+            2,
+        ));
         let start = Configuration {
             def: scenario.clone(),
             schedule: Schedule::from_decisions([first.clone()]),

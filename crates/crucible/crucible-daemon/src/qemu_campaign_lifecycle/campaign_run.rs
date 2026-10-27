@@ -51,7 +51,7 @@ use crate::{
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
     ComposedQemuAttemptResourceGuardFactory, CrucibleArtifactError, CrucibleCampaignArtifactStore,
     CrucibleExecutionModel, CrucibleExecutionModelError, CrucibleExecutionRunner,
-    CrucibleMeasurementError, CrucibleMeasurementReplayEvidence, ExactCheckpointStore,
+    CrucibleMeasurementError, CrucibleMeasurementEvidenceBundle, ExactCheckpointStore,
     ExactCheckpointStoreError, ExecutionCancellation, ExecutorCapacityError,
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostResourceFactory,
     MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, QemuAttemptHostResourceFactory,
@@ -74,17 +74,23 @@ pub use exploration::{
 };
 
 mod finding_export;
-use finding_export::capture_final_finding_export;
+use finding_export::{
+    FINDING_EXPORT_DIRECTORY, FindingExportStorage, capture_final_finding_export,
+};
 pub use finding_export::{
-    GuardedCampaignFindingExport, GuardedCampaignFindingObjectProof,
-    GuardedCampaignFindingOccurrenceObjectProof, GuardedCampaignFindingOccurrenceProof,
-    GuardedCampaignFindingProof, GuardedCampaignFindingQueryProof,
-    GuardedCampaignFindingTriageReplayProof, GuardedCampaignFindingTriageReplaySegmentProof,
-    GuardedCampaignFindingTriageReplaySet,
+    GuardedCampaignFindingExport, GuardedCampaignFindingExportFrame,
+    GuardedCampaignFindingExportFrames, GuardedCampaignFindingExportReadError,
+    GuardedCampaignFindingObjectProof, GuardedCampaignFindingOccurrenceObjectProof,
+    GuardedCampaignFindingOccurrenceQueryProof, GuardedCampaignFindingQueryProof,
+    GuardedCampaignFindingTriageReplaySegmentProof,
 };
 
 mod replay_closure;
-pub(crate) use replay_closure::GuardedCampaignReplaySelection;
+pub(crate) use replay_closure::{
+    GuardedCampaignReplayChoices, GuardedCampaignReplaySelection, MAX_REPLAY_CLOSURE_FRAME_BYTES,
+    MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES, REPLAY_CLOSURE_OBJECT_KIND,
+    REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
+};
 pub use replay_closure::{
     GuardedCampaignReplayClosure, GuardedCampaignReplayClosureError,
     validate_remote_resume_replay_closure,
@@ -97,17 +103,32 @@ use resume::{
     ResumeProofMaterialization, materialize_resume_proof, validate_resume_source,
 };
 
+mod sink;
+#[cfg(any(test, feature = "test-support"))]
+pub use sink::GuardedCampaignRunRecorder;
+pub use sink::{
+    DiscardGuardedCampaignProgress, GuardedCampaignRunSink, GuardedCampaignRunSinkError,
+};
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-const DEFAULT_RUN_MAX_CHOICES: u64 = 65_536;
+/// Default scenario-choice budget of a run without exploration.
+///
+/// It is only a default: [`GuardedDefaultCampaignRunRequest::with_maximum_choices`]
+/// replaces it, and the campaign's funded budget is the only bound applied.
+pub const DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES: u64 = 65_536;
 const DEFAULT_RUN_REPOSITORY_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RUN_EXECUTOR_SCAN: usize = 1_024;
 const DEFAULT_RUN_PLANNER_SCAN: u32 = 1_024;
 const DEFAULT_RUN_MAX_SUPERVISOR_STEPS: usize = 1_000_000;
+// Supervisor steps allowed per funded attempt. One attempt costs a few
+// planner and executor steps plus objective publications; the slack keeps the
+// step bound a livelock guard rather than a second, hidden attempt budget.
+const DEFAULT_RUN_SUPERVISOR_STEPS_PER_ATTEMPT: u64 = 16;
 const DEFAULT_RUN_RECONCILIATION_STEPS: usize = 64;
 
 type DefaultPlannerService = LocalCampaignPlannerService;
@@ -165,7 +186,7 @@ where
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignObservationSource {
     proof: ObservationStopProof,
-    evidence: CrucibleMeasurementReplayEvidence,
+    evidence: CrucibleMeasurementEvidenceBundle,
 }
 
 impl GuardedDefaultCampaignObservationSource {
@@ -173,7 +194,7 @@ impl GuardedDefaultCampaignObservationSource {
     #[must_use]
     pub const fn new(
         proof: ObservationStopProof,
-        evidence: CrucibleMeasurementReplayEvidence,
+        evidence: CrucibleMeasurementEvidenceBundle,
     ) -> Self {
         Self { proof, evidence }
     }
@@ -193,6 +214,8 @@ pub struct GuardedDefaultCampaignRunRequest {
     initial_replay_closure: Option<GuardedCampaignReplayClosure>,
     discovery_stop: StopCondition,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
+    maximum_choices: u64,
     collect_watch_frames: bool,
     capture_reached_stop: Option<Arc<ExactCheckpointStore>>,
     resume_source: Option<GuardedDefaultCampaignResumeSource>,
@@ -225,6 +248,8 @@ impl GuardedDefaultCampaignRunRequest {
             initial_replay_closure: None,
             discovery_stop: StopCondition::NextChoice,
             verify_determinism_findings: false,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            maximum_choices: DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES,
             collect_watch_frames: false,
             capture_reached_stop: None,
             resume_source: None,
@@ -277,13 +302,39 @@ impl GuardedDefaultCampaignRunRequest {
         self
     }
 
+    /// Bounds each attempt's encoded event log at `maximum_bytes`.
+    ///
+    /// The bound is operational and never enters production or campaign
+    /// identity; it defaults to [`crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES`].
+    #[must_use]
+    pub const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    /// Funds a run without exploration for `maximum_choices` scenario choices.
+    ///
+    /// The value becomes the campaign's branch-request budget, so the run
+    /// fails with [`GuardedDefaultCampaignInvariantError::ChoiceLimit`] when a
+    /// scenario reaches more choices. It defaults to
+    /// [`DEFAULT_GUARDED_CAMPAIGN_MAX_CHOICES`]. An exploration request is
+    /// funded by its own attempt budget instead.
+    #[must_use]
+    pub const fn with_maximum_choices(mut self, maximum_choices: u64) -> Self {
+        self.maximum_choices = maximum_choices;
+        self
+    }
+
     /// Returns whether ordinary attempts receive bounded paired replay.
     #[must_use]
     pub const fn verifies_determinism_findings(&self) -> bool {
         self.verify_determinism_findings
     }
 
-    /// Retains bounded authenticated campaign progress frames for CLI watch output.
+    /// Delivers authenticated campaign progress frames to the run's sink.
+    ///
+    /// Each frame reaches [`GuardedCampaignRunSink::on_watch_frame`]; the
+    /// owner does not retain them.
     #[must_use]
     pub const fn with_watch_frames(mut self) -> Self {
         self.collect_watch_frames = true;
@@ -292,9 +343,9 @@ impl GuardedDefaultCampaignRunRequest {
 
     /// Explores typed choices through the shared campaign planner and executor.
     ///
-    /// Exploration starts with `NextChoice` discovery and retains every
-    /// accepted observation and branch-request identity. It cannot be combined
-    /// with the single-run savepoint or resume adapters.
+    /// Exploration starts with `NextChoice` discovery and delivers every
+    /// accepted observation and branch-request identity to the run's sink. It
+    /// cannot be combined with the single-run savepoint or resume adapters.
     #[must_use]
     pub fn with_exploration(mut self, exploration: GuardedCampaignExploration) -> Self {
         self.discovery_stop = exploration.attempt_stop();
@@ -434,7 +485,7 @@ pub struct GuardedDefaultCampaignObservation {
     properties: crucible_campaign::PropertyVerdictSet,
     coverage: crucible_campaign::CoverageProjection,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
-    observation_evidence: Option<CrucibleMeasurementReplayEvidence>,
+    observation_evidence: Option<CrucibleMeasurementEvidenceBundle>,
     replay_closure: GuardedCampaignReplayClosure,
     supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
     timeout: Option<GuardedCampaignTimeoutEvidence>,
@@ -483,9 +534,10 @@ impl GuardedDefaultCampaignObservation {
         &self.evidence
     }
 
-    /// Returns the raw replay evidence for an authenticated observation stop.
+    /// Returns the raw replay evidence, with its log segments, for an
+    /// authenticated observation stop.
     #[must_use]
-    pub const fn observation_evidence(&self) -> Option<&CrucibleMeasurementReplayEvidence> {
+    pub const fn observation_evidence(&self) -> Option<&CrucibleMeasurementEvidenceBundle> {
         self.observation_evidence.as_ref()
     }
 
@@ -908,19 +960,23 @@ impl GuardedDefaultCampaignWatchFrame {
 }
 
 /// Bounded immutable result of one completed guarded default campaign.
+///
+/// Accepted observations, branch acceptances, and watch frames grow with the
+/// run, so they are delivered to a [`GuardedCampaignRunSink`] while the
+/// campaign runs and are not retained here. The result keeps their counts,
+/// the terminal observation, and the terminal evidence and proofs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardedDefaultCampaignRun {
     campaign: CampaignName,
     final_snapshot: CampaignSnapshotId,
     finding_export: GuardedCampaignFindingExport,
-    observations: Vec<GuardedDefaultCampaignObservation>,
+    observation_count: usize,
     terminal: GuardedDefaultCampaignObservation,
     terminal_configuration: Configuration,
     branch_request_count: usize,
-    branch_acceptances: Vec<GuardedCampaignBranchAcceptance>,
     exploration_completion: Option<GuardedCampaignExplorationCompletion>,
+    // At most the created, running, and completed states.
     state_updates: Vec<CampaignState>,
-    watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
     replay_closure: GuardedCampaignReplayClosure,
     savepoint: Option<GuardedDefaultCampaignSavepoint>,
@@ -995,10 +1051,10 @@ impl GuardedDefaultCampaignRun {
         &self.finding_export
     }
 
-    /// Returns every incorporated observation in acceptance order.
+    /// Returns the number of incorporated observations delivered to the sink.
     #[must_use]
-    pub fn observations(&self) -> &[GuardedDefaultCampaignObservation] {
-        &self.observations
+    pub const fn observation_count(&self) -> usize {
+        self.observation_count
     }
 
     /// Returns the terminal incorporated observation.
@@ -1013,16 +1069,13 @@ impl GuardedDefaultCampaignRun {
         &self.terminal_configuration
     }
 
-    /// Returns the number of scenario-default branch requests accepted.
+    /// Returns the number of branch requests the campaign accepted.
+    ///
+    /// For an exploration run this counts the acceptances delivered to
+    /// [`GuardedCampaignRunSink::on_branch_acceptance`].
     #[must_use]
     pub const fn branch_request_count(&self) -> usize {
         self.branch_request_count
-    }
-
-    /// Returns each repository-accepted exploration request in acceptance order.
-    #[must_use]
-    pub fn branch_acceptances(&self) -> &[GuardedCampaignBranchAcceptance] {
-        &self.branch_acceptances
     }
 
     /// Returns the bounded exploration completion reason for a search run.
@@ -1031,16 +1084,10 @@ impl GuardedDefaultCampaignRun {
         self.exploration_completion
     }
 
-    /// Returns authenticated campaign lifecycle states in observation order.
+    /// Returns the authenticated created, running, and completed states.
     #[must_use]
     pub fn state_updates(&self) -> &[CampaignState] {
         &self.state_updates
-    }
-
-    /// Returns authenticated campaign heads and their captured execution boundaries.
-    #[must_use]
-    pub fn watch_frames(&self) -> &[GuardedDefaultCampaignWatchFrame] {
-        &self.watch_frames
     }
 
     /// Returns the bounded scheduler-authored evidence from the terminal attempt.
@@ -1131,6 +1178,12 @@ where
     /// A recorded logical resume checkpoint could not be reconstructed exactly.
     #[error("guarded default campaign resume checkpoint failed: {0}")]
     ResumeCheckpoint(#[source] crucible_engine::EngineError),
+    /// The final finding proof transcript could not be written.
+    #[error("guarded default campaign finding export transcript failed: {0}")]
+    FindingExport(#[source] std::io::Error),
+    /// The caller's progress sink stopped the campaign.
+    #[error("guarded default campaign progress sink failed: {0}")]
+    Sink(#[source] GuardedCampaignRunSinkError),
     /// A fixed default-run invariant was violated.
     #[error("guarded default campaign invariant failed: {0}")]
     Invariant(#[source] GuardedDefaultCampaignInvariantError),
@@ -1142,8 +1195,8 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// Final finding proof export was canceled before a transfer or return.
     #[error("final finding proof export was canceled")]
     FindingExportCanceled,
-    /// Final finding proof export exceeded its fixed operation or byte bound.
-    #[error("final finding proof export exceeded its fixed bound")]
+    /// Final finding proof export exceeded its transcript disk quota.
+    #[error("final finding proof export exceeded its transcript disk quota")]
     FindingExportLimit,
     /// Final finding proof export exceeded its finite wall-clock deadline.
     #[error("final finding proof export exceeded its finite deadline")]
@@ -1151,8 +1204,8 @@ pub enum GuardedDefaultCampaignInvariantError {
     /// The campaign exceeded its fixed supervisor reconciliation bound.
     #[error("supervisor step count exceeded its fixed bound")]
     SupervisorStepLimit,
-    /// More reached choices were accepted than the fixed admission bound.
-    #[error("scenario-default choice count exceeded its fixed bound")]
+    /// A scenario reached more choices than the run's funded choice budget.
+    #[error("scenario-default choice count exceeded the run's choice budget")]
     ChoiceLimit,
     /// A nonterminal observation contained no choice to continue.
     #[error("a nonterminal observation contained no authenticated choice")]
@@ -1232,6 +1285,9 @@ pub enum GuardedDefaultCampaignInvariantError {
 
 /// Executes one guarded scenario-default path through shared campaign ownership.
 ///
+/// Accepted observations, branch acceptances, and watch frames are discarded;
+/// use [`run_guarded_default_campaign_with_sink`] to consume them.
+///
 /// # Errors
 ///
 /// Returns [`GuardedDefaultCampaignRunError`] when resource admission, artifact
@@ -1240,14 +1296,32 @@ pub enum GuardedDefaultCampaignInvariantError {
 pub fn run_guarded_default_campaign(
     request: GuardedDefaultCampaignRunRequest,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
+    run_guarded_default_campaign_with_sink(request, &mut DiscardGuardedCampaignProgress)
+}
+
+/// Executes one guarded campaign and streams its progress into `sink`.
+///
+/// `sink` receives each accepted observation, branch acceptance, and
+/// requested watch frame synchronously on the campaign thread, in acceptance
+/// order, and the owner retains none of them.
+///
+/// # Errors
+///
+/// Returns the errors of [`run_guarded_default_campaign`], and
+/// [`GuardedDefaultCampaignRunError::Sink`] when `sink` stops the campaign.
+pub fn run_guarded_default_campaign_with_sink(
+    request: GuardedDefaultCampaignRunRequest,
+    sink: &mut dyn GuardedCampaignRunSink,
+) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError> {
     let host = LinuxQemuAttemptHostResourceFactory::open(request.host.clone())
         .map_err(GuardedDefaultCampaignRunError::Host)?;
-    run_guarded_default_campaign_with_host(request, host)
+    run_guarded_default_campaign_with_host(request, host, sink)
 }
 
 pub(super) fn run_guarded_default_campaign_with_host<H>(
     request: GuardedDefaultCampaignRunRequest,
     host: H,
+    sink: &mut dyn GuardedCampaignRunSink,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError>
 where
     H: QemuAttemptHostResourceFactory + QemuAttemptSelectedHostResourceFactory,
@@ -1320,13 +1394,16 @@ where
         request,
         runner,
         execution_evidence,
-        repository,
-        planner_authority,
-        exact_retention,
+        DefaultRunStores {
+            repository,
+            planner_authority,
+            exact_retention,
+        },
+        sink,
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn run_guarded_default_campaign_with_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
@@ -1336,22 +1413,28 @@ where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
 {
-    validate_initial_replay(&request)?;
-    validate_resume_source(&request)?;
-
-    run_guarded_default_campaign_with_validated_runner(request, runner, execution_evidence)
+    run_guarded_default_campaign_with_runner_into(
+        request,
+        runner,
+        execution_evidence,
+        &mut DiscardGuardedCampaignProgress,
+    )
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn run_guarded_default_campaign_with_validated_runner<R>(
+fn run_guarded_default_campaign_with_runner_into<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
     execution_evidence: QemuAttemptExecutionEvidence,
+    sink: &mut dyn GuardedCampaignRunSink,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
 {
+    validate_initial_replay(&request)?;
+    validate_resume_source(&request)?;
+
     run_guarded_default_campaign_with_store(
         request,
         runner,
@@ -1361,6 +1444,7 @@ where
             DEFAULT_RUN_REPOSITORY_BYTES,
         )),
         Arc::new(MemoryRefBackend::new()),
+        sink,
     )
 }
 
@@ -1371,6 +1455,7 @@ fn run_guarded_default_campaign_with_store<R>(
     execution_evidence: QemuAttemptExecutionEvidence,
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
+    sink: &mut dyn GuardedCampaignRunSink,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
@@ -1388,24 +1473,38 @@ where
         request,
         runner,
         execution_evidence,
-        repository,
-        planner_authority,
-        exact_retention,
+        DefaultRunStores {
+            repository,
+            planner_authority,
+            exact_retention,
+        },
+        sink,
     )
+}
+
+/// Campaign repository and retention authority owned by one run.
+struct DefaultRunStores {
+    repository: Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
 }
 
 fn run_guarded_default_campaign_with_repository<R>(
     request: GuardedDefaultCampaignRunRequest,
     runner: R,
     execution_evidence: QemuAttemptExecutionEvidence,
-    repository: Arc<CampaignRepository>,
-    planner_authority: PlannerAuthorityKey,
-    exact_retention: Arc<CampaignRunFindingExactRetentionSource>,
+    stores: DefaultRunStores,
+    sink: &mut dyn GuardedCampaignRunSink,
 ) -> Result<GuardedDefaultCampaignRun, GuardedDefaultCampaignRunError<R::Error>>
 where
     R: CrucibleExecutionRunner,
     R::Error: Error + Send + Sync + 'static,
 {
+    let DefaultRunStores {
+        repository,
+        planner_authority,
+        exact_retention,
+    } = stores;
     if let Some(closure) = &request.initial_replay_closure {
         closure
             .publish(&repository, &request.scenario, &request.initial_schedule)
@@ -1463,25 +1562,26 @@ where
     let created_state = repository
         .state(campaign.as_str())
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let (maximum_branch_requests, maximum_attempts) = request.exploration.map_or_else(
-        || {
-            (
-                DEFAULT_RUN_MAX_CHOICES,
-                DEFAULT_RUN_MAX_CHOICES
-                    + if request.resume_source.is_some() {
-                        2
-                    } else {
-                        1
-                    },
-            )
-        },
-        |exploration| {
-            (
-                exploration.maximum_attempts(),
-                exploration.maximum_attempts(),
-            )
-        },
-    );
+    // An exploration funds its own attempt budget. A scenario-default run
+    // funds its requested choice budget plus the discovery attempt and, for
+    // a resume, the source attempt; the budget is the run's only choice bound.
+    let (maximum_branch_requests, maximum_attempts) = match request.exploration {
+        Some(exploration) => (
+            exploration.maximum_attempts(),
+            exploration.maximum_attempts(),
+        ),
+        None => (
+            request.maximum_choices,
+            request
+                .maximum_choices
+                .checked_add(if request.resume_source.is_some() {
+                    2
+                } else {
+                    1
+                })
+                .ok_or(GuardedDefaultCampaignInvariantError::ChoiceLimit)?,
+        ),
+    };
     let funded = apply_campaign_control(
         &client,
         &principal,
@@ -1554,7 +1654,8 @@ where
         daemon_epoch,
         request.resources,
         request.cancellation.clone(),
-    );
+    )
+    .with_maximum_event_log_bytes(request.maximum_event_log_bytes);
     let capture_checkpoints = request.capture_reached_stop.as_ref().or_else(|| {
         request
             .resume_source
@@ -1587,31 +1688,29 @@ where
     )
     .map_err(GuardedDefaultCampaignRunError::SupervisorConfiguration)?;
 
-    let mut watch_frames = Vec::new();
     if request.collect_watch_frames {
         let initial_evidence = execution_evidence
             .snapshot()
             .map_err(GuardedDefaultCampaignRunError::Evidence)?;
-        watch_frames.push(campaign_watch_frame(
-            &repository,
-            &campaign,
-            created.snapshot(),
-            &initial_evidence,
-            None,
-        )?);
-        watch_frames.push(campaign_watch_frame(
-            &repository,
-            &campaign,
-            running,
-            &initial_evidence,
-            None,
-        )?);
+        for snapshot in [created.snapshot(), running] {
+            let frame =
+                campaign_watch_frame(&repository, &campaign, snapshot, &initial_evidence, None)?;
+            sink.on_watch_frame(&frame)
+                .map_err(GuardedDefaultCampaignRunError::Sink)?;
+        }
     }
     let all_candidates = request
         .exploration
         .map(|_| publish_all_candidates_generator(&repository))
         .transpose()
         .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let scenario_artifact = repository
+        .load_scenario_artifact(scenario_content)
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    let maximum_supervisor_steps =
+        usize::try_from(maximum_attempts.saturating_mul(DEFAULT_RUN_SUPERVISOR_STEPS_PER_ATTEMPT))
+            .unwrap_or(usize::MAX)
+            .max(DEFAULT_RUN_MAX_SUPERVISOR_STEPS);
     let execution = drive_default_campaign(
         DefaultRunContext {
             repository: &repository,
@@ -1625,23 +1724,36 @@ where
             exploration: request.exploration,
             all_candidates,
             scenario: &request.scenario,
-            scenario_content,
+            scenario_artifact: &scenario_artifact,
             executor_store: &store,
             supplemental_finding_oracle: request.supplemental_finding_oracle.as_deref(),
+            maximum_branch_requests,
+            maximum_supervisor_steps,
+            collect_watch_frames: request.collect_watch_frames,
         },
-        vec![created_state, running_state],
-        watch_frames,
-        request.collect_watch_frames,
+        DefaultRunProgress {
+            state_updates: vec![created_state, running_state],
+            sink,
+        },
         request.capture_reached_stop.is_some(),
         request.resume_source.as_ref(),
         &mut supervisor,
     )?;
+    // The transcript shares the run's admitted disk limit with its other
+    // run-state files and is removed when the last result handle drops.
     let finding_export = capture_final_finding_export(
         &client,
         &principal,
         &campaign,
         execution.final_snapshot,
         &request.cancellation,
+        &FindingExportStorage {
+            directory: request
+                .lifecycle
+                .run_state_root()
+                .join(FINDING_EXPORT_DIRECTORY),
+            maximum_bytes: request.resources.maximum_disk_bytes(),
+        },
     )?;
     materialize_result(
         &repository,
@@ -1764,12 +1876,7 @@ where
         Some(closure) => closure
             .validate_for_schedule(&request.scenario, &request.initial_schedule)
             .map_err(GuardedDefaultCampaignRunError::ReplayClosure),
-        None if replay_closure::schedule_selection_ids(&request.initial_schedule)
-            .map_err(GuardedDefaultCampaignRunError::ReplayClosure)?
-            .is_empty() =>
-        {
-            Ok(())
-        }
+        None if !replay_closure::schedule_has_selection(&request.initial_schedule) => Ok(()),
         None => Err(GuardedDefaultCampaignRunError::ReplayClosure(
             GuardedCampaignReplayClosureError::Invalid {
                 reason: "a nonempty initial schedule requires its authenticated choice closure",
@@ -1812,22 +1919,27 @@ where
 }
 
 struct DefaultRunExecution {
-    observations: Vec<DefaultRunAcceptedObservation>,
-    branch_request_count: usize,
-    branch_acceptances: Vec<GuardedCampaignBranchAcceptance>,
+    tally: DefaultRunTally,
     exploration_completion: Option<GuardedCampaignExplorationCompletion>,
     final_snapshot: CampaignSnapshotId,
     state_updates: Vec<CampaignState>,
-    watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
     savepoint: Option<DefaultRunSavepointCapture>,
     resume: Option<DefaultRunResumeProof>,
+}
+
+/// Counts and the latest observation, which is all the run retains of its
+/// streamed progress.
+#[derive(Default)]
+struct DefaultRunTally {
+    observation_count: usize,
+    branch_request_count: usize,
+    terminal: Option<GuardedDefaultCampaignObservation>,
 }
 
 struct DefaultRunAcceptedObservation {
     id: ObservationId,
     virtual_time_ticks: u64,
     evidence: QemuAttemptExecutionEvidenceSnapshot,
-    supplemental_finding: Option<GuardedCampaignSupplementalFinding>,
 }
 
 struct DefaultRunPendingSavepointCapture {
@@ -1860,14 +1972,18 @@ struct DefaultRunContext<'a, S> {
     exploration: Option<GuardedCampaignExploration>,
     all_candidates: Option<crucible_campaign::CandidateGeneratorSpecId>,
     scenario: &'a ScenarioDefForm,
-    scenario_content: crucible_campaign::ScenarioArtifactId,
+    scenario_artifact: &'a crucible_campaign::ScenarioArtifact,
     executor_store: &'a CampaignExecutorStore,
     supplemental_finding_oracle: Option<&'a dyn GuardedCampaignFindingOracle>,
+    maximum_branch_requests: u64,
+    maximum_supervisor_steps: usize,
+    collect_watch_frames: bool,
 }
 
 fn evaluate_supplemental_finding<S, E>(
     context: &DefaultRunContext<'_, S>,
     observation: &Observation,
+    configuration: &Configuration,
 ) -> Result<Option<GuardedCampaignSupplementalFinding>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
@@ -1875,26 +1991,11 @@ where
     let Some(oracle) = context.supplemental_finding_oracle else {
         return Ok(None);
     };
-    let child = context
-        .repository
-        .load_configuration_artifact(observation.child_content())
-        .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let scenario_artifact = context
-        .repository
-        .load_scenario_artifact(context.scenario_content)
-        .map_err(GuardedDefaultCampaignRunError::Repository)?;
-    let configuration = decode_crucible_configuration_artifact_with_selections(
-        context.scenario,
-        &scenario_artifact,
-        &child,
-        context.executor_store,
-    )
-    .map_err(GuardedDefaultCampaignRunError::Artifact)?;
     if configuration.id().bytes != observation.child().as_hash().as_bytes() {
         return Err(GuardedDefaultCampaignInvariantError::ObservationConfigurationMismatch.into());
     }
     let evaluation = oracle
-        .evaluate(&configuration)
+        .evaluate(configuration)
         .map_err(GuardedDefaultCampaignRunError::SupplementalFinding)?;
     let Some(evaluation) = evaluation else {
         return Ok(None);
@@ -1923,9 +2024,7 @@ where
 
 fn drive_default_campaign<R, S>(
     context: DefaultRunContext<'_, S>,
-    mut state_updates: Vec<CampaignState>,
-    mut watch_frames: Vec<GuardedDefaultCampaignWatchFrame>,
-    collect_watch_frames: bool,
+    mut progress: DefaultRunProgress<'_>,
     capture_reached_stop: bool,
     resume_source: Option<&GuardedDefaultCampaignResumeSource>,
     supervisor: &mut CampaignSupervisor<DefaultPlannerService, DefaultExecutorService<R>>,
@@ -1936,15 +2035,14 @@ where
     S: crucible_campaign::CampaignService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,
 {
-    let mut observations = Vec::new();
-    let mut branch_request_count = 0usize;
-    let mut branch_acceptances = Vec::new();
+    let mut tally = DefaultRunTally::default();
     let mut planner_no_work_snapshot = None;
     let mut exploration_completion = None;
     let mut pending_capture: Option<DefaultRunPendingSavepointCapture> = None;
     let mut resume_progress = resume_source.map(|_| DefaultRunResumeProgress::AwaitingSource);
+    let mut resume_source_record: Option<Box<GuardedDefaultCampaignObservation>> = None;
     let mut objective_evaluation_cursor = None;
-    for supervisor_iteration in 0..DEFAULT_RUN_MAX_SUPERVISOR_STEPS {
+    for supervisor_iteration in 0..context.maximum_supervisor_steps {
         if crate::publish_next_objective_evaluation(
             context.repository,
             context.campaign.as_str(),
@@ -1992,32 +2090,16 @@ where
                 .execution_evidence
                 .snapshot()
                 .map_err(GuardedDefaultCampaignRunError::Evidence)?;
-            let final_snapshot = complete_default_campaign(
-                &context,
-                *snapshot,
-                supervisor_iteration,
-                &mut state_updates,
-            )?;
-            if collect_watch_frames {
-                watch_frames.push(campaign_watch_frame(
-                    context.repository,
-                    context.campaign,
-                    final_snapshot,
-                    &evidence,
-                    None,
-                )?);
-            }
+            let final_snapshot =
+                progress.complete(&context, *snapshot, supervisor_iteration, &evidence)?;
             return Ok(DefaultRunExecution {
-                observations,
-                branch_request_count,
-                branch_acceptances,
+                tally,
                 exploration_completion: Some(
                     exploration_completion
                         .unwrap_or(GuardedCampaignExplorationCompletion::Exhausted),
                 ),
                 final_snapshot,
-                state_updates,
-                watch_frames,
+                state_updates: progress.state_updates,
                 savepoint: None,
                 resume: None,
             });
@@ -2063,6 +2145,9 @@ where
                 }
                 let source = resume_source
                     .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
+                let source_record = resume_source_record
+                    .take()
+                    .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
                 let ready = context
                     .repository
                     .savepoint_capture_resolution_at(result.new_snapshot, savepoint.request)
@@ -2084,6 +2169,7 @@ where
                         source_configuration: savepoint.reached,
                         source_frontier: source.checkpoint.virtual_time,
                         source_observation,
+                        source_record,
                         source_evidence: evidence.clone(),
                         source_capture: Some(savepoint),
                         ready_snapshot: None,
@@ -2091,29 +2177,17 @@ where
                         selection: None,
                         continuation: None,
                     };
-                    let final_snapshot = complete_default_campaign(
+                    let final_snapshot = progress.complete(
                         &context,
                         result.new_snapshot,
                         supervisor_iteration,
-                        &mut state_updates,
+                        &evidence,
                     )?;
-                    if collect_watch_frames {
-                        watch_frames.push(campaign_watch_frame(
-                            context.repository,
-                            context.campaign,
-                            final_snapshot,
-                            &evidence,
-                            None,
-                        )?);
-                    }
                     return Ok(DefaultRunExecution {
-                        observations,
-                        branch_request_count,
-                        branch_acceptances,
+                        tally,
                         exploration_completion: None,
                         final_snapshot,
-                        state_updates,
-                        watch_frames,
+                        state_updates: progress.state_updates,
                         savepoint: None,
                         resume: Some(proof),
                     });
@@ -2159,21 +2233,14 @@ where
                         GuardedDefaultCampaignInvariantError::ResumeContinuationMismatch.into(),
                     );
                 }
-                if collect_watch_frames {
-                    watch_frames.push(campaign_watch_frame(
-                        context.repository,
-                        context.campaign,
-                        selected.new_snapshot,
-                        &evidence,
-                        None,
-                    )?);
-                }
+                progress.deliver_watch_frame(&context, selected.new_snapshot, &evidence, None)?;
                 resume_progress = Some(DefaultRunResumeProgress::Continuing(Box::new(
                     DefaultRunResumeProof {
                         source_checkpoint: source.checkpoint.id,
                         source_configuration: savepoint.reached,
                         source_frontier: source.checkpoint.virtual_time,
                         source_observation,
+                        source_record,
                         source_evidence: evidence.clone(),
                         source_capture: Some(savepoint),
                         ready_snapshot: Some(result.new_snapshot),
@@ -2185,29 +2252,17 @@ where
                 continue;
             }
 
-            let final_snapshot = complete_default_campaign(
+            let final_snapshot = progress.complete(
                 &context,
                 result.new_snapshot,
                 supervisor_iteration,
-                &mut state_updates,
+                &evidence,
             )?;
-            if collect_watch_frames {
-                watch_frames.push(campaign_watch_frame(
-                    context.repository,
-                    context.campaign,
-                    final_snapshot,
-                    &evidence,
-                    None,
-                )?);
-            }
             return Ok(DefaultRunExecution {
-                observations,
-                branch_request_count,
-                branch_acceptances,
+                tally,
                 exploration_completion: None,
                 final_snapshot,
-                state_updates,
-                watch_frames,
+                state_updates: progress.state_updates,
                 savepoint: Some(savepoint),
                 resume: None,
             });
@@ -2238,23 +2293,40 @@ where
             .repository
             .load_observation(observation_id)
             .map_err(GuardedDefaultCampaignRunError::Repository)?;
-        let supplemental_finding = evaluate_supplemental_finding(&context, &observation)?;
-        let has_supplemental_finding = supplemental_finding.is_some();
-        observations.push(DefaultRunAcceptedObservation {
-            id: observation_id,
-            virtual_time_ticks,
-            evidence: execution_boundary.clone(),
-            supplemental_finding,
-        });
-        if collect_watch_frames {
-            watch_frames.push(campaign_watch_frame(
-                context.repository,
-                context.campaign,
-                snapshot,
-                &execution_boundary,
-                Some(observation_id),
-            )?);
+
+        // Deliver the accepted observation while its attempt's segments are
+        // live, then keep only the latest one as the terminal candidate.
+        let accepted = materialize_observation(
+            &context,
+            DefaultRunAcceptedObservation {
+                id: observation_id,
+                virtual_time_ticks,
+                evidence: execution_boundary.clone(),
+            },
+            observation.clone(),
+        )?;
+        let has_supplemental_finding = accepted.supplemental_finding().is_some();
+        progress
+            .sink
+            .on_observation(&accepted)
+            .map_err(GuardedDefaultCampaignRunError::Sink)?;
+        tally.observation_count = tally
+            .observation_count
+            .checked_add(1)
+            .ok_or(GuardedDefaultCampaignInvariantError::ChoiceLimit)?;
+        if matches!(
+            resume_progress,
+            Some(DefaultRunResumeProgress::AwaitingSource)
+        ) {
+            resume_source_record = Some(Box::new(accepted.clone()));
         }
+        tally.terminal = Some(accepted);
+        progress.deliver_watch_frame(
+            &context,
+            snapshot,
+            &execution_boundary,
+            Some(observation_id),
+        )?;
 
         if matches!(
             resume_progress,
@@ -2296,9 +2368,11 @@ where
                     );
                 };
                 actual
-                    .verify_observation_stop_proof(proof)
+                    .evidence()
+                    .verify_observation_stop_proof(actual.segments(), proof)
                     .map_err(GuardedDefaultCampaignRunError::Measurement)?;
-                if &actual != expected {
+                // Equal manifests name equal chains, hence equal entries.
+                if actual.evidence() != expected.evidence() {
                     return Err(
                         GuardedDefaultCampaignInvariantError::ResumeSourceEvidenceMismatch.into(),
                     );
@@ -2330,11 +2404,15 @@ where
                 );
             }
 
+            let source_record = resume_source_record
+                .take()
+                .ok_or(GuardedDefaultCampaignInvariantError::MissingResumeProof)?;
             let proof = DefaultRunResumeProof {
                 source_checkpoint: source.checkpoint.id,
                 source_configuration: expected_configuration,
                 source_frontier: source.checkpoint.virtual_time,
                 source_observation: observation_id,
+                source_record,
                 source_evidence: execution_boundary.clone(),
                 source_capture: None,
                 ready_snapshot: None,
@@ -2342,29 +2420,17 @@ where
                 selection: None,
                 continuation: None,
             };
-            let final_snapshot = complete_default_campaign(
+            let final_snapshot = progress.complete(
                 &context,
                 snapshot,
                 supervisor_iteration,
-                &mut state_updates,
+                &execution_boundary,
             )?;
-            if collect_watch_frames {
-                watch_frames.push(campaign_watch_frame(
-                    context.repository,
-                    context.campaign,
-                    final_snapshot,
-                    &execution_boundary,
-                    None,
-                )?);
-            }
             return Ok(DefaultRunExecution {
-                observations,
-                branch_request_count,
-                branch_acceptances,
+                tally,
                 exploration_completion: None,
                 final_snapshot,
-                state_updates,
-                watch_frames,
+                state_updates: progress.state_updates,
                 savepoint: None,
                 resume: Some(proof),
             });
@@ -2382,29 +2448,17 @@ where
             && (has_supplemental_finding
                 || observation_has_finding(context.repository, &observation)?)
         {
-            let final_snapshot = complete_default_campaign(
+            let final_snapshot = progress.complete(
                 &context,
                 snapshot,
                 supervisor_iteration,
-                &mut state_updates,
+                &execution_boundary,
             )?;
-            if collect_watch_frames {
-                watch_frames.push(campaign_watch_frame(
-                    context.repository,
-                    context.campaign,
-                    final_snapshot,
-                    &execution_boundary,
-                    None,
-                )?);
-            }
             return Ok(DefaultRunExecution {
-                observations,
-                branch_request_count,
-                branch_acceptances,
+                tally,
                 exploration_completion: Some(GuardedCampaignExplorationCompletion::Finding),
                 final_snapshot,
-                state_updates,
-                watch_frames,
+                state_updates: progress.state_updates,
                 savepoint: None,
                 resume: None,
             });
@@ -2415,14 +2469,16 @@ where
                     .all_candidates
                     .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
                 let mut expected_snapshot = snapshot;
-                for opportunity in observation.discovered_choices() {
+                for opportunity in context.repository.discovered_choices(&observation) {
+                    let opportunity =
+                        opportunity.map_err(GuardedDefaultCampaignRunError::Repository)?;
                     match exploration_branch_request(
                         context.repository,
                         exploration,
                         all_candidates,
                         observation_id,
                         &observation,
-                        *opportunity,
+                        opportunity,
                     )? {
                         ExplorationBranchDecision::Request {
                             request: branch,
@@ -2440,18 +2496,21 @@ where
                                 .submit_branch_request(&submission)
                                 .map_err(GuardedDefaultCampaignRunError::Service)?;
                             expected_snapshot = response.new_snapshot();
-                            branch_acceptances.push(
-                                GuardedCampaignBranchAcceptance::from_response(
-                                    observation_id,
-                                    &response,
-                                    exhausts_domain,
-                                ),
-                            );
+                            progress
+                                .sink
+                                .on_branch_acceptance(
+                                    GuardedCampaignBranchAcceptance::from_response(
+                                        observation_id,
+                                        &response,
+                                        exhausts_domain,
+                                    ),
+                                )
+                                .map_err(GuardedDefaultCampaignRunError::Sink)?;
                             if !exhausts_domain && exploration_completion.is_none() {
                                 exploration_completion =
                                     Some(GuardedCampaignExplorationCompletion::AttemptBudget);
                             }
-                            branch_request_count += 1;
+                            tally.branch_request_count += 1;
                         }
                         ExplorationBranchDecision::DepthBound => {
                             exploration_completion =
@@ -2463,13 +2522,18 @@ where
                 planner_no_work_snapshot = None;
                 continue;
             }
-            let opportunity_id = observation
-                .discovered_choices()
-                .iter()
+            let opportunity_id = context
+                .repository
+                .discovered_choices(&observation)
                 .next()
-                .copied()
+                .transpose()
+                .map_err(GuardedDefaultCampaignRunError::Repository)?
                 .ok_or(GuardedDefaultCampaignInvariantError::MissingChoice)?;
-            if branch_request_count >= DEFAULT_RUN_MAX_CHOICES as usize {
+            // The funded branch budget is the only choice bound; checking it
+            // here reports a typed limit instead of a refused submission.
+            if u64::try_from(tally.branch_request_count)
+                .map_or(true, |count| count >= context.maximum_branch_requests)
+            {
                 return Err(GuardedDefaultCampaignInvariantError::ChoiceLimit.into());
             }
             let opportunity = context
@@ -2512,7 +2576,7 @@ where
                 .client
                 .submit_branch_request(&submission)
                 .map_err(GuardedDefaultCampaignRunError::Service)?;
-            branch_request_count += 1;
+            tally.branch_request_count += 1;
             continue;
         }
 
@@ -2544,21 +2608,12 @@ where
             continue;
         }
 
-        let final_snapshot = complete_default_campaign(
+        let final_snapshot = progress.complete(
             &context,
             snapshot,
             supervisor_iteration,
-            &mut state_updates,
+            &execution_boundary,
         )?;
-        if collect_watch_frames {
-            watch_frames.push(campaign_watch_frame(
-                context.repository,
-                context.campaign,
-                final_snapshot,
-                &execution_boundary,
-                None,
-            )?);
-        }
         let resume = match resume_progress.take() {
             Some(DefaultRunResumeProgress::Continuing(proof)) => Some(*proof),
             Some(
@@ -2569,13 +2624,10 @@ where
             None => None,
         };
         return Ok(DefaultRunExecution {
-            observations,
-            branch_request_count,
-            branch_acceptances,
+            tally,
             exploration_completion: None,
             final_snapshot,
-            state_updates,
-            watch_frames,
+            state_updates: progress.state_updates,
             savepoint: None,
             resume,
         });

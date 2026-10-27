@@ -399,7 +399,7 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
         &resume_request.schedule,
         &resume_request.checkpoint,
         7,
-        b"rpc-replay-closure".to_vec(),
+        vec![b"rpc-replay-closure".to_vec()],
     )
     .expect("bounded RPC replay closure should build");
     resume_request = resume_request.with_replay_closure(replay_closure);

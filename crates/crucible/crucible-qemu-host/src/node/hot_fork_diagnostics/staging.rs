@@ -104,6 +104,7 @@ impl QemuNode {
             }
         };
         let exact = qemu_state.staged()
+            && qemu_state.generation() != 0
             && qemu_state.descriptor_name() == Some(&endpoint.descriptor_name)
             && qemu_state.socket_cookie() == Some(endpoint.socket_cookie)
             && qemu_state.template_generation() == template_generation
@@ -120,6 +121,7 @@ impl QemuNode {
                 Some(QemuHotForkChildDiagnosticStage::TransferUncertain(endpoint));
             return Err(QemuHotForkChildDiagnosticStageError::TransferUncertain { source });
         }
+        endpoint.diagnostic_generation = qemu_state.generation();
         endpoint.replacement_plan_bound = false;
         let proof = endpoint.proof(QemuHotForkChildDiagnosticStageState::Installed);
         self.hot_fork_child_diagnostic_stage =
@@ -135,14 +137,21 @@ impl QemuNode {
             .map(QemuHotForkChildDiagnosticStage::proof)
     }
 
+    /// Transfers the stage's consumer to the owner of the forked child.
+    ///
+    /// The consumer is bound to `child_process_id` before any child-owned
+    /// drain, so its control-row fold attributes every child row.
     pub(in crate::node) fn take_hot_fork_child_diagnostic_consumer(
         &mut self,
+        child_process_id: u32,
     ) -> Result<QemuHotForkChildDiagnosticConsumer, QemuNodeChannelError> {
         match self.hot_fork_child_diagnostic_stage.as_mut() {
             Some(QemuHotForkChildDiagnosticStage::Installed(endpoint))
                 if endpoint.replacement_plan_bound =>
             {
-                endpoint.take_consumer()
+                let mut consumer = endpoint.take_consumer()?;
+                consumer.bind_child_process_id(child_process_id);
+                Ok(consumer)
             }
             Some(QemuHotForkChildDiagnosticStage::Installed(_)) => Err(QemuNodeChannelError::new(
                 "take hot-fork child diagnostics consumer",
@@ -161,12 +170,13 @@ impl QemuNode {
         }
     }
 
-    /// Returns the child diagnostics retained by this node so far.
+    /// Returns the final child diagnostics retained by this node so far.
     ///
     /// This reads in every lifecycle state: a failed fork quarantines the node,
     /// and the child's last words on its diagnostics stream are the evidence a
     /// failure report needs. Available bytes are drained first; the node state
-    /// is otherwise untouched.
+    /// is otherwise untouched. The result holds at most
+    /// [`crate::MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_TAIL_BYTES`] bytes.
     ///
     /// # Errors
     ///
@@ -189,7 +199,7 @@ impl QemuNode {
             ));
         };
         consumer.drain_available()?;
-        Ok(consumer.retained().to_vec())
+        Ok(consumer.retained_tail().to_vec())
     }
 
     /// Releases one acknowledged diagnostics stage in exact ownership order.

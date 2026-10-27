@@ -9,8 +9,8 @@ use crucible_store::content_envelope::ContentChild;
 
 #[test]
 fn production_exact_closure_schema_matches_current_magic() {
-    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 9);
-    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v9\0");
+    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 12);
+    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v12\0");
 }
 
 fn hash(label: &[u8]) -> ContentHash {
@@ -107,6 +107,8 @@ fn fixture() -> (
         scheduler: hash(b"scheduler"),
         event_log_segments: Vec::new(),
         signal_artifacts: Vec::new(),
+        fault_trace_segments: Vec::new(),
+        block_overlay_chunks: Vec::new(),
         trigger_state: hash(b"trigger"),
         assertion_state: hash(b"assertion"),
         lifecycle_state: hash(b"lifecycle"),
@@ -217,7 +219,8 @@ fn repository_fixture(closure: &ExactCheckpointClosureRecord) -> RepositoryFixtu
                 ContentId::for_bytes(
                     ObjectKind::Observation,
                     CHOICE_CLOSURE_SCHEMA_VERSION,
-                    b"CCRC\0\0\0\x01\0\0\0\0",
+                    // The empty version 2 replay-closure root.
+                    b"CCRC\0\0\0\x02\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
                 ),
             )
             .unwrap_or_else(|error| panic!("fixture choice child: {error:?}")),
@@ -654,5 +657,237 @@ fn closure_binding_rejects_missing_extra_and_substituted_inventory() {
     assert_eq!(
         validate_closure_structure(&substituted),
         Err(ExactCheckpointRelationError::InvalidStructure)
+    );
+}
+
+#[test]
+fn closure_delivers_sorted_fault_trace_segments_and_rejects_unsorted_ones() {
+    let (_, mut closure, _) = fixture();
+    let shared_bytes = b"shared semantic object";
+    let shared = hash(shared_bytes);
+    let segments = [b"trace segment one".to_vec(), b"trace segment two".to_vec()]
+        .into_iter()
+        .map(|bytes| (hash(&bytes), bytes))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    // Every other semantic object shares one body so the visitor only has to
+    // serve the shared bytes and the trace segments.
+    closure.schedule = shared;
+    closure.scheduler = shared;
+    closure.trigger_state = shared;
+    closure.assertion_state = shared;
+    closure.lifecycle_state = shared;
+    closure.fault_checkpoint = shared;
+    closure.targets[0].snapshot = shared;
+    closure.targets[0].manifest_identity = exact_checkpoint_target_manifest_identity(
+        closure.configuration,
+        closure.fault_checkpoint,
+        &closure.targets[0],
+    );
+    closure.fault_trace_segments = segments.keys().copied().collect();
+    closure.objects = manifest_object_identities(&closure)
+        .into_iter()
+        .map(|identity| ExactCheckpointObjectRecord {
+            identity,
+            length: if identity == shared {
+                shared_bytes.len() as u64
+            } else {
+                segments
+                    .get(&identity)
+                    .map_or(1, |bytes| bytes.len() as u64)
+            },
+        })
+        .collect();
+    assign_exact_checkpoint_closure_identity(&mut closure)
+        .unwrap_or_else(|error| panic!("trace closure root: {error:?}"));
+
+    let mut unsorted = closure.clone();
+    unsorted.fault_trace_segments.reverse();
+    assert_eq!(
+        validate_closure_structure(&unsorted),
+        Err(ExactCheckpointRelationError::InvalidStructure)
+    );
+
+    let fixture = repository_fixture(&closure);
+    let repository = authenticate_exact_checkpoint_repository(
+        fixture.root,
+        &fixture.envelope,
+        &fixture.indexes,
+        &fixture.observed,
+    )
+    .unwrap_or_else(|error| panic!("authenticate trace repository: {error:?}"));
+    let manifest = exact_checkpoint_closure_test_bytes(&closure)
+        .unwrap_or_else(|error| panic!("trace manifest: {error:?}"));
+    let binding = authenticate_exact_checkpoint_closure(
+        repository,
+        &manifest,
+        MAX_EXACT_CHECKPOINT_MANIFEST_BYTES as u64,
+    )
+    .unwrap_or_else(|error| panic!("authenticate trace closure: {error:?}"));
+
+    let byte_limit = shared_bytes.len() as u64
+        + segments
+            .values()
+            .map(|bytes| bytes.len() as u64)
+            .sum::<u64>();
+    let mut delivered = Vec::new();
+    binding
+        .visit_semantic_objects(
+            byte_limit,
+            || Ok(()),
+            |identity| {
+                let bytes = segments
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_else(|| shared_bytes.to_vec());
+                Ok(Box::new(Cursor::new(bytes)))
+            },
+            |role, bytes| {
+                if let ExactCheckpointSemanticObjectRole::FaultTraceSegment { index, identity } =
+                    role
+                {
+                    delivered.push((index, identity, bytes.to_vec()));
+                }
+                Ok(
+                    matches!(role, ExactCheckpointSemanticObjectRole::FaultCheckpoint)
+                        .then(|| hash(b"decoded fault semantic identity")),
+                )
+            },
+        )
+        .unwrap_or_else(|error| panic!("visit trace closure: {error:?}"));
+
+    let expected = segments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (identity, bytes))| (index, identity, bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(delivered, expected);
+}
+
+#[test]
+fn closure_names_block_overlay_chunks_by_reference_and_bounds_them() {
+    let (_, mut closure, _) = fixture();
+    let chunk_bytes = [vec![7_u8; 4096], vec![9_u8; 8192]];
+    let mut chunks = chunk_bytes
+        .iter()
+        .map(|bytes| hash(bytes))
+        .collect::<Vec<_>>();
+    chunks.sort_unstable();
+    closure.block_overlay_chunks = chunks.clone();
+    let lengths = chunk_bytes
+        .iter()
+        .map(|bytes| (hash(bytes), bytes.len() as u64))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let rebuild_objects = |closure: &mut ExactCheckpointClosureRecord| {
+        closure.objects = manifest_object_identities(closure)
+            .into_iter()
+            .map(|identity| ExactCheckpointObjectRecord {
+                identity,
+                length: lengths.get(&identity).copied().unwrap_or(1),
+            })
+            .collect();
+    };
+    rebuild_objects(&mut closure);
+    assign_exact_checkpoint_closure_identity(&mut closure)
+        .unwrap_or_else(|error| panic!("block overlay closure root: {error:?}"));
+    assert_eq!(validate_closure_structure(&closure), Ok(()));
+    assert!(chunks.iter().all(|chunk| {
+        closure
+            .objects
+            .iter()
+            .any(|object| object.identity == *chunk)
+    }));
+
+    let mut unsorted = closure.clone();
+    unsorted.block_overlay_chunks.reverse();
+    assert_eq!(
+        validate_closure_structure(&unsorted),
+        Err(ExactCheckpointRelationError::InvalidStructure)
+    );
+
+    // A chunk object longer than one 4 MiB chunk is refused by geometry.
+    let mut oversized = closure.clone();
+    for object in &mut oversized.objects {
+        if object.identity == chunks[0] {
+            object.length = ARTIFACT_CHUNK_BYTES + 1;
+        }
+    }
+    assert_eq!(
+        validate_closure_structure(&oversized),
+        Err(ExactCheckpointRelationError::InvalidStructure)
+    );
+
+    // Chunks count against the semantic byte limit but are never opened or
+    // delivered by the semantic visitor.
+    let fixture = repository_fixture(&closure);
+    let repository = authenticate_exact_checkpoint_repository(
+        fixture.root,
+        &fixture.envelope,
+        &fixture.indexes,
+        &fixture.observed,
+    )
+    .unwrap_or_else(|error| panic!("authenticate block overlay repository: {error:?}"));
+    let manifest = exact_checkpoint_closure_test_bytes(&closure)
+        .unwrap_or_else(|error| panic!("block overlay manifest: {error:?}"));
+    let binding = authenticate_exact_checkpoint_closure(
+        repository,
+        &manifest,
+        MAX_EXACT_CHECKPOINT_MANIFEST_BYTES as u64,
+    )
+    .unwrap_or_else(|error| panic!("authenticate block overlay closure: {error:?}"));
+    assert_eq!(binding.block_overlay_chunks(), chunks.as_slice());
+    let opened = std::cell::RefCell::new(Vec::new());
+    let result = binding.visit_semantic_objects(
+        u64::MAX,
+        || Ok(()),
+        |identity| {
+            opened.borrow_mut().push(identity);
+            Ok(Box::new(Cursor::new(Vec::new())))
+        },
+        |_, _| Ok(None),
+    );
+    // The fixture's semantic objects are not served, so the visit fails;
+    // what matters is that no block overlay chunk was ever opened.
+    assert!(result.is_err());
+    assert!(
+        opened
+            .borrow()
+            .iter()
+            .all(|identity| !chunks.contains(identity))
+    );
+}
+
+#[test]
+fn repository_root_admits_dense_choice_frames_and_rejects_gaps() {
+    let (_, closure, _) = fixture();
+    let repository = repository_fixture(&closure);
+    let original = ContentEnvelope::from_canonical_bytes(&repository.envelope)
+        .unwrap_or_else(|error| panic!("decode fixture root: {error:?}"));
+    let with_frames = |ordinals: &[usize]| {
+        let mut children = original.children().clone();
+        for ordinal in ordinals {
+            let frame = ContentId::for_bytes(
+                ObjectKind::Observation,
+                CHOICE_FRAME_SCHEMA_VERSION,
+                &ordinal.to_le_bytes(),
+            );
+            children.insert(
+                ContentChild::new(format!("{CHOICE_FRAME_ROLE_PREFIX}{ordinal:08x}"), frame)
+                    .unwrap_or_else(|error| panic!("fixture frame child: {error:?}")),
+            );
+        }
+        ContentEnvelope::new(
+            ROOT_SCHEMA,
+            ROOT_SCHEMA_VERSION,
+            children,
+            original.body().to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("fixture framed root: {error:?}"))
+    };
+
+    assert!(decode_root_children(&with_frames(&[0, 1, 2]), 1).is_ok());
+    assert_eq!(
+        decode_root_children(&with_frames(&[0, 2]), 1).err(),
+        Some(ExactCheckpointRelationError::RepositoryRootMismatch)
     );
 }

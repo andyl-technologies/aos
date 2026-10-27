@@ -267,6 +267,16 @@ where
             })?;
         let requested_configuration = exact_source_configuration(input);
         if boundary.configuration().id() != requested_configuration.id() {
+            crate::qemu_hot_fork_world_factory::note_hot_fork_decline(
+                crate::HotForkRefusal::with_detail(
+                    "exact-capture-configuration-mismatch",
+                    format!(
+                        "checkpoint={} requested={}",
+                        boundary.configuration().id().to_hex(),
+                        requested_configuration.id().to_hex()
+                    ),
+                ),
+            );
             return Ok(None);
         }
 
@@ -290,9 +300,11 @@ where
         let continuation = source.continuation();
         let actual_configuration = continuation.configuration().id();
         let prepared_boundary_matches = boundary.configuration() == continuation.configuration()
-            && boundary
-                .proof()
-                .matches_checkpoint(continuation.configuration(), continuation.scheduler())
+            && boundary.proof().matches_checkpoint(
+                continuation.configuration(),
+                continuation.scheduler(),
+                continuation.event_log_segments(),
+            )
             && production_boundary.matches(continuation);
         if actual_configuration != requested_configuration.id() || !prepared_boundary_matches {
             let retirement = source.retire().err().map(Box::new);
@@ -354,6 +366,113 @@ pub struct AuthenticatedExactQemuHotForkSource {
     key: QemuHotForkSourceWorldKey,
     checkpoint: ExactCheckpointId,
     source: ProductionVmHotForkSourceWorld,
+}
+
+/// Thin attempt world accepted only by the managed published-root path.
+///
+/// The thin-attempt runner mints this token after authenticating the prepared
+/// world against its sealed observation: the configuration, scenario,
+/// lineage, and complete scheduler boundary match, and `published` is the
+/// observation's child configuration artifact. Admission persists
+/// [`crate::HotCheckpointFallback::Thin`] for that artifact before the world
+/// becomes reusable.
+#[must_use = "admit the authenticated source or retain its complete authority"]
+pub(crate) struct AuthenticatedPublishedRootQemuHotForkSource {
+    key: QemuHotForkSourceWorldKey,
+    published: ConfigurationArtifactId,
+    source: ProductionVmHotForkSourceWorld,
+    provenance: QemuPublishedRootProvenance,
+}
+
+impl AuthenticatedPublishedRootQemuHotForkSource {
+    /// Seals a validated thin-attempt world with its published child artifact.
+    ///
+    /// Callers must already have authenticated the world against the sealed
+    /// observation; managed admission rechecks only the boundary predicates
+    /// and that `provenance` names the source's own configuration.
+    pub(crate) const fn new(
+        key: QemuHotForkSourceWorldKey,
+        published: ConfigurationArtifactId,
+        source: ProductionVmHotForkSourceWorld,
+        provenance: QemuPublishedRootProvenance,
+    ) -> Self {
+        Self {
+            key,
+            published,
+            source,
+            provenance,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        QemuHotForkSourceWorldKey,
+        ConfigurationArtifactId,
+        ProductionVmHotForkSourceWorld,
+        QemuPublishedRootProvenance,
+    ) {
+        (self.key, self.published, self.source, self.provenance)
+    }
+}
+
+/// How a published-boundary root came to be retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QemuPublishedRootOrigin {
+    /// A thin attempt kept the world it stopped with at its published child.
+    AttemptStop,
+    /// Replay kept the joined network fault park at an attempt's branch parent.
+    BranchParentAnchor,
+}
+
+/// Operational facts the pool keeps beside one retained published root.
+///
+/// None of this is durable or semantic. Ancestor lookup reads the boundary
+/// configuration here so it never has to lock a source that children have
+/// leased, and compares the replay grouping mode that produced the root's
+/// prefix with the one a descendant's thin replay would use.
+#[derive(Clone, Debug)]
+pub(crate) struct QemuPublishedRootProvenance {
+    origin: QemuPublishedRootOrigin,
+    configuration: std::sync::Arc<Configuration>,
+    live_network_choice_pause: Option<bool>,
+}
+
+impl QemuPublishedRootProvenance {
+    /// Records how a root at `configuration` was produced.
+    ///
+    /// `live_network_choice_pause` is the single live-network pause mode in
+    /// force over the root's whole prefix, or `None` when its prefix mixed
+    /// modes. A root with a mixed prefix never serves as an ancestor.
+    pub(crate) fn new(
+        origin: QemuPublishedRootOrigin,
+        configuration: Configuration,
+        live_network_choice_pause: Option<bool>,
+    ) -> Self {
+        Self {
+            origin,
+            configuration: std::sync::Arc::new(configuration),
+            live_network_choice_pause,
+        }
+    }
+
+    /// Returns how the root was produced.
+    #[must_use]
+    pub(crate) const fn origin(&self) -> QemuPublishedRootOrigin {
+        self.origin
+    }
+
+    /// Returns the exact boundary configuration the root is paused at.
+    #[must_use]
+    pub(crate) fn configuration(&self) -> &Configuration {
+        &self.configuration
+    }
+
+    /// Returns the live-network pause mode over the root's whole prefix.
+    #[must_use]
+    pub(crate) const fn live_network_choice_pause(&self) -> Option<bool> {
+        self.live_network_choice_pause
+    }
 }
 
 impl AuthenticatedExactQemuHotForkSource {

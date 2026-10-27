@@ -30,10 +30,6 @@ impl fmt::Display for DecodeAdmissionError {
 struct DecodeBudget {
     fat_configured: u64,
     fat_hard: u64,
-    work_items_configured: u64,
-    records_configured: u64,
-    decoded_work_items: u64,
-    decoded_records: u64,
     owned_bytes: u64,
 }
 
@@ -50,10 +46,6 @@ impl DecodeBudgetGuard {
         let budget = DecodeBudget {
             fat_configured: limits.fat_checkpoint_bytes,
             fat_hard: FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes,
-            work_items_configured: limits.thin_replay_events,
-            records_configured: limits.resolved_effect_records,
-            decoded_work_items: 0,
-            decoded_records: 0,
             owned_bytes: 0,
         };
         let prior = ACTIVE_BUDGET.with(|active| active.replace(Some(budget)));
@@ -67,59 +59,8 @@ impl Drop for DecodeBudgetGuard {
     }
 }
 
-pub(super) fn configured(field: &'static str, hard: u64) -> u64 {
-    ACTIVE_BUDGET.with(|active| {
-        let Some(budget) = active.get() else {
-            return hard;
-        };
-        match field {
-            "fat_checkpoint_bytes" => budget.fat_configured.min(hard),
-            "thin_replay_events" => budget.work_items_configured.min(hard),
-            "resolved_effect_records" => budget.records_configured.min(hard),
-            _ => hard,
-        }
-    })
-}
-
 fn budget_active() -> bool {
     ACTIVE_BUDGET.with(|active| active.get().is_some())
-}
-
-pub(super) fn collection_current(field: &'static str) -> u64 {
-    ACTIVE_BUDGET.with(|active| {
-        active.get().map_or(0, |budget| match field {
-            "thin_replay_events" => budget.decoded_work_items,
-            "resolved_effect_records" => budget.decoded_records,
-            _ => 0,
-        })
-    })
-}
-
-pub(super) fn commit_collection(
-    field: &'static str,
-    additional: u64,
-) -> Result<(), DecodeAdmissionError> {
-    ACTIVE_BUDGET.with(|active| {
-        let Some(mut budget) = active.get() else {
-            return Ok(());
-        };
-        let slot = match field {
-            "thin_replay_events" => &mut budget.decoded_work_items,
-            "resolved_effect_records" => &mut budget.decoded_records,
-            _ => return Ok(()),
-        };
-        *slot = slot.checked_add(additional).ok_or_else(|| {
-            DecodeAdmissionError(resource_message(
-                field,
-                *slot,
-                additional,
-                configured(field, u64::MAX),
-                u64::MAX,
-            ))
-        })?;
-        active.set(Some(budget));
-        Ok(())
-    })
 }
 
 pub(super) fn resource_message(

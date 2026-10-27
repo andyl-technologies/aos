@@ -84,10 +84,11 @@ configuration record binds its semantic `ConfigurationId`, its
 Repository reads resolve these records and recheck every cross-record binding;
 validation is not limited to the campaign-creation path.
 
-Finding reproduction uses the same exact-artifact rule. The current schema-v2
+Finding reproduction uses the same exact-artifact rule. The current schema-v3
 `ReproductionArtifact` binds semantic and exact scenario/configuration
-identities, a stable failure fingerprint, verifier-checked self-contained
-execution-model bytes, its original reproduction, the exact minimization
+identities, a stable failure fingerprint, verifier-checked static
+execution-model bytes with the ordered schedule segments they reference, its
+original reproduction, the exact minimization
 policy, bounded candidate history, and the final replayed state. The current
 schema-v4 `Finding` binds its normalized signature, representative and
 occurrence observations, reproduction artifacts, authenticated first-seen
@@ -779,7 +780,7 @@ pub enum AttemptAdmissionRole {
 }
 
 pub struct Observation {
-    pub schema_version: u32, // exact current schema v13
+    pub schema_version: u32, // exact current schema v16
     pub attempt: AttemptId,
     pub child: ConfigurationId,
     pub child_content: ConfigurationArtifactId,
@@ -788,24 +789,53 @@ pub struct Observation {
     pub measurements: MeasurementSetId,
     pub properties: PropertyVerdictSetId,
     pub coverage: CoverageProjectionId,
-    pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
-    pub produced_selections: CanonicalSet<SelectionId>,
-    pub resolved_effect_trace: Option<ContentId>,
+    pub discovered_choices: MerkleMapRoot, // opportunity key -> ChoiceOpportunityId
+    pub produced_selections: MerkleMapRoot, // selected opportunity key -> SelectionId
+    pub resolved_effect_trace: Option<ResolvedEffectTraceRef>,
+}
+
+pub struct ResolvedEffectTraceRef {
+    pub manifest: ContentId,      // Trace schema 4 manifest leaf
+    pub segments: Vec<ContentId>, // Trace schema 1 segments, manifest order
 }
 ```
 
-Observation schema v14 is the sole current encoding. It carries the current
-stop outcome plus the bounded canonical set of selections produced while execution
-continued through choices discovered by that attempt. Each selection must
-resolve to exactly one of the observation's discovered opportunities, and no
-opportunity may be selected twice. The selection IDs are envelope children, so
-the accepted observation roots the complete replay closure. The combined
-discovered-opportunity and produced-selection count cannot exceed the
-envelope's 65,529 variable-child allowance. An optional schema-1 trace leaf
-retains the canonical resolved effects from the same completed attempt. Its
-content identity is an observation child; producer and public reader decode
-the bounded trace against the Crucible fault contract. Any other observation schema is
-rejected.
+Observation schema v16 is the sole current encoding. Its choice material is
+paged: the opportunities an attempt discovered and the selections it produced
+while continuing through them are two Merkle maps, and the observation encodes
+only each map's root identity and entry count. Both maps use the
+order-preserving key of an opportunity, its raw content digest, which is also
+the key of the snapshot graph's nested choice index:
+
+```text
+discovered-choices  : digest(opportunity) -> opportunity content ID
+produced-selections : digest(selected opportunity) -> selection content ID
+```
+
+Each root is one envelope child, so the observation's size and child count do
+not grow with the number of choices and no envelope-derived count bound
+applies. Each selection must resolve to one of the observation's discovered
+opportunities; keying the produced map by opportunity makes "no opportunity is
+selected twice" structural, and a `NextChoice` observation leaves a discovery
+unresolved exactly when the produced map is smaller than the discovered one.
+Readers page both maps with ordinary bounded scans and compare the walked
+entry count with the committed count. Through the two roots the accepted
+observation still roots the complete replay closure. The resident bound on
+one attempt's choice material is operational: the executor's candidate charges
+at most 128 MiB of unique canonical choice records, as section 04a states.
+An optional segmented resolved-effect
+trace (§15) retains the canonical resolved effects from the same completed
+attempt. The observation names its Trace schema 4 manifest leaf as child
+`resolved-effect-trace` and each Trace schema 1 segment, in manifest order,
+as child `resolved-effect-trace.segment.NNNN`; at most 4,095 distinct
+segments are listed, so the fixed roles, the manifest, and the segments
+always fit the envelope's child allowance. The campaign repository treats
+both leaf kinds as opaque: a candidate carries the manifest bytes, at most
+1 MiB, plus read handles to the producer's segment stores, and publication
+streams and authenticates one segment at a time, so no repository bound
+grows with the trace. Producer and public reader decode the manifest and
+each segment against the Crucible fault contract. Any other observation
+schema is rejected.
 
 Stop-condition tags 5 and 6 add `ExecutionQuanta` and
 `VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
@@ -838,8 +868,16 @@ a choice reached before that fallback can. Campaign logic handles an
 authenticated timeout outcome; no timer event is delivered to guest code for
 recovery.
 
+The authored policy and stop condition are the only modeled horizon. The
+packaged executor's lifecycle has no separate virtual-time ceiling, so a
+policy deadline is never truncated by an executor default. An attempt whose
+policy declares no deadline runs until its primary stop or until an
+operational limit refuses it: the deployment's execution-quantum allowance,
+the attempt event-log byte bound, or the host completion watchdog. These
+refusals are operational failures, never `PolicyTimeout` evidence.
+
 These stop tags occur only in the current enclosing records: `Attempt` v9,
-`BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v16, and discovery-service
 request v4. A noncurrent enclosing schema is rejected before interpreting the
 stop body.
 
@@ -895,8 +933,9 @@ semantic attempt when stop and other execution inputs also match. Requests with
 different stop conditions still share the edge but may admit distinct attempts.
 The semantic child identity and exact child artifact are both present: graph
 deduplication uses the former, while closure validation and replay retain the
-latter. Measurement, property, coverage, path, and discovered-choice records
-are exact children of the observation envelope.
+latter. Measurement, property, coverage, and path records and the roots of
+the discovered-choice and produced-selection maps are exact children of the
+observation envelope.
 This is campaign-knowledge deduplication, not a loss of audit history.
 
 A finite source is bounded by the request even when the selectable's legal
@@ -1020,6 +1059,22 @@ are `CreditId` and whose values are exact expansion-credit content IDs. This
 lets restart and imported-snapshot validation recover visit counts without a
 process-local search stack or a repository listing operation.
 
+New genesis snapshots also anchor one canonical empty
+`crucible.campaign.observation-direct-selection-index.v1` map under
+`observations_root`; with the choice-source anchor below, these two anchors are
+the only genesis observation-root entries. The index maps a domain-separated branch-point key to a
+nested Merkle map whose keys order direct integer selections by value: a
+one-byte representation tag (signed before unsigned), the big-endian value with
+the signed sign bit flipped, and the first 23 bytes of the `SelectionId`
+digest. Each value is the content ID of the first canonical observation whose
+branch attempt realized that selection. Canonical observation publication adds
+the entry only when the attempt starts with an integer branch selection that
+has no entry yet at its branch point; a later realization, exact replay, or
+determinism conflict leaves the index unchanged. Import and restart validation
+recompute the insertion, and a current snapshot without the anchor fails
+closed. Descendants that reach the point through a deeper branch are credited
+but never indexed, so corpus mutation reads only the point's direct children.
+
 `ContinuationProjection` schema version 1 is the compact authenticated current
 state of one request. New genesis snapshots anchor one canonical empty nested
 frontier index under `exploration_root`. Each nested key is the exact
@@ -1037,6 +1092,19 @@ Request transitions add positions, and a planner Issue retires its selected
 position only on the final allowed proposal ordinal. Historical membership
 remains authenticated in exploration. Cold validation recomputes every delta,
 so a lineage cannot omit an unspent request or restore a spent one.
+
+New genesis also anchors one canonical empty
+`crucible.campaign.observation-choice-source-index.v1` map under the observation
+root. Each key is `H("crucible.campaign.observation-choice-source.v1",
+parent_artifact || opportunity)` for a choice discovered by a canonical
+observation whose child artifact is `parent_artifact`; each value is the content
+ID of the earliest such observation in ascending `(AdmissionOrdinal,
+ObservationId)` order. Streaming completions may arrive out of admission order,
+so observation publication compares against the current slot and lowers it
+rather than keeping the first arrival. Determinism-conflict observations never
+change the index. Cold validation recomputes the same read-compare-upsert from
+the parent snapshot. Snapshots without this anchor are rejected before ordinary
+runtime admission.
 
 Planner page construction reads only the requested ordered window plus one
 lookahead position. Invocation closure validation reuses exact roots already

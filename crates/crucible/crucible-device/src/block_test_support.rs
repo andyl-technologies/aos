@@ -8,6 +8,43 @@ pub(super) fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("expected Ok, got {error:?}"))
 }
 
+/// Returns a fresh heap-backed page store.
+pub(super) fn mem() -> BlockPageStore {
+    BlockPageStore::memory()
+}
+
+/// Streams a device's full disk image into a buffer.
+pub(super) fn image(device: &BlockDevice) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    ok(device.materialize_to(&mut bytes));
+    bytes
+}
+
+/// Streams an overlay over `base` into a buffer.
+pub(super) fn overlay_image(overlay: &CowOverlay, base: &BaseImage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    ok(overlay.materialize_to(base, &mut bytes));
+    bytes
+}
+
+/// Encodes and decodes `snapshot`, binding a source holding its chunk objects.
+///
+/// This is the persistence path: the decoded snapshot names its overlay
+/// chunks by identity only and reads them back through the bound source.
+pub(super) fn encoded_round_trip(snapshot: &BlockSnapshot) -> BlockSnapshot {
+    let bytes = ok(snapshot.to_canonical_bytes());
+    let mut objects = std::collections::BTreeMap::new();
+    let mut buffer = Vec::new();
+    for chunk in ok(snapshot.overlay.chunks()) {
+        if let Some(identity) = ok(snapshot.overlay.read_chunk(chunk.index, &mut buffer)) {
+            objects.insert(identity, buffer.clone());
+        }
+    }
+    let mut decoded = ok(BlockSnapshot::from_canonical_bytes(&bytes));
+    decoded.bind_overlay_source(std::sync::Arc::new(objects));
+    decoded
+}
+
 /// Builds a base image of `len` bytes filled with a deterministic ramp.
 pub(super) fn ramp_base(len: usize) -> BaseImage {
     let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();

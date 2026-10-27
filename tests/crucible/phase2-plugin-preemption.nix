@@ -5,8 +5,7 @@
   taskIds ? ["T-PLUG-25"],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   protocolPreemption = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/preemption.rs;
@@ -264,112 +263,32 @@ in
   if failures != []
   then throw "crucible phase2 plugin preemption check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-preemption";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-preemption";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            target_dir="$TMPDIR/crucible-plugin-preemption-target"
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               preemption::tests::preemption_injector_requires_qemu_capability_and_valid_window \
-              preemption::tests::preemption_injector_requires_qemu_capability_and_valid_window
-            run_exact_test \
               preemption::tests::preemption_injector_dispatches_vcpu_switch_at_commanded_icount \
-              preemption::tests::preemption_injector_dispatches_vcpu_switch_at_commanded_icount
-            run_exact_test \
               preemption::tests::preemption_injector_dispatches_interrupt_without_round_robin_switch \
-              preemption::tests::preemption_injector_dispatches_interrupt_without_round_robin_switch
-            run_exact_test \
               preemption::tests::preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu \
-              preemption::tests::preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu
-            run_exact_test \
               preemption::tests::preemption_injector_localizes_malformed_or_rejected_commands \
-              preemption::tests::preemption_injector_localizes_malformed_or_rejected_commands
-            run_exact_test \
               preemption::tests::deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch \
-              preemption::tests::deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch
-            run_exact_test \
               preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow \
-              preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow
-            run_exact_test \
-              abi::tests::capabilities::runtime_install_rejects_each_missing_capability_family \
               abi::tests::capabilities::runtime_install_rejects_each_missing_capability_family
           '';
         }

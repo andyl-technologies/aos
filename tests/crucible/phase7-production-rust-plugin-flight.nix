@@ -4,6 +4,7 @@
   lib,
   attrPath,
   campaignComposition ? null,
+  ackPollExperiment ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   repoRoot = ../..;
@@ -47,88 +48,74 @@
     inherit pkgs lib;
     src = source;
   };
+  clockReadGuest = import ./phase7-guest-clock-read-guest.nix {
+    inherit pkgs source cargoDeps;
+  };
+  clockRuntimeGuest = import ./phase7-guest-clock-read-guest.nix {
+    inherit pkgs source cargoDeps;
+    runtimeObserver = import ./phase7-clock-vvar-observer.nix {inherit pkgs;};
+  };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   blockRecoveryNanos = 5000000000;
   blockGuest = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate mkCrucibleBinaries workspaceTests;
+  testSupportFlag = lib.optionalString ackPollExperiment "--features test-support";
+  # Debug tests that must pass before the flight executables are trusted.
+  flightPrerequisites = mkCrucibleTestGate {
+    pname = "crucible-production-rust-plugin-flight-prerequisites";
+    src = source;
+    phases = [
+      {
+        name = "run-flight-prerequisites";
+        script = ''
+          set -eu
+          test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
+            crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
+          crucible-cargo test \
+            -p crucible-qemu-host \
+            ${testSupportFlag} \
+            --example crucible-qemu-production-plugin-flight
+          crucible-cargo test \
+            -p crucible-qemu-host --lib \
+            spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
+          crucible-cargo test \
+            -p crucible-qemu-host --lib \
+            runtime_trace_budget_rejects_unbounded_or_empty_admission
+          crucible-cargo test \
+            -p crucible-qemu-host --lib \
+            supervision::runtime_determinism_trace::tests
+          mkdir -p "$out"
+          printf 'PASS\n' > "$out/result"
+        '';
+      }
+    ];
+  };
+  flightBinaries = mkCrucibleBinaries {
+    pname = "crucible-production-rust-plugin-flight-binaries";
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-qemu-production-plugin-flight = "build --release -p crucible-qemu-host ${testSupportFlag} --example crucible-qemu-production-plugin-flight";
+      crucible-daemon-host-parallel-flight = "test --release -p crucible-daemon --lib";
+    };
+  };
   flight = pkgs.mkDerivation {
     pname = "crucible-production-rust-plugin-flight";
     version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
-      pkgs.sed
-
-      pkgs.sqlite
-    ];
+    src = null;
+    buildDeps = [pkgs.coreutils flightPrerequisites flightBinaries];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
+        name = "install";
         script = ''
           set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host \
-            --example crucible-qemu-production-plugin-flight
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host \
-            --example crucible-qemu-production-plugin-flight
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host --lib \
-            spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host --lib \
-            runtime_trace_budget_rejects_unbounded_or_empty_admission
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host --lib \
-            supervision::runtime_determinism_trace::tests
-          cargo test --frozen --offline --release --no-run \
-            --message-format=json-render-diagnostics \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/daemon-messages.jsonl"
-          daemon_test=$(jq -r \
-            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-            "$TMPDIR/daemon-messages.jsonl")
-          test -f "$daemon_test"
-          mkdir -p "$out/bin"
-          cp \
-            "$TMPDIR/target/release/examples/crucible-qemu-production-plugin-flight" \
-            "$out/bin/"
-          cp "$daemon_test" "$out/bin/crucible-daemon-host-parallel-flight"
-          mkdir -p "$out/share"
-          cp tests/crucible/fixtures/e2e-determinism.scenario.toml "$out/share/"
+          test "$(cat ${flightPrerequisites}/result)" = PASS
+          mkdir -p "$out/bin" "$out/share"
+          cp ${flightBinaries}/bin/crucible-qemu-production-plugin-flight "$out/bin/"
+          cp ${flightBinaries}/bin/crucible-daemon-host-parallel-flight "$out/bin/"
+          cp ${source}/tests/crucible/fixtures/e2e-determinism.scenario.toml "$out/share/"
         '';
       }
     ];
@@ -183,6 +170,11 @@
 
     result=/tmp/production-plugin-result
     runtime_trace=/tmp/production-reference-runtime-determinism.summary
+    # Observe the original pending wait before crash cleanup changes the slot.
+    # This host-only reporter keeps its existing 256-row/512-KiB runtime bound;
+    # it does not install the separate plugin time-ownership observer.
+    export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=256
+    export CRUCIBLE_TIME_OWNERSHIP_WITNESS=0
     ${productionFlightCommand} "$runtime_trace" > "$result"
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"
@@ -218,9 +210,7 @@
       instruction_exact_window_width_picoseconds=50 \
       fractional_phase_window_lower_picoseconds=2000000 \
       fractional_phase_window_upper_picoseconds=2000001 \
-      fractional_phase_no_retirement=true \
-      fractional_phase_timer_projection_changed=true \
-      fractional_phase_fingerprint_changed=true \
+      fractional_phase_clock_not_credited=true \
       instruction_exact_raw_retirement_successor=true \
       instruction_exact_rr_successor=true \
       instruction_exact_state_projection_changed=true \
@@ -245,7 +235,7 @@
       hot_fork_preparation_order=block-recovery-settled,draining,prepared \
       component_failures=0 \
       per_vcpu_register_files_present=true \
-      sample_logical_picoseconds_equal_target=true; do
+      sample_logical_picoseconds_settle_target=true; do
       test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$result")" -eq 1
     done
     for numeric_evidence in \
@@ -255,6 +245,8 @@
       test "$(${pkgs.grep}/bin/grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
     done
     test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_tick=[0-9]+$' "$result")" -eq 1
+    # A one-picosecond later bound admits at most the retirement ending on it.
+    test "$(${pkgs.grep}/bin/grep -Ec '^fractional_phase_retirements=[01]$' "$result")" -eq 1
     witness_value() {
       ${pkgs.grep}/bin/grep -E "^$1=" "$result" \
         | ${pkgs.coreutils}/bin/cut -d = -f 2-
@@ -460,10 +452,52 @@
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };
+  timeOwnershipDiagnostic = import ./phase7-time-ownership-live.nix {
+    inherit pkgs testing productionFlightCommand rootfsDeps attemptHostSetupScript;
+  };
+  guestClockReadEquivalence = import ./phase7-guest-clock-read-live.nix {
+    inherit pkgs testing attemptHostSetupScript;
+    rootfsDeps = rootfsDeps ++ [clockReadGuest];
+    clockReadFlightCommand = ''
+      ${pkgs.coreutils}/bin/timeout -k 15 900 \
+        ${flight}/bin/crucible-qemu-production-plugin-flight \
+        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+        ${pkgs.linux}/boot/vmlinuz-* \
+        ${clockReadGuest}/initrd.img \
+        ${blockGuest}/initrd.img \
+        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+        /sys/fs/cgroup/crucible /tmp/attempts/run \
+    '';
+  };
+  linuxBootAckPollPair =
+    if ackPollExperiment
+    then
+      import ./phase7-linux-boot-ack-poll.nix {
+        inherit pkgs testing rootfsDeps attemptHostSetupScript productionFlightCommand;
+      }
+    else null;
+  guestClockRuntimeConversion = import ./phase7-guest-clock-read-live.nix {
+    inherit pkgs testing attemptHostSetupScript;
+    runtimeAnchor = true;
+    rootfsDeps = rootfsDeps ++ [clockRuntimeGuest];
+    clockReadFlightCommand = ''
+      ${pkgs.coreutils}/bin/timeout -k 15 900 \
+        ${flight}/bin/crucible-qemu-production-plugin-flight \
+        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+        ${pkgs.linux}/boot/vmlinuz-* \
+        ${clockRuntimeGuest}/initrd.img \
+        ${blockGuest}/initrd.img \
+        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+        /sys/fs/cgroup/crucible /tmp/attempts/run \
+    '';
+  };
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
-    timeout = 1200;
+    # Five sequential boots, one per ceiling schedule.
+    timeout = 3600;
     inherit rootfsDeps;
     testScript = ''
       set -eu
@@ -479,6 +513,8 @@
       ${pkgs.grep}/bin/grep -Fxq 'diagnostic_mode=phase4-partition-probe' "$result"
       ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_span_ps=1000000' "$result"
       ${pkgs.grep}/bin/grep -Fq 'phase4_partition_exact_match=true' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_variants=coarse,fine,alternating-rendezvous,ten-nanosecond,seeded-odd' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'bound_frequency_independent=true' "$result"
     '';
   };
   exposedGate =
@@ -498,6 +534,10 @@
             blockRecoveryDiagnostic
             blockRecoveryTestScript
             partitionDiagnostic
+            timeOwnershipDiagnostic
+            guestClockReadEquivalence
+            linuxBootAckPollPair
+            guestClockRuntimeConversion
             ;
         };
     };

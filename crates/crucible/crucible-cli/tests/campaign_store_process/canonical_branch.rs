@@ -60,10 +60,14 @@ pub(super) fn run_imported_canonical_branch(
     );
     let retained = repository.inspect_archived_exact_finding(archive, finding_id)?;
     let reproduction = repository.load_reproduction_artifact(retained.reproduction())?;
-    let model = crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())?;
+    let model = crucible_daemon::decode_crucible_reproduction(
+        &reproduction,
+        &crucible_daemon::RepositoryReproductionSegments::new(&repository, retained.reproduction()),
+        "retained reproduction",
+    )?;
     let original = model
         .schedule()
-        .decisions()
+        .decision_history()
         .iter()
         .find_map(|decision| match decision {
             Decision::Selection(selection) => Some(selection.selection()),

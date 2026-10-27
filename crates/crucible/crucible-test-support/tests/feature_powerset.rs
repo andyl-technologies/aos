@@ -24,7 +24,10 @@ fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Erro
         .join("feature-powerset");
 
     for case in feature_cases() {
-        let mut command = Command::new(env!("CARGO"));
+        // Cargo exports its own path to running tests as well. Prefer it so a
+        // relocated test binary does not depend on its compile-time Cargo.
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
+        let mut command = Command::new(cargo);
         command
             .arg("check")
             .arg("--manifest-path")
@@ -73,7 +76,13 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu-host",
         &[
             ("default", &[][..]),
-            ("test-support", &["crucible-engine/test-double"][..]),
+            (
+                "test-support",
+                &[
+                    "crucible-engine/test-double",
+                    "crucible-qemu-shmem/test-support",
+                ][..],
+            ),
         ],
     );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);

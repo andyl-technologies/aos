@@ -482,6 +482,19 @@ rather than falling back to work proportional to the virtual disk. The closure
 is durably published before transient QMP snapshots are deleted and only nodes
 that were running are resumed. No second full-file staging tree is created.
 
+Publication writes each node's QEMU snapshot envelope and each failed node's
+host-I/O continuation to a staged object in the object directory as it is
+encoded, one nested owner at a time, and hashes it in the same pass. The
+manifest names the staged identity, and publication links the
+re-authenticated file into place. `fat_checkpoint_bytes` therefore bounds each
+envelope as it is written and the closure by its staged length. It is a
+stored-size contract, never the size of one in-memory buffer (RFC section
+15.12, CMEAS-37). Restore reads one envelope at a time and checks it is
+canonical by comparing a streamed re-encoding with the stored bytes. Block
+page sets and the 9p tree still travel inside the host-I/O envelope until
+they are externalized as content-addressed page objects, as overlay and RAM
+layers already are.
+
 Version-nine sparse overlay artifacts carry a logical `length`, no dense
 `chunks`, and strictly ordered, nonoverlapping, nonadjacent extents. Each
 extent contains a `start_chunk` and one or more consecutive BLAKE3 chunk
@@ -517,8 +530,13 @@ alternate monolithic VMState reader or restore path.
 stream. Production publication uses
 `crucible.executor.exact-checkpoint-root@exact-manifest.5`. The root commits to
 the version-nine closure manifest and its direct-or-delta RAM layers, device
-state, scheduler continuation, immutable backing, fault checkpoint, and bounded
-choice records discovered before the pause. The assignment ledger stages that
+state, scheduler continuation and the sealed event-log segments it references
+(RFC section 15.12), immutable backing, fault checkpoint, and the
+replay closure of choice records discovered before the pause: a version 2
+closure root child plus one `checkpoint-choice-frame-NNNNNNNN` child per frame
+of at most 64 MiB (RFC section 15.8). Loading reads only the closure root;
+replay validation reads each frame when it reaches it and authenticates it
+against the root's digest. The assignment ledger stages that
 root before publication, and publication makes
 the authenticated children durable before exposing the root. A process-local
 replay claim is issued only by a completed guarded raw-to-promoted comparison;
@@ -528,10 +546,10 @@ never process-launch authority. Sparse overlay restore authenticates the exact
 extent manifest and every named chunk before atomically exposing a file whose
 omitted ranges are zero holes.
 
-The complete multi-node production continuation uses version nine of the same
+The complete multi-node production continuation uses version eleven of the same
 typed root rather than flattening a potentially large object set into one
 generic envelope. The registered leaves are the canonical
-`crucible.production-exact-closure@device-state.9` manifest and exact opaque
+`crucible.production-exact-closure@device-state.11` manifest and exact opaque
 production objects under
 `crucible.executor.production-checkpoint-object@device-state.5`. Every object
 retains its production BLAKE3 identity and declared length in a registered
@@ -841,6 +859,86 @@ promotion is bounded by predicted reuse, prepare cost, memory pressure, depth,
 and retention policy. Evicting any hub leaves its semantic node and exact/thin
 realizations intact.
 
+Promotion currently begins at thin-path roots. A fresh thin attempt that stops
+at a published next-choice boundary, and whose non-destructive final drain
+proves no final events remain, may keep its complete paused world as a depth-0
+root keyed by lineage and that child configuration. Sealing receives the same
+empty final-event list whether or not the world is kept, so retention never
+changes the observation. The root's thin fallback names the published child
+artifact and is persisted before the source becomes reusable. The root is
+admitted only after its observation disposition is durable, fit-or-reject at
+initial hotness, so it never evicts genesis or another retained source. Only
+branches whose parent is that published configuration reuse it. Promoting a
+forked descendant at its own stop boundary remains future work.
+
+A boundary whose next choice is a guest selectable is not retained. The guest's
+committed stop stays held until a branch replies, together with the original
+RUN plans its peers resume after that reply. The hold is a live controller
+capability that neither an exact checkpoint nor a hot-fork continuation
+carries, and nothing yet proves that a child reconstructed without it resumes
+its peers exactly as the thin fallback the root names would. The retention
+drain therefore declines such a world before settling anything and reports
+the refusal. A network fault boundary, where every VM is parked and joined at
+an exact-checkpoint-ready frontier, remains retainable. Later branches from a
+guest-choice boundary are instead served from an ancestor root, as below.
+
+**Anchor roots and ancestor suffix replay.** A branch whose own selection is a
+recorded network fault branch at its parent `A`, and for which no root at `A`
+exists, would cross exactly one host-verified exact boundary on its thin replay
+path: the all-VM park at `A`, joined to the recorded frontier, just before the
+branch is appended. When published-root retention is enabled, the lower tier
+may stop its replay there, check that every VM is parked with quiet network
+queues and an exact-ready boundary, prove by a non-destructive drain that no
+entries remain, and keep the world as a published-boundary root at `A`. The
+root's thin fallback names `A`'s stored artifact. It is admitted only when the
+pool can also hold one child. An admitted anchor ends its execution as
+retryable, because the anchoring replay already spent part of that execution's
+budget; the requeued execution forks the attempt from the root with a full
+budget, spending no more than thin replay would. Each attempt anchors at most
+once, so a requeued execution that still cannot fork replays thin. A root
+coordinate held by an invalidated root refuses the anchor before any replay,
+and any other refusal also leaves the attempt to thin replay. Such a root is an
+anchor: it is created for the branch in hand rather than after a disposition,
+and it records how it was produced and the replay pause mode of its prefix.
+
+A branch whose parent `G` has no root may fork from the deepest retained
+published-boundary root `A` whose configuration is a strict schedule prefix of
+`G`, whether an anchor or a thin stop root. The child replays the recorded
+suffix from `A` to `G` with the same start-replay function thin replay uses,
+then applies the attempt's own selection. The child inherits the root's
+lifecycle configuration, which carries no attempt-specific replay inputs, so a
+suffix qualifies only when every decision in it is on an allowlist of decisions
+start replay serves from attempt input: deterministic scheduler and ordering
+decisions (delivery order, preemption, and RNG draws no campaign branch
+substitutes), recorded network fault branches crossed at their joined park,
+guest selections answered at the guest's request, and live-world network
+selections before the attempt's edge. A recorded guest selection is recognized
+by a domain the scenario declares only for guest selectables, and the
+attempt's own edge by its resolved guest opportunity. Every other decision,
+including any class added later, refuses the suffix by name, as does a
+signal-fault branch still pending. The suffix is
+bounded to 4096 decisions and 8 selections, and the root's recorded pause mode
+must equal the attempt's own. The same configuration rule applies to the edge
+of a child of an exact published root, which is refused before checkout when
+its selection is carried in configuration. Any failure before the child
+begins applying the attempt's own edge at `G` is operational: a suffix
+divergence, a scheduler or terminal failure inside the suffix, a failed
+network fault crossing inside it, or a guest request at `G` that differs from
+the recorded one. The child is quarantined, the root is invalidated, and the
+attempt's next execution runs thin. Cancellation, and a failure applying the
+edge itself, keep their class. A world reached this way is never
+retained at the guest-choice boundary it passed.
+
+Both paths write one bounded operational row per decision:
+
+```text
+CRUCIBLE-HOT-FORK-ANCHOR-V1 attempt=<id> anchor=<configuration> decision=admitted|declined|rejected|quarantined reason=<token>
+CRUCIBLE-HOT-FORK-ANCESTOR-V1 attempt=<id> anchor=<configuration> suffix_decisions=<n> decision=forked|skipped|diverged reason=<token>
+```
+
+Neither row is a campaign fact, and neither path changes a durable, catalog,
+wire, or shared-memory format.
+
 - **[HFORK-21]** Every writable mapping in a template capability profile MUST be
   classified as private-COW, replaced in the child, reconstructed in the child,
   or forbidden. `MAP_SHARED` inheritance is never presumed to become COW.
@@ -863,3 +961,24 @@ realizations intact.
   multi-source demotion failure MUST preserve completed releases, restore the
   failed source authority at its exact stable coordinate, and leave the
   candidate uninstalled.
+- **[HFORK-25]** A retained source MAY be created at a published
+  configuration `A` only at the host-verified exact-ready boundary reached by
+  replay before `A`'s recorded network fault branch is appended: every VM
+  physically parked and joined, no held continuation, no pending network
+  output, campaign network queues empty, and a replay proof matching the
+  prepared continuation. Its thin fallback names `A`'s stored artifact and is
+  persisted before reuse. Creating it MUST NOT change any campaign fact, and
+  any failure leaves the attempt to thin replay. The execution that creates
+  it MUST NOT go on to run the attempt; at most one execution per attempt may
+  create one, and an invalidated root MUST NOT count as retained.
+- **[HFORK-26]** A branch whose parent `G` has no exact source MAY fork from
+  the deepest retained published root `A` whose schedule is a strict prefix of
+  `G`, only when every suffix decision is on an explicit allowlist of
+  decisions replayed from attempt input by the same start-replay function thin
+  replay uses; unlisted decisions MUST refuse the root. The child MUST
+  validate each replayed guest request against its recorded opportunity and
+  branch point and reach the target exactly before the attempt's own
+  selection is applied.
+  Any failure other than cancellation before the attempt's own edge begins
+  to apply at `G` is operational, invalidates `A`, and falls back to thin. A world reached this way MUST NOT be retained at a guest-choice
+  boundary.

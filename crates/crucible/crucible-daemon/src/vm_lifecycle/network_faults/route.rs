@@ -51,7 +51,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
         let mut runtime_committed = false;
         let mut staged_effect_state = self.effect_state.clone();
         let mut staged_campaign_records = Vec::new();
-        let mut staged_campaign_replay_cursor = self.campaign_effect_replay_cursor;
+        let mut staged_campaign_replay = self.campaign_effect_replay.clone();
+        let mut staged_campaign_log = None;
         let staged = (|| {
             for output in source_outputs {
                 'route: for route in staged_scheduler.resolve_backend_network_routes(&output)? {
@@ -369,11 +370,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                 NetworkFrameApplication::default()
                             };
                             if !campaign_actions.is_empty() {
-                                let campaign_current = self
-                                    .campaign_records
-                                    .len()
-                                    .checked_add(staged_campaign_records.len())
-                                    .and_then(|count| u64::try_from(count).ok())
+                                let campaign_current = u64::try_from(staged_campaign_records.len())
+                                    .ok()
+                                    .and_then(|staged| {
+                                        self.campaign_log.records().checked_add(staged)
+                                    })
                                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                                         message: String::from(
                                             "campaign network effect record count exceeds u64",
@@ -427,17 +428,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                                     .map_err(|error| SchedulerError::BoundaryViolation {
                                         message: format!("record selected network fault effect: {error}"),
                                     })?;
-                                    if let Some(expected) = &self.campaign_effect_replay {
-                                        if expected.get(staged_campaign_replay_cursor)
-                                            != Some(&record)
-                                        {
-                                            return Err(SchedulerError::BoundaryViolation {
-                                                message: String::from(
-                                                    "selected network effect differs from exact replay evidence",
-                                                ),
-                                            });
-                                        }
-                                        staged_campaign_replay_cursor += 1;
+                                    if let Some(expected) = staged_campaign_replay.as_mut() {
+                                        expected.consume_expected(&record)?;
                                     }
                                     staged_campaign_records.push(record);
                                 }
@@ -607,6 +599,15 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
             if next_wakeup_ticks.is_some() {
                 staged_scheduler.set_signal_fault_wakeup(next_wakeup_ticks)?;
             }
+            // Campaign records are rare; only a routing step that committed
+            // some pays for a staged copy of the log's bounded position.
+            if !staged_campaign_records.is_empty() {
+                let mut log = self.campaign_log.clone();
+                for record in staged_campaign_records.drain(..) {
+                    log.push(record)?;
+                }
+                staged_campaign_log = Some(log);
+            }
             staged_scheduler
                 .record_pending_signal_fault_search_frontiers(runtime.drain_search_choices())?;
             let mut journal =
@@ -643,15 +644,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
                     runtime.poison();
                 } else {
                     *cursor = cursor_before;
-                    runtime.set_external_effect_count(
-                        u64::try_from(self.campaign_records.len()).map_err(|_| {
-                            SchedulerError::BoundaryViolation {
-                                message: String::from(
-                                    "campaign network effect record count exceeds u64",
-                                ),
-                            }
-                        })?,
-                    );
+                    runtime.set_external_effect_count(self.campaign_log.records());
                 }
                 return Err(error);
             }
@@ -660,8 +653,10 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
         *pending_outputs = staged_pending;
         *outputs = routed;
         self.effect_state = staged_effect_state;
-        self.campaign_records.extend(staged_campaign_records);
-        self.campaign_effect_replay_cursor = staged_campaign_replay_cursor;
+        if let Some(log) = staged_campaign_log {
+            self.campaign_log = log;
+        }
+        self.campaign_effect_replay = staged_campaign_replay;
         Ok(appends)
     }
 }

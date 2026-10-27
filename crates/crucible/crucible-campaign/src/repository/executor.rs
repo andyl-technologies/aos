@@ -257,128 +257,70 @@ impl CampaignExecutorStore {
         self.repository.resolve_selection(id)
     }
 
-    /// Resolves a bounded batch of selections with shared authenticated dependencies.
+    /// Starts a streamed selection resolver over the repository.
     ///
-    /// Repeated opportunities, declarations, and domains are decoded once. The
-    /// aggregate unique canonical record envelopes are bounded independently of
-    /// the number and ordering of selections.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the batch exceeds its record or byte bound, or
-    /// when any exact selection reference is missing, corrupt, or inconsistent.
-    pub fn resolve_selections(
-        &self,
-        ids: &[SelectionId],
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        self.repository.resolve_selections(ids)
+    /// The resolver authenticates one selection per call and shares decoded
+    /// declarations and domains through bounded caches, so callers can fold
+    /// over any number of selections.
+    #[must_use]
+    pub fn selection_resolver(&self) -> SelectionResolver<'_> {
+        SelectionResolver::new(&self.repository)
     }
 
-    /// Resolves selections against stored records and one unpublished observation candidate.
+    /// Starts a streamed resolver whose resident decoded records stay within a limit.
+    ///
+    /// The limit covers the resolver's cached declarations and domains plus
+    /// every uncached record of the selection being resolved. It lets an
+    /// executor reserve for the decoded representation before resolution
+    /// allocates it. Values a caller keeps after [`SelectionResolver::resolve`]
+    /// returns are the caller's to account for.
+    #[must_use]
+    pub fn selection_resolver_within(
+        &self,
+        maximum_resident_canonical_bytes: usize,
+    ) -> SelectionResolver<'_> {
+        SelectionResolver::within(&self.repository, maximum_resident_canonical_bytes)
+    }
+
+    /// Starts a streamed resolver that also serves one unpublished candidate's selections.
     ///
     /// An executor may need to replay a configuration produced by its current
     /// execution before that observation has entered the repository. Selections
     /// carried by `owned` are authenticated by [`ObservationCandidate`]'s
     /// constructor; every other selection is resolved through the repository.
-    /// The result preserves the order and cardinality of `ids`.
     ///
     /// # Errors
     ///
-    /// Returns an error when an owned selection cannot be identified, its
-    /// discovery closure is inconsistent, or a remaining selection cannot be
-    /// authenticated by the repository.
-    pub fn resolve_selections_with_owned_candidate(
-        &self,
-        ids: &[SelectionId],
-        owned: &ObservationCandidate,
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        let owned_discoveries = owned
-            .discovered_choices
-            .iter()
-            .map(|discovery| {
-                discovery
-                    .opportunity
-                    .id()
-                    .map(|id| (id, discovery))
-                    .map_err(CampaignRepositoryError::from)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let owned_selections = owned
-            .produced_selections
-            .iter()
-            .map(|selection| {
-                selection
-                    .id()
-                    .map(|id| (id, selection))
-                    .map_err(CampaignRepositoryError::from)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-
-        let stored_ids = ids
-            .iter()
-            .filter(|id| !owned_selections.contains_key(id))
-            .copied()
-            .collect::<Vec<_>>();
-        let stored = self
-            .repository
-            .resolve_selections(&stored_ids)?
-            .into_iter()
-            .map(|selection| {
-                selection
-                    .selection()
-                    .id()
-                    .map(|id| (id, selection))
-                    .map_err(CampaignRepositoryError::from)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-
-        ids.iter()
-            .map(|id| {
-                if let Some(selection) = owned_selections.get(id) {
-                    let discovery = owned_discoveries.get(&selection.opportunity()).ok_or(
-                        CampaignRepositoryError::Integrity {
-                            reason: "owned-candidate-selection-opportunity-missing",
-                        },
-                    )?;
-                    selection
-                        .validate_resolved_references(&discovery.opportunity, &discovery.domain)?;
-                    Ok(ResolvedSelection {
-                        selection: (*selection).clone(),
-                        opportunity: Arc::new(discovery.opportunity.clone()),
-                        declaration: Arc::clone(&discovery.declaration),
-                        domain: Arc::clone(&discovery.domain),
-                    })
-                } else {
-                    stored
-                        .get(id)
-                        .cloned()
-                        .ok_or(CampaignRepositoryError::Integrity {
-                            reason: "owned-candidate-selection-resolution-inexact",
-                        })
-                }
-            })
-            .collect()
+    /// Returns an error when an owned selection cannot be identified.
+    pub fn selection_resolver_with_owned_candidate<'a>(
+        &'a self,
+        owned: &'a ObservationCandidate,
+    ) -> Result<SelectionResolver<'a>, CampaignRepositoryError> {
+        SelectionResolver::with_owned_candidate(&self.repository, owned)
     }
 
-    /// Resolves a bounded batch within a caller-supplied canonical byte limit.
+    /// Visits each selection of `ids` in order, fully authenticated.
     ///
-    /// The limit covers every unique selection, opportunity, declaration, and
-    /// domain body decoded by the batch. It lets an executor reserve for the
-    /// decoded representation before repository resolution allocates it.
+    /// Repeated identities are visited repeatedly. Shared dependencies are
+    /// decoded once while they fit the resolver's bounded caches.
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignRepositoryError::SelectionResolutionBudgetExceeded`]
-    /// when the unique canonical closure exceeds `maximum_canonical_bytes`, or
-    /// the ordinary resolution error for missing, corrupt, or inconsistent
-    /// records.
-    pub fn resolve_selections_with_canonical_byte_limit(
+    /// Returns the first error from `visit`, or a repository error when any
+    /// exact selection reference is missing, corrupt, or inconsistent.
+    pub fn for_each_resolved_selection<E>(
         &self,
         ids: &[SelectionId],
-        maximum_canonical_bytes: usize,
-    ) -> Result<Vec<ResolvedSelection>, CampaignRepositoryError> {
-        self.repository
-            .resolve_selections_with_canonical_byte_limit(ids, maximum_canonical_bytes)
+        mut visit: impl FnMut(ResolvedSelection) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        let mut resolver = self.selection_resolver();
+        for id in ids {
+            visit(resolver.resolve(*id)?)?;
+        }
+        Ok(())
     }
 
     /// Publishes a validated immutable observation candidate without advancing a campaign.
@@ -614,8 +556,7 @@ impl CampaignExecutorStore {
                 artifact.configuration(),
                 artifact.configuration_artifact(),
                 artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
+                artifact.reproduction_payload().clone(),
                 minimization.clone(),
             ),
             None => self.repository.publish_reproduction_artifact(
@@ -624,10 +565,39 @@ impl CampaignExecutorStore {
                 artifact.configuration(),
                 artifact.configuration_artifact(),
                 artifact.finding_fingerprint(),
-                artifact.payload_schema(),
-                artifact.payload().to_vec(),
+                artifact.reproduction_payload().clone(),
             ),
         }
+    }
+
+    /// Publishes one executor-verified reproduction payload segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`CampaignRepository::publish_reproduction_payload_segment`].
+    pub fn publish_executor_reproduction_payload_segment(
+        &self,
+        segment: ReproductionPayloadSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.repository
+            .publish_reproduction_payload_segment(segment, bytes)
+    }
+
+    /// Publishes one executor-verified attempt-log segment of a triage replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of
+    /// [`CampaignRepository::publish_finding_triage_replay_log_segment`].
+    pub fn publish_executor_triage_replay_log_segment(
+        &self,
+        segment: crate::FindingTriageReplayLogSegment,
+        bytes: &[u8],
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        self.repository
+            .publish_finding_triage_replay_log_segment(segment, bytes)
     }
 
     /// Publishes one executor-prepared finding-candidate root.
@@ -672,7 +642,7 @@ impl CampaignExecutorStore {
 }
 
 impl CampaignExecutorPublicationGuard<'_> {
-    /// Reads one capture chunk or manifest while GC remains excluded.
+    /// Reads one capture leaf or manifest while GC remains excluded.
     ///
     /// # Errors
     ///
@@ -685,7 +655,7 @@ impl CampaignExecutorPublicationGuard<'_> {
         self.repository.read_finding_replay_capture_object(id)
     }
 
-    /// Idempotently writes one capture chunk or manifest while GC remains excluded.
+    /// Idempotently writes one capture leaf or manifest while GC remains excluded.
     ///
     /// # Errors
     ///
@@ -704,7 +674,7 @@ impl CampaignExecutorPublicationGuard<'_> {
 }
 
 impl CampaignRepository {
-    /// Reads one immutable finding replay capture manifest or chunk.
+    /// Reads one immutable finding replay capture manifest or leaf.
     ///
     /// This read-only path is used after an imported archive has authenticated
     /// the complete finding closure. Publication still requires the separate
@@ -723,11 +693,71 @@ impl CampaignRepository {
     }
 }
 
+/// Admits a current capture manifest or one of its version 1 trace leaves.
 fn validate_finding_replay_capture_object_id(id: ContentId) -> Result<(), CampaignRepositoryError> {
-    if id.schema_version() != 1
-        || !matches!(id.kind(), ObjectKind::ExactManifest | ObjectKind::Trace)
-    {
+    let admitted = match id.kind() {
+        ObjectKind::ExactManifest => {
+            crate::FindingReplayCaptureEvidenceId::from_manifest_content_id(id).is_ok()
+        }
+        ObjectKind::Trace => id.schema_version() == 1,
+        _ => false,
+    };
+    if !admitted {
         return Err(integrity("finding-replay-capture-object-kind"));
     }
     Ok(())
+}
+
+impl CampaignRepositoryError {
+    /// Maps read-only executor validation failure into the wire rejection vocabulary.
+    ///
+    /// Missing or temporarily unreadable immutable input remains retryable under
+    /// a fresh assignment. Authenticated incompatibility and corrupt canonical
+    /// structure fail stably, while backend authorization remains distinct.
+    #[must_use]
+    pub fn executor_rejection(&self) -> ExecutorRejection {
+        match self {
+            Self::Store(error) => store_executor_rejection(error),
+            Self::Merkle(crate::CampaignStoreError::Store(error)) => {
+                store_executor_rejection(error)
+            }
+            Self::NotFound | Self::Poisoned | Self::Scratch { .. } => {
+                ExecutorRejection::UnavailableInput
+            }
+            Self::Budget(_)
+            | Self::Codec(_)
+            | Self::SelectionResolutionBudgetExceeded { .. }
+            | Self::Merkle(_)
+            | Self::AlreadyExists
+            | Self::Stale { .. }
+            | Self::CommandReuse
+            | Self::RefConflict { .. }
+            | Self::InvalidRequest { .. }
+            | Self::Integrity { .. }
+            | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
+        }
+    }
+}
+
+fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
+    match error {
+        StoreError::NotFound { .. }
+        | StoreError::Quota
+        | StoreError::Unavailable
+        | StoreError::Poisoned { .. }
+        | StoreError::Io { .. }
+        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
+        StoreError::Unauthorized => ExecutorRejection::Unauthorized,
+        StoreError::Corrupt { .. }
+        | StoreError::InvalidId
+        | StoreError::InvalidRefName { .. }
+        | StoreError::InvalidRange { .. }
+        | StoreError::InvalidComposition { .. }
+        | StoreError::InvalidGraph { .. }
+        | StoreError::DurabilityUnsatisfied { .. }
+        | StoreError::Incompatible
+        | StoreError::InvalidSourceLength { .. }
+        | StoreError::MultipartCleanupRequired
+        | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
+    }
 }

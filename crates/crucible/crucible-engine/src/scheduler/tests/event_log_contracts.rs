@@ -7,10 +7,11 @@ fn event_log_append_rejects_class_catalog_mismatch() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("class-catalog-mismatch"),
-            value: 17,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("class-catalog-mismatch"),
+            0,
+            17,
+        ))),
     );
     entry.class = SchedulerEventLogClass::Observational;
 
@@ -31,10 +32,11 @@ fn event_log_append_rejects_typed_kind_catalog_drift() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("typed-kind-catalog-drift"),
-            value: 23,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("typed-kind-catalog-drift"),
+            0,
+            23,
+        ))),
     );
     entry.event_payload = EventPayload::new("diagnostic", entry.event_payload.attributes().clone());
 
@@ -55,10 +57,11 @@ fn event_log_append_rejects_unknown_typed_kind() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("unknown-typed-kind"),
-            value: 31,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("unknown-typed-kind"),
+            0,
+            31,
+        ))),
     );
     entry.event_payload = EventPayload::new(
         "unregistered_kind",
@@ -82,10 +85,11 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     let entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 9 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("segment-round-trip"),
-            value: 41,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("segment-round-trip"),
+            0,
+            41,
+        ))),
     );
     let entries = vec![entry];
     let segment = scheduler_event_log_segment_material(previous_prefix, &entries);
@@ -98,10 +102,15 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     assert_eq!(decoded.encode(), bytes);
     assert_eq!(decoded.text_view(), segment.text_view());
     assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
+    assert!(
+        decoded.entries[0]
+            .entry_material
+            .contains("rng_address=ordinal:0")
+    );
 }
 
 #[test]
-fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
+fn event_log_v7_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp() {
     let consumer = SchedulerNodeId {
         node: NodeId {
             name: String::from("consumer"),
@@ -149,12 +158,16 @@ fn event_log_v4_rejects_v3_and_missing_or_wrong_backend_input_stamp() {
     let material =
         scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
 
-    let mut old_version = material.encode();
-    old_version[16..20].copy_from_slice(&3_u32.to_le_bytes());
-    assert!(matches!(
-        decode_scheduler_event_log_segment(&old_version),
-        Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: 3 })
-    ));
+    // Version 6 entries recorded RNG draws without their draw address.
+    for version in [3_u32, 5, 6] {
+        let mut old_version = material.encode();
+        old_version[16..20].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_scheduler_event_log_segment(&old_version),
+            Err(SchedulerEventLogSegmentDecodeError::UnsupportedVersion { version: rejected })
+                if rejected == version
+        ));
+    }
 
     for stamp_node in [None, Some(String::from("wrong-node"))] {
         let mut malformed = material.clone();
@@ -209,4 +222,61 @@ fn idle_jump_preserves_exact_tick_and_unchanged_raw_retirement_in_event_stamp() 
         decode_scheduler_event_log_segment(&material.encode()),
         Ok(material)
     );
+}
+
+fn quantum_boundary_entry() -> SchedulerEventLogEntry {
+    scheduler_event_log_entry(
+        99_672,
+        VirtualTime {
+            ticks: 4_128_000_000_000,
+        },
+        SchedulerEventLogPayload::EvaluationBoundary(SchedulerEvaluationBoundaryKind::Quantum),
+    )
+}
+
+fn entry_material(entry: &SchedulerEventLogEntry) -> String {
+    scheduler_event_log_entry_material(
+        entry.sequence,
+        &entry.at,
+        &entry.source,
+        entry.level,
+        entry.class,
+        &entry.event_payload,
+        &entry.payload,
+    )
+}
+
+#[test]
+fn derived_evaluation_boundary_uses_compact_identity_material() {
+    let entry = quantum_boundary_entry();
+
+    let material = entry_material(&entry);
+
+    assert_eq!(
+        material,
+        format!(
+            "entry_form=evaluation-boundary\nsequence=99672\nat_virtual_time_ticks={}\nat_tick={}\nkind=quantum",
+            entry.at.virtual_time.ticks, entry.at.stamp.tick.ticks,
+        )
+    );
+    assert_eq!(entry.canonical_material_len(), material.len());
+    assert!(entry.has_valid_content_hash());
+}
+
+#[test]
+fn evaluation_boundary_with_underived_fields_keeps_full_identity_material() {
+    let compact = quantum_boundary_entry();
+    let mut debug_level = compact.clone();
+    debug_level.level = EventLevel::Debug;
+    let mut node_stamped = compact.clone();
+    node_stamped.at.stamp.node = Some(NodeId {
+        name: String::from("router-a"),
+    });
+
+    for entry in [debug_level, node_stamped] {
+        let material = entry_material(&entry);
+        assert!(material.starts_with("sequence=99672\n"), "{material}");
+        assert!(material.ends_with("payload=evaluation-boundary\nkind=Quantum"));
+        assert_ne!(material, entry_material(&compact));
+    }
 }

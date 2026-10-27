@@ -451,11 +451,17 @@ fn gate_preemption_branching_reduces_commuting_single_vcpu_preemptions()
         .checkpoint_configuration(covered.representative)
         .ok_or("covered representative must be recorded")?;
     assert_eq!(
-        covered.configuration.schedule.decisions()[1],
+        covered.configuration.schedule.decision_history()[1],
         frontier_decision
     );
-    assert_eq!(representative.schedule.decisions()[1], branch_decision);
-    assert_eq!(representative.schedule.decisions()[3], frontier_decision);
+    assert_eq!(
+        representative.schedule.decision_history()[1],
+        branch_decision
+    );
+    assert_eq!(
+        representative.schedule.decision_history()[3],
+        frontier_decision
+    );
     assert_ne!(covered.configuration.id(), representative.id());
     let materialized = run
         .materialized
@@ -665,18 +671,12 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let discovery = selectable.into_discovery()?;
     let parent = accepted_step!(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 42,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 42)),
     );
     let observed_frontier = accepted_step!(&parent, Decision::Selection(observed.clone()));
     graph.record_step(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 42,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 42)),
     )?;
     graph.record_step(&parent, Decision::Selection(observed.clone()))?;
 
@@ -699,10 +699,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     ));
     let mismatched_parent = accepted_step!(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 41,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 41)),
     );
     assert!(matches!(
         app_random_branch_decisions(&mismatched_parent, &observed, &discovery, &base_config),
@@ -768,10 +765,10 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     assert_eq!(branch_values, vec![59, 131, 209]);
     for child in &branched.report.explored {
         assert!(matches!(child.decision, Decision::Selection(_)));
-        assert_eq!(child.configuration.schedule.decisions().len(), 2);
+        assert_eq!(child.configuration.schedule.decision_history().len(), 2);
         assert!(reduce(&child.configuration.def, &child.configuration.schedule).is_ok());
     }
-    assert_eq!(observed_frontier.schedule.decisions().len(), 2);
+    assert_eq!(observed_frontier.schedule.decision_history().len(), 2);
     assert!(AppRandomSampleBudget::new(MAX_APP_RANDOM_SAMPLES_PER_DRAW + 1).is_none());
 
     let capped_scenario = ScenarioDef::from_canonical_material_with_seed_and_app_random_draw_cap(
@@ -793,10 +790,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let capped_discovery = capped_selectable.into_discovery()?;
     let capped_parent = accepted_step!(
         &capped,
-        Decision::RngDraw(RngDecision {
-            stream: capped_stream,
-            value: 9,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(capped_stream, 0, 9)),
     );
     let capped_decision = app_random_branch_decisions(
         &capped_parent,

@@ -623,7 +623,7 @@ one marker kind that is *in-band* rather than purely descriptive.
   `width:u8` ≤8, `stream_tag:lp_str`). The plugin MUST serve the requested value
   from the **single seeded decision source** of the contract
   ([`04-determinism-contract.md`](04-determinism-contract.md)), **forked per
-  `(node, stream)` by name-hash of `stream_tag`** so distinct streams are
+  `(node, stream)` by a stream key over `stream_tag`** so distinct streams are
   independent and reproducible, MUST record it as a `BackendRngEvidence` (decision
   kind 05) in the schedule, and MUST write the value back **at the doorbell trap
   icount** as a host→guest reply that obeys the injection contract ([GHC-31],
@@ -1067,7 +1067,7 @@ the transport layer by construction.
   sufficiency, opt-in additivity, and live white-box on/off fingerprint equality.
 - [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, golden-vectored): serve from
-  the single seeded decision source forked per `(node, stream_tag)` by name-hash,
+  the single seeded decision source keyed per `(node, stream_tag)`,
   record a `BackendRngEvidence` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
@@ -1081,7 +1081,7 @@ the transport layer by construction.
   engine-backed tests drive the full doorbell callback through a test-only
   `DecisionRecorder` adapter, using a node plus `stream_tag` composite
   `RngStreamId::from_name(...)` so requests are served from scenario-seed
-  name-hashed decision streams that are isolated across nodes with the same tag,
+  name-keyed decision streams that are isolated across nodes with the same tag,
   preserving the guest request id and recording `RngDraw` followed by
   `BackendRngEvidence` before writing the little-endian reply at the trap
   icount. The gate also consumes the T-GHC-13 S5 result, reruns the app-random

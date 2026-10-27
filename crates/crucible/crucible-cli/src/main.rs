@@ -86,9 +86,9 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.resolved-effect-trace.v1+cbor";
+    "application/vnd.crucible.resolved-effect-trace-bundle.v1";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.campaign-replay-closure.v1+binary";
+    "application/vnd.crucible.campaign-replay-closure.v2+binary";
 const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
 const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
@@ -698,7 +698,7 @@ enum StoreCommand {
     Status(StoreStatusArgs),
     /// Read and authenticate one complete object without repair or promotion.
     Ensure(StoreEnsureArgs),
-    /// Authenticate every bounded physical placement in one stable generation.
+    /// Authenticate every physical placement in one stable generation.
     Verify(StoreVerifyArgs),
     /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
     Gc(CampaignStoreGcArgs),
@@ -764,6 +764,16 @@ struct StoreVerifyArgs {
     /// Strict composed repository-store deployment file.
     #[arg(value_name = "STORE")]
     deployment: PathBuf,
+    /// Fail before reading more than this many summed logical bytes.
+    #[arg(
+        long,
+        value_name = "bytes",
+        default_value_t = crucible_daemon::campaign_store_composition::DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES
+    )]
+    max_logical_bytes: u64,
+    /// Parent directory for the private inventory spool [default: deployment directory].
+    #[arg(long, value_name = "path")]
+    spool_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

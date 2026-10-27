@@ -930,17 +930,17 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
         &resume_request.schedule,
         &resume_request.checkpoint,
         7,
-        replay_payload.clone(),
+        vec![replay_payload.clone()],
     )
     .expect("bounded snapshot replay closure should build");
     let resume_with_closure = resume_request
         .clone()
         .with_replay_closure(replay_closure.clone());
     let resume_closure_wire = format!(
-        "{resume_prefix}campaign-replay-closure-version={}\ncampaign-replay-closure-identity={}\ncampaign-replay-closure-size={}\ncampaign-replay-closure-payload={}\n{observation_wire}",
+        "{resume_prefix}campaign-replay-closure-version={}\ncampaign-replay-closure-identity={}\ncampaign-replay-closure-frames=1\ncampaign-replay-closure-frame-size={}\ncampaign-replay-closure-frame={}\n{observation_wire}",
         replay_closure.schema_version(),
         replay_closure.identity().to_hex(),
-        replay_closure.payload_len(),
+        replay_payload.len(),
         hex_encode(&replay_payload),
     );
     assert_eq!(
@@ -955,12 +955,12 @@ fn rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants() 
     );
     let wrong_size = resume_closure_wire.replace(
         &format!(
-            "campaign-replay-closure-size={}\n",
-            replay_closure.payload_len()
+            "campaign-replay-closure-frame-size={}\n",
+            replay_payload.len()
         ),
         &format!(
-            "campaign-replay-closure-size={}\n",
-            replay_closure.payload_len().saturating_add(1)
+            "campaign-replay-closure-frame-size={}\n",
+            replay_payload.len().saturating_add(1)
         ),
     );
     assert!(parse_resume_session_request(wrong_size.as_bytes()).is_err());

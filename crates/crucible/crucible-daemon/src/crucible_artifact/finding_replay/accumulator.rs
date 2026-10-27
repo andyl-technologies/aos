@@ -1,25 +1,30 @@
-//! Deduplicated replay-record accumulation and validation.
+//! Deduplicated replay-record accumulation, retained-record access, and
+//! validation.
+//!
+//! Each newly seen record is written to the transcript's
+//! [`ReplayRecordStore`] as it arrives. Memory keeps only the identity set, the
+//! per-kind identity tables in first-seen order, and the aggregate byte
+//! charge, so retained replay evidence occupies the store, not the process.
 
 use super::*;
+use crate::{ReplayRecord, ReplayRecordError, ReplayRecordStore};
 
+/// Typed identities of retained records, one table per record kind.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::crucible_artifact) struct ReplayRecordAccumulator {
-    pub(super) ids: BTreeSet<crucible_store::content_store::ContentId>,
-    configurations: Vec<ConfigurationArtifact>,
-    measurements: Vec<MeasurementSet>,
-    properties: Vec<PropertyVerdictSet>,
-    coverage: Vec<CoverageProjection>,
-    declarations: Vec<SelectableDeclaration>,
-    domains: Vec<ChoiceDomain>,
-    opportunities: Vec<ChoiceOpportunity>,
-    selections: Vec<Selection>,
-    pub(super) canonical_bytes: usize,
+pub(in crate::crucible_artifact) struct ReplayRecordIds {
+    pub(in crate::crucible_artifact) configurations: Vec<ConfigurationArtifactId>,
+    pub(in crate::crucible_artifact) measurements: Vec<MeasurementSetId>,
+    pub(in crate::crucible_artifact) properties: Vec<PropertyVerdictSetId>,
+    pub(in crate::crucible_artifact) coverage: Vec<CoverageProjectionId>,
+    pub(in crate::crucible_artifact) declarations: Vec<SelectableId>,
+    pub(in crate::crucible_artifact) domains: Vec<ChoiceDomainId>,
+    pub(in crate::crucible_artifact) opportunities: Vec<ChoiceOpportunityId>,
+    pub(in crate::crucible_artifact) selections: Vec<SelectionId>,
 }
 
-impl ReplayRecordAccumulator {
-    pub(super) const fn new() -> Self {
+impl ReplayRecordIds {
+    pub(in crate::crucible_artifact) const fn new() -> Self {
         Self {
-            ids: BTreeSet::new(),
             configurations: Vec::new(),
             measurements: Vec::new(),
             properties: Vec::new(),
@@ -28,6 +33,206 @@ impl ReplayRecordAccumulator {
             domains: Vec::new(),
             opportunities: Vec::new(),
             selections: Vec::new(),
+        }
+    }
+
+    /// Returns every identity in canonical table order.
+    pub(in crate::crucible_artifact) fn content_ids(&self) -> impl Iterator<Item = ContentId> + '_ {
+        self.configurations
+            .iter()
+            .map(|id| id.content_id())
+            .chain(self.measurements.iter().map(|id| id.content_id()))
+            .chain(self.properties.iter().map(|id| id.content_id()))
+            .chain(self.coverage.iter().map(|id| id.content_id()))
+            .chain(self.declarations.iter().map(|id| id.content_id()))
+            .chain(self.domains.iter().map(|id| id.content_id()))
+            .chain(self.opportunities.iter().map(|id| id.content_id()))
+            .chain(self.selections.iter().map(|id| id.content_id()))
+    }
+
+    fn append(&mut self, other: Self) {
+        self.configurations.extend(other.configurations);
+        self.measurements.extend(other.measurements);
+        self.properties.extend(other.properties);
+        self.coverage.extend(other.coverage);
+        self.declarations.extend(other.declarations);
+        self.domains.extend(other.domains);
+        self.opportunities.extend(other.opportunities);
+        self.selections.extend(other.selections);
+    }
+}
+
+/// The distinct records both replay passes retain, by identity.
+///
+/// The record bytes stay in the stores behind [`Self::sources`]; every read
+/// authenticates the record against its identity. Equality compares the
+/// identities and charges, never the store handles.
+#[derive(Clone, Debug)]
+pub(in crate::crucible_artifact) struct PreparedFindingReplayRecords {
+    pub(in crate::crucible_artifact) ids: ReplayRecordIds,
+    pub(in crate::crucible_artifact) sources: crate::ReplayRecordSources,
+    pub(in crate::crucible_artifact) record_count: usize,
+    pub(in crate::crucible_artifact) canonical_bytes: u64,
+}
+
+impl PartialEq for PreparedFindingReplayRecords {
+    fn eq(&self, other: &Self) -> bool {
+        self.ids == other.ids
+            && self.record_count == other.record_count
+            && self.canonical_bytes == other.canonical_bytes
+    }
+}
+
+impl Eq for PreparedFindingReplayRecords {}
+
+impl PreparedFindingReplayRecords {
+    /// Reads and authenticates one retained record.
+    pub(in crate::crucible_artifact) fn load<T: crate::ReplayRecord>(
+        &self,
+        id: T::Id,
+    ) -> Result<T, crate::ReplayRecordError> {
+        crate::load_replay_record::<T>(&self.sources, id).map(|(record, _)| record)
+    }
+
+    /// Visits every retained record of one kind in table order.
+    ///
+    /// Records are read and authenticated one at a time.
+    pub(in crate::crucible_artifact) fn try_for_each<T, E>(
+        &self,
+        ids: &[T::Id],
+        mut visit: impl FnMut(&T) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        T: crate::ReplayRecord,
+        E: From<crate::ReplayRecordError>,
+    {
+        for id in ids {
+            visit(&self.load::<T>(*id)?)?;
+        }
+        Ok(())
+    }
+
+    /// Retains one more record, held in a new memory store, for tests that
+    /// tamper with a prepared closure.
+    #[cfg(test)]
+    pub(in crate::crucible_artifact) fn insert_for_test<T: crate::ReplayRecord>(
+        &mut self,
+        record: &T,
+        table: impl FnOnce(&mut ReplayRecordIds) -> &mut Vec<T::Id>,
+    ) -> T::Id {
+        let id = record
+            .record_id()
+            .unwrap_or_else(|error| panic!("test record identity: {error}"));
+        let mut store = crate::ReplayRecordStore::memory();
+        store
+            .put(T::content_id(id), &record.encode())
+            .unwrap_or_else(|error| panic!("test record write: {error}"));
+        self.sources.extend(store.sources());
+        table(&mut self.ids).push(id);
+        id
+    }
+
+    /// Visits every retained record's canonical bytes in table order.
+    ///
+    /// Each record is read and authenticated before it is visited.
+    pub(in crate::crucible_artifact) fn try_for_each_encoded<E>(
+        &self,
+        mut visit: impl FnMut(ContentId, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<crate::ReplayRecordError>,
+    {
+        fn table<T: crate::ReplayRecord, E: From<crate::ReplayRecordError>>(
+            records: &PreparedFindingReplayRecords,
+            ids: &[T::Id],
+            visit: &mut impl FnMut(ContentId, &[u8]) -> Result<(), E>,
+        ) -> Result<(), E> {
+            for id in ids {
+                let record = records.load::<T>(*id)?;
+                visit(T::content_id(*id), &record.encode())?;
+            }
+            Ok(())
+        }
+
+        let ids = &self.ids;
+        table::<ConfigurationArtifact, E>(self, &ids.configurations, &mut visit)?;
+        table::<MeasurementSet, E>(self, &ids.measurements, &mut visit)?;
+        table::<PropertyVerdictSet, E>(self, &ids.properties, &mut visit)?;
+        table::<CoverageProjection, E>(self, &ids.coverage, &mut visit)?;
+        table::<SelectableDeclaration, E>(self, &ids.declarations, &mut visit)?;
+        table::<ChoiceDomain, E>(self, &ids.domains, &mut visit)?;
+        table::<ChoiceOpportunity, E>(self, &ids.opportunities, &mut visit)?;
+        table::<Selection, E>(self, &ids.selections, &mut visit)
+    }
+}
+
+/// The records one replay adds, prepared before any of them is admitted.
+#[derive(Default)]
+struct PendingRecords {
+    ids: ReplayRecordIds,
+    writes: Vec<(ContentId, Vec<u8>)>,
+    seen: BTreeSet<ContentId>,
+    bytes: u64,
+}
+
+impl PendingRecords {
+    /// Stages `record` unless it is already retained or staged.
+    fn stage<T: ReplayRecord>(
+        &mut self,
+        retained: &BTreeSet<ContentId>,
+        record: &T,
+        table: impl FnOnce(&mut ReplayRecordIds) -> &mut Vec<T::Id>,
+    ) -> Result<T::Id, CrucibleArtifactError> {
+        let id = record.record_id()?;
+        let content = T::content_id(id);
+        if retained.contains(&content) || !self.seen.insert(content) {
+            return Ok(id);
+        }
+
+        let bytes = record.encode();
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
+        self.writes.push((content, bytes));
+        table(&mut self.ids).push(id);
+        Ok(id)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::crucible_artifact) struct ReplayRecordAccumulator {
+    pub(super) ids: BTreeSet<ContentId>,
+    tables: ReplayRecordIds,
+    store: ReplayRecordStore,
+    pub(super) canonical_bytes: u64,
+}
+
+/// Records are content-addressed, so equal identities name equal records
+/// wherever the store keeps them.
+impl PartialEq for ReplayRecordAccumulator {
+    fn eq(&self, other: &Self) -> bool {
+        self.ids == other.ids
+            && self.tables == other.tables
+            && self.canonical_bytes == other.canonical_bytes
+    }
+}
+
+impl Eq for ReplayRecordAccumulator {}
+
+impl Default for ReplayRecordAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplayRecordAccumulator {
+    pub(super) const fn new() -> Self {
+        Self::with_store(ReplayRecordStore::memory())
+    }
+
+    pub(super) const fn with_store(store: ReplayRecordStore) -> Self {
+        Self {
+            ids: BTreeSet::new(),
+            tables: ReplayRecordIds::new(),
+            store,
             canonical_bytes: 0,
         }
     }
@@ -47,27 +252,13 @@ impl ReplayRecordAccumulator {
                 reason,
             } => {
                 validate_incompatible_configuration(candidate, &configuration)?;
-                let configuration_id = configuration.id()?;
-                let canonical_bytes = configuration.canonical_bytes().len();
-                if self.ids.insert(configuration_id.content_id()) {
-                    self.canonical_bytes = self
-                        .canonical_bytes
-                        .checked_add(canonical_bytes)
-                        .ok_or(CampaignCodecError::LimitExceeded {
-                            limit: "finding-replay-retained-record-bytes",
-                        })?;
-                    if self.ids.len() > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS
-                        || self.canonical_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES
-                    {
-                        return Err(CampaignCodecError::LimitExceeded {
-                            limit: "finding-replay-retained-record-bytes",
-                        }
-                        .into());
-                    }
-                    self.configurations.push(configuration);
-                }
+                let mut pending = PendingRecords::default();
+                let configuration = pending.stage(&self.ids, &configuration, |tables| {
+                    &mut tables.configurations
+                })?;
+                self.admit(pending, 0)?;
                 Ok(RecordedFindingReplay::DeterministicallyIncompatible {
-                    configuration: configuration_id,
+                    configuration,
                     reason,
                 })
             }
@@ -79,22 +270,43 @@ impl ReplayRecordAccumulator {
         replay: CrucibleFindingReplayEvidence,
     ) -> Result<RecordedFindingReplay, CrucibleArtifactError> {
         replay.validate_signature_ownership()?;
-        let configuration = replay.configuration.id()?;
-        let measurements = replay.measurements.id()?;
-        let properties = replay.properties.id()?;
-        let coverage = replay.coverage.id()?;
+
+        let mut pending = PendingRecords::default();
+        let configuration = pending.stage(&self.ids, &replay.configuration, |tables| {
+            &mut tables.configurations
+        })?;
+        let measurements = pending.stage(&self.ids, &replay.measurements, |tables| {
+            &mut tables.measurements
+        })?;
+        let properties = pending.stage(&self.ids, &replay.properties, |tables| {
+            &mut tables.properties
+        })?;
+        let coverage = pending.stage(&self.ids, &replay.coverage, |tables| &mut tables.coverage)?;
+        for declaration in &replay.declarations {
+            pending.stage(&self.ids, declaration, |tables| &mut tables.declarations)?;
+        }
+        for domain in &replay.domains {
+            pending.stage(&self.ids, domain, |tables| &mut tables.domains)?;
+        }
         let opportunities = replay
             .opportunities
             .iter()
-            .map(ChoiceOpportunity::id)
+            .map(|opportunity| {
+                pending.stage(&self.ids, opportunity, |tables| &mut tables.opportunities)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let selections = replay
             .selections
             .iter()
-            .map(Selection::id)
+            .map(|selection| pending.stage(&self.ids, selection, |tables| &mut tables.selections))
             .collect::<Result<Vec<_>, _>>()?;
-        let next_canonical_bytes = self.preflight(&replay)?;
-        let recorded = RecordedFindingReplay::Observed {
+
+        let signature_bytes = replay
+            .signature
+            .as_ref()
+            .map_or(0, |signature| signature.canonical_bytes().len() as u64);
+        self.admit(pending, signature_bytes)?;
+        Ok(RecordedFindingReplay::Observed {
             signature: replay.signature.map(Box::new),
             configuration,
             measurements,
@@ -102,140 +314,57 @@ impl ReplayRecordAccumulator {
             coverage,
             opportunities,
             selections,
-        };
-
-        if self.ids.insert(configuration.content_id()) {
-            self.configurations.push(replay.configuration);
-        }
-        if self.ids.insert(replay.measurements.id()?.content_id()) {
-            self.measurements.push(replay.measurements);
-        }
-        if self.ids.insert(replay.properties.id()?.content_id()) {
-            self.properties.push(replay.properties);
-        }
-        if self.ids.insert(replay.coverage.id()?.content_id()) {
-            self.coverage.push(replay.coverage);
-        }
-        for declaration in replay.declarations {
-            if self.ids.insert(declaration.id()?.content_id()) {
-                self.declarations.push(declaration);
-            }
-        }
-        for domain in replay.domains {
-            if self.ids.insert(domain.id()?.content_id()) {
-                self.domains.push(domain);
-            }
-        }
-        for opportunity in replay.opportunities {
-            if self.ids.insert(opportunity.id()?.content_id()) {
-                self.opportunities.push(opportunity);
-            }
-        }
-        for selection in replay.selections {
-            if self.ids.insert(selection.id()?.content_id()) {
-                self.selections.push(selection);
-            }
-        }
-        self.canonical_bytes = next_canonical_bytes;
-        Ok(recorded)
+        })
     }
 
-    pub(super) fn preflight(
-        &self,
-        replay: &CrucibleFindingReplayEvidence,
-    ) -> Result<usize, CrucibleArtifactError> {
-        let mut candidate_records = BTreeMap::from([
-            (
-                replay.configuration.id()?.content_id(),
-                replay.configuration.canonical_bytes().len(),
-            ),
-            (
-                replay.measurements.id()?.content_id(),
-                replay.measurements.canonical_bytes().len(),
-            ),
-            (
-                replay.properties.id()?.content_id(),
-                replay.properties.canonical_bytes().len(),
-            ),
-            (
-                replay.coverage.id()?.content_id(),
-                replay.coverage.canonical_bytes().len(),
-            ),
-        ]);
-        for declaration in &replay.declarations {
-            candidate_records.insert(
-                declaration.id()?.content_id(),
-                declaration.canonical_bytes().len(),
-            );
-        }
-        for domain in &replay.domains {
-            candidate_records.insert(domain.id()?.content_id(), domain.canonical_bytes().len());
-        }
-        for opportunity in &replay.opportunities {
-            candidate_records.insert(
-                opportunity.id()?.content_id(),
-                opportunity.canonical_bytes().len(),
-            );
-        }
-        for selection in &replay.selections {
-            candidate_records.insert(
-                selection.id()?.content_id(),
-                selection.canonical_bytes().len(),
-            );
-        }
-
-        let new_records = candidate_records
-            .keys()
-            .filter(|id| !self.ids.contains(id))
-            .count();
-        if self
-            .ids
-            .len()
-            .checked_add(new_records)
-            .is_none_or(|count| count > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)
-        {
+    /// Charges, writes, and then retains one replay's new records.
+    ///
+    /// Admission is atomic: a refused or failed replay leaves the retained
+    /// identities and charges unchanged. Records written before a later write
+    /// fails stay in the store unreferenced, and an identical retry rewrites
+    /// them idempotently.
+    fn admit(
+        &mut self,
+        pending: PendingRecords,
+        signature_bytes: u64,
+    ) -> Result<(), CrucibleArtifactError> {
+        let count = self.ids.len().saturating_add(pending.writes.len());
+        if count > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "finding-replay-retained-record-count",
             }
             .into());
         }
-        let record_bytes = candidate_records
-            .iter()
-            .filter(|(id, _)| !self.ids.contains(id))
-            .try_fold(0usize, |total, (_, bytes)| total.checked_add(*bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        let signature_bytes = replay
-            .signature
-            .as_ref()
-            .map_or(0, |signature| signature.canonical_bytes().len());
-        let next_bytes = self
+        let bytes = self
             .canonical_bytes
-            .checked_add(record_bytes)
-            .and_then(|bytes| bytes.checked_add(signature_bytes))
-            .ok_or(CampaignCodecError::LimitExceeded {
-                limit: "finding-replay-retained-record-bytes",
-            })?;
-        if next_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
+            .saturating_add(pending.bytes)
+            .saturating_add(signature_bytes);
+        if bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "finding-replay-retained-record-bytes",
             }
             .into());
         }
-        Ok(next_bytes)
+
+        for (record, bytes) in &pending.writes {
+            self.store
+                .put(*record, bytes)
+                .map_err(|source| ReplayRecordError::Unwritable {
+                    record: *record,
+                    source,
+                })?;
+        }
+        self.ids
+            .extend(pending.writes.iter().map(|(record, _)| *record));
+        self.tables.append(pending.ids);
+        self.canonical_bytes = bytes;
+        Ok(())
     }
 
     pub(in crate::crucible_artifact) fn finish(self) -> PreparedFindingReplayRecords {
         PreparedFindingReplayRecords {
-            configurations: self.configurations,
-            measurements: self.measurements,
-            properties: self.properties,
-            coverage: self.coverage,
-            declarations: self.declarations,
-            domains: self.domains,
-            opportunities: self.opportunities,
-            selections: self.selections,
+            sources: self.store.sources(),
+            ids: self.tables,
             record_count: self.ids.len(),
             canonical_bytes: self.canonical_bytes,
         }
@@ -321,30 +450,9 @@ pub(super) fn validate_owned_replay_selections(
         def: candidate.artifact.scenario_def().clone(),
         schedule: candidate.artifact.schedule().clone(),
     };
-    let selection_count = configuration
-        .schedule
-        .decisions()
-        .iter()
-        .filter(|decision| matches!(decision, Decision::Selection(_)))
-        .count();
-    if selection_count > MAX_CONFIGURATION_SELECTION_DECISIONS {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    let campaign_branch_count = replay
-        .selections
-        .iter()
-        .filter(|selection| matches!(selection.origin(), SelectionOrigin::CampaignBranch { .. }))
-        .count();
-    if replay
-        .configuration
-        .payload()
-        .len()
-        .checked_mul(campaign_branch_count)
-        .is_none_or(|bytes| bytes > MAX_CONFIGURATION_BRANCH_PREFIX_BYTES)
-    {
-        return Err(CrucibleArtifactError::SelectionResolutionLimit);
-    }
-    for (index, decision) in configuration.schedule.decisions().iter().enumerate() {
+    // Campaign-branch parents are identified prefixes of this one
+    // configuration, so authenticating them copies no schedule.
+    for (index, decision) in configuration.schedule.decision_history().iter().enumerate() {
         let Decision::Selection(decision) = decision else {
             continue;
         };
@@ -371,10 +479,7 @@ pub(super) fn validate_owned_replay_selections(
                 selection.validate_replay(opportunity, domain)?;
             }
             SelectionOrigin::CampaignBranch { .. } => {
-                let parent = Configuration {
-                    def: configuration.def.clone(),
-                    schedule: configuration.schedule.prefix(index)?,
-                };
+                let parent = ConfigurationPrefix::new(&configuration, index)?;
                 selection.validate_branch_replay(
                     opportunity,
                     domain,
@@ -392,12 +497,11 @@ pub(super) fn validate_owned_replay_selections(
                         domain,
                     )?;
                     let branch = selectable.resolve_branch(selection)?;
-                    let end = index
-                        .checked_add(branch.decisions().len())
-                        .ok_or(CrucibleArtifactError::SelectionResolutionLimit)?;
-                    if end > configuration.schedule.len()
-                        || configuration.schedule.decisions()[index..end] != *branch.decisions()
-                    {
+                    if !super::super::configuration_codec::schedule_records_at(
+                        &configuration,
+                        index,
+                        branch.decisions(),
+                    ) {
                         return Err(CrucibleArtifactError::SignalFaultScheduleMismatch);
                     }
                     if branch.decisions().len() == 2 {
@@ -423,7 +527,7 @@ pub(super) fn validate_owned_replay_selections(
     }
     if configuration
         .schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .any(|(index, decision)| {

@@ -76,8 +76,9 @@ fn checkpoint_world() -> World {
 }
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }

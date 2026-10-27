@@ -138,7 +138,7 @@ fn unchanged_authenticated_child_is_not_read_again() {
     fixture.backend.reads.lock().expect("read counts").clear();
     let mut positions = BTreeSet::new();
     let mut roots = BTreeSet::new();
-    let mut values = BTreeSet::new();
+    let mut values = BTreeMap::new();
 
     fixture
         .map
@@ -154,7 +154,7 @@ fn unchanged_authenticated_child_is_not_read_again() {
 
     assert_eq!(positions, BTreeSet::from([(next, Vec::new())]));
     assert_eq!(roots, BTreeSet::from([next]));
-    assert_eq!(values, BTreeSet::from([fixture.third_value]));
+    assert_eq!(values, BTreeMap::from([(fixture.third_value, None)]));
     assert!(
         !fixture
             .backend
@@ -190,7 +190,7 @@ fn changed_count_for_reused_child_still_reads_and_refuses() {
         forged_id,
         &mut BTreeSet::new(),
         &mut BTreeSet::new(),
-        &mut BTreeSet::new(),
+        &mut BTreeMap::new(),
         100,
     );
 
@@ -227,7 +227,7 @@ fn changed_child_body_is_still_read_and_authenticated() {
         next,
         &mut BTreeSet::new(),
         &mut BTreeSet::new(),
-        &mut BTreeSet::new(),
+        &mut BTreeMap::new(),
         100,
     );
 
@@ -270,7 +270,7 @@ fn shared_nested_roots_have_bounded_authenticated_work() {
         .store(512, Ordering::Relaxed);
     let mut positions = BTreeSet::new();
     let mut roots = BTreeSet::new();
-    let mut values = BTreeSet::new();
+    let mut values = BTreeMap::new();
 
     fixture
         .map
@@ -279,7 +279,7 @@ fn shared_nested_roots_have_bounded_authenticated_work() {
 
     assert_eq!(roots, expected_roots);
     assert_eq!(positions.len(), 6);
-    assert_eq!(values, BTreeSet::from([fixture.third_value]));
+    assert_eq!(values, BTreeMap::from([(fixture.third_value, None)]));
     assert!(fixture.backend.operations.load(Ordering::Relaxed) <= 100);
 }
 
@@ -337,7 +337,7 @@ fn nested_root_reuse_keeps_distinct_prior_pairs() {
         )
         .expect("reuse common map at both owners")
         .content_id();
-    let mut values = BTreeSet::new();
+    let mut values = BTreeMap::new();
 
     fixture
         .map
@@ -351,7 +351,10 @@ fn nested_root_reuse_keeps_distinct_prior_pairs() {
         )
         .expect("different prior pair still authenticates new ownership");
 
-    assert_eq!(values, BTreeSet::from([value("first"), value("second")]));
+    assert_eq!(
+        values.into_keys().collect::<BTreeSet<_>>(),
+        BTreeSet::from([value("first"), value("second")])
+    );
 }
 
 #[test]
@@ -371,7 +374,7 @@ fn moved_authenticated_child_still_requires_its_new_prefix() {
             next,
             &mut BTreeSet::new(),
             &mut BTreeSet::new(),
-            &mut BTreeSet::new(),
+            &mut BTreeMap::new(),
             100,
         ),
         Err(CampaignStoreError::InvalidMerkle {
@@ -399,6 +402,43 @@ fn missing_new_leaf_is_not_treated_as_prior_authenticated_content() {
         .expect("publish new owner root");
 
     assert!(matches!(fixture.map.collect_changed_node_positions(
-        fixture.prior, next, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut BTreeSet::new(), 100,
+        fixture.prior, next, &mut BTreeSet::new(), &mut BTreeSet::new(), &mut BTreeMap::new(), 100,
     ), Err(CampaignStoreError::Store(StoreError::NotFound { id })) if id == missing));
+}
+
+#[test]
+fn replaced_values_report_only_their_same_key_predecessor() {
+    let fixture = fixture();
+    let next = fixture
+        .map
+        .insert(fixture.prior, key(0x10), fixture.third_value)
+        .expect("replace one existing key")
+        .content_id();
+    let added = fixture
+        .map
+        .insert(next, key(0x20), value("second"))
+        .expect("add one unrelated key")
+        .content_id();
+    let mut values = BTreeMap::new();
+
+    fixture
+        .map
+        .collect_changed_node_positions(
+            fixture.prior,
+            added,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            &mut values,
+            100,
+        )
+        .expect("charge replacement and addition");
+
+    // The replaced key's prior value is the predecessor; a new key has none.
+    assert_eq!(
+        values,
+        BTreeMap::from([
+            (fixture.third_value, Some(value("first"))),
+            (value("second"), None),
+        ])
+    );
 }

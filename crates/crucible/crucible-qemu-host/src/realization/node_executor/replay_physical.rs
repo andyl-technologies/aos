@@ -53,6 +53,17 @@ impl QemuReplayValidationExecutor {
         Vec<crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
         QemuVmRealizationError,
     > {
+        self.measure_replay(ReplayPhase::ChoiceDrain, |executor| {
+            executor.drain_replay_selectable_requests_untimed()
+        })
+    }
+
+    fn drain_replay_selectable_requests_untimed(
+        &mut self,
+    ) -> Result<
+        Vec<crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest>,
+        QemuVmRealizationError,
+    > {
         self.active_node
             .as_mut()
             .ok_or_else(|| QemuVmRealizationError::Executor {
@@ -73,6 +84,16 @@ impl QemuReplayValidationExecutor {
     /// Returns an error when no replay node is active or the physical pending
     /// request does not accept the exact recorded reply.
     pub fn enqueue_replay_selectable_reply(
+        &mut self,
+        pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        reply: &crucible_qemu_protocol::SelectionReply,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ChoiceReply, |executor| {
+            executor.enqueue_replay_selectable_reply_untimed(pending, reply)
+        })
+    }
+
+    fn enqueue_replay_selectable_reply_untimed(
         &mut self,
         pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
         reply: &crucible_qemu_protocol::SelectionReply,
@@ -103,7 +124,18 @@ impl QemuReplayValidationExecutor {
         &mut self,
         thin: QemuReplayOracleThinObservation,
         input: BackendInput,
-        delivery: crucible_engine::SimInstant,
+        delivery_icount: Icount,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::Input, |executor| {
+            executor.enqueue_materialized_replay_input_untimed(thin, input, delivery_icount)
+        })
+    }
+
+    fn enqueue_materialized_replay_input_untimed(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        input: BackendInput,
+        delivery_icount: Icount,
     ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
         self.validate_observation(
             &thin.authority,
@@ -113,7 +145,7 @@ impl QemuReplayValidationExecutor {
         )?;
         self.validate_active_replay_runtime(&thin.runtime)?;
         let current = replay_node_icount(&thin.runtime, &self.node)?;
-        if input.node != self.node || delivery.ticks < current.retired {
+        if input.node != self.node || delivery_icount < current {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded replay backend input",
                 message: String::from("input node or delivery count differs from the live replay"),
@@ -131,7 +163,7 @@ impl QemuReplayValidationExecutor {
             node,
             &BackendEffect::DeliverInput(input),
             VirtualTime {
-                ticks: delivery.ticks,
+                ticks: delivery_icount.retired,
             },
         )
         .map_err(|source| node_backend_error("enqueue guarded replay backend input", source))?;
@@ -143,6 +175,130 @@ impl QemuReplayValidationExecutor {
             authority: Arc::clone(&self.authority),
             generation,
         })
+    }
+
+    /// Arms one recorded preemption on the thin replay node.
+    ///
+    /// `decision.at` is the node-local physical counter the scheduler
+    /// commanded. The command authorizes the window from the thin node's
+    /// current counter through `decision.at`. Patched QEMU then applies it
+    /// where the live RUN did: exactly at `decision.at` for a halted guest, and
+    /// at a running guest's first boundary at or after it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale, the preemption belongs
+    /// to another node, its counter is not ahead of the thin node, or the
+    /// shared-memory mailbox refuses the command.
+    pub fn arm_materialized_replay_preemption(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        decision: &crucible_engine::PreemptionDecision,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ModelDecision, |executor| {
+            executor.arm_materialized_replay_preemption_untimed(thin, decision)
+        })
+    }
+
+    fn arm_materialized_replay_preemption_untimed(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        decision: &crucible_engine::PreemptionDecision,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        let current = replay_node_icount(&thin.runtime, &self.node)?;
+        if decision.node != self.node {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay preemption",
+                message: String::from("preemption belongs to another node"),
+            });
+        }
+        if decision.at.ticks <= current.retired {
+            return Err(QemuVmRealizationError::ReplayOracleUnsupported {
+                node: self.node.name.clone(),
+                effect: crate::QemuReplayOracleUnsupportedEffect::PreemptionNotAhead {
+                    at: decision.at.ticks,
+                    current: current.retired,
+                },
+            });
+        }
+
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "arm guarded replay preemption",
+                message: String::from("no QEMU replay node is active"),
+            })?;
+        node.publish_scheduler_preemption(
+            decision,
+            Icount {
+                retired: decision.at.ticks,
+            },
+        )
+        .map_err(|source| node_backend_error("arm guarded replay preemption", source))?;
+
+        let generation = self.issue_observation_generation()?;
+        self.thin_observation_generation = Some(generation);
+        Ok(QemuReplayOracleThinObservation {
+            runtime: thin.runtime,
+            authority: Arc::clone(&self.authority),
+            generation,
+        })
+    }
+
+    /// Confirms that QEMU took an armed preemption at its recorded counter.
+    ///
+    /// The thin node must stand at `decision.at`, or less than one retirement
+    /// past it, which is where a running guest meets the command at its first
+    /// boundary at or after it. The plugin must also have handed the command
+    /// to patched QEMU, which acknowledges only an accepted injection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the observation is stale, the thin node stands
+    /// elsewhere, or the command is still waiting in the mailbox.
+    pub fn confirm_materialized_replay_preemption(
+        &mut self,
+        thin: &QemuReplayOracleThinObservation,
+        decision: &crucible_engine::PreemptionDecision,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.validate_observation(
+            &thin.authority,
+            thin.generation,
+            self.thin_observation_generation,
+            "thin replay observation",
+        )?;
+        self.validate_active_replay_runtime(&thin.runtime)?;
+        let current = replay_node_icount(&thin.runtime, &self.node)?;
+        let node = self
+            .active_node
+            .as_mut()
+            .ok_or_else(|| QemuVmRealizationError::Executor {
+                operation: "confirm guarded replay preemption",
+                message: String::from("no QEMU replay node is active"),
+            })?;
+        let pending = node
+            .scheduler_preemption_pending()
+            .map_err(|source| node_backend_error("confirm guarded replay preemption", source))?;
+        if !preemption_taken_at(current, decision) || pending {
+            return Err(QemuVmRealizationError::InvalidCheckpoint {
+                role: "guarded replay preemption",
+                message: format!(
+                    "thin replay stands at {} with the command {} instead of at {} with it applied",
+                    current.retired,
+                    if pending { "pending" } else { "taken" },
+                    decision.at.ticks
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// Advances thin replay toward a checkpoint ceiling without changing its schedule.
@@ -169,6 +325,23 @@ impl QemuReplayValidationExecutor {
         ),
         QemuVmRealizationError,
     > {
+        self.measure_replay(ReplayPhase::Advance, |executor| {
+            executor.advance_materialized_replay_to_ceiling_untimed(thin, ceiling)
+        })
+    }
+
+    fn advance_materialized_replay_to_ceiling_untimed(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        ceiling: Icount,
+    ) -> Result<
+        (
+            QemuReplayOracleThinObservation,
+            AdvanceOutcome,
+            Option<Icount>,
+        ),
+        QemuVmRealizationError,
+    > {
         self.validate_observation(
             &thin.authority,
             thin.generation,
@@ -179,6 +352,7 @@ impl QemuReplayValidationExecutor {
         self.validate_active_replay_runtime(&runtime)?;
 
         let current = replay_node_icount(&runtime, &self.node)?;
+        self.performance.observe_physical(current.retired);
         if ceiling.retired <= current.retired {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "thin replay physical boundary",
@@ -209,33 +383,15 @@ impl QemuReplayValidationExecutor {
                 .then_some(state.next_deadline)
                 .flatten()
         });
-        if current_icount.retired > ceiling.retired {
-            return Err(QemuVmRealizationError::Executor {
-                operation: "advance guarded replay to physical boundary",
-                message: String::from("QEMU exceeded the authenticated replay ceiling"),
-            });
-        }
-        match outcome {
-            AdvanceOutcome::ReachedHorizon if current_icount != ceiling => {
-                return Err(QemuVmRealizationError::Executor {
-                    operation: "advance guarded replay to physical boundary",
-                    message: String::from("QEMU reported the ceiling without reaching it"),
-                });
-            }
-            AdvanceOutcome::Paused { at } if at != current_icount => {
-                return Err(QemuVmRealizationError::Executor {
-                    operation: "advance guarded replay to physical boundary",
-                    message: String::from("QEMU pause count differs from the live node count"),
-                });
-            }
-            _ => {}
-        }
+        validate_replay_advance(current_icount, ceiling, &outcome)?;
+
         // The opaque observation keeps its last sampled identity while the
         // physical count, event-log offset, and generation bind this step.
         // The oracle takes a fresh full fingerprint at the final comparison.
         runtime
             .node_icounts
             .insert(self.node.clone(), current_icount);
+        self.performance.observe_physical(current_icount.retired);
         runtime.event_log = self.event_log.offset();
         let generation = self.issue_observation_generation()?;
         self.thin_observation_generation = Some(generation);
@@ -259,6 +415,16 @@ impl QemuReplayValidationExecutor {
     ///
     /// Returns an error when the observation or transition is stale or invalid.
     pub fn apply_materialized_replay_decision(
+        &mut self,
+        thin: QemuReplayOracleThinObservation,
+        request: QemuVmReplayRequest,
+    ) -> Result<QemuReplayOracleThinObservation, QemuVmRealizationError> {
+        self.measure_replay(ReplayPhase::ModelDecision, |executor| {
+            executor.apply_materialized_replay_decision_untimed(thin, request)
+        })
+    }
+
+    fn apply_materialized_replay_decision_untimed(
         &mut self,
         thin: QemuReplayOracleThinObservation,
         request: QemuVmReplayRequest,
@@ -312,6 +478,32 @@ impl QemuReplayValidationExecutor {
     }
 }
 
+/// Checks one bounded replay step against the live node count.
+///
+/// A reached horizon attests settlement through the ceiling (RFC-0010
+/// SCHED-12). The live count is the last retirement at or below the ceiling,
+/// so it may stop short of it; only crossing the ceiling is refused.
+fn validate_replay_advance(
+    current_icount: Icount,
+    ceiling: Icount,
+    outcome: &AdvanceOutcome,
+) -> Result<(), QemuVmRealizationError> {
+    let refusal = |message: &str| QemuVmRealizationError::Executor {
+        operation: "advance guarded replay to physical boundary",
+        message: String::from(message),
+    };
+
+    if current_icount.retired > ceiling.retired {
+        return Err(refusal("QEMU exceeded the authenticated replay ceiling"));
+    }
+    match outcome {
+        AdvanceOutcome::Paused { at } if *at != current_icount => {
+            Err(refusal("QEMU pause count differs from the live node count"))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn replay_node_icount(
     runtime: &RuntimeState,
     node: &NodeId,
@@ -324,6 +516,17 @@ fn replay_node_icount(
     })
 }
 
+/// Returns whether a node standing at `current` can have taken `decision`.
+///
+/// A halted guest takes a preemption exactly at `decision.at`. A running guest
+/// never moves its clock without a retirement, so it takes it at its first
+/// boundary at or after `decision.at`, less than one retirement later
+/// (RFC-0010 SCHED-12, TIME-30).
+fn preemption_taken_at(current: Icount, decision: &crucible_engine::PreemptionDecision) -> bool {
+    current.retired >= decision.at.ticks
+        && current.retired - decision.at.ticks < crucible_engine::SIM_TICKS_PER_INSTRUCTION
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -331,6 +534,35 @@ mod tests {
     use crucible_engine::{Configuration, EventLogOffset, ScenarioDef, Schedule, SchedulerState};
 
     use super::*;
+
+    #[test]
+    fn a_preemption_is_taken_at_its_counter_or_the_first_boundary_after_it() {
+        let decision = crucible_engine::PreemptionDecision {
+            node: NodeId {
+                name: String::from("node"),
+            },
+            at: crucible_engine::SimInstant { ticks: 1_024 },
+            kind: crucible_engine::PreemptionKind::InterruptAt {
+                target_vcpu: crucible_engine::VcpuId { index: 0 },
+                irq: crucible_engine::IrqVector { vector: 32 },
+            },
+        };
+
+        for (current, taken) in [
+            (1_000, false),
+            (1_023, false),
+            (1_024, true),
+            (1_050, true),
+            (1_073, true),
+            (1_074, false),
+        ] {
+            assert_eq!(
+                preemption_taken_at(Icount { retired: current }, &decision),
+                taken,
+                "current={current}"
+            );
+        }
+    }
 
     #[test]
     fn physical_replay_reads_only_the_owned_node_clock() -> Result<(), QemuVmRealizationError> {
@@ -368,5 +600,37 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    fn settled_replay_step_may_stop_below_its_ceiling() {
+        let ceiling = Icount { retired: 1_000 };
+        let below = Icount { retired: 951 };
+
+        assert!(validate_replay_advance(below, ceiling, &AdvanceOutcome::ReachedHorizon).is_ok());
+        assert!(validate_replay_advance(ceiling, ceiling, &AdvanceOutcome::ReachedHorizon).is_ok());
+        assert!(
+            validate_replay_advance(
+                Icount { retired: 1_001 },
+                ceiling,
+                &AdvanceOutcome::ReachedHorizon,
+            )
+            .is_err(),
+            "a settled step must never cross its ceiling"
+        );
+        assert!(
+            validate_replay_advance(below, ceiling, &AdvanceOutcome::Paused { at: below }).is_ok()
+        );
+        assert!(
+            validate_replay_advance(
+                below,
+                ceiling,
+                &AdvanceOutcome::Paused {
+                    at: Icount { retired: 900 },
+                },
+            )
+            .is_err(),
+            "a pause must report the live count"
+        );
     }
 }

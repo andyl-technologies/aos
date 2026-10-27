@@ -19,14 +19,18 @@ in
     gate = "gate:scheduler-liveness";
     executionFamily = "qemu-runtime";
     name = "production-scheduler-liveness";
+    authoritySerialFrame = {
+      begin = "PRODUCTION_PLUGIN_RESULT_BEGIN";
+      end = "PRODUCTION_PLUGIN_RESULT_END";
+    };
     requiredEvidence = [
       "gate=gate:production-rust-plugin-flight"
       "diskless_multiboot_runs=2"
       "sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000"
       "instruction_exact_window_width_picoseconds=50"
       "instruction_exact_raw_retirement_successor=true"
-      "fractional_phase_no_retirement=true"
-      "sample_logical_picoseconds_equal_target=true"
+      "fractional_phase_clock_not_credited=true"
+      "sample_logical_picoseconds_settle_target=true"
       "bounded_scheduler_preemption_applied=true"
       "pending_quantum_preemption_certified=true"
       "scheduler_preemption_mailbox_decisions=2"
@@ -41,7 +45,7 @@ in
       "real_qemu_required=true"
       "bounded_progress=sample-targets,pending-quantum-preemption,idle-wake"
       "sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000"
-      "fractional_phase_no_retirement=true"
+      "fractional_phase_clock_not_credited=true"
       "pending_quantum_preemption_certified=true"
       "scheduler_preemption_mailbox_decisions=2"
       "all_vcpus_halted_observed=true"

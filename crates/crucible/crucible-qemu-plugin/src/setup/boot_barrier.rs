@@ -24,6 +24,20 @@ impl PluginSetupCompletion {
         setup_ack: PluginReadySetupAck,
         slot_index: u32,
     ) -> Result<BootBarrierRelease, PluginSetupBootBarrierError> {
+        self.wait_boot_barrier_with_reader(setup_ack, slot_index, None)
+    }
+
+    /// Borrows an installed native release reader at the original barrier seam.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original mapped/wait refusal or a missing native Cold owner.
+    pub(crate) fn wait_boot_barrier_with_reader(
+        &mut self,
+        setup_ack: PluginReadySetupAck,
+        slot_index: u32,
+        reader: Option<&mut dyn FnMut() -> Result<Option<u64>, BootBarrierError>>,
+    ) -> Result<BootBarrierRelease, PluginSetupBootBarrierError> {
         let net_slot = u32::try_from(ReservedExecutorSlot::NetRouter.slot())
             .map_err(|_error| PluginSetupBootBarrierError::ExecutorSlotOutOfRange)?;
         let block_slot = u32::try_from(ReservedExecutorSlot::BlockIo.slot())
@@ -32,8 +46,20 @@ impl PluginSetupCompletion {
             .mapped_region
             .node_directed_ring_pair_mut(slot_index, slot_index, net_slot, slot_index, block_slot)
             .map_err(|source| PluginSetupBootBarrierError::MappedRegion { source })?;
-        PluginBootBarrier::wait(setup_ack, mapped.node_slot)
-            .map_err(|source| PluginSetupBootBarrierError::Wait { source })
+        let result = match reader {
+            Some(reader) => {
+                PluginBootBarrier::prepare_initial_ceiling_wait(setup_ack, mapped.node_slot)
+                    .and_then(|request| {
+                        PluginBootBarrier::wait_for_initial_ceiling_with_reader(
+                            mapped.node_slot,
+                            request,
+                            reader,
+                        )
+                    })
+            }
+            None => PluginBootBarrier::wait(setup_ack, mapped.node_slot),
+        };
+        result.map_err(|source| PluginSetupBootBarrierError::Wait { source })
     }
 }
 

@@ -25,6 +25,8 @@ use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
 use thiserror::Error;
 
+mod released_usage;
+
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
 const QUOTA_SUBCOMMAND_SHIFT: u32 = 8;
@@ -280,12 +282,18 @@ impl LinuxProjectQuotaReservation {
         verify_project_attributes(directory, &self.path, self.original_attributes)?;
 
         let filesystem = self.filesystem()?;
-        let usage = get_project_quota(filesystem, &self.path, self.project_id)?;
-        if usage.dqb_curspace != 0 || usage.dqb_curinodes != 0 {
-            return Err(LinuxProjectQuotaError::ProjectInUse {
+        let read_usage = || {
+            get_project_quota(filesystem, &self.path, self.project_id)
+                .map(|usage| (usage.dqb_curspace, usage.dqb_curinodes))
+        };
+        // The emptied directory admits no new entries, so usage can only fall.
+        let usage = released_usage::drain_released_usage(read_usage)?;
+        if let released_usage::ReleasedUsage::Held { bytes, inodes } = usage {
+            return Err(LinuxProjectQuotaError::ReleasedProjectInUse {
                 project_id: self.project_id,
-                bytes: usage.dqb_curspace,
-                inodes: usage.dqb_curinodes,
+                bytes,
+                inodes,
+                holders: released_usage::diagnose_released_usage(&self.path, read_usage),
             });
         }
         clear_project_quota(filesystem, &self.path, self.project_id)?;
@@ -567,6 +575,25 @@ pub enum LinuxProjectQuotaError {
         bytes: u64,
         /// Existing accounted inode count.
         inodes: u64,
+    },
+    /// An emptied run directory's project still accounts content at release.
+    ///
+    /// Release first waits a fixed bounded time for deferred kernel file
+    /// release to drain the usage, so this reports usage that outlived that
+    /// wait. The usual cause is a process that holds an unlinked project file
+    /// open or mapped; `holders` names any such processes found in `/proc`.
+    #[error(
+        "project-quota identifier {project_id} retains quota state ({bytes} bytes, {inodes} inodes); deleted-file holders: {holders}"
+    )]
+    ReleasedProjectInUse {
+        /// Released project identifier.
+        project_id: u32,
+        /// Accounted bytes at the end of the drain wait.
+        bytes: u64,
+        /// Accounted inode count at the end of the drain wait.
+        inodes: u64,
+        /// Diagnostic list of processes holding deleted project files.
+        holders: String,
     },
     /// Kernel directory attributes did not match the requested transaction.
     #[error("project-quota directory attributes did not verify: {path}")]

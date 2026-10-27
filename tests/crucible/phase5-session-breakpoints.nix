@@ -6,8 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -68,8 +67,12 @@
         needle = "ConditionEventLogPrefix::from_evaluation_boundary";
       }
       {
-        label = "full-prefix synthetic boundary";
-        needle = "from_scheduler_event_log_entries_with_evaluation_boundary";
+        label = "full-history synthetic boundary";
+        needle = ".with_evaluation_boundary(";
+      }
+      {
+        label = "condition prefix extended incrementally";
+        needle = "prefix.append_entries(entries.to_vec())";
       }
       {
         label = "breakpoint transition evaluation";
@@ -218,6 +221,14 @@
         needle = "pub fn from_scheduler_event_log_entries_with_evaluation_boundary";
       }
       {
+        label = "public built-prefix boundary extension";
+        needle = "pub fn with_evaluation_boundary";
+      }
+      {
+        label = "public prefix batch extension";
+        needle = "pub fn append_entries";
+      }
+      {
         label = "condition prefix event firing facts";
         needle = "event_firings: BTreeMap<EventId, VirtualTime>";
       }
@@ -254,10 +265,8 @@ in
   if failures != []
   then throw "crucible phase5 session-breakpoints check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase5-session-breakpoints";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
@@ -265,49 +274,17 @@ in
         [
           pkgs.sqlite
           pkgs.coreutils
-          pkgs.rust
           pkgs.sed
         ]
         ++ dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-session-breakpoints";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-breakpoints-target" \
+            crucible-cargo test \
               -p crucible-session \
               --lib \
               -- --test-threads=1

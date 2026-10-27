@@ -18,8 +18,9 @@ pub(super) fn validate_host_run_outcome(
         ticks: planned.plan.ceiling.max_advance_icount,
     };
     let reached = completed.step.reached;
+    let settled = completed.step.settled_through;
     if planned.dispatch_contract == crate::BackendDispatchContract::PhysicalSource
-        && reached.ticks < planned.admission.semantic_horizon().icount.retired
+        && settled.ticks < planned.admission.semantic_horizon().icount.retired
         && matches!(
             completed.step.physical_stop,
             BackendPhysicalStop::Horizon | BackendPhysicalStop::UnclassifiedPause
@@ -43,7 +44,56 @@ pub(super) fn validate_host_run_outcome(
             ),
         });
     }
+    // Settlement is all or nothing: a step attests either its whole ceiling
+    // or only its own stop.
+    if settled != reached && settled != ceiling {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` settled through {} instead of its stop {} or ceiling {}",
+                node.name, settled.ticks, reached.ticks, ceiling.ticks,
+            ),
+        });
+    }
+    // A ceiling is an upper bound (SCHED-12). A completed horizon or an idle
+    // park may settle the whole ceiling with its clock at its last retirement
+    // or exact event below it; output must still stop at its exact clock.
+    let settled_below_ceiling = settled == ceiling
+        && reached < ceiling
+        && matches!(
+            completed.step.physical_stop,
+            BackendPhysicalStop::Horizon | BackendPhysicalStop::Idle
+        )
+        && completed.network_outputs.is_empty();
+    if settled == ceiling && reached < ceiling && !settled_below_ceiling {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` settled {} without a completed horizon or idle park at {}",
+                node.name, ceiling.ticks, reached.ticks,
+            ),
+        });
+    }
+    // An exact-event ceiling is a modeled event for this node (SCHED-39). A
+    // halted node reaches it by an idle advance, so an idle park below it
+    // would hide the event. A runnable node never moves its clock without a
+    // retirement: it settles through the ceiling at its last boundary below
+    // it and takes the event at its first boundary at or after it (TIME-30).
+    // Only the backend knows its retirement cost, so it bounds that gap.
+    if settled_below_ceiling
+        && planned.admission.dispatch_stop() == RunCeilingStop::ExactEvent
+        && completed.step.physical_stop != BackendPhysicalStop::Horizon
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` settled exact-event ceiling {} without arriving from {}",
+                node.name, ceiling.ticks, reached.ticks,
+            ),
+        });
+    }
+    let settled_horizon = settled_below_ceiling
+        && completed.step.physical_stop == BackendPhysicalStop::Horizon
+        && completed.step.outcome == AdvanceOutcome::ReachedHorizon;
     if reached < ceiling
+        && !settled_horizon
         && !matches!(
             completed.step.outcome,
             AdvanceOutcome::Paused { at } if at.retired == reached.ticks
@@ -57,6 +107,7 @@ pub(super) fn validate_host_run_outcome(
         });
     }
     if reached < ceiling
+        && !settled_horizon
         && matches!(
             completed.step.physical_stop,
             BackendPhysicalStop::Horizon | BackendPhysicalStop::UnclassifiedPause
@@ -89,6 +140,7 @@ pub(super) fn validate_host_run_outcome(
             ),
         });
     }
+    validate_console_output(completed)?;
     for output in &completed.network_outputs {
         if output.source != *node || output.emit_icount.retired != reached.ticks {
             return Err(SchedulerError::BoundaryViolation {
@@ -102,6 +154,30 @@ pub(super) fn validate_host_run_outcome(
     Ok(())
 }
 
+/// Requires the consumed operation endpoint in the actual canonical byte batch.
+pub(super) fn validate_console_output(
+    completed: &ConcurrentBackendRunOutcome,
+) -> Result<(), SchedulerError> {
+    let node = &completed.node;
+    if let BackendPhysicalStop::ConsoleOutput { sequence } = completed.step.physical_stop
+        && !completed.observations.iter().any(|event| {
+            matches!(
+                event.payload(),
+                crate::ObservableEventPayload::NativeConsoleByte { node: source, origin }
+                    if source == node && origin.node_sequence == sequence
+            )
+        })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "host worker for `{}` reported console output without owned native byte origins",
+                node.name,
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn validate_held_network_lookahead(
     scheduler: &SingleScheduler,
     source: &SchedulerNodeId,
@@ -109,12 +185,14 @@ pub(super) fn validate_held_network_lookahead(
     held_runs: &BTreeMap<NodeId, HeldHostRun>,
     boundary_runs: &BTreeMap<NodeId, HeldBoundaryRun>,
 ) -> Result<(), SchedulerError> {
+    // A held peer is compared at its settled endpoint: settlement through a
+    // tick at or after a possible delivery would have skipped that delivery.
     let reached = held_runs
         .values()
         .map(|held| {
             (
                 &held.run.plan.node,
-                held.completed.step.reached.ticks,
+                held.completed.step.settled_through.ticks,
                 false,
             )
         })

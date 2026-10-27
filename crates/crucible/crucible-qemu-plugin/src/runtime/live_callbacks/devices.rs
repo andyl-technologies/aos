@@ -436,6 +436,7 @@ impl LiveDeviceCallbackState {
             });
         }
         let request = block_request(operation, offset, data, len)?;
+        let oldest_outstanding_epoch = self.oldest_outstanding_block_epoch();
         let mut outbound = self.block_rings.outbound.block_outbound();
         let submit = if retry_preserve {
             self.block.submit_retry_request(
@@ -445,6 +446,7 @@ impl LiveDeviceCallbackState {
                 current_icount,
                 &request,
                 qemu_identity,
+                oldest_outstanding_epoch,
             )
         } else {
             handle_block_submit_callback(
@@ -454,6 +456,7 @@ impl LiveDeviceCallbackState {
                 &mut outbound,
                 current_icount,
                 &request,
+                oldest_outstanding_epoch,
             )
         }
         .map_err(|source| LiveDeviceCallbackError::Block { source })?;
@@ -473,6 +476,27 @@ impl LiveDeviceCallbackState {
             debug_assert!(removed, "successful preserved retry had authorization");
         }
         Ok(())
+    }
+
+    /// Returns the oldest epoch among identities QEMU may still submit.
+    ///
+    /// `submit_block` accepts only the allocator's next identity or one held in
+    /// `block_reissue_preserve`, and that set gains members only from tokens in
+    /// `block_tokens`. Together the two containers therefore bound every
+    /// identity QEMU can submit later, so no later request carries an older
+    /// epoch ([IO-35]). An identity QEMU abandons after a `RetryPreserveId`
+    /// disposition stays in the set and keeps this floor conservatively low;
+    /// that is safe, and the host's retained-epoch hard limit bounds it.
+    fn oldest_outstanding_block_epoch(&self) -> Option<u64> {
+        // Identities order by epoch first, so each container's first entry
+        // holds its oldest epoch.
+        let awaiting_response = self.block_tokens.keys().next();
+        let awaiting_retry = self.block_reissue_preserve.first();
+        [awaiting_response, awaiting_retry]
+            .into_iter()
+            .flatten()
+            .map(|identity| identity.epoch())
+            .min()
     }
 
     fn poll_block(
@@ -1130,6 +1154,7 @@ impl LiveVcpuTimeCallbackState {
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
         if self.idle_advance_is_pending() {
+            self.note_block_poll(epoch, request_id, false);
             return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
@@ -1137,6 +1162,7 @@ impl LiveVcpuTimeCallbackState {
             .lock_devices()?
             .poll_block(self.slot.get(), current_icount, epoch, request_id, output)
             .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.note_block_poll(epoch, request_id, result != QEMU_PLUGIN_BLOCK_POLL_PENDING);
         self.publish_device_completion_pause_if_quiesced("block-poll")?;
         Ok(result)
     }

@@ -13,7 +13,14 @@
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  vmRuntime = testGate.mkCrucibleVmRuntime {
+    src = crucibleSrc;
+    subset = testGate.mkCrucibleTestSubset {
+      pname = "crucible-checkpoint-delta-flight-tests";
+      requests = ["crucible-qemu-host"];
+    };
+  };
   checkpointPluginSource = builtins.path {
     path = ./phase2-qemu-checkpoint-delta-plugin.c;
     name = "phase2-qemu-checkpoint-delta-plugin.c";
@@ -48,27 +55,16 @@
       pkgs.jq
       pkgs.pkg-config
       pkgs.pcre2
-      pkgs.rust
       pkgs.sed
       pkgs.socat
-      pkgs.sqlite
       qemuPackage
       sourceCheck
     ]
     ++ dependencies;
   campaignRuntimeEnvironment = {
     CC = "${pkgs.gcc}/bin/cc";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PKG_CONFIG_PATH = lib.makePkgConfigPath [pkgs.glib.dev pkgs.pcre2 pkgs.sqlite];
+    PKG_CONFIG_PATH = lib.makePkgConfigPath [pkgs.glib.dev pkgs.pcre2];
   };
-  configureScript = ''
-    set -eu
-    export CARGO_HOME="$TMPDIR/cargo"
-    export RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib"
-    mkdir -p "$CARGO_HOME" .cargo
-    sed "s|@vendor@|${cargoDeps}|g" \
-      "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-  '';
   buildFixturesScript = ''
     set -eu
     cc -shared -fPIC -Wall -Wextra -Werror \
@@ -94,11 +90,7 @@
     objcopy -O binary --gap-fill 0 direct-reset.elf direct-reset.bin
     [ "$(wc -c < direct-reset.bin)" -eq 65536 ]
 
-    cargo test \
-      --frozen \
-      --offline \
-      --target-dir "$TMPDIR/checkpoint-delta-target" \
-      --manifest-path crates/Cargo.toml \
+    crucible-cargo test \
       -p crucible-qemu-host \
       --lib \
       --no-run
@@ -198,11 +190,7 @@
       set +e
       AOS_CHECKPOINT_DELTA_QMP="$qmp_socket" \
       AOS_CHECKPOINT_DELTA_QTEST="$qtest_socket" \
-        timeout -k 10 300 cargo test \
-          --frozen \
-          --offline \
-          --target-dir "$TMPDIR/checkpoint-delta-target" \
-          --manifest-path crates/Cargo.toml \
+        timeout -k 10 300 crucible-cargo test \
           -p crucible-qemu-host \
           --lib \
           "qmp::checkpoint_delta_flight_tests::$test_name" \
@@ -318,28 +306,13 @@
       printf 'task_ids=%s\n' '${taskList}'
     } >> "$out/result"
   '';
-  authoritativeGate = pkgs.mkDerivation {
+  authoritativeGate = testGate.mkCrucibleTestGate {
     pname = "crucible-phase2-qemu-checkpoint-delta-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = crucibleSrc;
 
     buildDeps = runtimeInputs;
-    runtimeDeps = [pkgs.sqlite];
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = configureScript;
-      }
       {
         name = "build-flight-fixtures";
         script = buildFixturesScript;
@@ -351,10 +324,7 @@
     ];
   };
   modeRuntimeScript = ''
-    cp -R ${crucibleSrc} source
-    chmod -R u+w source
-    cd source
-    ${configureScript}
+    ${vmRuntime.script}
     ${buildFixturesScript}
     ${runFlightScript}
   '';
@@ -369,15 +339,15 @@ in
       authoritativeResultIdentity = "restore_latency_measurement=descriptor-restore-through-cont-ack";
       executionFamily = "qemu-runtime";
       name = "checkpoint-delta-flight";
-      runtimeClosures = [
-        crucibleSrc
-        cargoDeps
-        checkpointPluginSource
-        checkpointGuestSource
-        checkpointGuestLinkerScript
-        directResetSource
-        directResetLinkerScript
-      ];
+      runtimeClosures =
+        vmRuntime.closures
+        ++ [
+          checkpointPluginSource
+          checkpointGuestSource
+          checkpointGuestLinkerScript
+          directResetSource
+          directResetLinkerScript
+        ];
       runtimeScript = modeRuntimeScript;
       runtimeEnvironment = campaignRuntimeEnvironment;
       timeout = 3600;

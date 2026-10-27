@@ -171,3 +171,106 @@ fn erase_rejects_unaligned_complete_requests_without_mutation() {
     ));
     assert_eq!(state, before);
 }
+
+/// Programs page 1 and drives one retention read so every rule changes cells.
+fn changed_state(rules: &[ResolvedBlockFlashRule]) -> BlockFlashState {
+    let mut state = BlockFlashState::default();
+    let write = BlockRequest::write(1, 512, vec![0; 512]);
+    state
+        .program(&write, 5, 8192, rules)
+        .unwrap_or_else(|error| panic!("program should succeed: {error}"));
+    let read = BlockRequest::read(2, 512, 512);
+    let mut bytes = vec![0; 512];
+    state
+        .read(&read, 10_005, 8192, rules, &mut bytes)
+        .unwrap_or_else(|error| panic!("retention read should succeed: {error}"));
+    state
+}
+
+fn persistent_read(state: &BlockFlashState) -> Vec<u8> {
+    let mut bytes = vec![0x5a; 8192];
+    state
+        .apply_persistent_read(0, &mut bytes)
+        .unwrap_or_else(|error| panic!("persistent read should apply: {error}"));
+    bytes
+}
+
+#[test]
+fn retired_continuations_fold_into_a_residual_that_reads_identically() {
+    let first = rule();
+    let mut second = rule();
+    second.contributor = [9; 32];
+    second.choice_key = [8; 32];
+    let unpruned = changed_state(&[first.clone(), second.clone()]);
+    assert!(
+        unpruned
+            .continuations()
+            .values()
+            .all(|continuation| !continuation.changed_bytes.is_empty())
+    );
+    let expected = persistent_read(&unpruned);
+
+    let mut pruned = unpruned.clone();
+    assert!(pruned.retire_continuation(&first.contributor));
+    assert_eq!(pruned.continuations().len(), 1);
+    assert_eq!(
+        pruned.residual_changed_bytes(),
+        &unpruned.continuations()[&first.contributor].changed_bytes
+    );
+    assert_eq!(persistent_read(&pruned), expected);
+
+    // Overlapping masks XOR together; cancelled offsets leave no zero entry.
+    assert!(pruned.retire_continuation(&second.contributor));
+    assert!(pruned.continuations().is_empty());
+    assert!(
+        pruned
+            .residual_changed_bytes()
+            .values()
+            .all(|mask| *mask != 0)
+    );
+    assert_eq!(persistent_read(&pruned), expected);
+    pruned
+        .validate_restore(8192)
+        .unwrap_or_else(|error| panic!("residual state should validate: {error}"));
+
+    // An absent contributor is not retired twice.
+    assert!(!pruned.retire_continuation(&first.contributor));
+}
+
+#[test]
+fn a_continuation_with_an_in_progress_erase_is_not_retired() {
+    let mut partial = rule();
+    partial.erase_block_bytes = 8;
+    partial.program_page_bytes = 4;
+    partial.program_erase.erase_probability_millionths = 1_000_000;
+    partial.program_erase.partial_erase = true;
+    let contributors = [partial.contributor];
+    let mut state = BlockFlashState::default();
+    state
+        .register_rules(16, &[partial])
+        .unwrap_or_else(|error| panic!("flash rule should register: {error}"));
+    state
+        .erase_fragment_registered(7, 0, 8, 0, &[0xff; 4], 11, 16, &contributors)
+        .unwrap_or_else(|error| panic!("first erase fragment should resolve: {error}"));
+
+    let before = state.clone();
+    assert!(!state.retire_continuation(&contributors[0]));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn restore_rejects_zero_or_out_of_range_residual_masks() {
+    let mut state = BlockFlashState::default();
+    state.residual_changed_bytes.insert(4, 0x10);
+    state
+        .validate_restore(8)
+        .unwrap_or_else(|error| panic!("nonzero in-range residual: {error}"));
+
+    let mut zero = state.clone();
+    zero.residual_changed_bytes.insert(5, 0);
+    assert!(zero.validate_restore(8).is_err());
+
+    let mut outside = state;
+    outside.residual_changed_bytes.insert(8, 0x01);
+    assert!(outside.validate_restore(8).is_err());
+}

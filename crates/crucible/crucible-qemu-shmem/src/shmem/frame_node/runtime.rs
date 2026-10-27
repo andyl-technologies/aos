@@ -1,5 +1,6 @@
 //! Per-node shared-memory publication and control operations.
 
+use super::control_effect::BoundaryWriter;
 use super::*;
 
 impl NodeSlot {
@@ -40,7 +41,7 @@ impl NodeSlot {
             logical_time_restore_ack: AtomicU32::new(0),
             control_boundary_fault_command_frontier: AtomicU64::new(0),
             control_boundary_capture_request: AtomicU32::new(0),
-            _pad3: [0; 4],
+            control_boundary_publication_claim: AtomicU32::new(0),
             timer_witness_generation: AtomicU64::new(0),
             timer_witness_deadline_ps: AtomicU64::new(0),
             timer_witness_deadline_tick: AtomicU64::new(0),
@@ -51,7 +52,11 @@ impl NodeSlot {
             timer_witness_completed: AtomicU32::new(0),
             timer_witness_reserved: AtomicU32::new(0),
             advance_publication_sequence: AtomicU64::new(0),
-            _pad4: [0; 40],
+            settled_ceiling_tick: AtomicU64::new(0),
+            settled_publication_sequence: AtomicU64::new(0),
+            host_publication_signal: AtomicU32::new(0),
+            host_publication_waiters: AtomicU32::new(0),
+            _pad4: [0; 16],
         }
     }
 
@@ -76,7 +81,7 @@ impl NodeSlot {
             .store(witness.reserved, Ordering::Release);
         self.timer_witness_generation
             .store(witness.generation, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Publishes one scheduler advance with explicit completion semantics.
@@ -91,9 +96,34 @@ impl NodeSlot {
         ceiling: AdvanceCeiling,
         stop_condition: AdvanceStopCondition,
     ) -> Result<WakeAction, NodeSlotError> {
-        self.validate_scheduler_ceiling(ceiling)?;
+        self.publish_scheduler_advance_with_effect(ceiling, stop_condition, |_| {})
+    }
 
-        self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)
+    /// Publishes a scheduler ceiling with an already-prepared local effect.
+    ///
+    /// The original writer supplies its exact next even sequence after storing
+    /// the ceiling and before its release publication or wake. The effect must
+    /// not allocate, wait, or perform fallible work. Its caller must prepare all
+    /// storage and authenticate any additional owner before entering this method.
+    /// No phase or native execution authority is conferred by the sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] for an invalid ceiling or a failed futex wake.
+    /// A wake failure leaves the preceding publication and effect committed.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `effect`. The ceiling writer closes coherently
+    /// during unwind, but its wake and caller-specific effects are incomplete.
+    pub fn publish_scheduler_advance_with_effect(
+        &self,
+        ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
+    ) -> Result<WakeAction, NodeSlotError> {
+        self.validate_scheduler_ceiling(ceiling)?;
+        self.publish_prevalidated_scheduler_ceiling_with_effect(ceiling, stop_condition, effect)
     }
 
     /// Arms a ceiling for an externally restored execution state without waking it.
@@ -151,6 +181,51 @@ impl NodeSlot {
         ceiling: AdvanceCeiling,
         stop_condition: AdvanceStopCondition,
     ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
+        self.publish_scheduler_inbox_and_advance_with_effect(
+            dst_slot,
+            src_slot,
+            inbox,
+            inbox_entries,
+            pending_inputs,
+            ceiling,
+            stop_condition,
+            |_| {},
+        )
+    }
+
+    /// Publishes an inbox batch and an already-prepared advance effect in order.
+    ///
+    /// The caller must reserve effect storage before calling this method. Source,
+    /// ceiling and ring preflight precede inbox changes. The local effect runs
+    /// inside the original scheduler writer before its even release and wake.
+    /// It must not allocate, wait, or fail; it supplies no execution authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerWakePublicationError`] under the same conditions as
+    /// [`Self::publish_scheduler_inbox_and_advance`]. A failure after publication
+    /// does not undo the already-published input or effect.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `effect`. Published inputs remain published and
+    /// the ceiling writer closes, but the original wake has not completed.
+    // crucible-lint: allow rust-allow -- the borrowed adapter retains explicit ring, advance and prepared local effect inputs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the borrowed adapter binds one directed ring and one typed scheduler advance"
+    )]
+    pub fn publish_scheduler_inbox_and_advance_with_effect(
+        &self,
+        dst_slot: u32,
+        src_slot: u32,
+        inbox: &RingHeader,
+        inbox_entries: &mut [FrameEntry],
+        pending_inputs: &[FrameEntry],
+        ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
+    ) -> Result<SchedulerWakePublication, SchedulerWakePublicationError> {
         self.validate_scheduler_ceiling(ceiling)?;
         for (input_index, frame) in pending_inputs.iter().enumerate() {
             crate::region::helpers::validate_pending_input_source(input_index, src_slot, frame)?;
@@ -168,7 +243,11 @@ impl NodeSlot {
                 .map_err(RegionAllocationAccessError::from)?;
         }
 
-        let wake = self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;
+        let wake = self.publish_prevalidated_scheduler_ceiling_with_effect(
+            ceiling,
+            stop_condition,
+            effect,
+        )?;
         Ok(SchedulerWakePublication {
             dst_slot,
             pending_input_count: pending_inputs.len(),
@@ -187,8 +266,26 @@ impl NodeSlot {
     /// Returns [`NodeSlotError::InvalidAdvanceStopCondition`] when the stable
     /// tuple contains an unknown current-ABI encoding.
     pub fn load_scheduler_advance(&self) -> Result<(u64, AdvanceStopCondition), NodeSlotError> {
-        let (ceiling, encoded, _) = self.load_scheduler_advance_raw();
-        Ok((ceiling, AdvanceStopCondition::decode(encoded)?))
+        let publication = self.load_scheduler_advance_publication()?;
+        Ok((publication.ceiling(), publication.stop()))
+    }
+
+    /// Retains the exact original coherent scheduler-advance observation.
+    ///
+    /// This publication receipt confers no execution or phase authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] for an unknown completion-condition encoding.
+    pub fn load_scheduler_advance_publication(
+        &self,
+    ) -> Result<SchedulerAdvancePublication, NodeSlotError> {
+        let (ceiling, encoded, sequence) = self.load_scheduler_advance_raw();
+        Ok(SchedulerAdvancePublication {
+            ceiling,
+            stop: AdvanceStopCondition::decode(encoded)?,
+            sequence,
+        })
     }
 
     /// Publishes that this node has plugin-submitted device I/O in flight.
@@ -238,6 +335,82 @@ impl NodeSlot {
         Ok(())
     }
 
+    /// Republishes the reached icount without demoting an idle boundary there.
+    ///
+    /// An answer to an advance that ends at the node's current coordinate adds
+    /// a fresh publication but retires nothing and wakes no vCPU. When the
+    /// node already published idle at `reached_icount`, the publication keeps
+    /// that classification and its wake deadline: only a vCPU resume makes
+    /// the node running again. Any other state publishes as
+    /// [`Self::publish_reached_icount`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the reached icount exceeds the published
+    /// ceiling.
+    pub fn publish_reached_icount_retaining_idle(
+        &self,
+        reached_icount: u64,
+    ) -> Result<(), NodeSlotError> {
+        self.check_node_may_advance_to(reached_icount)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
+        let idle_here = self.status.load(Ordering::Acquire) == STATUS_IDLE
+            && self.current_icount.load(Ordering::Acquire) == reached_icount;
+        let status = if idle_here {
+            STATUS_IDLE
+        } else {
+            STATUS_RUNNING
+        };
+        self.publish_state(reached_icount, current_ns, None, status);
+        Ok(())
+    }
+
+    /// Publishes a reached icount that settles the node through its ceiling.
+    ///
+    /// QEMU calls this when the node's next retirement would exceed the
+    /// published ceiling and no exact event lies in `(reached, ceiling]`
+    /// (RFC-0010 SCHED-12). The node's clock stays at `reached_icount`, which
+    /// may be below the ceiling. The record names the advance publication it
+    /// settles, so a record left from an earlier quantum never matches a later
+    /// one.
+    ///
+    /// `settled_ceiling` is the ceiling QEMU sampled. If the host replaced it
+    /// since, the settlement is stale: the reached icount is still published,
+    /// but no settlement is recorded and this returns `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError::NodeAdvancePastCeiling`] when the reached
+    /// icount exceeds the published ceiling, or an advance-stop decoding error.
+    pub fn publish_settled_icount(
+        &self,
+        reached_icount: u64,
+        settled_ceiling: u64,
+    ) -> Result<bool, NodeSlotError> {
+        let advance = self.load_scheduler_advance_publication()?;
+        if reached_icount > advance.ceiling() {
+            return Err(NodeSlotError::NodeAdvancePastCeiling {
+                next_icount: reached_icount,
+                max_advance_icount: advance.ceiling(),
+            });
+        }
+        let settles = advance.ceiling() == settled_ceiling && advance.stop().authorizes_ceiling();
+
+        let current_ns = icount_to_virtual_ns(reached_icount);
+        let writer = BoundaryWriter::enter(self);
+        self.current_icount.store(reached_icount, Ordering::Release);
+        self.current_ns.store(current_ns, Ordering::Release);
+        if settles {
+            self.settled_ceiling_tick
+                .store(advance.ceiling(), Ordering::Release);
+            self.settled_publication_sequence
+                .store(advance.sequence(), Ordering::Release);
+        }
+        self.status.store(STATUS_RUNNING, Ordering::Release);
+        drop(writer);
+        Ok(settles)
+    }
+
     /// Publishes that the node is idle and prepares the futex wait precondition.
     ///
     /// # Errors
@@ -277,9 +450,38 @@ impl NodeSlot {
         reached_icount: u64,
         raw_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        validate_raw_retirement_at_tick(raw_icount, reached_icount)?;
+        self.publish_pause_quiesced_with_effect(reached_icount, raw_icount, |_| {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .map_err(NodeBoundaryPublicationError::into_slot)
+    }
+
+    /// Publishes the original pause fields before one prepared local effect.
+    ///
+    /// No scheduler-advance read or ceiling check is added to this pause writer.
+    /// The effect must refuse before mutating its accepted state, then commit
+    /// infallibly. It must not block, allocate, perform IO or change authority.
+    /// This method publishes no control acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns original slot validation errors or the effect's original refusal.
+    /// Refusal closes the node publication coherently but does not roll back the
+    /// original boundary stores or a caller's incorrectly partial effect.
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic after closing the original node publication.
+    pub fn publish_pause_quiesced_with_effect<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<(), NodeBoundaryPublicationError<E>> {
+        validate_raw_retirement_at_tick(raw_icount, reached_icount)
+            .map_err(NodeBoundaryPublicationError::Slot)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        let writer = BoundaryWriter::enter(self);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         self.idle_wake_icount
@@ -287,14 +489,20 @@ impl NodeSlot {
         self.logical_time_raw_icount
             .store(raw_icount, Ordering::Release);
         self.status.store(STATUS_IDLE, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        effect(NodeBoundaryPublication {
+            logical: reached_icount,
+            raw: raw_icount,
+            advance: None,
+            closed_generation: writer.closed_generation(),
+        })
+        .map_err(NodeBoundaryPublicationError::Effect)
     }
 
     /// Republishes the exact coordinate observed by a QEMU control callback.
     ///
-    /// At the scheduler ceiling, the callback publishes an exact idle boundary:
-    /// the vCPU has yielded, the ceiling prevents another dispatch, and QEMU has
+    /// At the scheduler ceiling, or after the node settled through the current
+    /// advance below it, the callback publishes an exact idle boundary: the
+    /// vCPU has yielded, the ceiling prevents another dispatch, and QEMU has
     /// already run the preceding device bottom halves. An existing idle
     /// publication retains its future wake deadline so the scheduler can still
     /// classify an early pause against the original quantum horizon. A
@@ -313,30 +521,167 @@ impl NodeSlot {
         reached_icount: u64,
         raw_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        let (max_advance_icount, stop_condition) = self.load_scheduler_advance()?;
+        self.publish_control_boundary_with_effect(reached_icount, raw_icount, |_| {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .map_err(NodeBoundaryPublicationError::into_slot)
+    }
+
+    /// Publishes original control fields and their same-read advance receipt.
+    ///
+    /// The effect has the same refusal/commit contract as
+    /// [`Self::publish_pause_quiesced_with_effect`]. The original odd control
+    /// ACK remains the caller's separate final operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns original validation errors or a refusal before accepted effects.
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic after closing the original publication.
+    pub fn publish_control_boundary_with_effect<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<(), NodeBoundaryPublicationError<E>> {
+        self.publish_control_boundary_classified(
+            reached_icount,
+            raw_icount,
+            ZeroLengthIdleRecord::Unkept,
+            effect,
+        )
+        .map(|_answered| ())
+    }
+
+    /// Publishes a control boundary against the writer's zero-length idle record.
+    ///
+    /// This is [`Self::publish_control_boundary_answering_with_effect`]
+    /// without a paired effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when `reached_icount` exceeds the scheduler
+    /// ceiling.
+    pub fn publish_control_boundary_answering(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        answered_advance: Option<u64>,
+    ) -> Result<Option<u64>, NodeSlotError> {
+        self.publish_control_boundary_answering_with_effect(
+            reached_icount,
+            raw_icount,
+            answered_advance,
+            |_| Ok::<_, std::convert::Infallible>(()),
+        )
+        .map_err(NodeBoundaryPublicationError::into_slot)
+    }
+
+    /// Publishes a control boundary for a writer that records which advance
+    /// each of its zero-length idle publications answered.
+    ///
+    /// An idle wake at or before the node's coordinate is the protocol's
+    /// quiesced-boundary encoding. It is a claim about one advance: the
+    /// settle at a clamp ceiling, or a stop the node took while running
+    /// toward the ceiling. `answered_advance` names the advance publication
+    /// sequence that the slot's current zero-length idle answered, or `None`
+    /// when the writer recorded none. Below this advance's ceiling, a
+    /// zero-length idle that answered another advance is not a stop for this
+    /// one, so it is dropped and the node publishes running at the
+    /// coordinate; the next vCPU idle or retirement publishes where it
+    /// actually stops. One that answered this advance is preserved, as is
+    /// any future idle wake. At the ceiling or after settlement this behaves
+    /// exactly as [`Self::publish_control_boundary_with_effect`].
+    ///
+    /// Returns the advance sequence whose zero-length idle the slot holds
+    /// after this publication, or `None` when it holds none, so the writer
+    /// can keep its record current. The comparison uses the advance this
+    /// writer itself loads, so a concurrent advance publication cannot make
+    /// it preserve an idle against one advance and publish under another.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors and effect refusal as
+    /// [`Self::publish_control_boundary_with_effect`].
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic after closing the original publication.
+    pub fn publish_control_boundary_answering_with_effect<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        answered_advance: Option<u64>,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<Option<u64>, NodeBoundaryPublicationError<E>> {
+        self.publish_control_boundary_classified(
+            reached_icount,
+            raw_icount,
+            ZeroLengthIdleRecord::Kept(answered_advance),
+            effect,
+        )
+    }
+
+    fn publish_control_boundary_classified<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        record: ZeroLengthIdleRecord,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<Option<u64>, NodeBoundaryPublicationError<E>> {
+        let advance = self
+            .load_scheduler_advance_publication()
+            .map_err(NodeBoundaryPublicationError::Slot)?;
+        let max_advance_icount = advance.ceiling();
+        let stop_condition = advance.stop();
         if reached_icount > max_advance_icount {
-            return Err(NodeSlotError::NodeAdvancePastCeiling {
-                next_icount: reached_icount,
-                max_advance_icount,
-            });
+            return Err(NodeBoundaryPublicationError::Slot(
+                NodeSlotError::NodeAdvancePastCeiling {
+                    next_icount: reached_icount,
+                    max_advance_icount,
+                },
+            ));
         }
-        validate_raw_retirement_at_tick(raw_icount, reached_icount)?;
+        validate_raw_retirement_at_tick(raw_icount, reached_icount)
+            .map_err(NodeBoundaryPublicationError::Slot)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
         let was_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE;
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        // A settlement record for this very advance proves that no retirement
+        // or exact event remains before the ceiling, just like landing on it.
+        let settled = self.settled_publication_sequence.load(Ordering::Acquire)
+            == advance.sequence()
+            && self.settled_ceiling_tick.load(Ordering::Acquire) == max_advance_icount
+            && self.current_icount.load(Ordering::Acquire) == reached_icount;
+        let writer = BoundaryWriter::enter(self);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         self.logical_time_raw_icount
             .store(raw_icount, Ordering::Release);
-        if reached_icount == max_advance_icount && stop_condition == AdvanceStopCondition::Ceiling {
+        if (reached_icount == max_advance_icount || settled) && stop_condition.authorizes_ceiling()
+        {
             if !was_idle {
                 self.idle_wake_icount
                     .store(reached_icount, Ordering::Release);
             }
             self.status.store(STATUS_IDLE, Ordering::Release);
+        } else if was_idle
+            && self.idle_wake_icount.load(Ordering::Acquire) <= reached_icount
+            && record.is_stale_for(advance.sequence())
+        {
+            self.status.store(STATUS_RUNNING, Ordering::Release);
         }
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        let zero_length_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE
+            && self.idle_wake_icount.load(Ordering::Acquire) <= reached_icount;
+        effect(NodeBoundaryPublication {
+            logical: reached_icount,
+            raw: raw_icount,
+            advance: Some(advance),
+            closed_generation: writer.closed_generation(),
+        })
+        .map_err(NodeBoundaryPublicationError::Effect)?;
+        Ok(zero_length_idle.then_some(advance.sequence()))
     }
 
     /// Arms one host-to-plugin logical-time restore transaction.
@@ -414,7 +759,7 @@ impl NodeSlot {
         self.status.store(STATUS_IDLE, Ordering::Release);
         self.logical_time_restore_ack
             .store(request.generation, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
         Ok(())
     }
 
@@ -422,93 +767,151 @@ impl NodeSlot {
     pub fn mark_running(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_RUNNING, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Marks a node as done after it observes shutdown.
     pub fn mark_done(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_DONE, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Returns a stable snapshot of the slot's published fields.
+    ///
+    /// This producer-side convenience waits for both publications, spinning
+    /// briefly and then sleeping, so a peer stalled mid-publication parks the
+    /// caller instead of pegging its core. Host supervision and QEMU callbacks
+    /// use [`Self::try_snapshot`] so an interrupted writer cannot prevent their
+    /// own deadline, child-exit or retry handling from running.
     #[must_use]
     pub fn snapshot(&self) -> NodeSlotSnapshot {
+        self.snapshot_with(&mut super::contention_backoff::ContentionBackoff::new())
+    }
+
+    pub(super) fn snapshot_with(
+        &self,
+        backoff: &mut super::contention_backoff::ContentionBackoff,
+    ) -> NodeSlotSnapshot {
         loop {
-            let before = self.publish_gen.load(Ordering::Acquire);
-            if !before.is_multiple_of(2) {
-                continue;
-            }
-            // Read the independently published control acknowledgement before
-            // the fields it orders. Its acquire pairs with the plugin's release
-            // only for operations that follow this load; reading it later could
-            // return a new acknowledgement beside slot fields fetched before
-            // the corresponding control callback published them.
-            let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
-            let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
-                self.load_scheduler_advance_raw();
-            let snapshot = NodeSlotSnapshot {
-                current_icount: self.current_icount.load(Ordering::Acquire),
-                current_ns: self.current_ns.load(Ordering::Acquire),
-                max_advance_icount,
-                idle_wake_icount: self.idle_wake_icount.load(Ordering::Acquire),
-                wake_signal: self.wake_signal.load(Ordering::Acquire),
-                status: self.status.load(Ordering::Acquire),
-                kind: self.kind.load(Ordering::Acquire),
-                device_io_active: self.device_io_active.load(Ordering::Acquire),
-                advance_stop_condition,
-                advance_publication_sequence,
-                publish_gen: before,
-                control_boundary_ack,
-                control_boundary_fault_command_frontier: self
-                    .control_boundary_fault_command_frontier
-                    .load(Ordering::Acquire),
-                control_boundary_capture_request: self
-                    .control_boundary_capture_request
-                    .load(Ordering::Acquire),
-                logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
-                logical_time_restore_target: self
-                    .logical_time_restore_target
-                    .load(Ordering::Acquire),
-                logical_time_restore_request: self
-                    .logical_time_restore_request
-                    .load(Ordering::Acquire),
-                logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
-                virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
-                    0 => None,
-                    generation => Some(VirtualTimerFireWitness {
-                        generation,
-                        deadline_ps: self.timer_witness_deadline_ps.load(Ordering::Acquire),
-                        deadline_tick: self.timer_witness_deadline_tick.load(Ordering::Acquire),
-                        armed_raw_icount: self
-                            .timer_witness_armed_raw_icount
-                            .load(Ordering::Acquire),
-                        fired_expire_ps: self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
-                        fired_virtual_ps: self
-                            .timer_witness_fired_virtual_ps
-                            .load(Ordering::Acquire),
-                        fired_raw_icount: self
-                            .timer_witness_fired_raw_icount
-                            .load(Ordering::Acquire),
-                        completed: self.timer_witness_completed.load(Ordering::Acquire),
-                        reserved: self.timer_witness_reserved.load(Ordering::Acquire),
-                    }),
-                },
-            };
-            let after = self.publish_gen.load(Ordering::Acquire);
-            if before == after && after.is_multiple_of(2) {
+            if let Some(snapshot) = self.try_snapshot() {
                 return snapshot;
             }
+            backoff.wait();
         }
+    }
+
+    /// Attempts one coherent read without waiting for either publication.
+    ///
+    /// Returns `None` when the node or scheduler publication is in progress or
+    /// changes during the read. No partially published fields are returned.
+    /// The caller owns any retry and its original liveness deadline.
+    #[must_use]
+    pub fn try_snapshot(&self) -> Option<NodeSlotSnapshot> {
+        self.try_snapshot_with_control_claim(0)
+    }
+
+    pub(super) fn try_snapshot_with_control_claim(
+        &self,
+        expected_claim: u32,
+    ) -> Option<NodeSlotSnapshot> {
+        let control_claim = self
+            .control_boundary_publication_claim
+            .load(Ordering::Acquire);
+        let before = self.publish_gen.load(Ordering::Acquire);
+        if control_claim != expected_claim || !before.is_multiple_of(2) {
+            return None;
+        }
+        // Read the independently published control acknowledgement before
+        // the fields it orders. Its acquire pairs with the plugin's release
+        // only for operations that follow this load; reading it later could
+        // return a new acknowledgement beside slot fields fetched before
+        // the corresponding control callback published them.
+        let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
+        let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
+            self.try_load_scheduler_advance_raw()?;
+        let snapshot = NodeSlotSnapshot {
+            current_icount: self.current_icount.load(Ordering::Acquire),
+            current_ns: self.current_ns.load(Ordering::Acquire),
+            max_advance_icount,
+            idle_wake_icount: self.idle_wake_icount.load(Ordering::Acquire),
+            wake_signal: self.wake_signal.load(Ordering::Acquire),
+            status: self.status.load(Ordering::Acquire),
+            kind: self.kind.load(Ordering::Acquire),
+            device_io_active: self.device_io_active.load(Ordering::Acquire),
+            advance_stop_condition,
+            advance_publication_sequence,
+            publish_gen: before,
+            control_boundary_ack,
+            control_boundary_fault_command_frontier: self
+                .control_boundary_fault_command_frontier
+                .load(Ordering::Acquire),
+            control_boundary_capture_request: self
+                .control_boundary_capture_request
+                .load(Ordering::Acquire),
+            logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
+            logical_time_restore_target: self.logical_time_restore_target.load(Ordering::Acquire),
+            logical_time_restore_request: self.logical_time_restore_request.load(Ordering::Acquire),
+            logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
+            settled_ceiling_tick: self.settled_ceiling_tick.load(Ordering::Acquire),
+            settled_publication_sequence: self.settled_publication_sequence.load(Ordering::Acquire),
+            virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
+                0 => None,
+                generation => Some(VirtualTimerFireWitness {
+                    generation,
+                    deadline_ps: self.timer_witness_deadline_ps.load(Ordering::Acquire),
+                    deadline_tick: self.timer_witness_deadline_tick.load(Ordering::Acquire),
+                    armed_raw_icount: self.timer_witness_armed_raw_icount.load(Ordering::Acquire),
+                    fired_expire_ps: self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
+                    fired_virtual_ps: self.timer_witness_fired_virtual_ps.load(Ordering::Acquire),
+                    fired_raw_icount: self.timer_witness_fired_raw_icount.load(Ordering::Acquire),
+                    completed: self.timer_witness_completed.load(Ordering::Acquire),
+                    reserved: self.timer_witness_reserved.load(Ordering::Acquire),
+                }),
+            },
+        };
+        if expected_claim == 0 {
+            self.finish_snapshot_read(snapshot)
+        } else {
+            self.finish_snapshot_read_with_control_claim(snapshot, expected_claim)
+        }
+    }
+
+    // The final ACK check excludes a whole host request interval between the
+    // two claim reads. A released claim alone cannot identify that interval.
+    pub(super) fn finish_snapshot_read(
+        &self,
+        snapshot: NodeSlotSnapshot,
+    ) -> Option<NodeSlotSnapshot> {
+        self.finish_snapshot_read_with_control_claim(snapshot, 0)
+    }
+
+    fn finish_snapshot_read_with_control_claim(
+        &self,
+        snapshot: NodeSlotSnapshot,
+        expected_claim: u32,
+    ) -> Option<NodeSlotSnapshot> {
+        let after = self.publish_gen.load(Ordering::Acquire);
+        let scheduler_after = self.advance_publication_sequence.load(Ordering::Acquire);
+        if snapshot.publish_gen == after
+            && self
+                .control_boundary_publication_claim
+                .load(Ordering::Acquire)
+                == expected_claim
+            && after.is_multiple_of(2)
+            && scheduler_after == snapshot.advance_publication_sequence
+            && scheduler_after.is_multiple_of(2)
+            && self.control_boundary_ack.load(Ordering::Acquire) == snapshot.control_boundary_ack
+        {
+            return Some(snapshot);
+        }
+        None
     }
 
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._pad2.iter().all(|byte| *byte == 0)
-            && self._pad3.iter().all(|byte| *byte == 0)
-            && self._pad4.iter().all(|byte| *byte == 0)
+        self._pad2.iter().all(|byte| *byte == 0) && self._pad4.iter().all(|byte| *byte == 0)
     }
 
     /// Requests one QEMU main-loop control boundary and wakes an idle plugin.
@@ -531,6 +934,128 @@ impl NodeSlot {
         fault_command_frontier: u64,
         capture_request: Option<u32>,
     ) -> Result<u32, NodeSlotError> {
+        self.request_control_boundary_with_effect(fault_command_frontier, capture_request, |_| {})
+    }
+
+    /// Retains the original request pairing before either wake can fail.
+    ///
+    /// The prepared effect runs once after the original successful publication
+    /// or exact idempotent pending request, before the futex wake. It must not
+    /// allocate, block or fail, and reobservation must not duplicate custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns original capture/frontier validation or futex-wake errors. A
+    /// wake failure preserves the published request and its retained pairing.
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic; the already-published request remains pending.
+    pub fn request_control_boundary_with_effect(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        effect: impl FnOnce(u32),
+    ) -> Result<u32, NodeSlotError> {
+        self.request_control_boundary_with_effect_and_wake(
+            fault_command_frontier,
+            capture_request,
+            effect,
+            || self.wake_after_signal_increment(),
+        )
+    }
+
+    pub(super) fn request_control_boundary_with_effect_and_wake(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        effect: impl FnOnce(u32),
+        wake: impl FnOnce() -> Result<WakeAction, FutexError>,
+    ) -> Result<u32, NodeSlotError> {
+        self.request_control_boundary_with_fields_and_wake(
+            fault_command_frontier,
+            capture_request,
+            None::<fn(PreparedControlBoundaryRequest)>,
+            effect,
+            wake,
+        )
+    }
+
+    /// Publishes prepared native-readable fields before the request Release.
+    ///
+    /// The fields effect runs only for a new request, before it is observable
+    /// through the original CAS. All fallible storage and owner checks must
+    /// already be complete. The retained effect runs after successful request
+    /// publication and before wake, preserving local custody on wake failure.
+    /// An already-pending exact request retains its existing fields.
+    ///
+    /// A shared nonblocking host claim excludes all other request publishers
+    /// before any metadata or paired fields change. Matching codec fields alone
+    /// never prove phase authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns original frontier/capture/wake failures or a competing request
+    /// publication. A busy contender changes neither the request nor its fields.
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic. A fields panic precedes request publication;
+    /// a retained-effect panic leaves its already-published request pending.
+    pub fn request_control_boundary_with_prepared_fields(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        fields: impl FnOnce(PreparedControlBoundaryRequest),
+        retained: impl FnOnce(u32),
+    ) -> Result<u32, NodeSlotError> {
+        self.request_control_boundary_with_fields_and_wake(
+            fault_command_frontier,
+            capture_request,
+            Some(fields),
+            retained,
+            || self.wake_after_signal_increment(),
+        )
+    }
+
+    pub(super) fn request_control_boundary_with_fields_and_wake(
+        &self,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        fields: Option<impl FnOnce(PreparedControlBoundaryRequest)>,
+        effect: impl FnOnce(u32),
+        wake: impl FnOnce() -> Result<WakeAction, FutexError>,
+    ) -> Result<u32, NodeSlotError> {
+        // Every host request publisher shares this claim, including ordinary
+        // requests. A contender cannot overwrite metadata or paired fields
+        // belonging to the same proposed even successor.
+        self.control_boundary_publication_claim
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| NodeSlotError::ControlBoundaryPublicationBusy)?;
+        self.request_control_boundary_claimed_with_fields_and_wake(
+            ControlBoundaryPublicationClaim(&self.control_boundary_publication_claim),
+            fault_command_frontier,
+            capture_request,
+            fields,
+            effect,
+            wake,
+        )
+    }
+
+    pub(super) fn request_control_boundary_claimed_with_fields_and_wake(
+        &self,
+        publication: ControlBoundaryPublicationClaim<'_>,
+        fault_command_frontier: u64,
+        capture_request: Option<u32>,
+        mut fields: Option<impl FnOnce(PreparedControlBoundaryRequest)>,
+        effect: impl FnOnce(u32),
+        wake: impl FnOnce() -> Result<WakeAction, FutexError>,
+    ) -> Result<u32, NodeSlotError> {
+        if !core::ptr::eq(publication.0, &self.control_boundary_publication_claim)
+            || publication.0.load(Ordering::Acquire) != 1
+        {
+            return Err(NodeSlotError::ControlBoundaryPublicationBusy);
+        }
         let capture_request = capture_request.unwrap_or(0);
         if capture_request != 0 && capture_request & 1 == 0 {
             return Err(NodeSlotError::InvalidControlBoundaryCaptureRequest {
@@ -563,6 +1088,10 @@ impl NodeSlot {
                 .store(fault_command_frontier, Ordering::Relaxed);
             self.control_boundary_capture_request
                 .store(capture_request, Ordering::Relaxed);
+            let fields_prepared = fields.is_some();
+            if let Some(fields) = fields.take() {
+                fields(PreparedControlBoundaryRequest(request));
+            }
             match self.control_boundary_ack.compare_exchange(
                 observed,
                 request,
@@ -570,11 +1099,20 @@ impl NodeSlot {
                 Ordering::Acquire,
             ) {
                 Ok(_) => break request,
+                Err(observed) if fields_prepared => {
+                    return Err(NodeSlotError::ControlBoundaryPublicationRaced {
+                        expected: request,
+                        observed,
+                    });
+                }
                 Err(_) => continue,
             }
         };
-        self.wake_after_signal_increment()
-            .map_err(|source| NodeSlotError::FutexWake { source })?;
+        effect(request);
+        // A woken consumer must see completed slot/pair fields immediately.
+        // Releasing after wake could let it park on the held claim forever.
+        drop(publication);
+        wake().map_err(|source| NodeSlotError::FutexWake { source })?;
         Ok(request)
     }
 
@@ -622,6 +1160,7 @@ impl NodeSlot {
         let acknowledgement = request.wrapping_add(1);
         self.control_boundary_ack
             .store(acknowledgement, Ordering::Release);
+        self.signal_host_publication();
         acknowledgement
     }
 
@@ -661,14 +1200,14 @@ impl NodeSlot {
                 .store(idle_wake_icount, Ordering::Release);
         }
         self.status.store(status, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     fn publish_device_io_active(&self, active: bool) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.device_io_active
             .store(u8::from(active), Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     pub(crate) fn validate_scheduler_ceiling(
@@ -691,16 +1230,72 @@ impl NodeSlot {
         ceiling: AdvanceCeiling,
         stop_condition: AdvanceStopCondition,
     ) -> Result<WakeAction, NodeSlotError> {
-        self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);
+        self.publish_prevalidated_scheduler_ceiling_with_effect(ceiling, stop_condition, |_| {})
+    }
 
-        self.wake_after_signal_increment()
-            .map_err(|source| NodeSlotError::FutexWake { source })
+    fn publish_prevalidated_scheduler_ceiling_with_effect(
+        &self,
+        ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
+    ) -> Result<WakeAction, NodeSlotError> {
+        self.publish_prevalidated_scheduler_ceiling_with_wake(
+            ceiling,
+            stop_condition,
+            effect,
+            || self.wake_after_signal_increment(),
+        )
+    }
+
+    /// Keeps the original publication body shared with the focused wake-error control.
+    fn publish_prevalidated_scheduler_ceiling_with_wake(
+        &self,
+        ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
+        wake: impl FnOnce() -> Result<WakeAction, FutexError>,
+    ) -> Result<WakeAction, NodeSlotError> {
+        self.publish_scheduler_advance_fields_with_effect(
+            ceiling.max_advance_icount,
+            stop_condition,
+            effect,
+        );
+        wake().map_err(|source| NodeSlotError::FutexWake { source })
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_scheduler_advance_with_test_wake(
+        &self,
+        ceiling: AdvanceCeiling,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
+        wake: impl FnOnce() -> Result<WakeAction, FutexError>,
+    ) -> Result<WakeAction, NodeSlotError> {
+        self.validate_scheduler_ceiling(ceiling)?;
+        self.publish_prevalidated_scheduler_ceiling_with_wake(
+            ceiling,
+            AdvanceStopCondition::Ceiling,
+            effect,
+            wake,
+        )
     }
 
     fn publish_scheduler_advance_fields(
         &self,
         max_advance_icount: u64,
         stop_condition: AdvanceStopCondition,
+    ) {
+        self.publish_scheduler_advance_fields_with_effect(
+            max_advance_icount,
+            stop_condition,
+            |_| {},
+        );
+    }
+
+    pub(super) fn publish_scheduler_advance_fields_with_effect(
+        &self,
+        max_advance_icount: u64,
+        stop_condition: AdvanceStopCondition,
+        effect: impl FnOnce(SchedulerAdvanceSequence),
     ) {
         let published_sequence = loop {
             let observed = self.advance_publication_sequence.load(Ordering::Acquire);
@@ -719,6 +1314,11 @@ impl NodeSlot {
             }
         };
 
+        let publication = SchedulerAdvanceWriter {
+            sequence: &self.advance_publication_sequence,
+            published: published_sequence,
+        };
+
         match stop_condition {
             AdvanceStopCondition::NextAuthenticatedIdle => {
                 // A peer that observes the raised ceiling must also observe the
@@ -729,7 +1329,7 @@ impl NodeSlot {
                 self.max_advance_icount
                     .store(max_advance_icount, Ordering::Release);
             }
-            AdvanceStopCondition::Ceiling => {
+            AdvanceStopCondition::Ceiling | AdvanceStopCondition::ExactEvent => {
                 // A peer that observes the cleared mode must first observe the
                 // clamp or replacement ceiling that bounds renewed execution.
                 self.max_advance_icount
@@ -739,31 +1339,54 @@ impl NodeSlot {
             }
         }
 
-        self.advance_publication_sequence
-            .store(published_sequence, Ordering::Release);
+        effect(SchedulerAdvanceSequence(published_sequence));
+        drop(publication);
     }
 
+    /// Waits out a host scheduler publication in progress.
+    ///
+    /// The host owns the odd sequence; a host stalled mid-publication parks
+    /// this reader in the backoff's sleeps rather than a spin.
     pub(crate) fn load_scheduler_advance_raw(&self) -> (u64, u8, u64) {
+        self.load_scheduler_advance_raw_with(
+            &mut super::contention_backoff::ContentionBackoff::new(),
+        )
+    }
+
+    pub(super) fn load_scheduler_advance_raw_with(
+        &self,
+        backoff: &mut super::contention_backoff::ContentionBackoff,
+    ) -> (u64, u8, u64) {
         loop {
-            let before = self.advance_publication_sequence.load(Ordering::Acquire);
-            if !before.is_multiple_of(2) {
-                core::hint::spin_loop();
-                continue;
+            if let Some(publication) = self.try_load_scheduler_advance_raw() {
+                return publication;
             }
-            let stop_condition = self.advance_stop_condition.load(Ordering::Acquire);
-            let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
-            let after = self.advance_publication_sequence.load(Ordering::Acquire);
-            if before == after && after.is_multiple_of(2) {
-                return (max_advance_icount, stop_condition, after);
-            }
+            backoff.wait();
         }
     }
 
+    pub(super) fn try_load_scheduler_advance_raw(&self) -> Option<(u64, u8, u64)> {
+        let before = self.advance_publication_sequence.load(Ordering::Acquire);
+        if !before.is_multiple_of(2) {
+            return None;
+        }
+        let stop_condition = self.advance_stop_condition.load(Ordering::Acquire);
+        let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
+        let after = self.advance_publication_sequence.load(Ordering::Acquire);
+        (before == after && after.is_multiple_of(2)).then_some((
+            max_advance_icount,
+            stop_condition,
+            after,
+        ))
+    }
+
     pub(super) fn is_runnable_after_idle_publish(&self) -> bool {
-        let Ok((max_advance_icount, AdvanceStopCondition::Ceiling)) = self.load_scheduler_advance()
-        else {
+        let Ok((max_advance_icount, stop_condition)) = self.load_scheduler_advance() else {
             return false;
         };
+        if !stop_condition.authorizes_ceiling() {
+            return false;
+        }
         let status = self.status.load(Ordering::Acquire);
         let idle_wake_icount = self.idle_wake_icount.load(Ordering::Acquire);
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount
@@ -798,4 +1421,48 @@ fn validate_raw_retirement_at_tick(
         });
     }
     Ok(())
+}
+
+/// Completes a coherent ceiling even if an invalid local effect unwinds.
+struct SchedulerAdvanceWriter<'a> {
+    sequence: &'a AtomicU64,
+    published: u64,
+}
+
+impl Drop for SchedulerAdvanceWriter<'_> {
+    fn drop(&mut self) {
+        self.sequence.store(self.published, Ordering::Release);
+    }
+}
+
+// This host-only claim is not a native completion or phase receipt. Unwind
+// clears it before another original request publisher may touch paired fields.
+pub(super) struct ControlBoundaryPublicationClaim<'a>(pub(super) &'a AtomicU32);
+
+impl Drop for ControlBoundaryPublicationClaim<'_> {
+    fn drop(&mut self) {
+        // An externally changed word is never ours to release.
+        let _ = self
+            .0
+            .compare_exchange(1, 0, Ordering::Release, Ordering::Relaxed);
+    }
+}
+
+/// How a control-boundary writer accounts for a zero-length idle in the slot.
+#[derive(Clone, Copy)]
+enum ZeroLengthIdleRecord {
+    /// The writer keeps no record; below the ceiling the idle is preserved.
+    Unkept,
+    /// The advance sequence the idle answered, as its writer recorded it.
+    Kept(Option<u64>),
+}
+
+impl ZeroLengthIdleRecord {
+    const fn is_stale_for(self, sequence: u64) -> bool {
+        match self {
+            Self::Unkept => false,
+            Self::Kept(Some(answered)) => answered != sequence,
+            Self::Kept(None) => true,
+        }
+    }
 }

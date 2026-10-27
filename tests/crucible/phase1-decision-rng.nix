@@ -9,6 +9,8 @@
   layer0Gate = builtins.readFile ../../crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  rngDrawModel = builtins.readFile ../../crates/crucible/crucible-engine/src/model/materialized/rng_draw.rs;
+  decisionCodec = builtins.readFile ../../crates/crucible/crucible-engine/src/model/binary_state.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -24,11 +26,19 @@
         needle = "pub struct DecisionStream";
       }
       {
-        label = "fixed PRNG algorithm";
-        needle = "pub const DECISION_RNG_ALGORITHM: &str = \"splitmix64-v1\";";
+        label = "keyed PRNG algorithm";
+        needle = "pub const DECISION_RNG_ALGORITHM: &str = \"keyed-blake3-v2\";";
       }
       {
-        label = "stable name hash domain";
+        label = "refused legacy algorithm";
+        needle = "pub const DECISION_RNG_LEGACY_ALGORITHM: &str = \"splitmix64-v1\";";
+      }
+      {
+        label = "world-key derivation context";
+        needle = "pub const DECISION_RNG_WORLD_KEY_CONTEXT";
+      }
+      {
+        label = "stable name domain";
         needle = "pub const DECISION_RNG_NAME_HASH_DOMAIN";
       }
       {
@@ -40,23 +50,27 @@
         needle = "pub const DECISION_RNG_LINK_STREAM_DOMAIN";
       }
       {
-        label = "stable name hash helper";
-        needle = "pub fn stable_name_hash";
+        label = "BLAKE3 world-key derivation";
+        needle = "blake3::derive_key(DECISION_RNG_WORLD_KEY_CONTEXT";
       }
       {
-        label = "stable domain-name hash helper";
-        needle = "pub fn stable_domain_name_hash";
+        label = "BLAKE3 keyed draw";
+        needle = "blake3::Hasher::new_keyed(&self.stream_key)";
       }
       {
-        label = "seed xor name hash";
-        needle = "self.seed ^ stable_name_hash(entity_name)";
+        label = "length-prefixed draw fields";
+        needle = "fn write_length_prefixed";
       }
       {
-        label = "domain seed xor stable hash";
-        needle = "self.seed ^ stable_domain_name_hash(stream_domain, entity_name)";
+        label = "position-addressed draw";
+        needle = "pub fn draw_at(&self, position: u64) -> u64";
       }
       {
-        label = "domain stream seed API";
+        label = "event-keyed stream API";
+        needle = "pub fn event_in_domain(";
+      }
+      {
+        label = "domain stream id API";
         needle = "pub fn stream_seed_in_domain(&self, stream_domain: &str, entity_name: &str) -> u64";
       }
       {
@@ -75,10 +89,6 @@
         label = "link stream domain used by fork";
         needle = "self.fork_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, link_name)";
       }
-      {
-        label = "fixed PRNG implementation";
-        needle = "fn splitmix64";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-determinism/src/lib.rs" simLib [
       {
@@ -93,31 +103,39 @@
         label = "ambient random";
         needle = "rand::random";
       }
+      {
+        label = "sequential legacy PRNG";
+        needle = "fn splitmix64";
+      }
     ]
     ++ failuresFor "crates/crucible/crucible-determinism/tests/decision_rng.rs" decisionRngTest [
       {
-        label = "seed XOR stable hash test";
-        needle = "decision_rng_forks_by_seed_xor_stable_name_hash";
+        label = "published-derivation reference test";
+        needle = "decision_rng_matches_the_published_derivation";
       }
       {
         label = "construction-order independence test";
         needle = "decision_rng_streams_are_independent_of_construction_order";
       }
       {
-        label = "fixed algorithm test";
-        needle = "decision_rng_uses_fixed_cross_platform_algorithm";
+        label = "draw-order independence test";
+        needle = "decision_rng_event_draws_are_independent_of_draw_order";
+      }
+      {
+        label = "fixed vector test";
+        needle = "decision_rng_keeps_fixed_cross_platform_vectors";
       }
       {
         label = "known-vector stream";
         needle = "DecisionRng::new(0).fork(\"known-vector\")";
       }
       {
-        label = "first splitmix64 vector";
-        needle = "0xfe32_417a_273f_d586";
+        label = "first keyed vector";
+        needle = "0x1e76_8e32_8b90_978a";
       }
       {
-        label = "second splitmix64 vector";
-        needle = "0x44bf_2b53_3f3e_07fd";
+        label = "second keyed vector";
+        needle = "0x7227_aa57_219e_8e38";
       }
       {
         label = "name and seed sensitivity test";
@@ -128,36 +146,12 @@
         needle = "decision_rng_domain_separates_node_and_link_streams";
       }
       {
-        label = "node domain seed assertion";
-        needle = "rng.stream_seed_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, name)";
+        label = "length-prefix separation test";
+        needle = "decision_rng_length_prefixes_keep_adjacent_fields_apart";
       }
       {
-        label = "link domain seed assertion";
-        needle = "rng.stream_seed_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, name)";
-      }
-      {
-        label = "node fork assertion";
-        needle = "rng.fork_for_node(name)";
-      }
-      {
-        label = "link fork assertion";
-        needle = "rng.fork_for_link(name)";
-      }
-      {
-        label = "node domain seed fixed vector";
-        needle = "0x797b_e784_6aec_decf";
-      }
-      {
-        label = "link domain seed fixed vector";
-        needle = "0x785b_7e35_d8fa_c62c";
-      }
-      {
-        label = "node domain first draw fixed vector";
-        needle = "0xa86f_fa4e_91e2_4781";
-      }
-      {
-        label = "link domain first draw fixed vector";
-        needle = "0xc7dd_aa47_1d78_feaf";
+        label = "algorithm naming test";
+        needle = "decision_rng_names_the_keyed_algorithm_and_refused_legacy";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs" layer0Gate [
@@ -165,12 +159,28 @@
         label = "layer0 gate uses real decision RNG";
         needle = "DecisionRng::new";
       }
+    ]
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/materialized/rng_draw.rs" rngDrawModel [
       {
-        label = "layer0 gate uses stable name hash";
-        needle = "stable_name_hash";
+        label = "recorded draws carry a typed address";
+        needle = "pub address: RngDrawAddress,";
+      }
+      {
+        label = "link-frame draw address";
+        needle = "LinkFrame {";
+      }
+    ]
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/binary_state.rs" decisionCodec [
+      {
+        label = "unaddressed draw encoding is refused";
+        needle = "rng draw without a draw address is a retired decision encoding and is refused";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+      {
+        label = "DET-26 requires recorded draw addresses";
+        needle = "recorded draw MUST carry its stream and its full draw address";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
@@ -186,8 +196,8 @@
         needle = "`DECISION_RNG_LINK_STREAM_DOMAIN`";
       }
       {
-        label = "T-PAT-5 completion names stable domain hash";
-        needle = "`stable_domain_name_hash`";
+        label = "T-PAT-5 completion names keyed derivation";
+        needle = "`keyed-blake3-v2`";
       }
       {
         label = "T-PAT-5 completion names decision RNG gate";
@@ -222,10 +232,12 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             crate=crucible-sim
-            prng=splitmix64-v1
-            fork_rule=seed_xor_stable_name_hash
+            prng=keyed-blake3-v2
+            fork_rule=blake3_keyed_stream_key
+            refused_legacy=splitmix64-v1
+            recorded_draw_address=ordinal,link-frame
             node_link_domain_separation=fixed-stream-domains
-            pattern_PAT_7=name-hash-stream-forking
+            pattern_PAT_7=keyed-stream-derivation
             construction_order_perturbs_streams=false
             host_rng_used=false
             RESULT

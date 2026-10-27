@@ -186,8 +186,8 @@ pub(super) fn assert_fixed_typed_choice_replay_closure(stop: &StopCondition) {
 
     assert_eq!(schedule.len(), 1);
     assert!(matches!(
-        schedule.decisions(),
-        [crucible_engine::Decision::Selection(_)]
+        schedule.decision(0),
+        Some(crucible_engine::Decision::Selection(_))
     ));
     campaign
         .replay_closure()
@@ -198,11 +198,11 @@ pub(super) fn assert_fixed_typed_choice_replay_closure(stop: &StopCondition) {
 pub(super) fn handle_with_observation_claim(
     handle: &str,
     proof: &ObservationStopProof,
-    evidence: &crucible_daemon::CrucibleMeasurementReplayEvidence,
+    evidence: &crucible_daemon::CrucibleMeasurementEvidenceBundle,
 ) -> String {
     let proof_bytes = proof.canonical_bytes();
     let evidence_bytes = evidence
-        .canonical_bytes()
+        .canonical_bytes_with_limit(crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES)
         .or_panic("canonical forged observation evidence");
     handle
         .lines()

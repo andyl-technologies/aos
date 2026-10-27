@@ -166,7 +166,7 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         budget_timed_out: report.budget_timed_out,
         max_virtual_time_ticks: recipe.max_virtual_time_ticks,
         max_quanta: recipe.max_quanta,
-        run_ceiling_ticks: Some(PRODUCTION_CLI_RUN_CEILING_TICKS),
+        run_ceiling_ticks: Some(interactive_run_ceiling_ticks(recipe.max_virtual_time_ticks)),
         lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
         coverage: recipe.coverage,
         fingerprint_scope,
@@ -325,7 +325,7 @@ pub(crate) fn live_qemu_artifact_payloads(
     if let Some(trace) = &evidence.resolved_effect_trace {
         payloads.push(ReproductionArtifactComponentPayload {
             kind: String::from("live_qemu_resolved_effect_trace"),
-            name: String::from("resolved-effect-trace.cbor"),
+            name: String::from("resolved-effect-trace.bundle"),
             media_type: String::from(LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE),
             bytes: trace.clone(),
         });
@@ -589,7 +589,7 @@ fn decode_artifact_object_records(
 
 /// Returns the typed schedule indices that must be forced during live replay.
 pub(crate) fn replay_choice_indices(schedule: &crucible_engine::Schedule) -> Vec<u64> {
-    let decisions = schedule.decisions();
+    let decisions = schedule.decision_history();
     let mut network = Vec::new();
     for (index, decision) in decisions.iter().enumerate() {
         if matches!(decision, crucible_engine::Decision::Selection(selection)
@@ -785,3 +785,34 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
 #[cfg(test)]
 #[path = "artifact_capture_test.rs"]
 mod tests;
+
+/// Copies a segmented resolved-effect trace into its transport bundle.
+///
+/// Saved artifacts carry no segment store, so the trace travels as one
+/// bundle (RFC-0020 section 15.8) whose segments are read one at a time.
+pub(crate) fn resolved_effect_trace_bundle(
+    trace: &crucible_session::engine::ResolvedEffectTrace,
+) -> Result<Vec<u8>, CliError> {
+    trace
+        .to_bundle_bytes(usize::MAX)
+        .map_err(|error| backend_error(format!("bundle resolved-effect trace: {error}")))
+}
+
+/// Decodes a transport bundle and admits it under the scenario's limits.
+///
+/// Decoding authenticates every bundled segment against the manifest.
+pub(crate) fn decode_resolved_effect_trace_bundle(
+    bytes: &[u8],
+    limits: crucible_session::engine::FaultResourceLimits,
+) -> Result<crucible_session::engine::ResolvedEffectTrace, CliError> {
+    let trace =
+        crucible_session::engine::ResolvedEffectTrace::from_bundle_bytes(bytes, bytes.len())
+            .map_err(|error| {
+                backend_error(format!("decode resolved-effect trace bundle: {error}"))
+            })?;
+    trace
+        .manifest()
+        .admit(limits)
+        .map_err(|error| backend_error(format!("admit resolved-effect trace: {error}")))?;
+    Ok(trace)
+}

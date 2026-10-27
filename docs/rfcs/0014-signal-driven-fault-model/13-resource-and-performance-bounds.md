@@ -140,9 +140,31 @@ ring beyond the obsolete 64 MiB boundary.
 | `ninep_fids_per_session` | 65,536 | 262,144 |
 | `ninep_object_versions` | 1,048,576 | 4,194,304 |
 
+`ninep_object_versions` counts every live visibility update at or above the
+compaction floor, the compacted per-path residue (one or two versions per
+path), stale or misdirected directive objects, and exact virtual fids. It is
+therefore bounded by distinct authored paths plus unreleased updates rather
+than by run length. `ninep_sessions_per_device` is always one, because a
+`Tversion` retires the previous session.
+
 Large media/flash state uses sparse interval/counter structures; declaring
 geometry does not allocate one object per healthy block. Worst-case sparse
 entries remain bounded by media-interval and state-byte limits.
+
+Media and flash continuations are keyed by the identity of one resolved
+binding action, so a re-upserted binding starts a new continuation. A replaced
+or removed action never returns, and an existing continuation is consulted
+again only through a retained directive that already names it. After the
+storage adapter installs a directive, it passes the identities of every live
+persistent media and flash action to the device, which retires each
+continuation that is neither live nor named by a retained directive.
+`storage_media_intervals_per_device` therefore counts live and in-flight
+contributors, not every contributor installed during the run. Retired media
+counters are dropped because no later request reads them. A retired flash
+continuation folds its changed-cell XOR masks into a device-level residual that
+every read applies, so reads stay bit-identical; like the masks of an inactive
+continuation, the residual is never cleared by a later program or erase. A
+continuation with an in-progress erase decision is never retired.
 
 ## 13.6 Node and QEMU limits
 
@@ -181,43 +203,72 @@ command or acknowledgement.
 | `resolved_effect_records` | 268,435,456 | 1,073,741,824 |
 | `replay_first_mismatch_context_bytes` | 16,777,216 | 67,108,864 |
 
+`thin_replay_events` and `resolved_effect_records` bound the running work-item
+and record counters of the segmented resolved-effect trace (RFC-0020 section
+15.10). They are checked against the counters before an append, never by
+collecting the trace, and a checkpoint stores the counters beside the sealed
+segment references and the open tail; `fat_checkpoint_bytes` bounds that
+encoded position.
+
 Logs and checkpoints are chunked content-addressed artifacts. Reaching a byte or
 record bound is a typed terminal result; retaining fewer records is allowed only
 under an authored observability policy that still preserves every transition,
 decision, effect, and referenced full-value artifact required for explanation.
 `event_records` is one aggregate ceiling across referenced events, pending
 observations, raw QEMU occurrences, issued-action and commit ledgers, and active
-rule identities. The host derives the remaining capacity before a plugin
+rule identities. Referenced events count cumulatively: each emission is charged
+once, when its evaluation stages, against running record and byte counters that
+the production checkpoint stores beside a history chain digest. The runtime
+retains only the occurrences a registered block or 9p consumer can still select
+(RFC-0020 CMEAS-26), so neither accounting nor checkpointing rescans the emitted
+history. Pending observations and raw occurrences drain at every boundary and
+are measured directly. The host derives the remaining capacity before a plugin
 control pump or fault transaction. It freezes every non-target node at its
 current ownership, arms only the node whose control callback is about to run,
 and subtracts newly staged records before arming the next node. Restore first
 authenticates the complete checkpoint identity and requires empty live
 occurrence-event ownership, then installs the same aggregate policy before its
-first fingerprint control pump and requires ownership to remain empty after
-that pump. It never gives each collection or node an independent copy of the
-authored allowance; LIMIT-2 coordinates report the complete canonical current
-count and the plan-authored aggregate ceiling rather than a per-node remainder.
-Before any production adapter APPLY can become visible, the controller also
-owns the deterministic emitted-event, boot-request, and explorer-choice
-publication batch and reserves those persistent destinations plus the exact
-evaluation-observation tail. Publishing that model-owned batch after APPLY only
-moves staged owners. QEMU occurrence evidence, which cannot exist before APPLY,
-uses the separately bounded, fallible raw-event drain described above and
-poisons the continuation if authentication or typed allocation fails.
+first fingerprint control pump and requires ownership to remain empty after that
+pump. It never gives each collection or node an independent copy of the authored
+allowance; LIMIT-2 coordinates report the complete canonical current count and
+the plan-authored aggregate ceiling rather than a per-node remainder. Before any
+production adapter APPLY can become visible, the controller also owns the
+deterministic emitted-event, boot-request, and explorer-choice publication batch
+and reserves those persistent destinations plus the exact evaluation-observation
+tail. Publishing that model-owned batch after APPLY only moves staged owners.
+QEMU occurrence evidence, which cannot exist before APPLY, uses the separately
+bounded, fallible raw-event drain described above and poisons the continuation
+if authentication or typed allocation fails.
 
 The controller's terminal-lifecycle process ownership uses one versioned
-`run-state.json` envelope. The envelope atomically couples the current and
-staged QEMU process identities to the lifecycle phase, authenticated action and
-evidence hashes, completed exits, and the runtime event-record and byte bases.
-There is no separately published manifest or journal and no legacy fallback,
-so a rename cannot expose half of a process-generation transition. Encoding is
-measured before one fallible exact reservation and then writes only within that
-reserved storage. Recovery bounds the file before reading, performs a
-count-only preflight before constructing owned maps or record vectors, charges
-the complete envelope against the remaining `event_log_bytes`, charges journal
-records against the remaining aggregate `event_records`, and rejects any phase,
-generation, transition, or process-identity ownership matrix that the live
-publisher cannot produce.
+`run-state.json` envelope (version 3) and an append-only
+`lifecycle-exits.jsonl` exit log beside it. The envelope atomically couples the
+current and staged QEMU process identities to the lifecycle phase,
+authenticated action and evidence hashes, the committed exit-log prefix, and the
+runtime event-record and byte bases. There is no separately published manifest
+or journal and no legacy fallback, so a rename cannot expose half of a
+process-generation transition. Completed exits are history that is only counted
+and validated after commit, so they live in the log rather than the envelope,
+which therefore stays bounded by node count. The log holds one canonical
+compact JSON line per committed exit; the envelope records its record count,
+byte length, and a SHA-256 chain over the lines. A lifecycle commit first
+truncates the log to the recorded prefix, appends the transaction's exits, and
+syncs the file (and its directory when new); only then does it rename the
+envelope that records the longer prefix. A crash between the two steps leaves
+an unreferenced tail, which the next append or a recovery takeover of a dead
+owner truncates; a failed append or rename restores the committed reference so
+a retry writes the same bytes. Encoding is measured before one fallible exact
+reservation and then writes only within that reserved storage. Recovery bounds
+the envelope before reading, performs a count-only preflight before
+constructing owned maps or record vectors, charges the envelope plus the
+recorded log length against the remaining `event_log_bytes`, charges journal
+nodes plus recorded exits against the remaining aggregate `event_records`
+without reading the log, and rejects any phase, generation, transition, or
+process-identity ownership matrix that the live publisher cannot produce. It
+then streams only the recorded log prefix once, verifying each record's
+canonical encoding and fields, non-decreasing transactions, per-transaction
+node uniqueness, the record count, and the chain; a live owner's in-progress
+tail is ignored.
 
 Canonical QEMU node, host-I/O, production fault-runtime, and complete VMState
 envelopes admit their representation against `fat_checkpoint_bytes` and its
@@ -246,12 +297,12 @@ durably removes abandoned transaction staging before another capture.
 
 The raised
 resource policy is carried only by the versioned node-v7, host-I/O-v4,
-block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v2, I/O-core-v2,
-production-runtime-v6, and VM-snapshot-v4 formats; production runtime identity
-uses the v9 domain and VM snapshot identity uses the
+block-snapshot-v3, block-fault-state-v2, 9p-snapshot-v5, I/O-core-v2,
+production-runtime-v8, and VM-snapshot-v4 formats; production runtime identity
+uses the v11 domain and VM snapshot identity uses the
 `exact-snapshot.v7` domain, so old policy identities cannot alias new artifacts.
 
-## 13.8 Search and minimization limits
+## 13.8 Search limits
 
 | Field | Default | Hard ceiling |
 | --- | ---: | ---: |
@@ -261,15 +312,21 @@ uses the v9 domain and VM snapshot identity uses the
 | `search_choices_per_state` | 65,536 | 262,144 |
 | `trace_mutation_windows` | 65,536 | 262,144 |
 | `mapping_mutation_points` | 65,536 | 262,144 |
-| `minimization_attempts` | 1,048,576 | 16,777,216 |
 
 Search strategies additionally declare a finite fuel count. For a finite
 mutation product, `search_states` is one global counter: materializing each
 candidate root consumes one state and expanding any frontier within that
 candidate consumes one more. The counter never resets between candidates.
-Replay, minimization trials, and candidate generation consume their separately
-declared finite bounds. Exhaustion returns a complete bounded-search result and
-never silently switches strategy.
+Replay and candidate generation consume their separately declared finite
+bounds. Exhaustion returns a complete bounded-search result and never silently
+switches strategy.
+
+The fault plan carries no minimization limit. The fault runtime performs no
+minimization; failure-preserving finding minimization is bounded by the
+compiled 4,096-candidate minimization policy of RFC-0020 section 03.10, which
+is published there and retained in every minimized reproduction's policy
+identity rather than hidden. An authored plan that still names a
+`minimization_attempts` field is rejected as an unknown resource limit.
 
 ## 13.9 Future sensor bounds
 

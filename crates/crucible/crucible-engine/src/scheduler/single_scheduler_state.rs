@@ -102,6 +102,7 @@ impl SingleScheduler {
     ) -> Result<Self, SchedulerError> {
         let timeline = SharedTimeline::new();
         let configuration = scenario.canonical_configuration();
+        let trigger_console_patterns = scenario.trigger_console_patterns.clone();
         let ready_point_counters = scenario.ready_point_counters;
         let mut nodes = scenario
             .nodes
@@ -120,6 +121,7 @@ impl SingleScheduler {
                 })?;
             runtime.time_mapping.anchor_counter = counter;
             runtime.time_mapping.anchor_time = SimInstant::EPOCH;
+            runtime.ready_point_mapping = runtime.time_mapping;
         }
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
@@ -142,7 +144,7 @@ impl SingleScheduler {
             .map(|topology| topology.scheduling_nodes.iter().cloned().collect())
             .unwrap_or_default();
         let decision_seed = configuration.def.seed();
-        let scheduler = Self {
+        let mut scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
@@ -154,11 +156,11 @@ impl SingleScheduler {
             nodes,
             topology_changes: scenario.topology_changes,
             run_subdivision_policies,
-            run_subdivision_records: Vec::new(),
+            run_subdivision_records: crate::History::new(),
             preemption_requests,
-            preemption_applications: Vec::new(),
+            preemption_applications: crate::History::new(),
             control_admissions: Vec::new(),
-            control_applications: Vec::new(),
+            control_applications: crate::History::new(),
             pending_events: scenario.pending_events,
             imported_io: BTreeMap::new(),
             inventory_world: None,
@@ -182,6 +184,7 @@ impl SingleScheduler {
             branch_network_choices: Vec::new(),
             app_random_branch_selections: BTreeMap::new(),
             search_frontiers: Vec::new(),
+            retired_search_frontiers: 0,
             event_log,
             trigger_actions,
             trigger_static_topology: scenario.trigger_static_topology,
@@ -189,14 +192,23 @@ impl SingleScheduler {
             frontier,
             quanta: 0,
             topology_epoch: 0,
-            topology_change_applications: Vec::new(),
-            rendezvous_records: Vec::new(),
+            topology_change_applications: crate::History::new(),
+            rendezvous_records: crate::History::new(),
             boundary_yields: 0,
-            ceiling_publications: Vec::new(),
+            ceiling_publications: crate::History::new(),
             lock_held: false,
             last_advance: None,
             last_topology_recompute: false,
+            held_peer_evidence: BTreeMap::new(),
+            held_run_publication: false,
         };
+        // Trigger matchers exist before the first console byte, so no
+        // trigger ever needs console history.
+        scheduler.declare_console_patterns(
+            trigger_console_patterns
+                .iter()
+                .map(|(node, pattern)| (node, pattern.as_str())),
+        )?;
         Ok(scheduler)
     }
 
@@ -214,24 +226,36 @@ impl SingleScheduler {
     /// A nanosecond coordinate between representable icounts is rounded upward,
     /// so a modeled delay is never shortened by the machine time scale.
     ///
+    /// Nodes run on their own clocks, so a node may already be ahead of the
+    /// shared frontier. An evaluation must observe every live node at its
+    /// coordinate, so a wakeup that some live node has already passed is
+    /// refused rather than applied late.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when the requested wakeup
-    /// is not strictly after the current shared frontier or upward alignment
-    /// overflows the virtual-time representation.
+    /// is not strictly after the current shared frontier, when a live node's
+    /// settled time or held RUN evidence already lies beyond it, or when upward
+    /// alignment overflows the virtual-time representation.
     pub fn set_signal_fault_wakeup(
         &mut self,
         wakeup_ticks: Option<u64>,
     ) -> Result<(), SchedulerError> {
-        if let Some(wakeup_ticks) = wakeup_ticks
-            && wakeup_ticks <= self.frontier.ticks
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "signal fault wakeup {wakeup_ticks} must be after scheduler frontier {}",
-                    self.frontier.ticks
-                ),
-            });
+        if let Some(wakeup_ticks) = wakeup_ticks {
+            if wakeup_ticks <= self.frontier.ticks {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "signal fault wakeup {wakeup_ticks} must be after scheduler frontier {}",
+                        self.frontier.ticks
+                    ),
+                });
+            }
+            self.require_no_live_node_beyond(
+                SimInstant {
+                    ticks: wakeup_ticks,
+                },
+                "signal fault wakeup",
+            )?;
         }
         self.signal_fault_wakeup = wakeup_ticks.map(|ticks| SimInstant { ticks });
         Ok(())
@@ -279,20 +303,12 @@ impl SingleScheduler {
                     ),
                 });
             }
-            for node in &self.nodes {
-                if !matches!(
-                    self.effective_node_activity(node),
-                    SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-                ) && self.node_current_time(node)?.ticks > wakeup.ticks
-                {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "trigger deadline {} is behind live node {}",
-                            wakeup.ticks, node.id.node.name
-                        ),
-                    });
-                }
-            }
+            self.require_no_live_node_beyond(
+                SimInstant {
+                    ticks: wakeup.ticks,
+                },
+                "trigger deadline",
+            )?;
         }
         self.trigger_wakeup = wakeup.map(|at| SimInstant { ticks: at.ticks });
         self.trigger_activation = activation.map(|at| SimInstant { ticks: at.ticks });
@@ -485,6 +501,37 @@ impl SingleScheduler {
     /// Returns [`SchedulerError::TimeConversion`] when a completion delivery
     /// icount cannot be converted under the timeline shift.
     pub fn refresh_device_horizons(&mut self) -> Result<(), SchedulerError> {
+        let earliest_by_target = self.complete_device_horizons()?;
+
+        self.device_horizons.clear();
+        for (target, instant) in earliest_by_target {
+            self.device_horizons.insert(target.clone(), instant);
+            // Re-activate a parked requester so the next sequential completion is
+            // observed ([SCHED-29]); a `Runnable` node is left as-is.
+            if let Some(runtime) = self
+                .nodes
+                .iter_mut()
+                .find(|runtime| runtime.id.node == target)
+                && runtime.activity == SchedulerNodeActivity::Idle
+            {
+                runtime.activity = SchedulerNodeActivity::Runnable;
+            }
+        }
+        Ok(())
+    }
+
+    /// Enumerates the complete device/link horizons without copying scheduler history.
+    ///
+    /// Device conversions finish in the original order before links are merged.
+    /// Callers retain responsibility for cache installation and node activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original missing-target or time-conversion error before any
+    /// caller installs horizons or reactivates nodes.
+    pub(super) fn complete_device_horizons(
+        &self,
+    ) -> Result<Vec<(NodeId, SimInstant)>, SchedulerError> {
         // Recompute the earliest undelivered completion per target; the in-flight
         // queues are the single source of truth. Ordered by `NodeId` (BTreeMap
         // iteration) so the refresh is deterministic.
@@ -526,21 +573,7 @@ impl SingleScheduler {
         }
         earliest_by_target.sort_by(|left, right| left.0.cmp(&right.0));
 
-        self.device_horizons.clear();
-        for (target, instant) in earliest_by_target {
-            self.device_horizons.insert(target.clone(), instant);
-            // Re-activate a parked requester so the next sequential completion is
-            // observed ([SCHED-29]); a `Runnable` node is left as-is.
-            if let Some(runtime) = self
-                .nodes
-                .iter_mut()
-                .find(|runtime| runtime.id.node == target)
-                && runtime.activity == SchedulerNodeActivity::Idle
-            {
-                runtime.activity = SchedulerNodeActivity::Runnable;
-            }
-        }
-        Ok(())
+        Ok(earliest_by_target)
     }
 
     /// Drops every resolved network frame on one exact directed World route.
@@ -689,8 +722,8 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// This currently never returns an error; the `Result` is kept for forward
-    /// compatibility with sequence-exhaustion guards.
+    /// Returns [`SchedulerError::BoundaryViolation`] when a sub-node's device
+    /// exhausts its queue revision while retiring delivered completions.
     pub fn resolve_device_completions(
         &mut self,
         node: &SchedulerNodeId,
@@ -704,7 +737,12 @@ impl SingleScheduler {
         let mut due: Vec<crate::device_subnode::DeviceDelivery> = Vec::new();
         if let Some(sub_nodes) = self.device_sub_nodes.get_mut(&node.node) {
             for sub_node in sub_nodes.iter_mut() {
-                due.extend(sub_node.deliver_due(consumer_icount));
+                let delivered = sub_node.deliver_due(consumer_icount).map_err(|error| {
+                    SchedulerError::BoundaryViolation {
+                        message: format!("retire delivered device completions: {error}"),
+                    }
+                })?;
+                due.extend(delivered);
             }
         }
         // Canonical (delivery_icount, then producer sub-node id) order so the
@@ -921,6 +959,30 @@ impl SingleScheduler {
         self.event_log.condition_prefix()
     }
 
+    /// Declares console patterns so `console_match` folds bytes as they arrive.
+    ///
+    /// Console bytes already retained are folded immediately, so a restored
+    /// scheduler may declare its patterns after restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when a pattern cannot
+    /// become a streaming automaton.
+    pub fn declare_console_patterns<'pattern>(
+        &mut self,
+        patterns: impl IntoIterator<Item = (&'pattern NodeId, &'pattern str)>,
+    ) -> Result<(), SchedulerError> {
+        for (node, pattern) in patterns {
+            self.event_log
+                .condition_prefix
+                .declare_console_pattern(node, pattern)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("declare console pattern: {error}"),
+                })?;
+        }
+        Ok(())
+    }
+
     /// Returns the scheduler-owned trigger action state.
     #[must_use]
     pub fn trigger_actions(&self) -> &TriggerActionState {
@@ -1090,12 +1152,18 @@ impl SingleScheduler {
     /// Armed trigger timers are made visible to `Timer` leaves from the
     /// scheduler-owned [`TriggerActionState`], so a timer fires exactly at the
     /// virtual time produced by the `ArmTimer` action that armed it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::UndeclaredConsoleMatcher`] when a trigger's
+    /// `console_match` matcher was not declared at admission; `state` is
+    /// unchanged.
     pub fn evaluate_event_graph<O>(
         &self,
         graph: &EventGraph,
         state: &mut EventGraphState,
         oracle: O,
-    ) -> EventFirings
+    ) -> Result<EventFirings, SchedulerError>
     where
         O: ConditionLeafOracle,
     {
@@ -1103,6 +1171,7 @@ impl SingleScheduler {
             ConditionEvaluationPass::from_log_prefix_ref(self.event_log.condition_prefix(), oracle)
                 .with_timer_fires(self.trigger_actions.armed_timers.clone());
         pass.evaluate_event_graph(graph, state)
+            .map_err(SchedulerError::UndeclaredConsoleMatcher)
     }
 
     /// Applies deterministic trigger firings and their action effects atomically.
@@ -1198,37 +1267,39 @@ impl SingleScheduler {
 
     /// Returns the RUN max-advance ceilings published by this scheduler.
     #[must_use]
-    pub fn run_ceiling_publications(&self) -> &[SchedulerRunCeilingPublication] {
+    pub fn run_ceiling_publications(&self) -> &crate::History<SchedulerRunCeilingPublication> {
         &self.ceiling_publications
     }
 
     /// Returns plugin-internal RR subdivision evidence for completed RUNs.
     #[must_use]
-    pub fn run_subdivision_records(&self) -> &[SchedulerRunSubdivisionRecord] {
+    pub fn run_subdivision_records(&self) -> &crate::History<SchedulerRunSubdivisionRecord> {
         &self.run_subdivision_records
     }
 
     /// Returns explorer-supplied preemptions applied by completed RESOLVE phases.
     #[must_use]
-    pub fn preemption_applications(&self) -> &[SchedulerPreemptionApplication] {
+    pub fn preemption_applications(&self) -> &crate::History<SchedulerPreemptionApplication> {
         &self.preemption_applications
     }
 
     /// Returns topology changes applied at completed scheduler boundaries.
     #[must_use]
-    pub fn topology_change_applications(&self) -> &[SchedulerTopologyChangeApplication] {
+    pub fn topology_change_applications(
+        &self,
+    ) -> &crate::History<SchedulerTopologyChangeApplication> {
         &self.topology_change_applications
     }
 
     /// Returns allowed rendezvous records completed at scheduler boundaries.
     #[must_use]
-    pub fn rendezvous_records(&self) -> &[SchedulerRendezvousRecord] {
+    pub fn rendezvous_records(&self) -> &crate::History<SchedulerRendezvousRecord> {
         &self.rendezvous_records
     }
 
     /// Returns scheduler-side control applications completed at boundaries.
     #[must_use]
-    pub fn control_applications(&self) -> &[SchedulerControlApplication] {
+    pub fn control_applications(&self) -> &crate::History<SchedulerControlApplication> {
         &self.control_applications
     }
 
@@ -1363,7 +1434,7 @@ impl SingleScheduler {
         blockers.extend(
             network_targets
                 .into_iter()
-                .map(|target| SchedulerQuiescenceBlocker::DeviceCompletionInFlight { target }),
+                .map(|target| SchedulerQuiescenceBlocker::NetworkFrameInFlight { target }),
         );
 
         for node in &self.nodes {

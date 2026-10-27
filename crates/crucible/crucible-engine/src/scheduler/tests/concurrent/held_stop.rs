@@ -4,6 +4,9 @@ use super::*;
 use crate::{BackendPhysicalStop, HeldHostStopKind, HeldHostStopWitness};
 use std::collections::VecDeque;
 
+#[path = "choice_cut.rs"]
+mod choice_cut;
+
 struct GuestStopBackend {
     base: TestConcurrentBackend,
     stops: BTreeMap<NodeId, VecDeque<(VirtualTime, BackendPhysicalStop)>>,
@@ -67,6 +70,10 @@ impl GuestStopBackend {
 }
 
 impl SimulationBackend for GuestStopBackend {
+    fn dispatch_contract(&self) -> crate::BackendDispatchContract {
+        self.base.dispatch_contract()
+    }
+
     fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
         crate::BackendIoInventoryAuthority::SchedulerOwnedModel
     }
@@ -150,6 +157,7 @@ impl ConcurrentSimulationBackend for GuestStopBackend {
                     },
                 };
                 completed.step.reached = pause;
+                completed.step.settled_through = pause;
                 completed.step.physical_stop = cause;
                 completed
                     .step

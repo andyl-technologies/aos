@@ -399,7 +399,7 @@ fn triage_result_accepts_one_minimization_per_cluster_member() -> Result<(), Box
 fn failure_signature_rejects_static_artifact_identity_mismatch() -> Result<(), Box<dyn Error>> {
     let scenario = scenario_form()?;
     let schedule = Schedule::from_decisions([override_decision("triage-decision", "fail")]);
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let mut finding = finding_artifact(
         &scenario,
         schedule,
@@ -437,7 +437,7 @@ fn failure_signature_rejects_unbound_record_inputs() -> Result<(), Box<dyn Error
         FindingDiscoveryPath::StateSpaceSearch,
         finding_hash("bound"),
     )?;
-    let entries = recorded_event_log(schedule.decisions()[0].clone());
+    let entries = recorded_event_log(schedule.decision_history()[0].clone());
     let recorded_log = recorded_event_log_for_finding(&finding, &entries)?;
     let wrong_violation = property_violation_record(finding_hash("wrong-artifact"));
 

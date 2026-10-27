@@ -57,7 +57,8 @@ pub(crate) fn production_lifecycle_failure_class(
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
-        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
+        | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_)
+        | QemuAttemptProductionVmLifecycleError::TraceStorage(_) => {
             SchedulerOperationalFailureClass::Terminal
         }
     }
@@ -82,7 +83,8 @@ pub(super) fn map_start_replay_scheduler_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error =
         QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
@@ -105,7 +107,8 @@ pub(super) fn map_checkpoint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
     match class {
@@ -127,7 +130,8 @@ pub(super) fn map_terminal_fingerprint_capture_failure<F, D>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
     match class {

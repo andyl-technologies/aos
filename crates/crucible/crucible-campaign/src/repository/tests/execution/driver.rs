@@ -345,14 +345,18 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"executor driver original reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"executor driver original reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish original reproduction");
     let final_state = CampaignHash::derive("test-finding", b"executor driver final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"executor-driver-test-policy".to_vec(),
         Vec::new(),
         final_state,
@@ -365,8 +369,12 @@ fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart()
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"executor driver original reproduction".to_vec(),
+            crate::ReproductionPayload::new(
+                1,
+                b"executor driver original reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish minimized reproduction");

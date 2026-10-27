@@ -5,9 +5,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, ConditionEventLogPrefix, ConditionLeaf,
+    AssertionDef, AssertionId, AssertionRunVerdict, ConditionEventLogPrefix,
     HostAssertionEvaluator, HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionPredicate,
-    LintedHostAssertionOracle, ObservedState, Predicate, Properties, Property,
+    LintedHostAssertionOracle, NamedLeaf, ObservedBatch, Predicate, Properties, Property,
     PropertyLifecycleState, ReachabilityExpectation, ReachableDisposition, VirtualTime, World,
 };
 
@@ -29,12 +29,22 @@ fn properties(assertions: Vec<AssertionDef>) -> Properties {
         .expect("assertion lifecycle properties should validate")
 }
 
+/// Returns one growing log of quantum boundaries at times `1..=ticks`.
+///
+/// Prefixes for increasing `ticks` extend each other, as live observation
+/// requires.
 fn prefix(ticks: u64) -> ConditionEventLogPrefix {
-    crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-        ticks,
-        Vec::new(),
-    )
-    .expect("lifecycle test prefix should be checked")
+    let entries = (1..=ticks)
+        .map(|at| {
+            crucible_engine::test_support::condition_boundary_entry_for_test(
+                at - 1,
+                time(at),
+                crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+            )
+        })
+        .collect();
+    crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(entries)
+        .expect("lifecycle test prefix should be checked")
 }
 
 fn outcome<'a>(outcomes: &'a [HostAssertionOutcome], assertion: &str) -> &'a HostAssertionOutcome {
@@ -70,19 +80,14 @@ where
     crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(oracle)
 }
 
-fn lifecycle_oracle(state: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-    match leaf {
-        ConditionLeaf::Named { name, nodes } => {
-            assert!(nodes.is_empty());
-            match name {
-                "always-ok" | "hit" | "terminal-ok" => true,
-                "trigger" => state.at() == time(1),
-                "done" => state.at() == time(3),
-                "forbidden" => false,
-                _ => panic!("unexpected lifecycle predicate {name}"),
-            }
-        }
-        ConditionLeaf::GuestMarker { .. } => false,
+fn lifecycle_oracle(leaf: NamedLeaf<'_>, batch: &ObservedBatch<'_>) -> bool {
+    assert!(leaf.nodes().is_empty());
+    match leaf.name() {
+        "always-ok" | "hit" | "terminal-ok" => true,
+        "trigger" => batch.at() == time(1),
+        "done" => batch.at() == time(3),
+        "forbidden" => false,
+        name => panic!("unexpected lifecycle predicate {name}"),
     }
 }
 
@@ -261,16 +266,10 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
         ),
     ]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle =
-        linted_host_oracle(
-            |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-                ConditionLeaf::Named { nodes, .. } => {
-                    assert!(nodes.is_empty());
-                    false
-                }
-                ConditionLeaf::GuestMarker { .. } => false,
-            },
-        );
+    let mut oracle = linted_host_oracle(|leaf: NamedLeaf<'_>, _batch: &ObservedBatch<'_>| {
+        assert!(leaf.nodes().is_empty());
+        false
+    });
 
     let report = evaluator.finalize_prefix(&prefix(1), &mut oracle);
 
@@ -319,7 +318,7 @@ fn empty_log_always_remains_declared_and_reports_never_evaluated() {
         },
     )]);
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = linted_host_oracle(|_state: ObservedState<'_>, _leaf: ConditionLeaf<'_>| true);
+    let mut oracle = linted_host_oracle(|_leaf: NamedLeaf<'_>, _batch: &ObservedBatch<'_>| true);
 
     let report = evaluator.finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle);
 

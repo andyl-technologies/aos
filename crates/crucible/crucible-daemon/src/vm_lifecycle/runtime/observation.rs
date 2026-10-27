@@ -72,7 +72,8 @@ pub(super) fn assertion_state_event_from_outcome(
         | HostAssertionOutcomeKind::NeverEvaluated
         | HostAssertionOutcomeKind::NeverTriggered
         | HostAssertionOutcomeKind::NeverReachedWarn
-        | HostAssertionOutcomeKind::NeverReachedFail => return None,
+        | HostAssertionOutcomeKind::NeverReachedFail
+        | HostAssertionOutcomeKind::Undecided => return None,
     };
     Some(ObservableEvent::assertion_state_changed(
         outcome.at,

@@ -37,7 +37,7 @@ async fn breakpoint_named_host_predicate_fires_at_no_entry_quantum_boundary() {
         panic!("named-predicate breakpoint quantum should run: {error}");
     }
 
-    assert!(actor.event_log.lock_entries().is_empty());
+    assert!(actor.event_log.entries_for_test().is_empty());
     assert_eq!(
         actor
             .engine()

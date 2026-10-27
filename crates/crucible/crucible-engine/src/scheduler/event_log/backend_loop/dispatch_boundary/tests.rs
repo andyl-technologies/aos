@@ -203,7 +203,7 @@ fn dispatch_acknowledged_original_queue_survives_refresh_and_checkpoint() {
 
     ok(scheduler.commit_prepared_host_run(
         run,
-        completed.step.reached.ticks,
+        HostRunReport::exact(completed.step.reached.ticks),
         &[],
         Vec::new(),
         Vec::new(),

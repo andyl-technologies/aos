@@ -57,6 +57,34 @@ impl NetLink {
             .collect()
     }
 
+    /// Resumes a suspended consumer at `resume`, keeping every frame it missed.
+    ///
+    /// A consumer whose clock jumps forward (an all-VM campaign park join)
+    /// never observed the interval it skipped. Frames due inside that interval
+    /// are not lost: like a receive queue across a suspend, they become due at
+    /// the first deliverable instant after `resume`, the same `resume + 1`
+    /// position [`PastDeliveryPolicy::ClampToFuture`] assigns a past delivery.
+    /// Retimed frames keep their source and sequence, so coincident frames
+    /// stay in emission order. Frames already due after `resume` keep their
+    /// exact icounts. Returns the number of retimed frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::ClockRegression`] when `resume` is below the
+    /// current icount. The link is unchanged on error.
+    pub fn resume_consumer_at(&mut self, resume: u64) -> Result<usize, DeviceError> {
+        self.clock.advance_to(resume)?;
+
+        let missed = self.inflight.drain_due(resume);
+        let retimed = missed.len();
+        let next_deliverable = resume.saturating_add(1);
+        for mut pending in missed {
+            pending.key.delivery_icount = next_deliverable;
+            self.inflight.insert(pending);
+        }
+        Ok(retimed)
+    }
+
     /// Converts a reused [`PendingResponse`] back into a [`Delivery`].
     pub(super) fn pending_to_delivery(pending: PendingResponse) -> Delivery {
         Delivery {

@@ -23,25 +23,28 @@ use crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
 };
-use crucible_qemu_shmem::{
-    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
-};
+use crucible_qemu_shmem::{DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1};
 
 use crate::QemuVmSnapshot;
 #[cfg(target_os = "linux")]
 use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
-    QemuProcessIdentity,
+    QemuNodeLifecycleState, QemuProcessIdentity,
 };
-use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
+use crate::{QemuNode, QemuNodeError};
 
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
 mod block_boundary;
-#[path = "node_set/campaign_marker_boundary.rs"]
-mod campaign_marker_boundary;
+#[path = "node_set/campaign_marker.rs"]
+mod campaign_marker;
 #[path = "node_set/collection.rs"]
 mod collection;
+#[cfg(test)]
+#[path = "node_set/console_sentinel.rs"]
+mod console_sentinel;
+#[cfg(test)]
+pub(crate) use console_sentinel::ConsoleSentinelProbe;
 #[path = "node_set/concurrent.rs"]
 mod concurrent;
 #[cfg(target_os = "linux")]
@@ -51,12 +54,23 @@ mod disk_seal;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+#[path = "node_set/step_progress.rs"]
+mod step_progress;
+use step_progress::{MAX_STEP_REISSUES, consumed_input_without_retiring, stagnant_pause_boundary};
+// Host wall-clock accounting lives with the supervision clock boundary.
+#[path = "supervision/attempt_progress.rs"]
+mod attempt_progress;
+#[path = "supervision/run_window.rs"]
+mod run_window;
 
 #[cfg(target_os = "linux")]
 pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
+pub use campaign_marker::{QemuCampaignMarkerBoundaryDiagnostic, QemuParkedCampaignMarker};
+use campaign_marker::{
+    UnprovenCampaignMarker, campaign_marker_stop, is_campaign_boundary_marker,
+    report_campaign_marker_stop,
+};
 pub use concurrent::QemuHostParallelismEvidence;
-
-use campaign_marker_boundary::campaign_marker_parked_at;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
@@ -282,17 +296,6 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
         self.source.release_hot_fork_plugin_endpoints()
     }
 
-    /// Releases the source-owned child-console stage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::QemuNodeChannelError`] when source authentication or
-    /// the ordered console release fails.
-    pub fn release_child_console(&mut self) -> Result<(), crate::QemuNodeChannelError> {
-        self.validate_retained_transaction()?;
-        self.source.release_hot_fork_child_console()
-    }
-
     /// Releases the source-owned child QMP stage.
     ///
     /// # Errors
@@ -430,45 +433,6 @@ impl QemuNodeSelectablePendingRequest {
     }
 }
 
-/// Maximum early-pause reissues for one scheduler-selected node step.
-///
-/// A backpressured FIFO head can create one exact pause per canonical QEMU RX
-/// attempt. Use the public transport hard bound so a valid retained frame can
-/// exhaust its own typed retry budget before this adapter reports a generic
-/// progress failure.
-const MAX_STEP_REISSUES: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
-
-fn consumed_input_without_retiring(
-    observation: &StepObservation,
-    previous: VirtualTime,
-    inbound_frames_consumed: usize,
-) -> bool {
-    observation.reached == previous
-        && matches!(
-            observation.outcome,
-            crucible_engine::AdvanceOutcome::Paused { .. }
-        )
-        && inbound_frames_consumed > 0
-}
-
-fn stagnant_pause_boundary(
-    observation: &StepObservation,
-    previous: VirtualTime,
-    final_state: Option<QemuNodeIdleState>,
-) -> Option<(VirtualTime, Option<Icount>)> {
-    (observation.reached == previous
-        && matches!(
-            observation.outcome,
-            crucible_engine::AdvanceOutcome::Paused { .. }
-        ))
-    .then(|| {
-        (
-            observation.reached,
-            final_state.and_then(|state| state.next_deadline),
-        )
-    })
-}
-
 /// A deterministic node-addressed collection of live QEMU backends.
 pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
@@ -478,173 +442,10 @@ pub struct QemuNodeSet {
     parked_campaign_markers: BTreeMap<NodeId, QemuParkedCampaignMarker>,
     retained_observable_events: Vec<ObservableEvent>,
     last_host_parallelism: Option<QemuHostParallelismEvidence>,
-}
-
-/// One QEMU VMStop bound to a campaign marker and its exact retired count.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QemuParkedCampaignMarker {
-    /// The declared campaign boundary marker name.
-    pub marker: String,
-    /// Pre-instruction raw retired count recorded by the white-box callback.
-    pub marker_icount: Icount,
-    /// Post-instruction raw retired count paired with QEMU's native VMStop.
-    pub physical_raw_icount: Icount,
-    /// Scheduler-visible logical tick published with QEMU's native VMStop.
-    pub physical_icount: Icount,
-}
-
-/// Raw and logical coordinates joined at one campaign-marker VMStop boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QemuCampaignMarkerBoundaryDiagnostic {
-    /// Node that emitted the campaign marker.
-    pub node: NodeId,
-    /// Campaign marker name decoded from the guest event.
-    pub marker: String,
-    /// Raw retired count immediately before the marker instruction.
-    pub pre_raw: u64,
-    /// Raw retired count immediately after the marker instruction.
-    pub post_raw: u64,
-    /// Logical tick observed after the marker instruction.
-    pub observed_tick: u64,
-    /// Picosecond bias applied after scaling the raw count.
-    pub logical_offset_picoseconds: u64,
-    /// Raw coordinate carried by the marker event.
-    pub marker_event_raw: u64,
-    /// Raw retired count paired with the physical VMStop publication.
-    pub physical_stop_raw: u64,
-    /// Scheduler-visible logical tick of the physical VMStop.
-    pub physical_stop_tick: u64,
-}
-
-impl std::fmt::Display for QemuCampaignMarkerBoundaryDiagnostic {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node={} marker={} pre_raw={} post_raw={} observed_tick={} logical_offset_picoseconds={} marker_event_raw={} physical_stop_raw={} physical_stop_tick={}",
-            self.node.name,
-            self.marker,
-            self.pre_raw,
-            self.post_raw,
-            self.observed_tick,
-            self.logical_offset_picoseconds,
-            self.marker_event_raw,
-            self.physical_stop_raw,
-            self.physical_stop_tick,
-        )
-    }
-}
-
-impl QemuCampaignMarkerBoundaryDiagnostic {
-    /// Returns whether the marker and stopped slot prove one exact instruction boundary.
-    #[must_use]
-    pub const fn proves_exact_stop(&self) -> bool {
-        self.post_raw == self.physical_stop_raw && self.observed_tick == self.physical_stop_tick
-    }
-}
-
-#[cfg(test)]
-mod campaign_marker_parking_tests {
-    use super::*;
-    use crate::QemuLogicalTimeCalibration;
-    use crucible_engine::MarkerId;
-
-    #[test]
-    fn only_exact_campaign_marker_stop_is_retained() {
-        let node = NodeId {
-            name: "west".to_owned(),
-        };
-        let marker_at = Icount { retired: 41 };
-        let event = ObservableEvent::guest_marker(
-            marker_at,
-            node.clone(),
-            MarkerId::from_name("fault.transport.ready"),
-        );
-        let stopped_at = Icount { retired: 2_100 };
-        let calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_100,
-            raw_icount: 42,
-        };
-
-        assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, calibration, std::slice::from_ref(&event),),
-            Ok(Some(QemuParkedCampaignMarker {
-                marker: "fault.transport.ready".to_owned(),
-                marker_icount: marker_at,
-                physical_raw_icount: Icount { retired: 42 },
-                physical_icount: stopped_at,
-            }))
-        );
-        let projected_stop = Icount { retired: 2_158 };
-        let projected_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_158,
-            raw_icount: 42,
-        };
-        assert_eq!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                projected_calibration,
-                std::slice::from_ref(&event),
-            ),
-            Ok(Some(QemuParkedCampaignMarker {
-                marker: "fault.transport.ready".to_owned(),
-                marker_icount: marker_at,
-                physical_raw_icount: Icount { retired: 42 },
-                physical_icount: projected_stop,
-            }))
-        );
-
-        let mismatched_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_158,
-            raw_icount: 43,
-        };
-        let error = match campaign_marker_parked_at(
-            &node,
-            projected_stop,
-            mismatched_calibration,
-            std::slice::from_ref(&event),
-        ) {
-            Err(error) => error,
-            Ok(marker) => {
-                panic!("the stopped raw count must be exactly one beyond the marker: {marker:?}")
-            }
-        };
-        assert!(error.to_string().contains(
-            "CRUCIBLE-QEMU-CAMPAIGN-MARKER-BOUNDARY-V2 node=west marker=fault.transport.ready pre_raw=41 post_raw=42 observed_tick=2108 logical_offset_picoseconds=8 marker_event_raw=41 physical_stop_raw=43 physical_stop_tick=2158"
-        ));
-        let mismatched_logical_calibration = QemuLogicalTimeCalibration {
-            logical_icount: 2_159,
-            raw_icount: 42,
-        };
-        assert!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                mismatched_logical_calibration,
-                std::slice::from_ref(&event),
-            )
-            .is_err()
-        );
-        assert!(
-            campaign_marker_parked_at(
-                &node,
-                projected_stop,
-                projected_calibration,
-                &[event.clone(), event],
-            )
-            .is_err()
-        );
-
-        let unrelated = ObservableEvent::guest_marker(
-            marker_at,
-            node.clone(),
-            MarkerId::from_name("setup.complete"),
-        );
-        assert_eq!(
-            campaign_marker_parked_at(&node, stopped_at, calibration, &[unrelated]),
-            Ok(None)
-        );
-    }
+    run_window: run_window::RunWindow,
+    attempt_progress: attempt_progress::AttemptProgress,
+    #[cfg(test)]
+    console_sentinel_probe: Option<std::sync::Arc<console_sentinel::ConsoleSentinelProbe>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -705,12 +506,69 @@ impl QemuNodeSet {
         Ok(Some(parked))
     }
 
+    /// Returns every retained campaign-marker park, each revalidated.
+    ///
+    /// A hot-fork continuation carries these proofs, so a child world forked
+    /// at a joined park still stands at that park before any release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a parked node is absent or its live
+    /// physical count has changed since its VMStop proof was retained.
+    pub fn campaign_marker_parks(
+        &mut self,
+    ) -> Result<BTreeMap<NodeId, QemuParkedCampaignMarker>, BackendError> {
+        let nodes = self
+            .parked_campaign_markers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut parks = BTreeMap::new();
+        for node in nodes {
+            if let Some(parked) = self.parked_campaign_marker(&node)? {
+                parks.insert(node, parked);
+            }
+        }
+        Ok(parks)
+    }
+
+    /// Adopts one park captured from the hot-fork template of `node`.
+    ///
+    /// The child inherited the template's native VMStop at the marker, so the
+    /// template's proof names the child's boundary too. The physical count is
+    /// not compared here: the child's console restore rebinds its logical
+    /// clock to the template cut, and every later query revalidates the count,
+    /// so a child that does not stand exactly at the park refuses before any
+    /// release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or already parked.
+    pub fn adopt_campaign_marker_park(
+        &mut self,
+        node: &NodeId,
+        parked: QemuParkedCampaignMarker,
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?;
+        if self.parked_campaign_markers.contains_key(node) {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` already holds a campaign marker park",
+                    node.name
+                ),
+            });
+        }
+        self.parked_campaign_markers.insert(node.clone(), parked);
+        Ok(())
+    }
+
     /// Releases one marker park after the campaign commits its atomic choice.
     ///
     /// # Errors
     ///
     /// Returns [`BackendError`] when the node is absent, the marker differs,
-    /// or its physical retired count changed while parked.
+    /// its physical retired count changed while parked, or QEMU cannot confirm
+    /// the native stop that its next quantum must resume.
     pub fn release_parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -729,6 +587,12 @@ impl QemuNodeSet {
                 ),
             });
         }
+        // The plugin's native VMStop outlives the scheduler park: the node
+        // must resume QEMU when its next quantum publishes a ceiling, or that
+        // quantum would wait on a VM that cannot execute.
+        self.node_mut(node)?
+            .release_campaign_marker_stop()
+            .map_err(BackendError::from)?;
         self.parked_campaign_markers.remove(node);
         Ok(())
     }
@@ -920,7 +784,6 @@ impl QemuNodeSet {
             });
         }
         let host_stages_present = backend.hot_fork_plugin_endpoint_stage().is_some()
-            || backend.hot_fork_child_console_stage().is_some()
             || backend.hot_fork_child_qmp_stage().is_some()
             || backend.hot_fork_child_diagnostic_stage().is_some()
             || backend.hot_fork_private_ring_stage().is_some();
@@ -944,13 +807,6 @@ impl QemuNodeSet {
                 .release_hot_fork_plugin_endpoints()
                 .map_err(|error| BackendError::Rejected {
                     message: format!("release retained hot-fork plugin endpoints: {error}"),
-                })?;
-        }
-        if backend.hot_fork_child_console_stage().is_some() {
-            backend
-                .release_hot_fork_child_console()
-                .map_err(|error| BackendError::Rejected {
-                    message: format!("release retained hot-fork child console: {error}"),
                 })?;
         }
         if backend.hot_fork_child_qmp_stage().is_some() {
@@ -987,9 +843,9 @@ impl QemuNodeSet {
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node disappeared, changed process or
-    /// QMP transaction generation, or no longer reports a complete prepared
-    /// transaction.
+    /// Returns [`BackendError`] when the node disappeared, left the running
+    /// lifecycle state, changed process or QMP transaction generation, or no
+    /// longer reports a complete prepared transaction.
     #[cfg(target_os = "linux")]
     pub fn validate_retained_hot_fork_template(
         &mut self,
@@ -997,7 +853,7 @@ impl QemuNodeSet {
     ) -> Result<(), BackendError> {
         let current_process = self.process_identity(&prepared.node)?;
         let state = self
-            .node_mut(&prepared.node)?
+            .running_hot_fork_source_mut(&prepared.node)?
             .query_hot_fork_template()
             .map_err(|error| BackendError::Rejected {
                 message: format!("query retained hot-fork template: {error}"),
@@ -1013,16 +869,16 @@ impl QemuNodeSet {
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the token names a missing node, the source
-    /// process incarnation changed, or QEMU no longer owns the exact prepared
-    /// transaction generation.
+    /// Returns [`BackendError`] when the token names a missing or no longer
+    /// running node, the source process incarnation changed, or QEMU no longer
+    /// owns the exact prepared transaction generation.
     #[cfg(target_os = "linux")]
     pub fn prepared_hot_fork_source<'a>(
         &'a mut self,
         prepared: &'a QemuNodeSetPreparedHotForkTemplate,
     ) -> Result<QemuNodeSetPreparedHotForkSource<'a>, BackendError> {
         let current_process = self.process_identity(&prepared.node)?;
-        let source = self.node_mut(&prepared.node)?;
+        let source = self.running_hot_fork_source_mut(&prepared.node)?;
         let state = source
             .query_hot_fork_template()
             .map_err(|error| BackendError::Rejected {
@@ -1279,11 +1135,38 @@ impl QemuNodeSet {
         &mut self,
         node: &NodeId,
         physical_icount: Icount,
+        unproven: UnprovenCampaignMarker,
     ) -> Result<bool, BackendError> {
         let backend = self.node_mut(node)?;
-        let calibration = backend.logical_time_calibration()?;
         let events = backend.drain_observable_events()?;
-        let matched = campaign_marker_parked_at(node, physical_icount, calibration, &events)?;
+        backend
+            .note_campaign_markers_drained(campaign_marker::campaign_marker_names(node, &events));
+        // Horizon steps reach this check every quantum; only a step that
+        // retired a campaign marker needs the stopped-slot calibration.
+        let matched = if events
+            .iter()
+            .any(|event| is_campaign_boundary_marker(node, event))
+        {
+            let calibration = backend.boundary_logical_time_calibration()?;
+            let stop = campaign_marker_stop(node, physical_icount, calibration, &events, unproven);
+            report_campaign_marker_stop(
+                node,
+                physical_icount,
+                calibration,
+                &events,
+                unproven,
+                &stop,
+            );
+            backend.note_campaign_marker_proof(matches!(stop, Ok(None)).then(|| {
+                crate::node::UnprovenCampaignMarker {
+                    markers: campaign_marker::campaign_marker_names(node, &events),
+                    stop_tick: physical_icount.retired,
+                }
+            }));
+            stop?
+        } else {
+            None
+        };
         self.retained_observable_events.extend(events);
         if let Some(parked) = matched {
             self.parked_campaign_markers.insert(node.clone(), parked);
@@ -1849,6 +1732,29 @@ impl QemuNodeSet {
             })
     }
 
+    /// Borrows a retained hot-fork source that can still serve fork operations.
+    ///
+    /// A failed child-contract or child-file exchange quarantines its node
+    /// while QEMU may still report the prepared transaction, so the retained
+    /// template alone does not prove the source is reusable.
+    #[cfg(target_os = "linux")]
+    fn running_hot_fork_source_mut(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<&mut QemuNode, BackendError> {
+        let source = self.node_mut(node)?;
+        if source.lifecycle_state() != QemuNodeLifecycleState::Running {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "retained hot-fork source `{}` is {:?}, not running",
+                    node.name,
+                    source.lifecycle_state()
+                ),
+            });
+        }
+        Ok(source)
+    }
+
     fn node_mut_for_fault_command(
         &mut self,
         node: &NodeId,
@@ -1952,6 +1858,9 @@ fn parked_selectable_step(
         reached: VirtualTime {
             ticks: boundary_tick_ps,
         },
+        settled_through: VirtualTime {
+            ticks: boundary_tick_ps,
+        },
         outcome: crucible_engine::AdvanceOutcome::Paused {
             at: Icount {
                 retired: boundary_tick_ps,
@@ -1964,11 +1873,13 @@ fn parked_selectable_step(
 
 impl SimulationBackend for QemuNodeSet {
     fn dispatch_contract(&self) -> crucible_engine::BackendDispatchContract {
-        // This adapter implements the selected installed protocol, not the
-        // unimplemented native Source admission contract.
-        const _: () = assert!(crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION == 3);
-        const _: () = assert!(crucible_qemu_shmem::ABI_VERSION == 30);
-        crucible_engine::BackendDispatchContract::ControlV3
+        // This adapter requires its exact protocol/ABI pairing, not the
+        // unimplemented native Source admission contract. ABI 32 added the
+        // settlement record behind bounded ceilings (RFC-0010 SCHED-12); ABI
+        // 33 adds the hostward publication wake.
+        const _: () = assert!(crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION == 4);
+        const _: () = assert!(crucible_qemu_shmem::ABI_VERSION == 33);
+        crucible_engine::BackendDispatchContract::BoundedControl
     }
 
     fn step_node_with_admission(
@@ -2041,148 +1952,17 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
-        if let Some(parked) = self.parked_campaign_marker(node)? {
-            return Ok(StepObservation {
-                requested_ceiling: ceiling,
-                reached: VirtualTime {
-                    ticks: parked.physical_icount.retired,
-                },
-                outcome: crucible_engine::AdvanceOutcome::Paused {
-                    at: parked.physical_icount,
-                },
-                physical_stop: BackendPhysicalStop::CampaignMarker,
-                applied_preemptions: Vec::new(),
-            });
-        }
-        if let Some(pending) = self.pending_selectable_requests.get(node) {
-            return parked_selectable_step(node, pending, ceiling);
-        }
-        self.arm_selected_fault_event_staging(node)?;
-        let mut previous = SimulationBackend::now(self.node_mut(node)?);
-        let mut last_stagnant_pause = None;
-        for reissue in 0..=MAX_STEP_REISSUES {
-            let (mut observation, final_state, inbound_frames_consumed, effective_ceiling) = {
-                let backend = self.node_mut(node)?;
-                let observation = backend.step_to(ceiling)?;
-                (
-                    observation,
-                    backend.last_step_final_state(),
-                    backend.last_step_inbound_frames_consumed(),
-                    backend.last_step_ceiling(),
-                )
-            };
-            if let crucible_engine::AdvanceOutcome::Paused { at } = observation.outcome {
-                match self.retain_pending_selectable_request(node)? {
-                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps }
-                        if boundary_tick_ps == at.retired =>
-                    {
-                        // The plugin retains the exact request while native
-                        // VMStop prevents more guest execution. Return to the
-                        // modeled driver so it can select and enqueue a reply.
-                        observation.reached = VirtualTime { ticks: at.retired };
-                        observation.physical_stop = BackendPhysicalStop::GuestSelectable;
-                        return Ok(observation);
-                    }
-                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps } => {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU node `{}` selectable boundary {} differs from physical pause {}",
-                                node.name, boundary_tick_ps, at.retired,
-                            ),
-                        });
-                    }
-                    PendingSelectableRetention::AlreadyRetained => {
-                        return Err(BackendError::Rejected {
-                            message: format!(
-                                "QEMU node `{}` cannot step with an unresolved selectable request",
-                                node.name,
-                            ),
-                        });
-                    }
-                    PendingSelectableRetention::Absent => {}
-                }
-                if self.retain_campaign_marker_if_paused(node, at)? {
-                    observation.reached = VirtualTime { ticks: at.retired };
-                    observation.physical_stop = BackendPhysicalStop::CampaignMarker;
-                    return Ok(observation);
-                }
-            }
-            if observation.physical_stop == BackendPhysicalStop::NetworkOutput
-                || observation.reached == ceiling
-            {
-                return Ok(observation);
-            }
-            if let crucible_engine::AdvanceOutcome::Paused { .. } = observation.outcome
-                && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
-                && deadline.retired > ceiling.ticks
-            {
-                observation.reached = ceiling;
-                observation.physical_stop = BackendPhysicalStop::Idle;
-                return Ok(observation);
-            }
-            if matches!(
-                observation.outcome,
-                crucible_engine::AdvanceOutcome::Paused { .. }
-            ) {
-                // A delivery-capped quantum can stop exactly where an idle
-                // timer is also due. Both causes are within the original
-                // scheduler horizon, so resume through a fresh quantum.
-                // The monotone-progress check below still rejects a plugin
-                // that reports the same reachable deadline twice.
-                // An inbound frame already staged in the shared-memory ring can
-                // likewise cap a running (non-idle) quantum. The hot path drains
-                // it before returning; issue a fresh quantum for the remainder.
-            }
-            if observation.reached <= previous {
-                if consumed_input_without_retiring(&observation, previous, inbound_frames_consumed)
-                {
-                    // Consuming an input due at the current coordinate is real
-                    // boundary progress even though it retires no guest
-                    // instruction. Reissue once that complete batch has left
-                    // the ring; the bounded loop still rejects a backend that
-                    // cannot subsequently move or consume another due batch.
-                    last_stagnant_pause = None;
-                    continue;
-                }
-                if let Some(boundary) = stagnant_pause_boundary(&observation, previous, final_state)
-                    && last_stagnant_pause.as_ref() != Some(&boundary)
-                {
-                    // A fresh timer or control boundary can become visible at
-                    // the current coordinate without retiring an instruction.
-                    // Reissue it once; only an identical repeated boundary is
-                    // a stall. Distinct boundaries remain bounded by the outer
-                    // reissue limit.
-                    last_stagnant_pause = Some(boundary);
-                    continue;
-                }
-                return Err(BackendError::Rejected {
-                    message: format!(
-                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: effective ceiling {:?}, outcome {:?}, completed state {:?}, consumed inbound {}",
-                        node.name,
-                        observation.reached.ticks,
-                        ceiling.ticks,
-                        effective_ceiling,
-                        observation.outcome,
-                        final_state,
-                        inbound_frames_consumed,
-                    ),
-                });
-            }
-            previous = observation.reached;
-            last_stagnant_pause = None;
-        }
-        Err(BackendError::Rejected {
-            message: format!(
-                "QEMU node `{}` did not reach {} within {} reissues",
-                node.name, ceiling.ticks, MAX_STEP_REISSUES
-            ),
-        })
+        self.step_node_to_with_stop(node, ceiling, crucible_engine::RunCeilingStop::Bound)
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
         let mut events = std::mem::take(&mut self.retained_observable_events);
-        for node in self.nodes.values_mut() {
-            events.extend(node.drain_observable_events()?);
+        for (id, node) in &mut self.nodes {
+            let drained = node.drain_observable_events()?;
+            node.note_campaign_markers_drained(campaign_marker::campaign_marker_names(
+                id, &drained,
+            ));
+            events.extend(drained);
         }
         Ok(events)
     }
@@ -2300,12 +2080,240 @@ impl SimulationBackend for QemuNodeSet {
     }
 }
 
+impl QemuNodeSet {
+    /// Advances one node to `ceiling` under the scheduler's stop condition.
+    ///
+    /// [`crucible_engine::RunCeilingStop::ExactEvent`] makes the ceiling a modeled
+    /// event the node must reach exactly (RFC-0010 SCHED-39). A bound ceiling
+    /// may settle with the node's clock at its last retirement below it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is absent, the node cannot advance,
+    /// or an exact-event ceiling settles without the node arriving there.
+    pub fn step_node_to_with_stop(
+        &mut self,
+        node: &NodeId,
+        ceiling: VirtualTime,
+        stop: crucible_engine::RunCeilingStop,
+    ) -> Result<StepObservation, BackendError> {
+        self.attempt_progress.note_dispatch(
+            std::iter::once((node, ceiling.ticks)),
+            self.parked_campaign_markers.keys(),
+        );
+        let started = self.run_window.begin();
+        let progress_started = self.attempt_progress.begin();
+        let result = self.step_node_to_untimed(node, ceiling, stop);
+        self.run_window.finish_serial(started);
+        let reached = result.as_ref().ok().map(|step| step.reached.ticks);
+        self.attempt_progress
+            .finish_serial(progress_started, node, ceiling.ticks, reached);
+        result
+    }
+
+    /// Advances one node to `ceiling`, reissuing bounded quanta as needed.
+    fn step_node_to_untimed(
+        &mut self,
+        node: &NodeId,
+        ceiling: VirtualTime,
+        stop: crucible_engine::RunCeilingStop,
+    ) -> Result<StepObservation, BackendError> {
+        if let Some(parked) = self.parked_campaign_marker(node)? {
+            return Ok(StepObservation {
+                requested_ceiling: ceiling,
+                reached: VirtualTime {
+                    ticks: parked.physical_icount.retired,
+                },
+                settled_through: VirtualTime {
+                    ticks: parked.physical_icount.retired,
+                },
+                outcome: crucible_engine::AdvanceOutcome::Paused {
+                    at: parked.physical_icount,
+                },
+                physical_stop: BackendPhysicalStop::CampaignMarker,
+                applied_preemptions: Vec::new(),
+            });
+        }
+        if let Some(pending) = self.pending_selectable_requests.get(node) {
+            return parked_selectable_step(node, pending, ceiling);
+        }
+        self.arm_selected_fault_event_staging(node)?;
+        let mut previous = SimulationBackend::now(self.node_mut(node)?);
+        let mut last_stagnant_pause = None;
+        for reissue in 0..=MAX_STEP_REISSUES {
+            let (mut observation, final_state, inbound_frames_consumed, effective_ceiling) = {
+                let backend = self.node_mut(node)?;
+                let observation = backend.step_to_with_stop(ceiling, stop)?;
+                (
+                    observation,
+                    backend.last_step_final_state(),
+                    backend.last_step_inbound_frames_consumed(),
+                    backend.last_step_ceiling(),
+                )
+            };
+            if let crucible_engine::AdvanceOutcome::Paused { at } = observation.outcome {
+                match self.retain_pending_selectable_request(node)? {
+                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps }
+                        if boundary_tick_ps == at.retired =>
+                    {
+                        // The plugin retains the exact request while native
+                        // VMStop prevents more guest execution. Return to the
+                        // modeled driver so it can select and enqueue a reply.
+                        observation.reached = VirtualTime { ticks: at.retired };
+                        observation.settled_through = observation.reached;
+                        observation.physical_stop = BackendPhysicalStop::GuestSelectable;
+                        return Ok(observation);
+                    }
+                    PendingSelectableRetention::NewlyRetained { boundary_tick_ps } => {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU node `{}` selectable boundary {} differs from physical pause {}",
+                                node.name, boundary_tick_ps, at.retired,
+                            ),
+                        });
+                    }
+                    PendingSelectableRetention::AlreadyRetained => {
+                        return Err(BackendError::Rejected {
+                            message: format!(
+                                "QEMU node `{}` cannot step with an unresolved selectable request",
+                                node.name,
+                            ),
+                        });
+                    }
+                    PendingSelectableRetention::Absent => {}
+                }
+                if self.retain_campaign_marker_if_paused(
+                    node,
+                    at,
+                    UnprovenCampaignMarker::Refuse,
+                )? {
+                    observation.reached = VirtualTime { ticks: at.retired };
+                    observation.settled_through = observation.reached;
+                    observation.physical_stop = BackendPhysicalStop::CampaignMarker;
+                    return Ok(observation);
+                }
+            }
+            if matches!(
+                observation.outcome,
+                crucible_engine::AdvanceOutcome::ReachedHorizon
+            ) && observation.physical_stop == BackendPhysicalStop::Horizon
+            {
+                // The plugin claims a deferred campaign stop at the first
+                // publication after its marker. When that publication is the
+                // quantum ceiling, the stopped node reports the horizon, so the
+                // exact marker proof must run here too; otherwise the next
+                // quantum would wait on a VM that can no longer execute. A
+                // launch without marker parking retires the same markers with
+                // no stop, so only an exact proof changes this step.
+                let at = Icount {
+                    retired: observation.reached.ticks,
+                };
+                if self.retain_campaign_marker_if_paused(node, at, UnprovenCampaignMarker::Admit)? {
+                    observation.outcome = crucible_engine::AdvanceOutcome::Paused { at };
+                    observation.physical_stop = BackendPhysicalStop::CampaignMarker;
+                    return Ok(observation);
+                }
+            }
+            // A settled step completes its ceiling even when the node's clock
+            // stopped at an earlier last retirement (RFC-0010 SCHED-12).
+            if observation.physical_stop.is_output()
+                || observation.reached == ceiling
+                || observation.is_settled()
+            {
+                return Ok(observation);
+            }
+            // The hot path caps a quantum at the delivery tick of the earliest
+            // staged inbound frame, a fact of the host's own delivery ledger.
+            // A park reported under that cap attests nothing beyond it, even
+            // when the plugin published it before observing the frame, so it
+            // never settles the node through the scheduler ceiling.
+            let quantum_covers_ceiling =
+                effective_ceiling.is_none_or(|effective| effective.retired >= ceiling.ticks);
+            if let crucible_engine::AdvanceOutcome::Paused { at } = observation.outcome
+                && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
+                && deadline.retired > ceiling.ticks
+                && stop == crucible_engine::RunCeilingStop::Bound
+                && quantum_covers_ceiling
+            {
+                // The idle node parks at its physical point; its next wake is
+                // beyond the ceiling, so it is settled through the ceiling
+                // without advancing its clock there (SCHED-28 as bounded by
+                // SCHED-12). An exact-event ceiling is reissued instead: the
+                // halted node must still reach it by a time-only advance.
+                observation.reached = VirtualTime { ticks: at.retired };
+                observation.settled_through = ceiling;
+                observation.physical_stop = BackendPhysicalStop::Idle;
+                return Ok(observation);
+            }
+            if matches!(
+                observation.outcome,
+                crucible_engine::AdvanceOutcome::Paused { .. }
+            ) {
+                // A delivery-capped quantum can stop exactly where an idle
+                // timer is also due. Both causes are within the original
+                // scheduler horizon, so resume through a fresh quantum.
+                // The monotone-progress check below still rejects a plugin
+                // that reports the same reachable deadline twice.
+                // An inbound frame already staged in the shared-memory ring can
+                // likewise cap a running (non-idle) quantum. The hot path drains
+                // it before returning; issue a fresh quantum for the remainder.
+            }
+            if observation.reached <= previous {
+                if consumed_input_without_retiring(&observation, previous, inbound_frames_consumed)
+                {
+                    // Consuming an input due at the current coordinate is real
+                    // boundary progress even though it retires no guest
+                    // instruction. Reissue once that complete batch has left
+                    // the ring; the bounded loop still rejects a backend that
+                    // cannot subsequently move or consume another due batch.
+                    last_stagnant_pause = None;
+                    continue;
+                }
+                if let Some(boundary) = stagnant_pause_boundary(&observation, previous, final_state)
+                    && last_stagnant_pause.as_ref() != Some(&boundary)
+                {
+                    // A fresh timer or control boundary can become visible at
+                    // the current coordinate without retiring an instruction.
+                    // Reissue it once; only an identical repeated boundary is
+                    // a stall. Distinct boundaries remain bounded by the outer
+                    // reissue limit.
+                    last_stagnant_pause = Some(boundary);
+                    continue;
+                }
+                // The quiesced encoding has several plugin writers; the
+                // host's retained state names which one this stall belongs to.
+                let context = self.node_mut(node)?.stall_context();
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: effective ceiling {:?}, outcome {:?}, completed state {:?}, consumed inbound {}; {context}",
+                        node.name,
+                        observation.reached.ticks,
+                        ceiling.ticks,
+                        effective_ceiling,
+                        observation.outcome,
+                        final_state,
+                        inbound_frames_consumed,
+                    ),
+                });
+            }
+            previous = observation.reached;
+            last_stagnant_pause = None;
+        }
+        Err(BackendError::Rejected {
+            message: format!(
+                "QEMU node `{}` did not reach {} within {} reissues",
+                node.name, ceiling.ticks, MAX_STEP_REISSUES
+            ),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // crucible-lint: allow panic-shortcut -- fixture setup uses panic shortcuts for failure localization.
     #![allow(clippy::expect_used)]
 
-    use crucible_engine::{AdvanceOutcome, Icount};
+    use crucible_engine::Icount;
     use crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
     use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus, SelectionRequest};
 
@@ -2341,76 +2349,6 @@ mod tests {
             "the shutdown node still pins an unlinked attempt inode"
         );
         Ok(())
-    }
-
-    #[test]
-    fn current_coordinate_input_consumption_is_reissuable_boundary_progress() {
-        let previous = VirtualTime { ticks: 41 };
-        let paused = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 41 },
-            },
-        );
-
-        assert!(consumed_input_without_retiring(&paused, previous, 1));
-        assert!(!consumed_input_without_retiring(&paused, previous, 0));
-
-        let regressed = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 40 },
-            },
-        );
-        assert!(!consumed_input_without_retiring(&regressed, previous, 1));
-    }
-
-    #[test]
-    fn fresh_stagnant_pause_is_progress_but_an_identical_repeat_is_not() {
-        let previous = VirtualTime { ticks: 41 };
-        let paused = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 41 },
-            },
-        );
-        let first = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 60 }),
-            }),
-        );
-        assert_eq!(first, Some((previous, Some(Icount { retired: 60 }))));
-
-        let repeated = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 60 }),
-            }),
-        );
-        assert_eq!(repeated, first);
-
-        let advanced_boundary = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 61 }),
-            }),
-        );
-        assert_ne!(advanced_boundary, first);
-
-        let regressed = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 40 },
-            },
-        );
-        assert_eq!(stagnant_pause_boundary(&regressed, previous, None), None);
     }
 
     #[test]
@@ -2505,7 +2443,7 @@ mod tests {
             ),
         };
         let replacement = crate::QmpHotForkTemplateState::one_prepared(
-            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
         );
 
         let error = validate_prepared_hot_fork_token(&token, &process, &replacement)
@@ -2539,8 +2477,7 @@ mod tests {
                 QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
             ),
         };
-        let request =
-            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+        let request = crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
         let draining = crate::QmpHotForkTemplateState::one_draining_without_resources(request);
 
         assert!(validate_retained_hot_fork_token(&token, &process, &draining).is_ok());
@@ -2553,7 +2490,7 @@ mod tests {
         assert!(validate_retained_hot_fork_token(&token, &reused_process, &draining).is_err());
 
         let next_generation = crate::QmpHotForkTemplateState::one_draining_without_resources(
-            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
+            crate::QmpHotForkRequest::for_test(2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2),
         );
         assert!(validate_retained_hot_fork_token(&token, &process, &next_generation).is_err());
 
@@ -2588,7 +2525,7 @@ mod tests {
             ),
         };
         let prepared = crate::QmpHotForkTemplateState::one_prepared(
-            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+            crate::QmpHotForkRequest::for_test(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
         );
 
         let error = validate_prepared_hot_fork_token(&token, &replacement_process, &prepared)
@@ -2716,6 +2653,48 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn quarantined_source_is_not_revalidated_for_reuse() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let token = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                ContentHash::from_bytes(b"quarantined-source"),
+                EventLog::new(),
+                QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare source");
+        nodes
+            .validate_retained_hot_fork_template(&token)
+            .expect("running source revalidates");
+
+        // QEMU still reports the prepared transaction after the host
+        // quarantines the node, so only the lifecycle state refuses reuse.
+        crate::node::tests::quarantine_for_test(
+            nodes.nodes.get_mut(&node).expect("installed source"),
+        );
+        let validation = nodes
+            .validate_retained_hot_fork_template(&token)
+            .expect_err("quarantined source must not revalidate");
+        let loan = nodes
+            .prepared_hot_fork_source(&token)
+            .err()
+            .unwrap_or_else(|| panic!("quarantined source must not mint a source loan"));
+
+        assert!(validation.to_string().contains("not running"));
+        assert!(loan.to_string().contains("not running"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn authoritative_node_set_prepares_and_rolls_back_two_real_source_owners() {
         let mut nodes = QemuNodeSet::new();
         let first = NodeId {
@@ -2782,7 +2761,6 @@ mod tests {
             assert!(source.hot_fork_private_ring_stage().is_none());
             assert!(source.hot_fork_child_diagnostic_stage().is_none());
             assert!(source.hot_fork_child_qmp_stage().is_none());
-            assert!(source.hot_fork_child_console_stage().is_none());
             assert!(source.hot_fork_plugin_endpoint_stage().is_none());
         }
     }
@@ -2846,7 +2824,6 @@ mod tests {
             assert!(source.hot_fork_private_ring_stage().is_none());
             assert!(source.hot_fork_child_diagnostic_stage().is_none());
             assert!(source.hot_fork_child_qmp_stage().is_none());
-            assert!(source.hot_fork_child_console_stage().is_none());
             assert!(source.hot_fork_plugin_endpoint_stage().is_none());
         }
     }
@@ -2889,7 +2866,6 @@ mod tests {
         assert!(source.hot_fork_private_ring_stage().is_none());
         assert!(source.hot_fork_child_diagnostic_stage().is_none());
         assert!(source.hot_fork_child_qmp_stage().is_none());
-        assert!(source.hot_fork_child_console_stage().is_none());
         assert!(source.hot_fork_plugin_endpoint_stage().is_none());
     }
 
@@ -2930,7 +2906,6 @@ mod tests {
         assert!(source.hot_fork_private_ring_stage().is_some());
         assert!(source.hot_fork_child_diagnostic_stage().is_some());
         assert!(source.hot_fork_child_qmp_stage().is_some());
-        assert!(source.hot_fork_child_console_stage().is_some());
         assert!(source.hot_fork_plugin_endpoint_stage().is_some());
     }
 }

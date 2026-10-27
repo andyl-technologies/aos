@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Slack for child bounds, which include live page-granular procfs samples.
+const PROCFS_SAMPLE_SLACK: u64 = 1024 * 1024;
+
 #[test]
 fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_release() {
     let source_node =
@@ -28,7 +31,11 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
     )
     .expect("source resource profile");
     let parent_and_two_child_resources = HotCheckpointResourceProfile::new(
-        source_resources.template_bytes() * 3,
+        // A child reserves its dirty bound as bytes, not the source's template.
+        // That bound includes live procfs samples, so allow allocator slack.
+        source_resources.template_bytes()
+            + source_resources.expected_private_dirty_bytes() * 2
+            + PROCFS_SAMPLE_SLACK,
         source_resources.expected_private_dirty_bytes() * 3,
         source_resources.process_count() * 3,
         source_resources.virtual_cpu_count() * 3,
@@ -64,9 +71,13 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
         .expect("second lease");
 
     assert!(Arc::ptr_eq(&first.source, &second.source));
-    let (lease_usage, next_lease) = {
+    let (lease_usage, next_lease, retained_template_bytes) = {
         let pool = shared.pool.lock().expect("shared pool before rejection");
-        (pool.source_lease_usage(), pool.next_lease)
+        (
+            pool.source_lease_usage(),
+            pool.next_lease,
+            pool.manager.usage().template_bytes(),
+        )
     };
     for _ in 0..3 {
         let error = match excess_provider.checkout(&key) {
@@ -83,8 +94,9 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
                 && pressure.virtual_cpu_count()
                 && pressure.descriptor_count()
                 && pressure.overlay_count()
-                && current.template_bytes() == source_resources.template_bytes() * 3
-                && projected.template_bytes() == source_resources.template_bytes() * 4
+                && current.template_bytes() == retained_template_bytes + lease_usage.template_bytes()
+                && projected.template_bytes()
+                    == current.template_bytes() + lease_usage.template_bytes() / 2
                 && **rejected_limits == limits
         ));
         let diagnostic = error.to_string();
@@ -102,10 +114,10 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
     first_provider.restore(first);
     {
         let pool = shared.pool.lock().expect("shared pool after first release");
-        let lease_usage = pool.source_lease_usage();
+        // One of the two equal child reservations remains.
         assert_eq!(
-            lease_usage.template_bytes(),
-            source_resources.template_bytes()
+            pool.source_lease_usage().template_bytes() * 2,
+            lease_usage.template_bytes()
         );
         assert!(pool.source_lease_available(&key));
         assert!(!pool.source_available(&key));
@@ -191,8 +203,12 @@ fn source_admission_accounts_for_live_child_lease_reservations() {
     // Keep the moving procfs sample out of this exact pressure predicate. The
     // stable dimensions below still prove that the checked-out child's full
     // resource reservation participates in candidate admission.
+    // Room for the first source and one child of it; the second source's
+    // template bytes then exceed the ceiling only because the lease is live.
     let two_source_resources = HotCheckpointResourceProfile::new(
-        first_usage.template_bytes() + second_usage.template_bytes(),
+        first_usage.template_bytes()
+            + first_usage.expected_private_dirty_bytes()
+            + PROCFS_SAMPLE_SLACK,
         u64::MAX,
         first_usage.process_count() + second_usage.process_count(),
         first_usage.virtual_cpu_count() + second_usage.virtual_cpu_count(),
@@ -278,7 +294,7 @@ fn abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling() 
         .measure_retained_resources()
         .expect("measure retained source");
     let parent_and_two_child_resources = HotCheckpointResourceProfile::new(
-        usage.template_bytes() * 3,
+        usage.template_bytes() + usage.expected_private_dirty_bytes() * 2 + PROCFS_SAMPLE_SLACK,
         usage.expected_private_dirty_bytes() * 3,
         usage.process_count() * 3,
         usage.virtual_cpu_count() * 3,
@@ -334,9 +350,13 @@ fn abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling() 
     healthy_provider.restore(healthy);
     let pool = shared.pool.lock().expect("invalidated shared pool");
     assert!(!pool.source_lease_available(&key));
-    assert_eq!(
-        pool.source_lease_usage().template_bytes(),
-        usage.template_bytes()
+    // The surviving abandoned lease still reserves one child's bound, which
+    // a fresh procfs sample reproduces up to allocator slack.
+    assert!(
+        pool.source_lease_usage()
+            .template_bytes()
+            .abs_diff(usage.expected_private_dirty_bytes())
+            <= PROCFS_SAMPLE_SLACK
     );
     drop(pool);
     assert!(shared.orderly_shutdown().is_err());
@@ -373,7 +393,10 @@ fn shared_worker_providers_release_before_orderly_shutdown_and_restart_inventory
         .measure_retained_resources()
         .expect("measure second source");
     let retained_and_leased_resources = HotCheckpointResourceProfile::new(
-        (first_usage.template_bytes() + second_usage.template_bytes()) * 2,
+        first_usage.template_bytes()
+            + second_usage.template_bytes()
+            + first_usage.expected_private_dirty_bytes()
+            + second_usage.expected_private_dirty_bytes(),
         (first_usage.expected_private_dirty_bytes() + second_usage.expected_private_dirty_bytes())
             * 2,
         (first_usage.process_count() + second_usage.process_count()) * 2,
@@ -429,9 +452,10 @@ fn shared_worker_providers_release_before_orderly_shutdown_and_restart_inventory
         .iter()
         .map(|(key, _source)| *key)
         .collect::<Vec<_>>();
+    // Shutdown attempts the newest admission first.
     assert_eq!(
         failed_keys,
-        vec![first_key.template_key(), second_key.template_key()]
+        vec![second_key.template_key(), first_key.template_key()]
     );
 
     first_provider.restore(first_checked_out);

@@ -8,7 +8,8 @@ use crate::cli_store_transform::run_campaign_store_transform;
 use std::path::{Component, Path};
 
 use crucible_daemon::campaign_store_composition::{
-    BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreNodeKind,
+    BackendCapabilities, ContentId, ImmutableBlobBackend, StoreGraph, StoreGraphVerificationLimits,
+    StoreNodeKind,
 };
 use crucible_daemon::{
     CampaignGcApplyStatus, CampaignGcCandidateManifest, CampaignGcCandidateReason,
@@ -21,15 +22,14 @@ use crucible_daemon::{
 use serde::Serialize;
 
 use crate::cli_campaign_store::{
-    MAX_STORE_VERIFY_LOGICAL_BYTES, MAX_STORE_VERIFY_PLACEMENTS, load_campaign_repository_store,
-    load_campaign_store_graph, verify_campaign_store_inventory,
+    load_campaign_repository_store, load_campaign_store_graph, verify_campaign_store_inventory,
 };
 
 const CAMPAIGN_GC_REPORT_SCHEMA: &str = "crucible.cli.campaign-store-gc.v2";
 const CAMPAIGN_GC_PLAN_VERSION: &str = "v1";
 const STORE_STATUS_REPORT_SCHEMA: &str = "crucible.cli.store-status.v1";
 const STORE_ENSURE_REPORT_SCHEMA: &str = "crucible.cli.store-ensure.v1";
-const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v1";
+const STORE_VERIFY_REPORT_SCHEMA: &str = "crucible.cli.store-verify.v2";
 const MAXIMUM_OWNER_PATH_BYTES: usize = 4_095;
 const UNUSED_GC_ENDPOINT: &str = "/tmp/crucible-campaign-gc-owner.sock";
 
@@ -44,7 +44,7 @@ pub(super) struct CampaignStoreGcReport {
     phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     apply_status: Option<&'static str>,
-    roots: usize,
+    roots: u64,
     reachable_objects: Option<u64>,
     candidates: u64,
     unreachable_candidates: u64,
@@ -131,7 +131,6 @@ struct StoreEnsureReport {
 struct StoreVerifyReport {
     schema: &'static str,
     configuration: String,
-    maximum_placements: u64,
     maximum_logical_bytes: u64,
     placements: u64,
     logical_bytes: u64,
@@ -185,12 +184,13 @@ fn run_store_ensure(args: &StoreEnsureArgs, format: OutputFormat) -> Result<Stri
 }
 
 fn run_store_verify(args: &StoreVerifyArgs, format: OutputFormat) -> Result<String, CliError> {
-    let verified = verify_campaign_store_inventory(&args.deployment)?;
+    let limits = StoreGraphVerificationLimits::new(args.max_logical_bytes);
+    let verified =
+        verify_campaign_store_inventory(&args.deployment, limits, args.spool_dir.as_deref())?;
     let report = StoreVerifyReport {
         schema: STORE_VERIFY_REPORT_SCHEMA,
         configuration: encode_bytes(&verified.configuration),
-        maximum_placements: MAX_STORE_VERIFY_PLACEMENTS,
-        maximum_logical_bytes: MAX_STORE_VERIFY_LOGICAL_BYTES,
+        maximum_logical_bytes: limits.maximum_logical_bytes(),
         placements: verified.placements,
         logical_bytes: verified.logical_bytes,
         physical: verified
@@ -307,8 +307,15 @@ pub(super) fn run_campaign_store_gc(
 
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {
+            // Planning scratch goes beside the journal, on the same durable
+            // storage the operator chose for it.
+            let spill_parent = args
+                .journal
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
             let planned = authority
-                .plan(&mut ledger, Some(&mut exact_pins))
+                .plan(&mut ledger, Some(&mut exact_pins), spill_parent)
                 .map_err(|error| {
                     maintenance_error(format!("campaign GC planning failed: {error}"))
                 })?;
@@ -393,15 +400,6 @@ pub(super) fn run_campaign_store_gc(
             let transition = journal.cancel().map_err(|error| {
                 maintenance_error(format!("campaign GC cancellation failed: {error}"))
             })?;
-            let unreachable_candidates = journal
-                .candidates()
-                .iter()
-                .filter(|candidate| {
-                    matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
-                })
-                .count();
-            let unreachable_candidates = u64::try_from(unreachable_candidates)
-                .map_err(|_| maintenance_error("campaign GC candidate count overflow"))?;
             CampaignStoreGcReport {
                 schema: CAMPAIGN_GC_REPORT_SCHEMA,
                 operation: "cancel",
@@ -417,13 +415,8 @@ pub(super) fn run_campaign_store_gc(
                 roots,
                 reachable_objects: None,
                 candidates: journal.candidates().summary().candidates(),
-                unreachable_candidates,
-                reachable_cache_candidates: journal
-                    .candidates()
-                    .summary()
-                    .candidates()
-                    .checked_sub(unreachable_candidates)
-                    .ok_or_else(|| maintenance_error("campaign GC candidate count underflow"))?,
+                unreachable_candidates: journal.candidates().unreachable_candidates(),
+                reachable_cache_candidates: journal.candidates().reachable_cache_candidates(),
                 candidate_logical_bytes: journal.candidates().logical_bytes(),
                 cache_required_copies: required_copies,
                 physical,
@@ -438,32 +431,33 @@ fn cache_required_copy_report(
     plan: &CampaignGcPlan,
     candidates: &CampaignGcCandidateManifest,
 ) -> Result<Vec<CampaignStoreGcRequiredCopyReport>, CliError> {
-    candidates
-        .iter()
-        .filter_map(|candidate| {
-            let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
-            else {
-                return None;
-            };
-            Some((candidate, required_backend))
-        })
-        .map(|(candidate, required_backend)| {
-            let basis = plan
-                .physical()
-                .iter()
-                .find(|basis| basis.backend() == required_backend)
-                .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
-            let identity = basis.storage_identity();
-            Ok(CampaignStoreGcRequiredCopyReport {
-                candidate_backend: candidate.backend().to_owned(),
-                content: candidate.id().to_string(),
-                logical_bytes: candidate.logical_length(),
-                required_backend: required_backend.clone(),
-                required_storage_identity: identity.to_hex(),
-                required_generation: basis.generation().to_hex(),
-            })
-        })
-        .collect()
+    let manifest_error = |error| {
+        maintenance_error(format!(
+            "campaign GC candidate manifest read failed: {error}"
+        ))
+    };
+    let mut report = Vec::new();
+    for candidate in candidates.iter().map_err(manifest_error)? {
+        let candidate = candidate.map_err(manifest_error)?;
+        let CampaignGcCandidateReason::ReachableCache { required_backend } = candidate.reason()
+        else {
+            continue;
+        };
+        let basis = plan
+            .physical()
+            .iter()
+            .find(|basis| basis.backend() == required_backend)
+            .ok_or_else(|| maintenance_error("campaign GC required-copy basis is absent"))?;
+        report.push(CampaignStoreGcRequiredCopyReport {
+            candidate_backend: candidate.backend().to_owned(),
+            content: candidate.id().to_string(),
+            logical_bytes: candidate.logical_length(),
+            required_backend: required_backend.clone(),
+            required_storage_identity: basis.storage_identity().to_hex(),
+            required_generation: basis.generation().to_hex(),
+        });
+    }
+    Ok(report)
 }
 
 fn physical_report(plan: &crucible_daemon::CampaignGcPlan) -> Vec<CampaignStoreGcPhysicalReport> {
@@ -590,7 +584,6 @@ fn render_store_verify(
         OutputFormat::Table => {
             let mut lines = vec![
                 format!("{:<24} {}", "configuration", report.configuration),
-                format!("{:<24} {}", "maximum-placements", report.maximum_placements),
                 format!(
                     "{:<24} {}",
                     "maximum-logical-bytes", report.maximum_logical_bytes
@@ -616,7 +609,6 @@ fn render_store_verify(
                 String::from("| field | value |"),
                 String::from("|---|---|"),
                 format!("| configuration | `{}` |", report.configuration),
-                format!("| maximum placements | {} |", report.maximum_placements),
                 format!(
                     "| maximum logical bytes | {} |",
                     report.maximum_logical_bytes
@@ -819,7 +811,9 @@ mod tests {
     use std::fs::{self, Permissions};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    use crucible_store::content_store::{BlobHandle, ObjectKind};
+    use crucible_store::content_store::{
+        BlobHandle, DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES, ObjectKind,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -866,6 +860,8 @@ mod tests {
         let verified = run_store_verify(
             &StoreVerifyArgs {
                 deployment: fixture.store.clone(),
+                max_logical_bytes: 4_096,
+                spool_dir: Some(fixture.root.clone()),
             },
             OutputFormat::Jsonl,
         )
@@ -873,11 +869,8 @@ mod tests {
         let verified: serde_json::Value =
             serde_json::from_str(&verified).expect("decode verify report");
         assert_eq!(verified["schema"], STORE_VERIFY_REPORT_SCHEMA);
-        assert_eq!(verified["maximum_placements"], MAX_STORE_VERIFY_PLACEMENTS);
-        assert_eq!(
-            verified["maximum_logical_bytes"],
-            MAX_STORE_VERIFY_LOGICAL_BYTES
-        );
+        assert!(verified.get("maximum_placements").is_none());
+        assert_eq!(verified["maximum_logical_bytes"], 4_096);
         assert_eq!(verified["placements"], 1);
         assert_eq!(verified["logical_bytes"], bytes.len());
         assert_eq!(verified["physical"][0]["backend"], "primary");
@@ -911,6 +904,8 @@ mod tests {
         let error = run_store_verify(
             &StoreVerifyArgs {
                 deployment: fixture.store.clone(),
+                max_logical_bytes: DEFAULT_STORE_GRAPH_VERIFY_LOGICAL_BYTES,
+                spool_dir: None,
             },
             OutputFormat::Jsonl,
         )

@@ -178,26 +178,39 @@ impl<L> Engine<L> {
         &self.breakpoint_host_metadata
     }
 
-    pub(super) fn breakpoint_condition_prefix(
+    /// Returns whether a breakpoint can fire at the next evaluation.
+    pub(super) fn breakpoints_armed(&self) -> bool {
+        !matches!(self.state, EngineState::Stopped { .. }) && !self.breakpoints.is_empty()
+    }
+
+    /// Returns every console pattern an armed breakpoint can match.
+    pub(super) fn breakpoint_console_patterns(&self) -> BTreeSet<(NodeId, String)> {
+        crucible_engine::predicate_console_patterns(
+            self.breakpoints.iter().map(|(_, spec, _)| &spec.predicate),
+        )
+    }
+
+    /// Returns the prefix breakpoints evaluate after a quantum.
+    ///
+    /// `history` is the condition prefix over the whole history, already
+    /// extended with the quantum's entries. A quantum that emitted no entry
+    /// is evaluated at a synthesized boundary on a copy of it.
+    pub(super) fn breakpoint_condition_prefix<'history>(
         &self,
-        event_log_entries: &[SchedulerEventLogEntry],
+        history: &'history ConditionEventLogPrefix,
         emitted_event_log_entries: usize,
-    ) -> Result<Option<ConditionEventLogPrefix>, SessionError> {
-        if emitted_event_log_entries == 0 {
-            return ConditionEventLogPrefix::from_scheduler_event_log_entries_with_evaluation_boundary(
-                event_log_entries.to_vec(),
+    ) -> Result<std::borrow::Cow<'history, ConditionEventLogPrefix>, SessionError> {
+        if emitted_event_log_entries != 0 {
+            return Ok(std::borrow::Cow::Borrowed(history));
+        }
+
+        history
+            .with_evaluation_boundary(
                 usize_to_u64(self.event_log_len),
                 self.frontier,
                 SchedulerEvaluationBoundaryKind::Quantum,
             )
-            .map(Some)
-            .map_err(|error| SessionError::BreakpointConditionPrefix {
-                reason: error.to_string(),
-            });
-        }
-
-        ConditionEventLogPrefix::from_scheduler_event_log_entries(event_log_entries.to_vec())
-            .map(Some)
+            .map(std::borrow::Cow::Owned)
             .map_err(|error| SessionError::BreakpointConditionPrefix {
                 reason: error.to_string(),
             })

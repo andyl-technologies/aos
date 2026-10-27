@@ -152,4 +152,9 @@ pub struct BlockFlashMutationOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashState {
     pub(super) continuations: BTreeMap<[u8; 32], BlockFlashContinuation>,
+    // Retiring a continuation cannot heal cells it already changed, so its
+    // XOR masks fold into this device-level residual, which every read applies.
+    // Only reads observe it: like an inactive continuation's masks, a later
+    // program or erase by another rule never clears it.
+    pub(super) residual_changed_bytes: BTreeMap<u64, u8>,
 }

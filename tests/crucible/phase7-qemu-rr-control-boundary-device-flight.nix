@@ -5,52 +5,14 @@
   attrPath,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
   guest = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
-  flight = pkgs.mkDerivation {
+  flight = mkCrucibleBinaries {
     pname = "crucible-qemu-rr-control-boundary-device-flight";
-    version = "0";
-    src = source;
-    buildDeps = [
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
-      pkgs.sed
-      pkgs.sqlite
-    ];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu-host \
-            --example crucible-qemu-rr-control-boundary-device-flight
-          mkdir -p "$out/bin"
-          cp \
-            "$TMPDIR/target/release/examples/crucible-qemu-rr-control-boundary-device-flight" \
-            "$out/bin/"
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-qemu-rr-control-boundary-device-flight = "build --release -p crucible-qemu-host --example crucible-qemu-rr-control-boundary-device-flight";
+    };
   };
   rootfsDeps = [
     flight

@@ -646,12 +646,9 @@ pub(in crate::model) fn configuration_from_minimization_run(
     }
 
     let minimized = configuration_from_validated_finding(&run.minimized)?;
-    let candidates = minimization_candidates(
-        run.config(),
-        run.original.artifact.id(),
-        run.original.artifact.schedule(),
-        minimization_candidate_limit(&run.original.artifact),
-    )?;
+    let original_schedule = run.original.artifact.schedule();
+    let candidates =
+        minimization_candidates(run.config(), run.original.artifact.id(), original_schedule)?;
     if run.attempts.len() > candidates.len() {
         return Err(unified_operation_evidence_mismatch(
             "minimization",
@@ -670,27 +667,23 @@ pub(in crate::model) fn configuration_from_minimization_run(
                 "attempt-sequence",
             ));
         }
-        if attempt.removed_indices != candidate.removed_indices {
+        // Removed decisions are read from the original schedule through these
+        // indexes, so matching indexes also authenticate the removed decisions.
+        if attempt.removed_indices != candidate.removed_indices(original_schedule) {
             return Err(unified_operation_evidence_mismatch(
                 "minimization",
                 "removed-indices",
             ));
         }
-        if attempt.removed_decisions != candidate.removed_decisions {
-            return Err(unified_operation_evidence_mismatch(
-                "minimization",
-                "removed-decisions",
-            ));
-        }
         expect_content_hash(
             attempt.candidate_schedule,
-            candidate.schedule.content_hash(),
+            candidate.schedule_hash(),
             "minimization-candidate-schedule",
         )?;
 
         let candidate_configuration = Configuration {
             def: run.original.artifact.scenario_def(),
-            schedule: candidate.schedule.clone(),
+            schedule: candidate.schedule(original_schedule),
         };
         let candidate_finding = FindingReproductionArtifact::capture(
             run.original.discovery_path,

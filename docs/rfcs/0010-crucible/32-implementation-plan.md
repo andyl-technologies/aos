@@ -30,20 +30,20 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **592 tasks** across 37 areas, satisfying **1094 numbered
+The plan covers **597 tasks** across 37 areas, satisfying **1097 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
 Task counts by area:
 
 ```text
-PERF 34  DET 31  SCHED 30  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
+PERF 34  SCHED 35  DET 31  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
 CLI 20  EXEC 20  RISK 20  TRIG 20  SHM 19  ASRT 18  GHC 17  CRATE 16  FAULT 16
 IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:1f04dbe817c09642`
+Checklist sync digest: `rfc0010-checklist-v1:6a4e14a3ebcf00b1`
 
 ### Current completion audit
 
@@ -187,8 +187,9 @@ interleaving exactly reproducible.
 
 **Tasks.**
 - Scheduler (incl. RR sub-division, applying `Decision::Preemption`, and the
-  all-vCPUs-idle handling `T-SCHED-28 … T-SCHED-30`): `T-SCHED-1 … T-SCHED-30` ([`08`](08-scheduling.md)).
-- I/O sub-nodes (disk/9p/net as scheduled completion events): `T-IO-1 … T-IO-16` ([`15`](15-io-subnodes.md)).
+  all-vCPUs-idle handling `T-SCHED-28 … T-SCHED-30`, and graph horizons with
+  concurrent run sets `T-SCHED-31`): `T-SCHED-1 … T-SCHED-31` ([`08`](08-scheduling.md)).
+- I/O sub-nodes (disk/9p/net as scheduled completion events): `T-IO-1 … T-IO-17` ([`15`](15-io-subnodes.md)).
 - Patterns realized here: `T-PAT-2` ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:layer1-injection` (Contract B), `gate:scheduler-liveness`,
@@ -767,6 +768,9 @@ through a loaded-QEMU callback run without affecting fingerprints.
 acceptance gate.
 
 **Tasks.**
+- Multi-host horizons (per-consumer log streams and their canonical merge,
+  cross-host guarantee transport, event-keyed link randomness, and cut-based
+  checkpoints and hot forks; `T-SCHED-34` is complete): `T-SCHED-32 … T-SCHED-35` ([`08`](08-scheduling.md)).
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
 - Debugger packaging and live acceptance: `T-DBG-13 … T-DBG-14`

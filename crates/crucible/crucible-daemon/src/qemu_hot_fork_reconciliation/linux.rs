@@ -2,12 +2,22 @@
 
 use super::*;
 
+mod admission_failure;
 mod diagnostics;
 mod reconciliation;
 
 /// Production backend failure while retaining source and target authorities.
 #[derive(Debug, Error)]
 pub enum LinuxQemuHotForkReconciliationError {
+    /// Child admission failed with bounded pre-quarantine private evidence.
+    #[error("{source}; private child admission evidence: {report}")]
+    ChildAdmission {
+        /// Original typed channel failure, unchanged by diagnostic collection.
+        #[source]
+        source: QemuNodeChannelError,
+        /// Advisory owned-stream and pidfd observations captured before cleanup.
+        report: Box<admission_failure::ChildAdmissionFailureReport>,
+    },
     /// Source-QEMU channel or resource-stage reconciliation failed.
     #[error(transparent)]
     Source(#[from] QemuNodeChannelError),
@@ -29,7 +39,6 @@ pub enum LinuxQemuHotForkReconciliationError {
 enum LinuxSourceReleasePhase {
     CloseChildChannel,
     PluginEndpoints,
-    ChildConsole,
     ChildQmp,
     Diagnostics,
     PrivateRing,
@@ -57,10 +66,6 @@ impl LinuxQemuHotForkSourceLoan<'_> {
 
     fn release_plugin_endpoints(&mut self) -> Result<(), QemuNodeChannelError> {
         self.0.release_plugin_endpoints()
-    }
-
-    fn release_child_console(&mut self) -> Result<(), QemuNodeChannelError> {
-        self.0.release_child_console()
     }
 
     fn release_child_qmp(&mut self) -> Result<(), QemuNodeChannelError> {
@@ -427,6 +432,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        stopped_restore_ack: Option<&crucible_qemu_host::QemuStoppedRestoreAckCapability>,
     ) -> Result<(), LinuxQemuHotForkReconciliationError> {
         if self.installed_node.is_some() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -441,6 +447,7 @@ where
             shutdown_policy,
             async_policy,
             crash_detector,
+            stopped_restore_ack,
         ) {
             Ok(installed_node) => {
                 self.installed_node = Some(installed_node);
@@ -818,6 +825,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        stopped_restore_ack: Option<&crucible_qemu_host::QemuStoppedRestoreAckCapability>,
     ) -> Result<(), Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>>
     {
         self.require_phase(
@@ -827,7 +835,13 @@ where
         .map_err(Box::new)?;
         self.backend_mut()
             .map_err(Box::new)?
-            .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
+            .install_scheduler_node(
+                node,
+                shutdown_policy,
+                async_policy,
+                crash_detector,
+                stopped_restore_ack,
+            )
             .map_err(|source| {
                 Box::new(QemuHotForkAttemptReconciliationError::Operation {
                     operation: "install hot-fork scheduler node",

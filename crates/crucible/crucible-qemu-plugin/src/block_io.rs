@@ -36,8 +36,9 @@ pub use wire::*;
 use history::{CompletedEpochHistory, CompletedIdentityHistory, reserve_history};
 
 const BLOCK_IO_SLOT_U32: u32 = SLOT_BLK_IO as u32;
-const BLOCK_WIRE_VERSION: u8 = 4;
-const BLOCK_REQUEST_HEADER_LEN: usize = 28;
+const BLOCK_REQUEST_WIRE_VERSION: u8 = 5;
+const BLOCK_RESPONSE_WIRE_VERSION: u8 = 4;
+const BLOCK_REQUEST_HEADER_LEN: usize = 36;
 const BLOCK_RESPONSE_HEADER_LEN: usize = 20;
 const BLOCK_TRANSPORT_CONTINUATION_MAGIC: &[u8; 4] = b"CBTS";
 const BLOCK_TRANSPORT_CONTINUATION_VERSION: u16 = 1;
@@ -493,6 +494,11 @@ impl PluginBlockIo {
     /// SPSC ring. If enqueue fails, the request token is failed immediately so the
     /// pending counter cannot drift.
     ///
+    /// `oldest_outstanding_epoch` is the oldest epoch among identities QEMU may
+    /// still submit or resubmit: requests awaiting a response and identities
+    /// answered with `RetryPreserveId`. The request header carries the minimum
+    /// of that epoch and this request's own epoch as its oldest live epoch.
+    ///
     /// # Errors
     ///
     /// Returns [`BlockIoError`] when the ring does not match registration state,
@@ -505,6 +511,7 @@ impl PluginBlockIo {
         outbound_ring: &mut BlockOutboundRing<'_>,
         submit_icount: u64,
         request: &BlockRequest,
+        oldest_outstanding_epoch: Option<u64>,
     ) -> Result<BlockSubmit, BlockIoError> {
         let identity =
             BlockRequestIdentity::new(self.request_epoch.get(), self.next_request_id.get());
@@ -514,12 +521,14 @@ impl PluginBlockIo {
             outbound_ring,
             submit_icount,
             request,
-            identity,
+            Self::stamp(identity, oldest_outstanding_epoch),
             true,
         )
     }
 
     /// Submits a QEMU-authorized retry with an explicit transport identity.
+    // crucible-lint: allow rust-allow -- a preserved retry adds its explicit identity to the fixed submit boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn submit_retry_request(
         &self,
         freeze: &mut PluginDeviceIoFreeze,
@@ -528,6 +537,7 @@ impl PluginBlockIo {
         submit_icount: u64,
         request: &BlockRequest,
         identity: BlockRequestIdentity,
+        oldest_outstanding_epoch: Option<u64>,
     ) -> Result<BlockSubmit, BlockIoError> {
         self.submit_request_as(
             freeze,
@@ -535,9 +545,24 @@ impl PluginBlockIo {
             outbound_ring,
             submit_icount,
             request,
-            identity,
+            Self::stamp(identity, oldest_outstanding_epoch),
             false,
         )
+    }
+
+    // The floor includes the submitted identity itself, so it never follows
+    // that identity's epoch and the stamp is always well formed.
+    fn stamp(
+        identity: BlockRequestIdentity,
+        oldest_outstanding_epoch: Option<u64>,
+    ) -> BlockRequestStamp {
+        let oldest_live_epoch = oldest_outstanding_epoch.map_or(identity.epoch, |outstanding| {
+            outstanding.min(identity.epoch)
+        });
+        BlockRequestStamp {
+            identity,
+            oldest_live_epoch,
+        }
     }
 
     // crucible-lint: allow rust-allow -- the helper receives the complete fixed block request and shared-memory publication boundary.
@@ -549,10 +574,11 @@ impl PluginBlockIo {
         outbound_ring: &mut BlockOutboundRing<'_>,
         submit_icount: u64,
         request: &BlockRequest,
-        identity: BlockRequestIdentity,
+        stamp: BlockRequestStamp,
         advance_allocator: bool,
     ) -> Result<BlockSubmit, BlockIoError> {
         self.check_outbound_ring(outbound_ring)?;
+        let identity = stamp.identity;
         let request_id = identity.request_id;
         let next_request_id = if advance_allocator {
             Some(
@@ -563,7 +589,7 @@ impl PluginBlockIo {
         } else {
             None
         };
-        let payload = request.encode(identity)?;
+        let payload = request.encode(stamp)?;
         let frame = FrameEntry::new(submit_icount, self.vm_slot, request_id, &payload)
             .map_err(|source| BlockIoError::Frame { source })?;
         let device_token = freeze
@@ -592,6 +618,7 @@ impl PluginBlockIo {
             ring_index: self.outbound_ring_index,
             submit_icount,
             request_id,
+            oldest_live_epoch: stamp.oldest_live_epoch,
             payload_len: payload.len(),
             token: BlockRequestToken {
                 block_owner_id: self.owner_id,
@@ -1074,6 +1101,9 @@ impl PluginBlockIo {
 
 /// Handles one safe block submit callback body.
 ///
+/// `oldest_outstanding_epoch` has the meaning documented on
+/// [`PluginBlockIo::submit_request`].
+///
 /// # Errors
 ///
 /// Returns [`BlockIoError`] when submit validation, freeze state, or ring enqueue
@@ -1085,8 +1115,16 @@ pub fn handle_block_submit_callback(
     outbound_ring: &mut BlockOutboundRing<'_>,
     submit_icount: u64,
     request: &BlockRequest,
+    oldest_outstanding_epoch: Option<u64>,
 ) -> Result<BlockSubmit, BlockIoError> {
-    block_io.submit_request(freeze, slot, outbound_ring, submit_icount, request)
+    block_io.submit_request(
+        freeze,
+        slot,
+        outbound_ring,
+        submit_icount,
+        request,
+        oldest_outstanding_epoch,
+    )
 }
 
 /// Handles one safe block poll callback body.

@@ -1377,8 +1377,18 @@ pub(super) fn marker_id_material(id: &MarkerId) -> String {
     format!("marker_id_len={}\nmarker_id={}", id.name.len(), id.name)
 }
 
+/// Returns the seed's identity material, naming the decision-RNG derivation.
+///
+/// A seed means its draws, and its draws depend on the derivation. Naming the
+/// algorithm here gives every scenario, configuration and derived root an
+/// identity that cannot collide with one recorded under another derivation, so
+/// an artifact recorded under `splitmix64-v1` is refused by identity rather
+/// than replayed with re-valued draws.
 pub(super) fn seed_material(seed: Seed) -> String {
-    format!("seed_bytes={}", seed.to_hex())
+    format!(
+        "seed_bytes={}\ndecision_rng={DECISION_RNG_ALGORITHM}",
+        seed.to_hex()
+    )
 }
 
 pub(super) fn app_random_draw_cap_material(app_random_draw_cap: u64) -> String {

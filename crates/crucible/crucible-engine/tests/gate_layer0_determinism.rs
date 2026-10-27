@@ -53,8 +53,11 @@ fn gate_layer0_determinism_keeps_schedule_decisions_explicitly_ordered() {
     let left = accepted_step!(&accepted_step!(&genesis, first.clone()), second.clone());
     let right = accepted_step!(&accepted_step!(&genesis, second.clone()), first.clone());
 
-    assert_eq!(left.schedule.decisions(), &[first.clone(), second.clone()]);
-    assert_eq!(right.schedule.decisions(), &[second, first]);
+    assert_eq!(
+        left.schedule.decision_history(),
+        &[first.clone(), second.clone()]
+    );
+    assert_eq!(right.schedule.decision_history(), &[second, first]);
     assert_ne!(left.schedule, right.schedule);
 }
 
@@ -122,10 +125,11 @@ fn drive_backend(backend: &mut SimBackend, input: BackendInput, horizon: u64) {
 }
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }
 
 fn node(name: &str) -> NodeId {

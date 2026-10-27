@@ -1,4 +1,22 @@
 //! Canonical codec for inseparable QEMU VMState and Apache continuations.
+//!
+//! A snapshot envelope is the magic, three length-prefixed nested owners,
+//! the live-capture flag, and the aggregate identity:
+//!
+//! ```text
+//! "crucible.qemu-vm-snapshot.v4\0"
+//! u64 LE length, scheduler checkpoint (compact binary)
+//! u64 LE length, host-I/O checkpoint (canonical)
+//! u64 LE length, node continuation (compact binary)
+//! u8 live-capture flag
+//! [u8; 32] identity
+//! ```
+//!
+//! [`QemuVmSnapshot::write_canonical_with_limit`] streams the envelope to a
+//! writer one nested owner at a time, so a store can hash and persist it
+//! without holding the whole envelope. Decoding checks canonicality by
+//! streaming the same encoding against the input rather than building a
+//! second copy.
 
 use super::QemuVmSnapshot;
 use crate::{
@@ -6,12 +24,16 @@ use crate::{
     QemuNodeContinuationCheckpoint,
 };
 use crucible_engine::{Checkpoint, ContentHash};
+use std::io::Write;
 use std::sync::Arc;
 
 use crate::checkpoint::bounded_cbor::{BoundedCborError, HARD_FAT_CHECKPOINT_BYTES, admit_input};
 
 const MAGIC: &[u8] = b"crucible.qemu-vm-snapshot.v4\0";
+const IDENTITY_DOMAIN: &[u8] = b"crucible.qemu.exact-snapshot.v7\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
+// Magic, three u64 lengths, the live-capture flag, and the identity.
+const FIXED_ENVELOPE_BYTES: u64 = MAGIC.len() as u64 + 8 * 3 + 1 + 32;
 
 impl QemuVmSnapshot {
     /// Encodes the VMState metadata and every paired Apache continuation.
@@ -37,6 +59,29 @@ impl QemuVmSnapshot {
         fat_checkpoint_bytes: u64,
     ) -> Result<Vec<u8>, QemuVmSnapshotCodecError> {
         encode_snapshot(self, fat_checkpoint_bytes)
+    }
+
+    /// Streams the canonical envelope to `sink` under an authored ceiling.
+    ///
+    /// The bytes written equal [`Self::to_canonical_bytes_with_limit`]'s.
+    /// Each nested owner is encoded, written, and released before the next,
+    /// so at most one nested encoding is resident. Returns the envelope
+    /// length.
+    ///
+    /// On error `sink` may hold a partial envelope, which the caller must
+    /// discard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmSnapshotCodecError`] under the same conditions as
+    /// [`Self::to_canonical_bytes_with_limit`], and
+    /// [`QemuVmSnapshotCodecError::Write`] when `sink` fails.
+    pub fn write_canonical_with_limit<W: Write>(
+        &self,
+        fat_checkpoint_bytes: u64,
+        sink: &mut W,
+    ) -> Result<u64, QemuVmSnapshotCodecError> {
+        encode_snapshot_to(self, fat_checkpoint_bytes, sink)
     }
 
     /// Decodes and authenticates a complete QEMU exact snapshot.
@@ -109,10 +154,135 @@ impl QemuVmSnapshot {
             },
         };
         validate_execution_binding(&snapshot)?;
-        if encode_snapshot(&snapshot, fat_checkpoint_bytes)?.as_slice() != bytes {
+
+        // Re-encode against the input instead of into a second envelope.
+        let mut canonical = CanonicalComparison::new(bytes);
+        encode_snapshot_to(&snapshot, fat_checkpoint_bytes, &mut canonical)?;
+        if !canonical.matched() {
             return Err(QemuVmSnapshotCodecError::Noncanonical);
         }
         Ok(snapshot)
+    }
+}
+
+/// Streams the canonical envelope, releasing each nested encoding once written.
+///
+/// Checks run in the same order as [`encode_snapshot`]'s, and the bytes are
+/// identical; only the buffering differs.
+fn encode_snapshot_to<W: Write>(
+    snapshot: &QemuVmSnapshot,
+    maximum: u64,
+    sink: &mut W,
+) -> Result<u64, QemuVmSnapshotCodecError> {
+    let maximum = maximum.min(HARD_FAT_CHECKPOINT_BYTES);
+    validate_execution_binding(snapshot)?;
+    let mut identity = blake3::Hasher::new();
+    identity.update(IDENTITY_DOMAIN);
+    write_all(sink, MAGIC)?;
+
+    let checkpoint = snapshot.checkpoint.to_compact_binary();
+    let mut nested_bytes = admit_nested_bytes(0, checkpoint.len(), maximum)?;
+    hash_blob(&mut identity, &checkpoint)?;
+    write_blob(sink, &checkpoint)?;
+    drop(checkpoint);
+
+    let host_io = snapshot
+        .host_io
+        .to_canonical_bytes_with_limit(maximum.saturating_sub(nested_bytes))
+        .map_err(map_host_io_error)?;
+    nested_bytes = admit_nested_bytes(nested_bytes, host_io.len(), maximum)?;
+    hash_blob(&mut identity, &host_io)?;
+    write_blob(sink, &host_io)?;
+    drop(host_io);
+
+    let node = snapshot
+        .node
+        .to_compact_binary_with_limit(maximum.saturating_sub(nested_bytes))
+        .map_err(map_node_error)?;
+    nested_bytes = admit_nested_bytes(nested_bytes, node.len(), maximum)?;
+    hash_blob(&mut identity, &node)?;
+    write_blob(sink, &node)?;
+    drop(node);
+
+    identity.update(&[u8::from(snapshot.live_capture)]);
+    let identity = ContentHash {
+        bytes: *identity.finalize().as_bytes(),
+    };
+    if identity != snapshot.identity {
+        return Err(QemuVmSnapshotCodecError::Identity);
+    }
+    let total = FIXED_ENVELOPE_BYTES
+        .checked_add(nested_bytes)
+        .filter(|total| *total <= maximum)
+        .ok_or_else(|| {
+            resource(
+                "QEMU VM snapshot",
+                0,
+                FIXED_ENVELOPE_BYTES.saturating_add(nested_bytes),
+                maximum,
+                HARD_FAT_CHECKPOINT_BYTES,
+            )
+        })?;
+    write_all(sink, &[u8::from(snapshot.live_capture)])?;
+    write_all(sink, &snapshot.identity.bytes)?;
+    Ok(total)
+}
+
+fn write_blob<W: Write>(sink: &mut W, blob: &[u8]) -> Result<(), QemuVmSnapshotCodecError> {
+    let length = u64::try_from(blob.len()).map_err(|_| {
+        resource(
+            "QEMU VM snapshot nested bytes",
+            0,
+            u64::MAX,
+            MAX_BYTES,
+            HARD_FAT_CHECKPOINT_BYTES,
+        )
+    })?;
+    write_all(sink, &length.to_le_bytes())?;
+    write_all(sink, blob)
+}
+
+fn write_all<W: Write>(sink: &mut W, bytes: &[u8]) -> Result<(), QemuVmSnapshotCodecError> {
+    sink.write_all(bytes)
+        .map_err(|error| QemuVmSnapshotCodecError::Write { kind: error.kind() })
+}
+
+/// Writer that compares a streamed encoding with already-held bytes.
+struct CanonicalComparison<'a> {
+    expected: &'a [u8],
+    offset: usize,
+    equal: bool,
+}
+
+impl<'a> CanonicalComparison<'a> {
+    const fn new(expected: &'a [u8]) -> Self {
+        Self {
+            expected,
+            offset: 0,
+            equal: true,
+        }
+    }
+
+    /// Reports whether the stream reproduced the expected bytes exactly.
+    const fn matched(&self) -> bool {
+        self.equal && self.offset == self.expected.len()
+    }
+}
+
+impl Write for CanonicalComparison<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // Once a byte differs the result is settled; keep accepting writes
+        // so encoding errors still surface in their usual order.
+        if self.equal {
+            let end = self.offset.saturating_add(bytes.len());
+            self.equal = self.expected.get(self.offset..end) == Some(bytes);
+        }
+        self.offset = self.offset.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -356,6 +526,12 @@ pub enum QemuVmSnapshotCodecError {
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical QEMU VM snapshot")]
     Noncanonical,
+    /// The destination of a streamed envelope failed.
+    #[error("QEMU VM snapshot write failed: {kind}")]
+    Write {
+        /// Kind of the writer's I/O error.
+        kind: std::io::ErrorKind,
+    },
 }
 
 fn validate_execution_binding(snapshot: &QemuVmSnapshot) -> Result<(), QemuVmSnapshotCodecError> {
@@ -386,7 +562,7 @@ fn snapshot_identity_from_bytes(
     live_capture: bool,
 ) -> Result<ContentHash, QemuVmSnapshotCodecError> {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.qemu.exact-snapshot.v7\0");
+    hasher.update(IDENTITY_DOMAIN);
     hash_blob(&mut hasher, checkpoint)?;
     hash_blob(&mut hasher, host_io)?;
     hash_blob(&mut hasher, node)?;

@@ -856,10 +856,14 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
         }
     }
 
-    let mut expected = vec!["input:z-input:30", "output:a-output:40", "input:z-input:46"];
-    if chain {
-        expected.push("input:z-input:50");
-    }
+    // The backend loop holds and publishes in canonical order, so the final
+    // input wave completes inside the same drive with or without the chain.
+    let expected = vec![
+        "input:z-input:30",
+        "output:a-output:40",
+        "input:z-input:46",
+        "input:z-input:50",
+    ];
     assert_eq!(*trace.borrow(), expected);
     let delivered = &actor.backend().inner.state().delivered_inputs;
     assert_eq!(delivered.len(), 3);

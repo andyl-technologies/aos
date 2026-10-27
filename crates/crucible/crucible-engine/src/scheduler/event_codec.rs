@@ -55,7 +55,7 @@ pub(crate) fn recorded_assertion_log_from_schedule_for_search(
 ) -> Result<RecordedAssertionLog, OfflineAssertionCheckError> {
     let mut entries = Vec::with_capacity(schedule.len().saturating_add(1));
     let mut terminal_ticks = 0_u64;
-    for (index, decision) in schedule.decisions().iter().enumerate() {
+    for (index, decision) in schedule.decision_history().iter().enumerate() {
         let sequence = u64::try_from(index)
             .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len: index })?;
         let at = search_schedule_decision_event_time(decision, sequence);
@@ -148,7 +148,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v5",
+        "crucible.scheduler.event-log.entry.v6",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -182,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v5",
+        "crucible.scheduler.event-log.entry.v6",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -215,6 +215,18 @@ pub(super) fn scheduler_event_log_entry_material(
     event_payload: &EventPayload,
     payload: &SchedulerEventLogPayload,
 ) -> String {
+    if let Some(material) = derived_evaluation_boundary_material(
+        sequence,
+        at,
+        source,
+        level,
+        class,
+        event_payload,
+        payload,
+    ) {
+        return material;
+    }
+
     let mut lines = Vec::new();
     lines.push(format!("sequence={sequence}"));
     lines.push(format!("at_virtual_time_ticks={}", at.virtual_time.ticks));
@@ -270,6 +282,44 @@ pub(super) fn scheduler_event_log_entry_material(
         }
     }
     lines.join("\n")
+}
+
+/// Writes the compact identity material of a derived evaluation boundary.
+///
+/// Every committed scheduler RUN appends one boundary whose source, level,
+/// class, projected payload and node-free stamp all follow from its kind. The
+/// compact form omits those fields and is used only when each one holds, so
+/// the material stays injective. Its leading `entry_form` line can never start
+/// the full form, which always begins with `sequence=`. A boundary carrying
+/// any other field value keeps the full form.
+fn derived_evaluation_boundary_material(
+    sequence: u64,
+    at: &EventLogTime,
+    source: &EventSource,
+    level: EventLevel,
+    class: SchedulerEventLogClass,
+    event_payload: &EventPayload,
+    payload: &SchedulerEventLogPayload,
+) -> Option<String> {
+    let SchedulerEventLogPayload::EvaluationBoundary(kind) = payload else {
+        return None;
+    };
+    let derived = at.stamp.node.is_none()
+        && at.stamp.retired.is_none()
+        && *source == scheduler_event_log_payload_source(payload)
+        && level == scheduler_event_log_payload_level(payload)
+        && *event_payload == event_payload_from_scheduler_payload(payload)
+        && event_kind_catalog_class(event_payload) == Some(class);
+    if !derived {
+        return None;
+    }
+
+    Some(format!(
+        "entry_form=evaluation-boundary\nsequence={sequence}\nat_virtual_time_ticks={}\nat_tick={}\nkind={}",
+        at.virtual_time.ticks,
+        at.stamp.tick.ticks,
+        evaluation_boundary_kind_label(*kind),
+    ))
 }
 
 pub(super) fn event_payload_from_scheduler_payload(
@@ -394,6 +444,41 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
     }
 }
 
+/// Adds a draw's address to its `rng_draw` event attributes.
+fn insert_rng_draw_address_attributes(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    address: crate::RngDrawAddress,
+) {
+    match address {
+        crate::RngDrawAddress::Ordinal { ordinal } => {
+            attributes.insert(
+                String::from("address"),
+                EventAttributeValue::String(String::from("ordinal")),
+            );
+            attributes.insert(String::from("ordinal"), EventAttributeValue::U64(ordinal));
+        }
+        crate::RngDrawAddress::LinkFrame {
+            direction,
+            producer_sequence,
+            role,
+        } => {
+            attributes.insert(
+                String::from("address"),
+                EventAttributeValue::String(String::from("link-frame")),
+            );
+            attributes.insert(
+                String::from("direction"),
+                EventAttributeValue::String(String::from(direction.label())),
+            );
+            attributes.insert(
+                String::from("producer_sequence"),
+                EventAttributeValue::U64(producer_sequence),
+            );
+            attributes.insert(String::from("role"), EventAttributeValue::U64(role));
+        }
+    }
+}
+
 pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
     let mut attributes = BTreeMap::new();
     match decision {
@@ -417,6 +502,7 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 String::from("stream_name"),
                 EventAttributeValue::String(draw.stream.name.clone()),
             );
+            insert_rng_draw_address_attributes(&mut attributes, draw.address);
             attributes.insert(String::from("value"), EventAttributeValue::U64(draw.value));
             EventPayload::new("rng_draw", attributes)
         }
@@ -484,6 +570,29 @@ pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> E
                 EventAttributeValue::Bytes(bytes.clone()),
             );
             EventPayload::new("console_output", attributes)
+        }
+        ObservableEventPayload::NativeConsoleByte { node, origin } => {
+            attributes.insert(
+                String::from("node"),
+                EventAttributeValue::Node(node.clone()),
+            );
+            attributes.insert(
+                String::from("device"),
+                EventAttributeValue::Bytes(origin.device.bytes.to_vec()),
+            );
+            for (key, value) in [
+                ("stream", u64::from(origin.stream)),
+                ("logical_generation", origin.logical_generation),
+                ("node_sequence", origin.node_sequence),
+                ("stream_sequence", origin.stream_sequence),
+                ("emitted_ps", origin.emitted_ps),
+                ("raw_prefix", origin.raw_prefix),
+                ("vcpu", u64::from(origin.vcpu)),
+                ("byte", u64::from(origin.byte)),
+            ] {
+                attributes.insert(String::from(key), EventAttributeValue::U64(value));
+            }
+            EventPayload::new("native_console_byte", attributes)
         }
         ObservableEventPayload::CoverageBlock {
             execution_icount,
@@ -1031,6 +1140,7 @@ pub(super) fn observable_payload_stamp(
 ) -> EventLogTickStamp {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => node_boundary_stamp(at, node),
         ObservableEventPayload::CoverageBlock {
@@ -1160,6 +1270,7 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
 pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::MemorySample { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => {
@@ -1204,6 +1315,7 @@ pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> E
         ObservableEventPayload::MemorySample { .. } => EventLevel::Debug,
         ObservableEventPayload::AssertionProximity { .. } => EventLevel::Debug,
         ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NativeConsoleByte { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::IoCompletion { .. }
         | ObservableEventPayload::NodeState { .. }
@@ -1897,23 +2009,13 @@ pub(super) struct SchedulerEventLogSegmentMaterial {
 impl SchedulerEventLogSegmentMaterial {
     pub(super) fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
-        bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&self.previous_prefix.bytes);
-        write_u64_le(&mut bytes, self.entries.len() as u64);
+        encode_scheduler_event_log_segment_header(
+            &mut bytes,
+            self.previous_prefix,
+            self.entries.len() as u64,
+        );
         for entry in &self.entries {
-            write_u64_le(&mut bytes, entry.sequence);
-            write_u64_le(&mut bytes, entry.at_virtual_time_ticks);
-            write_u64_le(&mut bytes, entry.at_tick);
-            write_optional_u64(&mut bytes, entry.at_raw_retired);
-            write_optional_string(&mut bytes, entry.at_node.as_deref());
-            write_string(&mut bytes, &entry.source_material);
-            bytes.push(event_level_code(entry.level));
-            bytes.push(event_class_code(entry.class));
-            write_string(&mut bytes, &entry.payload_kind);
-            write_u64_le(&mut bytes, entry.payload_attribute_count);
-            bytes.extend_from_slice(&entry.content_hash.bytes);
-            write_string(&mut bytes, &entry.entry_material);
+            entry.encode_into(&mut bytes);
         }
         bytes
     }
@@ -1921,10 +2023,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v5",
+            "format=crucible.scheduler.event-log.segment-text.v6",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v5",
+            "canonical_format=crucible.scheduler.event-log.segment.v6",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));
@@ -2119,35 +2221,69 @@ pub(super) fn scheduler_event_log_segment_material(
 ) -> SchedulerEventLogSegmentMaterial {
     let entries = entries
         .iter()
-        .map(|entry| {
-            let entry_material = scheduler_event_log_entry_material(
-                entry.sequence,
-                &entry.at,
-                &entry.source,
-                entry.level,
-                entry.class,
-                &entry.event_payload,
-                &entry.payload,
-            );
-            SchedulerEventLogSegmentEntryMaterial {
-                sequence: entry.sequence,
-                at_virtual_time_ticks: entry.at.virtual_time.ticks,
-                at_tick: entry.at.stamp.tick.ticks,
-                at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
-                at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
-                source_material: scheduler_event_log_source_material("entry.source", &entry.source),
-                level: entry.level,
-                class: entry.class,
-                payload_kind: entry.event_payload.kind().to_owned(),
-                payload_attribute_count: entry.event_payload.attributes().len() as u64,
-                content_hash: entry.content_hash,
-                entry_material,
-            }
-        })
+        .map(SchedulerEventLogSegmentEntryMaterial::from_entry)
         .collect();
     SchedulerEventLogSegmentMaterial {
         previous_prefix,
         entries,
+    }
+}
+
+/// Writes the fixed segment header that precedes `entry_count` entries.
+///
+/// The count precedes the entries, so a streaming encoder must know it before
+/// the first entry is written.
+pub(super) fn encode_scheduler_event_log_segment_header(
+    bytes: &mut Vec<u8>,
+    previous_prefix: ContentHash,
+    entry_count: u64,
+) {
+    bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
+    bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&previous_prefix.bytes);
+    write_u64_le(bytes, entry_count);
+}
+
+impl SchedulerEventLogSegmentEntryMaterial {
+    pub(super) fn from_entry(entry: &SchedulerEventLogEntry) -> Self {
+        let entry_material = scheduler_event_log_entry_material(
+            entry.sequence,
+            &entry.at,
+            &entry.source,
+            entry.level,
+            entry.class,
+            &entry.event_payload,
+            &entry.payload,
+        );
+        Self {
+            sequence: entry.sequence,
+            at_virtual_time_ticks: entry.at.virtual_time.ticks,
+            at_tick: entry.at.stamp.tick.ticks,
+            at_raw_retired: entry.at.stamp.retired.map(|count| count.retired),
+            at_node: entry.at.stamp.node.as_ref().map(|node| node.name.clone()),
+            source_material: scheduler_event_log_source_material("entry.source", &entry.source),
+            level: entry.level,
+            class: entry.class,
+            payload_kind: entry.event_payload.kind().to_owned(),
+            payload_attribute_count: entry.event_payload.attributes().len() as u64,
+            content_hash: entry.content_hash,
+            entry_material,
+        }
+    }
+
+    pub(super) fn encode_into(&self, bytes: &mut Vec<u8>) {
+        write_u64_le(bytes, self.sequence);
+        write_u64_le(bytes, self.at_virtual_time_ticks);
+        write_u64_le(bytes, self.at_tick);
+        write_optional_u64(bytes, self.at_raw_retired);
+        write_optional_string(bytes, self.at_node.as_deref());
+        write_string(bytes, &self.source_material);
+        bytes.push(event_level_code(self.level));
+        bytes.push(event_class_code(self.class));
+        write_string(bytes, &self.payload_kind);
+        write_u64_le(bytes, self.payload_attribute_count);
+        bytes.extend_from_slice(&self.content_hash.bytes);
+        write_string(bytes, &self.entry_material);
     }
 }
 
@@ -2360,6 +2496,7 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("stream_domain={}", draw.stream.domain));
             lines.push(format!("stream_name_len={}", draw.stream.name.len()));
             lines.push(format!("stream_name={}", draw.stream.name));
+            lines.push(draw.address.canonical_material());
             lines.push(format!("value={}", draw.value));
         }
         Decision::Override(override_decision) => {

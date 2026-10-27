@@ -193,6 +193,11 @@ where
     }
 
     /// Reserves one child generation with a duplicated concurrent launch contract.
+    ///
+    /// Each node's contract carries its own cancellation eventfd. Its source
+    /// QEMU validates that descriptor as a nonblocking eventfd while sibling
+    /// nodes stage theirs concurrently, and QEMU's descriptor receive resets
+    /// the nonblocking flag of the open file description it was handed.
     pub(crate) fn reserve_process_node(
         &mut self,
         identity: ProductionVmNodeGeneration,
@@ -207,7 +212,7 @@ where
             state
                 .guard
                 .child_process_contract()?
-                .try_clone_for_attempt_generation()
+                .try_clone_for_concurrent_node()
                 .map_err(|source| {
                     world_resource_error(format!(
                         "duplicate concurrent hot-fork node process contract: {source}"

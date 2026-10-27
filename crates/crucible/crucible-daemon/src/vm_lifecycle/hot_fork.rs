@@ -12,9 +12,10 @@ use super::*;
 pub(super) mod disk_basis;
 mod native_disk_seal;
 mod resource_usage;
+mod resume_boundary_source;
 use disk_basis::ProductionVmHotForkDiskBasis;
 use native_disk_seal::ProductionVmHotForkDiskCustody;
-pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
+pub use resource_usage::{ProductionVmHotForkSourceWorldResourceUsage, SourceMemoryRegions};
 
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE: usize = 100;
@@ -543,7 +544,14 @@ impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
             formatter,
             "prepare production hot-fork source world: {}",
             self.message
-        )
+        )?;
+
+        // Callers that retire or quarantine the world keep only this text, so
+        // it must name why each unresolved source failed its rollback.
+        for (node, diagnostic) in &self.rollback_diagnostics {
+            write!(formatter, "; `{}`: {diagnostic}", node.name)?;
+        }
+        Ok(())
     }
 }
 
@@ -585,8 +593,11 @@ pub struct ProductionVmHotForkWorldContinuation {
     configuration: Configuration,
     // Child admission restores independent runtime state from these immutable captures.
     scheduler: Arc<SingleSchedulerCheckpoint>,
-    event_log_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    // The source run's store keeps the sealed segments `scheduler` names; a
+    // child copies them into its own run one segment at a time.
+    event_log_segments: ProductionEventLogSegments,
     signal_artifact_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
+    fault_trace_objects: Arc<BTreeMap<ContentHash, Vec<u8>>>,
     trigger_state: EventGraphState,
     assertion_state: HostAssertionEvaluatorCheckpoint,
     terminal_verdict: Option<QuantumTerminalVerdict>,
@@ -607,6 +618,15 @@ pub struct ProductionVmHotForkWorldContinuation {
     failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     nodes: Vec<ProductionVmHotForkNodeBoundary>,
     io_nodes: Vec<ProductionVmHotForkIoNodeBoundary>,
+    // The network adapter's selected campaign plan and committed frontier
+    // inside `fault_checkpoint`, kept so a child's plan is admitted before
+    // any child process exists.
+    network_replay_identity: Option<ContentHash>,
+    network_committed_frontier: VirtualTime,
+    // A source kept at a joined network fault park holds each VM's native
+    // marker stop. Children inherit those stops, and start replay crosses the
+    // recorded branch only while it can read every VM's park proof.
+    campaign_marker_parks: BTreeMap<NodeId, QemuParkedCampaignMarker>,
 }
 
 impl ProductionVmHotForkWorldContinuation {
@@ -619,8 +639,9 @@ impl ProductionVmHotForkWorldContinuation {
             config: self.config.clone(),
             configuration: self.configuration.clone(),
             scheduler: Arc::clone(&self.scheduler),
-            event_log_objects: self.event_log_objects.clone(),
+            event_log_segments: self.event_log_segments.clone(),
             signal_artifact_objects: self.signal_artifact_objects.clone(),
+            fault_trace_objects: Arc::clone(&self.fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_state.clone(),
             terminal_verdict: self.terminal_verdict.clone(),
@@ -640,6 +661,9 @@ impl ProductionVmHotForkWorldContinuation {
             failed_host_io: self.failed_host_io.clone(),
             nodes: self.nodes.clone(),
             io_nodes: self.io_nodes.clone(),
+            network_replay_identity: self.network_replay_identity,
+            network_committed_frontier: self.network_committed_frontier,
+            campaign_marker_parks: self.campaign_marker_parks.clone(),
         })
     }
 
@@ -647,6 +671,58 @@ impl ProductionVmHotForkWorldContinuation {
     #[must_use]
     pub const fn configuration(&self) -> &Configuration {
         &self.configuration
+    }
+
+    /// Admits one child attempt's network fault branches at this boundary.
+    ///
+    /// A source names only the network fault branches it has committed. A
+    /// child whose attempt selects a further branch at the source boundary
+    /// crosses it at runtime, and its network adapter must hold that branch
+    /// to release the selected markers and resolve the outage. Returns the
+    /// network-only plan to pass to [`Self::with_attempt_fault_replay`], or
+    /// `None` when the attempt selects no network branch and the child keeps
+    /// the source's own selection. Signal-fault branches are left out: those
+    /// the source crossed are already part of its checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal when the network branches do not form a valid plan
+    /// for the attempt's target, or when the plan neither equals the
+    /// checkpointed selection nor extends it by one branch at the committed
+    /// network frontier.
+    pub fn admit_attempt_fault_replay(
+        &self,
+        replay: &SignalFaultCampaignReplayPlan,
+    ) -> Result<Option<SignalFaultCampaignReplayPlan>, SchedulerError> {
+        if replay.network_branches().is_empty() {
+            return Ok(None);
+        }
+        let invalid = |error: crucible_engine::NetworkFaultSelectableError| {
+            hot_fork_boundary_error(format!("attempt network fault replay is invalid: {error}"))
+        };
+        let network = crucible_engine::NetworkFaultCampaignReplayPlan::new(
+            replay.target().clone(),
+            replay.network_branches().to_vec(),
+        )
+        .map_err(invalid)?;
+        network_faults::validate_campaign_replay_restore(
+            self.network_replay_identity,
+            Some(&network),
+            Some(self.network_committed_frontier),
+        )?;
+        SignalFaultCampaignReplayPlan::empty(replay.target().clone())
+            .with_network_branches(replay.network_branches().to_vec())
+            .map(Some)
+            .map_err(invalid)
+    }
+
+    /// Returns this continuation carrying a plan from [`Self::admit_attempt_fault_replay`].
+    ///
+    /// Every child forked from the continuation installs the plan in place of
+    /// the source's own selection; construction validates it again.
+    pub fn with_attempt_fault_replay(mut self, replay: SignalFaultCampaignReplayPlan) -> Self {
+        self.config = self.config.with_signal_fault_campaign_replay(replay);
+        self
     }
 
     /// Returns the canonical scheduler continuation at the fork boundary.
@@ -679,10 +755,19 @@ impl ProductionVmHotForkWorldContinuation {
         self.fault_checkpoint.id()
     }
 
-    /// Returns the number of authenticated event-log dependency objects.
+    /// Returns the number of sealed event-log segments the continuation names.
     #[must_use]
     pub fn event_log_object_count(&self) -> usize {
-        self.event_log_objects.len()
+        self.scheduler.event_log_segments().len()
+    }
+
+    /// Returns read access to the sealed event-log segments the continuation names.
+    ///
+    /// Pass it to [`SingleSchedulerCheckpoint::event_log_entries`] to stream
+    /// the continuation's log one segment at a time.
+    #[must_use]
+    pub const fn event_log_segments(&self) -> &ProductionEventLogSegments {
+        &self.event_log_segments
     }
 
     /// Returns the number of retained signal-artifact dependency objects.
@@ -746,6 +831,14 @@ impl ProductionVmHotForkWorldContinuation {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("hot-fork node continuation is incomplete"),
             });
+        }
+        // Only a running VM can hold a native marker stop for a child to inherit.
+        if self.campaign_marker_parks.keys().any(|node| {
+            self.node_service_states.get(node) != Some(&ProductionNodeServiceState::Running)
+        }) {
+            return Err(hot_fork_boundary_error(
+                "hot-fork campaign marker park names a node that is not running",
+            ));
         }
         let active_nodes = self
             .node_service_states
@@ -830,16 +923,11 @@ impl ProductionVmHotForkWorldContinuation {
                 });
             }
         }
-        if self
-            .scheduler
-            .event_log_segment_dependencies()
-            .iter()
-            .any(|identity| !self.event_log_objects.contains_key(identity))
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("hot-fork event-log dependency closure is incomplete"),
-            });
-        }
+        self.event_log_segments
+            .verify_present(&self.scheduler)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("hot-fork event-log dependency closure is incomplete: {error}"),
+            })?;
         let _retained_semantic_state = (
             &self.trigger_state,
             &self.assertion_state,
@@ -875,8 +963,9 @@ impl ProductionVmHotForkWorldContinuation {
             identity: self.configuration.id(),
             configuration: self.configuration,
             scheduler: self.scheduler,
-            event_log_objects: self.event_log_objects,
+            event_log_segments: self.event_log_segments,
             signal_artifact_objects: self.signal_artifact_objects,
+            fault_trace_objects: self.fault_trace_objects,
             trigger_state: self.trigger_state,
             assertion_state: self.assertion_state,
             terminal_verdict: self.terminal_verdict,
@@ -900,6 +989,7 @@ impl ProductionVmHotForkWorldContinuation {
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
             active_host_io: self.active_host_io,
+            campaign_marker_parks: self.campaign_marker_parks,
         }
     }
 }
@@ -1476,6 +1566,10 @@ impl ProductionVmLifecycleLoop {
         let configuration = self.inner.loop_impl().configuration().clone();
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let network_committed_frontier = self.inner.committed_frontier();
+        let network_replay_identity = self
+            .inner
+            .network_output_interceptor()
+            .campaign_replay_identity();
         let fault_checkpoint = {
             let (scheduler, backend, interceptor, pending_outputs) =
                 self.inner.network_transaction_parts_mut();
@@ -1515,16 +1609,24 @@ impl ProductionVmLifecycleLoop {
             &active_host_io,
             &self.failed_host_io,
         )?;
-        let event_log_objects = self
-            .inner
+        self.inner
             .loop_impl()
-            .event_log_dependency_objects()
+            .verify_event_log_segments()
             .map_err(|error| {
                 hot_fork_boundary_error(format!("capture event-log closure: {error}"))
-            })?
-            .into_iter()
-            .collect();
+            })?;
+        let event_log_segments =
+            ProductionEventLogSegments::store(self.inner.loop_impl().event_log_segment_store());
+        let fault_trace_objects =
+            capture_fault_trace_objects(&fault_checkpoint, self.fault_trace_segments.as_ref())?;
         let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
+        let campaign_marker_parks =
+            self.inner
+                .backend_mut()
+                .campaign_marker_parks()
+                .map_err(|error| {
+                    hot_fork_boundary_error(format!("capture campaign marker parks: {error}"))
+                })?;
         let after = self.hot_fork_node_boundaries()?;
         if before != after || scheduler.frontier() != checkpoint_virtual_time {
             return Err(hot_fork_boundary_error(
@@ -1536,8 +1638,9 @@ impl ProductionVmLifecycleLoop {
             config: self.config.clone(),
             configuration,
             scheduler: Arc::new(scheduler),
-            event_log_objects: Arc::new(event_log_objects),
+            event_log_segments,
             signal_artifact_objects: Arc::clone(&self.signal_artifact_objects),
+            fault_trace_objects: Arc::new(fault_trace_objects),
             trigger_state: self.trigger_state.clone(),
             assertion_state: self.assertion_evaluator.checkpoint(),
             terminal_verdict: self.terminal_verdict.clone(),
@@ -1557,6 +1660,9 @@ impl ProductionVmLifecycleLoop {
             failed_host_io: self.failed_host_io.clone(),
             nodes: before,
             io_nodes,
+            network_replay_identity,
+            network_committed_frontier,
+            campaign_marker_parks,
         };
         continuation.validate_complete_internal_state()?;
         Ok(continuation)
@@ -1728,6 +1834,8 @@ pub(super) use test_support::record_hot_fork_adoption_for_test;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_support::{
     hot_fork_adoption_count_for_test, prepared_hot_fork_source_world_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selection_for_test,
+    prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_for_test,
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,

@@ -16,6 +16,11 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference, ObjectEnvelope};
 
 mod bulk;
+mod closure_cursor;
+mod validation_reads;
+
+pub(crate) use closure_cursor::MerkleClosureCursor;
+pub(crate) use validation_reads::{MerkleReadSession, MerkleValidationReads};
 
 const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;
 const MAX_PAGE_ITEMS: usize = 10_000;
@@ -72,6 +77,43 @@ impl MerkleMapRoot {
     #[must_use]
     pub const fn entry_count(self) -> u64 {
         self.entry_count
+    }
+
+    /// Returns whether the root names the canonical empty map.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.entry_count == 0
+    }
+}
+
+// A record that embeds a root commits to its node identity and advertised
+// count. Decoding checks only the shape; readers authenticate the node and
+// its count against the store before trusting either.
+impl Canonical for MerkleMapRoot {
+    fn encode(&self, encoder: &mut Encoder) {
+        Canonical::encode(&self.content_id, encoder);
+        self.entry_count.encode(encoder);
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        let content_id = ContentId::decode(decoder)?;
+        let entry_count = u64::decode(decoder)?;
+        let empty =
+            MerkleMap::empty_content_id().map_err(|_| CampaignCodecError::InvalidValue {
+                reason: "merkle empty-root identity is unavailable",
+            })?;
+        if content_id.kind() != ObjectKind::MerkleNode
+            || content_id.schema_version() != empty.schema_version()
+            || (entry_count == 0) != (content_id == empty)
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "merkle root reference is malformed",
+            });
+        }
+        Ok(Self {
+            content_id,
+            entry_count,
+        })
     }
 }
 
@@ -348,25 +390,23 @@ impl MerkleMap {
     /// Authenticates every node and leaf value reachable from a root.
     ///
     /// This is the publication/transfer integrity operation. It validates
-    /// ancestor prefixes, advertised subtree counts, repeated-node misuse, and
-    /// the presence and digest of every referenced value object.
+    /// ancestor prefixes, advertised subtree counts, node depths, and the
+    /// presence of every referenced value object, with memory bounded by trie
+    /// depth. A node reused at another position fails the prefix check.
     ///
     /// # Errors
     ///
     /// Returns an error for a missing/corrupt value or node, malformed trie
-    /// shape, count disagreement, or a closure above one million unique nodes.
+    /// shape, count disagreement, or traversal above one million nodes.
     pub fn verify_closure(&self, root: ContentId) -> Result<MerkleMapRoot, CampaignStoreError> {
-        self.verify_closure_objects(root)
-            .map(|verified| verified.root)
+        self.verify_closure_streaming(root)
     }
 
     /// Authenticates a complete root with memory bounded by trie depth.
     ///
-    /// Unlike [`Self::verify_closure`], this variant does not retain the set of
-    /// leaf values for an enclosing object-graph walk. It still validates every
-    /// node, ancestor prefix, advertised count, value presence, and the final
-    /// root count, making it suitable for independently rebuildable projection
-    /// caches.
+    /// This is the same check as [`Self::verify_closure`]. Its node bound is a
+    /// work limit for this standalone call; campaign closure walks advance a
+    /// crate-private closure cursor directly and charge nodes to their own walk.
     ///
     /// # Errors
     ///
@@ -376,67 +416,27 @@ impl MerkleMap {
         &self,
         root: ContentId,
     ) -> Result<MerkleMapRoot, CampaignStoreError> {
-        let root_node = self.read_node(root, 0)?;
-        let expected_entries = root_node.entry_count;
-        // Depth increases on every child and non-root nodes cannot be empty, so
-        // cycles are impossible. Reusing a node at another trie position makes
-        // its eventual nonempty leaf fail the full ancestor-prefix check.
-        let mut stack = vec![(root_node, Vec::<u8>::new())];
+        let mut cursor = self.closure_cursor(root)?;
         let mut traversed_nodes = 0_usize;
-        let mut observed_entries = 0_u64;
-
-        while let Some((node, prefix)) = stack.pop() {
+        while let Some(step) = self.advance_closure_cursor(&mut cursor)? {
             traversed_nodes = traversed_nodes
                 .checked_add(1)
                 .ok_or(invalid("closure-node-limit"))?;
             if traversed_nodes > MAX_VERIFIED_NODES {
                 return Err(invalid("closure-node-limit"));
             }
-            for (slot, entry) in node.entries.iter().rev() {
-                let mut child_prefix = prefix.clone();
-                child_prefix.push(*slot);
-                match entry {
-                    MerkleEntry::Leaf { key, value } => {
-                        if !key_has_prefix(*key, &child_prefix) {
-                            return Err(invalid("leaf-ancestor-prefix-mismatch"));
-                        }
-                        if !self.backend.contains(*value)? {
-                            return Err(crucible_store::content_store::StoreError::NotFound {
-                                id: *value,
-                            }
-                            .into());
-                        }
-                        observed_entries = observed_entries
-                            .checked_add(1)
-                            .ok_or(invalid("entry-count-overflow"))?;
-                    }
-                    MerkleEntry::Node {
-                        content_id,
-                        entry_count,
-                    } => {
-                        let child = self.read_node(*content_id, node.depth + 1)?;
-                        if child.entry_count != *entry_count {
-                            return Err(invalid("child-entry-count-mismatch"));
-                        }
-                        stack.push((child, child_prefix));
-                    }
+            for value in step.values {
+                if !self.backend.contains(value)? {
+                    return Err(
+                        crucible_store::content_store::StoreError::NotFound { id: value }.into(),
+                    );
                 }
             }
         }
-        if observed_entries != expected_entries {
-            return Err(invalid("root-entry-count-mismatch"));
-        }
         Ok(MerkleMapRoot {
             content_id: root,
-            entry_count: observed_entries,
+            entry_count: cursor.observed_entries(),
         })
-    }
-
-    pub(crate) fn verify_closure_objects(
-        &self,
-        root: ContentId,
-    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
-        self.verify_closure_objects_cached(root, &mut BTreeSet::new())
     }
 
     /// Charges every final-root node position changed from an authenticated root.
@@ -445,13 +445,18 @@ impl MerkleMap {
     /// An old subtree with the same content ID and count at the same prefix was
     /// already reachable. A changed subtree is walked even when its nodes existed
     /// in storage before this update; storage novelty cannot prove reachability.
+    ///
+    /// Each changed non-trie value maps to the prior value bound to the same
+    /// key, when one existed. That prior value is owned by the authenticated
+    /// prior root, so a caller may use it as a predecessor whose children are
+    /// already covered.
     pub(crate) fn collect_changed_node_positions(
         &self,
         prior: ContentId,
         next: ContentId,
         positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
         roots: &mut BTreeSet<ContentId>,
-        values: &mut BTreeSet<ContentId>,
+        values: &mut BTreeMap<ContentId, Option<ContentId>>,
         limit: usize,
     ) -> Result<(), CampaignStoreError> {
         let mut root_pairs = vec![(prior, next)];
@@ -540,7 +545,14 @@ impl MerkleMap {
                                 };
                                 root_pairs.push((old_root, *value));
                             } else {
-                                values.insert(*value);
+                                let predecessor = match old_entry.as_ref() {
+                                    Some(MerkleEntry::Leaf {
+                                        key: old_key,
+                                        value: old_value,
+                                    }) if old_key == key => Some(*old_value),
+                                    _ => None,
+                                };
+                                values.entry(*value).or_insert(predecessor);
                                 if values.len() > limit {
                                     return Err(invalid("closure-node-limit"));
                                 }
@@ -576,95 +588,6 @@ impl MerkleMap {
         Ok(())
     }
 
-    pub(crate) fn verify_closure_objects_cached(
-        &self,
-        root: ContentId,
-        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
-    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
-        self.verify_closure_objects_cached_with_leaf_presence(root, verified_positions, true)
-    }
-
-    /// Verifies the trie while the enclosing full-closure walk reads its leaves.
-    /// The caller must authenticate every returned value before accepting the walk.
-    pub(crate) fn verify_closure_structure_cached(
-        &self,
-        root: ContentId,
-        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
-    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
-        self.verify_closure_objects_cached_with_leaf_presence(root, verified_positions, false)
-    }
-
-    fn verify_closure_objects_cached_with_leaf_presence(
-        &self,
-        root: ContentId,
-        verified_positions: &mut BTreeSet<(ContentId, Vec<u8>)>,
-        check_leaf_presence: bool,
-    ) -> Result<VerifiedMerkleClosure, CampaignStoreError> {
-        let root_node = self.read_node(root, 0)?;
-        let expected_entries = root_node.entry_count;
-        let mut stack = vec![(root, root_node, Vec::<u8>::new())];
-        let mut visited = BTreeSet::new();
-        let mut values = BTreeSet::new();
-        let mut observed_entries = 0_u64;
-
-        while let Some((node_id, node, prefix)) = stack.pop() {
-            if verified_positions.contains(&(node_id, prefix.clone())) {
-                observed_entries = observed_entries
-                    .checked_add(node.entry_count)
-                    .ok_or(invalid("entry-count-overflow"))?;
-                continue;
-            }
-            if !visited.insert(node_id) {
-                return Err(invalid("node-reused-at-multiple-prefixes"));
-            }
-            if visited.len() > MAX_VERIFIED_NODES {
-                return Err(invalid("closure-node-limit"));
-            }
-            verified_positions.insert((node_id, prefix.clone()));
-            for (slot, entry) in node.entries.iter().rev() {
-                let mut child_prefix = prefix.clone();
-                child_prefix.push(*slot);
-                match entry {
-                    MerkleEntry::Leaf { key, value } => {
-                        if !key_has_prefix(*key, &child_prefix) {
-                            return Err(invalid("leaf-ancestor-prefix-mismatch"));
-                        }
-                        if check_leaf_presence && !self.backend.contains(*value)? {
-                            return Err(crucible_store::content_store::StoreError::NotFound {
-                                id: *value,
-                            }
-                            .into());
-                        }
-                        values.insert(*value);
-                        observed_entries = observed_entries
-                            .checked_add(1)
-                            .ok_or(invalid("entry-count-overflow"))?;
-                    }
-                    MerkleEntry::Node {
-                        content_id,
-                        entry_count,
-                    } => {
-                        let child = self.read_node(*content_id, node.depth + 1)?;
-                        if child.entry_count != *entry_count {
-                            return Err(invalid("child-entry-count-mismatch"));
-                        }
-                        stack.push((*content_id, child, child_prefix));
-                    }
-                }
-            }
-        }
-        if observed_entries != expected_entries {
-            return Err(invalid("root-entry-count-mismatch"));
-        }
-        Ok(VerifiedMerkleClosure {
-            root: MerkleMapRoot {
-                content_id: root,
-                entry_count: observed_entries,
-            },
-            values,
-        })
-    }
-
     /// Returns the value associated with `key` in the immutable root.
     ///
     /// # Errors
@@ -678,6 +601,18 @@ impl MerkleMap {
     ) -> Result<Option<ContentId>, CampaignStoreError> {
         let node = self.read_node(root, 0)?;
         Self::get_from_node(node, key, &mut |id, depth| self.read_node(id, depth))
+    }
+
+    fn get_with_validation_reads(
+        &self,
+        root: ContentId,
+        key: CampaignHash,
+        retained: &mut MerkleValidationReads,
+    ) -> Result<Option<ContentId>, CampaignStoreError> {
+        let node = retained.read_node(self, root, 0)?;
+        Self::get_from_node(node, key, &mut |id, depth| {
+            retained.read_node(self, id, depth)
+        })
     }
 
     /// Returns one exact lookup result and the minimal authenticated path.
@@ -1032,7 +967,7 @@ impl MerkleMap {
             let node = self.read_overlay_node(current, 0, &overlay)?;
             current = match value {
                 Some(value) => {
-                    self.insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                    self.insert_overlay_node(current, node, *key, *value, &mut overlay, None)?
                 }
                 None => self.remove_overlay_node(current, node, *key, &mut overlay)?,
             }
@@ -1126,12 +1061,33 @@ impl MerkleMap {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
     ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
+        self.overlay_after_upserts_with_validation_reads(prior, upserts, None)
+    }
+
+    fn overlay_after_upserts_with_validation_reads(
+        &self,
+        prior: ContentId,
+        upserts: &BTreeMap<CampaignHash, ContentId>,
+        mut retained: Option<&mut MerkleValidationReads>,
+    ) -> Result<(ContentId, BTreeMap<ContentId, MerkleNode>), CampaignStoreError> {
         let mut overlay = BTreeMap::new();
         let mut current = prior;
         for (key, value) in upserts {
-            let node = self.read_overlay_node(current, 0, &overlay)?;
+            let node = self.read_overlay_node_with_validation_reads(
+                current,
+                0,
+                &overlay,
+                retained.as_deref_mut(),
+            )?;
             current = self
-                .insert_overlay_node(current, node, *key, *value, &mut overlay)?
+                .insert_overlay_node(
+                    current,
+                    node,
+                    *key,
+                    *value,
+                    &mut overlay,
+                    retained.as_deref_mut(),
+                )?
                 .content_id;
         }
         Ok((current, overlay))
@@ -1144,6 +1100,7 @@ impl MerkleMap {
         key: CampaignHash,
         value: ContentId,
         overlay: &mut BTreeMap<ContentId, MerkleNode>,
+        mut retained: Option<&mut MerkleValidationReads>,
     ) -> Result<NodeUpdate, CampaignStoreError> {
         let slot = digest_nibble(key, node.depth);
         let existing = node.entries.get(&slot).cloned();
@@ -1180,11 +1137,17 @@ impl MerkleMap {
                 entry_count,
             }) => {
                 let next_depth = node.depth.checked_add(1).ok_or(invalid("depth-overflow"))?;
-                let child = self.read_overlay_node(content_id, next_depth, overlay)?;
+                let child = self.read_overlay_node_with_validation_reads(
+                    content_id,
+                    next_depth,
+                    overlay,
+                    retained.as_deref_mut(),
+                )?;
                 if child.entry_count != entry_count {
                     return Err(invalid("child-entry-count-mismatch"));
                 }
-                let update = self.insert_overlay_node(content_id, child, key, value, overlay)?;
+                let update =
+                    self.insert_overlay_node(content_id, child, key, value, overlay, retained)?;
                 (
                     MerkleEntry::Node {
                         content_id: update.content_id,
@@ -1274,13 +1237,26 @@ impl MerkleMap {
         expected_depth: u8,
         overlay: &BTreeMap<ContentId, MerkleNode>,
     ) -> Result<MerkleNode, CampaignStoreError> {
+        self.read_overlay_node_with_validation_reads(content_id, expected_depth, overlay, None)
+    }
+
+    fn read_overlay_node_with_validation_reads(
+        &self,
+        content_id: ContentId,
+        expected_depth: u8,
+        overlay: &BTreeMap<ContentId, MerkleNode>,
+        retained: Option<&mut MerkleValidationReads>,
+    ) -> Result<MerkleNode, CampaignStoreError> {
         if let Some(node) = overlay.get(&content_id) {
             if node.depth != expected_depth {
                 return Err(invalid("node-depth-mismatch"));
             }
             return Ok(node.clone());
         }
-        self.read_node(content_id, expected_depth)
+        match retained {
+            Some(retained) => retained.read_node(self, content_id, expected_depth),
+            None => self.read_node(content_id, expected_depth),
+        }
     }
 
     fn scan_node(
@@ -1479,14 +1455,6 @@ impl MerkleMap {
 
 mod proof_validation;
 use proof_validation::*;
-
-/// Authenticated leaf values discovered while validating one complete map.
-pub(crate) struct VerifiedMerkleClosure {
-    /// Authenticated root identity and entry count.
-    pub(crate) root: MerkleMapRoot,
-    /// Leaf values that the enclosing campaign closure must also validate.
-    pub(crate) values: BTreeSet<ContentId>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct NodeUpdate {
@@ -1878,7 +1846,7 @@ mod tests {
 
         let mut positions = BTreeSet::new();
         let mut roots = BTreeSet::new();
-        let mut values = BTreeSet::new();
+        let mut values = BTreeMap::new();
         map.collect_changed_node_positions(
             first.content_id(),
             second.content_id(),
@@ -1891,8 +1859,8 @@ mod tests {
         assert!(positions.contains(&(second.content_id(), Vec::new())));
         assert!(positions.iter().any(|(_, prefix)| !prefix.is_empty()));
         assert_eq!(roots, BTreeSet::from([second.content_id()]));
-        assert!(values.contains(&value("second")));
-        assert!(!values.contains(&value("first")));
+        assert_eq!(values.get(&value("second")), Some(&None));
+        assert!(!values.contains_key(&value("first")));
 
         let mut forged = map.read_node(second.content_id(), 0).expect("valid root");
         let MerkleEntry::Node { entry_count, .. } =
@@ -1909,7 +1877,7 @@ mod tests {
                 forged_id,
                 &mut BTreeSet::new(),
                 &mut BTreeSet::new(),
-                &mut BTreeSet::new(),
+                &mut BTreeMap::new(),
                 100,
             ),
             Err(CampaignStoreError::InvalidMerkle {

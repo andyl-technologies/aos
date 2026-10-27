@@ -6,6 +6,7 @@
 //! shared through a test-only or process-global side channel.
 
 mod boundary;
+mod campaign_log;
 mod campaign_state;
 mod campaign_trace;
 mod evidence;
@@ -18,9 +19,10 @@ mod ordered_nested_map_entries;
 mod production_evidence;
 mod resource_limits;
 mod route;
+pub(super) use campaign_log::CampaignRecordLog;
+use campaign_log::{CampaignRecordLogPosition, CampaignRecordReplay};
 use campaign_state::CampaignMarkerReleaseRecord;
-#[cfg(test)]
-use campaign_state::validate_campaign_replay_restore;
+pub(super) use campaign_state::validate_campaign_replay_restore;
 pub(super) use campaign_trace::{
     campaign_network_binding_name, split_campaign_network_trace,
     trace_with_campaign_network_records,
@@ -35,7 +37,10 @@ use resource_limits::{
     reserve_network_resource, reserve_network_resource_u64, stage_pending_network_output,
     validate_pending_network_outputs,
 };
-use route::{availability_allows, earliest_wakeup, network_effect_application_error};
+use route::{
+    availability_allows, contact_service_is_expired, earliest_wakeup,
+    network_effect_application_error, retain_open_contact_services,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -46,7 +51,6 @@ use crucible_engine::model::{
     FaultObjectId, FaultObservation, FaultObservationKind, FaultOpportunity, FaultPhase,
     FaultResourceLimitError, FaultResourceLimits, NetworkAvailabilityState,
     NetworkEffectSpecification, NetworkInFlightPolicy, OpportunityPayload, ResolvedBindingAction,
-    ResolvedEffectRecord,
 };
 use crucible_engine::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
@@ -56,7 +60,7 @@ const HARD_PENDING_NETWORK_BYTES: usize =
     FaultResourceLimits::compiled_maximum().network_queue_bytes as usize;
 const HARD_CONTACT_SERVICE_ENTRIES: usize =
     FaultResourceLimits::compiled_maximum().network_contact_entries as usize;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 11;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 13;
 const NETWORK_TICK_RATE_SCALE: u128 =
     1_000_000_000 * crucible_engine::model::SIM_TICKS_PER_NS as u128;
 
@@ -104,23 +108,7 @@ fn validate_network_adapter_checkpoint(
             ),
         });
     }
-    let record_count = u64::try_from(checkpoint.campaign_records.len()).map_err(|_| {
-        SchedulerError::BoundaryViolation {
-            message: String::from("campaign network effect record count exceeds u64"),
-        }
-    })?;
-    limits
-        .reserve("resolved_effect_records", 0, record_count)
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("campaign network effect records exceed authored limits: {error}"),
-        })?;
-    for record in &checkpoint.campaign_records {
-        record
-            .validate()
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("invalid campaign network effect record: {error}"),
-            })?;
-    }
+    checkpoint.campaign_records.validate(limits)?;
     let mut released = BTreeSet::new();
     for proof in &checkpoint.campaign_marker_releases {
         if checkpoint.campaign_replay_identity.is_none()
@@ -573,6 +561,9 @@ fn validate_network_adapter_checkpoint(
             .any(|(key, service)| {
                 key.source == key.destination
                     || key.start_ticks >= key.end_ticks
+                    || checkpoint
+                        .coordinate
+                        .is_some_and(|now| contact_service_is_expired(key, service, now))
                     || service.settled_cursor_ticks < key.start_ticks
                     || service.settled_cursor_ticks > service.service_cursor_ticks
                     || service.service_cursor_ticks < key.start_ticks
@@ -902,7 +893,8 @@ struct NetworkAdapterCheckpoint {
     journal_sequence: u64,
     observations: super::storage_faults::ProductionFaultObservationJournal,
     effect_state: NetworkEffectRuntimeState,
-    campaign_records: Vec<ResolvedEffectRecord>,
+    /// Position of the segmented campaign effect log, never its sealed records.
+    campaign_records: CampaignRecordLogPosition,
     campaign_replay_identity: Option<ContentHash>,
     campaign_marker_releases: Vec<CampaignMarkerReleaseRecord>,
 }
@@ -975,6 +967,38 @@ fn stage_network_restore(
         adapter,
         identity,
     })
+}
+
+/// Returns every sealed trace segment a fault continuation references.
+///
+/// The signal runtime's recorded trace position and the host network
+/// adapter's campaign effect log name their sealed segments by identity and
+/// keep only their open tails inline. An exact checkpoint closure retains
+/// exactly these segments beside the continuation (RFC-0020 section 15);
+/// capture and restore both derive the set here, so a closure that omits a
+/// referenced segment or carries an unreferenced one fails closed.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError::BoundaryViolation`] when the host network
+/// adapter state does not decode.
+pub(super) fn fault_trace_segment_dependencies(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+) -> Result<BTreeSet<crucible_engine::segment_store::ContentId>, SchedulerError> {
+    let mut segments = BTreeSet::new();
+    if let Some(runtime) = checkpoint.runtime_checkpoint() {
+        segments.extend(runtime.recorded.sealed().iter().map(|segment| segment.id));
+    }
+
+    if let Some(network) = checkpoint.network_state() {
+        let adapter: NetworkAdapterCheckpoint = serde_json::from_slice(network.adapter_state())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("decode production network adapter checkpoint: {error}"),
+            })?;
+        segments.extend(adapter.campaign_records.sealed_segments());
+    }
+
+    Ok(segments)
 }
 
 fn validate_medium_pending_links(
@@ -1328,6 +1352,7 @@ fn checkpoint_network_effect_state(
                 .unwrap_or(key.start_ticks),
         );
     }
+    retain_open_contact_services(&mut checkpoint.contact_services, now);
     checkpoint
 }
 
@@ -1340,7 +1365,7 @@ struct NetworkStateDigestView<'a> {
     journal_sequence: u64,
     observations: &'a super::storage_faults::ProductionFaultObservationJournal,
     effect_state: &'a NetworkEffectRuntimeState,
-    campaign_records: &'a [ResolvedEffectRecord],
+    campaign_records: &'a CampaignRecordLogPosition,
     campaign_replay_identity: Option<ContentHash>,
     campaign_marker_releases: &'a [CampaignMarkerReleaseRecord],
 }
@@ -1370,9 +1395,11 @@ fn network_state_digest_from_parts(
         append_backend_output_evidence(&mut material, output)?;
     }
     append_network_effect_state(&mut material, state.effect_state)?;
+    // The log position authenticates every sealed record through its chain
+    // hash and carries the open records themselves.
     let encoded_campaign_records = serde_json::to_vec(state.campaign_records).map_err(|error| {
         SchedulerError::BoundaryViolation {
-            message: format!("encode campaign network effect records: {error}"),
+            message: format!("encode campaign network effect log position: {error}"),
         }
     })?;
     material.extend_from_slice(&encoded_campaign_records);
@@ -1450,11 +1477,10 @@ pub(super) struct ProductionFaultNetworkInterceptor {
     links: Vec<crucible_engine::LinkDef>,
     effect_state: NetworkEffectRuntimeState,
     campaign_replay: Option<crucible_engine::NetworkFaultCampaignReplayPlan>,
-    campaign_records: Vec<ResolvedEffectRecord>,
+    campaign_log: CampaignRecordLog,
     campaign_replay_identity: Option<ContentHash>,
     campaign_marker_releases: Vec<CampaignMarkerReleaseRecord>,
-    campaign_effect_replay: Option<Vec<ResolvedEffectRecord>>,
-    campaign_effect_replay_cursor: usize,
+    campaign_effect_replay: Option<CampaignRecordReplay>,
 }
 
 impl ProductionFaultNetworkInterceptor {
@@ -1484,10 +1510,13 @@ impl ProductionFaultNetworkInterceptor {
             resource_limits,
             topology,
             links,
+            Arc::new(crucible_engine::segment_store::SharedSegmentStore::new()),
         )
     }
 
     /// Creates an interceptor sharing one continuation with device coordinators.
+    ///
+    /// Committed campaign effects seal into `trace_segments`.
     pub(super) fn with_shared_runtime(
         runtime: Arc<Mutex<ProductionFaultRuntime>>,
         cursor: SharedProductionFaultEvaluationCursor,
@@ -1495,6 +1524,7 @@ impl ProductionFaultNetworkInterceptor {
         resource_limits: FaultResourceLimits,
         topology: crucible_engine::model::WorldFaultTopology,
         links: Vec<crucible_engine::LinkDef>,
+        trace_segments: Arc<dyn crucible_engine::segment_store::SegmentSink>,
     ) -> Self {
         Self {
             runtime,
@@ -1505,15 +1535,18 @@ impl ProductionFaultNetworkInterceptor {
             links,
             effect_state: NetworkEffectRuntimeState::default(),
             campaign_replay: None,
-            campaign_records: Vec::new(),
+            campaign_log: CampaignRecordLog::new(trace_segments, resource_limits),
             campaign_replay_identity: None,
             campaign_marker_releases: Vec::new(),
             campaign_effect_replay: None,
-            campaign_effect_replay_cursor: 0,
         }
     }
 
     /// Restores an authenticated adapter, scheduler, and pending-frame continuation.
+    ///
+    /// The signal runtime and the campaign effect log continue sealing trace
+    /// segments into `trace_storage`'s recording sink, which must hold every
+    /// sealed segment the checkpoint references.
     ///
     /// # Errors
     ///
@@ -1537,6 +1570,7 @@ impl ProductionFaultNetworkInterceptor {
         scheduler: &mut SingleScheduler,
         pending_outputs: &mut Vec<crucible_engine::BackendNetworkOutput>,
         observations: super::storage_faults::ProductionStorageObservations,
+        trace_storage: crucible_engine::model::FaultTraceStorage,
     ) -> Result<(Self, VirtualTime), SchedulerError> {
         let resource_limits = plan.resource_limits();
         let staged = stage_network_restore(&checkpoint, scheduler, resource_limits)?;
@@ -1550,6 +1584,11 @@ impl ProductionFaultNetworkInterceptor {
             &staged.pending_outputs,
             &topology,
         )?;
+        let campaign_log = CampaignRecordLog::restore(
+            Arc::clone(trace_storage.recording()),
+            resource_limits,
+            staged.adapter.campaign_records.clone(),
+        )?;
         let mut runtime = ProductionFaultRuntime::restore(
             plan,
             artifacts,
@@ -1557,6 +1596,7 @@ impl ProductionFaultNetworkInterceptor {
             checkpoint,
             host_manifests,
             nodes,
+            trace_storage,
         )
         .map_err(|error| SchedulerError::BoundaryViolation {
             message: format!("restore production signal fault continuation: {error}"),
@@ -1593,11 +1633,10 @@ impl ProductionFaultNetworkInterceptor {
             links,
             effect_state: staged.adapter.effect_state,
             campaign_replay: None,
-            campaign_records: staged.adapter.campaign_records,
+            campaign_log,
             campaign_replay_identity: staged.adapter.campaign_replay_identity,
             campaign_marker_releases: staged.adapter.campaign_marker_releases,
             campaign_effect_replay: None,
-            campaign_effect_replay_cursor: 0,
         };
         *scheduler = staged.scheduler;
         *pending_outputs = staged.pending_outputs;
@@ -1646,6 +1685,7 @@ impl ProductionFaultNetworkInterceptor {
             pending_outputs,
             cursor.coordinate.unwrap_or(0),
         );
+        let campaign_records = self.campaign_log.position();
         let network_state = network_state_digest_from_parts(NetworkStateDigestView {
             scheduler,
             committed_frontier,
@@ -1655,7 +1695,7 @@ impl ProductionFaultNetworkInterceptor {
             journal_sequence: cursor.journal_sequence,
             observations: &observations,
             effect_state: &effect_state,
-            campaign_records: &self.campaign_records,
+            campaign_records: &campaign_records,
             campaign_replay_identity: self.campaign_replay_identity,
             campaign_marker_releases: &self.campaign_marker_releases,
         })?;
@@ -1666,7 +1706,7 @@ impl ProductionFaultNetworkInterceptor {
             journal_sequence: cursor.journal_sequence,
             observations: observations.clone(),
             effect_state,
-            campaign_records: self.campaign_records.clone(),
+            campaign_records,
             campaign_replay_identity: self.campaign_replay_identity,
             campaign_marker_releases: self.campaign_marker_releases.clone(),
         })

@@ -20,8 +20,13 @@ use rcgen::{
 use tokio::io::AsyncReadExt;
 
 use crate::lifecycle::QuiescentLifecycleLoop;
+use crucible_control_api::{
+    RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_FRAMES,
+    ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest,
+};
 use crucible_engine::{
-    CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule, VirtualTime,
+    Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule,
+    VirtualTime,
 };
 use std::collections::BTreeMap;
 
@@ -30,7 +35,7 @@ use super::*;
 const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
 const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
-type TestState = Http2LifecycleState<
+pub(super) type TestState = Http2LifecycleState<
     QuiescentLifecycleLoop,
     crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
 >;
@@ -44,7 +49,7 @@ fn open_shutdown_receiver() -> watch::Receiver<bool> {
     receiver
 }
 
-fn test_state(mode: LifecycleServerMode) -> TestState {
+pub(super) fn test_state(mode: LifecycleServerMode) -> TestState {
     Http2LifecycleState {
         control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
             "server-test",
@@ -280,32 +285,29 @@ async fn rejected_tls_handshakes_release_admission_for_authenticated_rpc()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_body_rejects_declared_oversize_before_collection() {
+async fn unary_body_rejects_declared_oversize_before_collection() {
     let request = Request::builder()
         .version(Version::HTTP_2)
-        .header(
-            CONTENT_LENGTH,
-            RESUME_SESSION_RPC_BODY_MAX_BYTES.saturating_add(1),
-        )
+        .header(CONTENT_LENGTH, SMALL_RPC_BODY_MAX_BYTES.saturating_add(1))
         .body(Body::empty())
         .expect("oversize request fixture must be well-formed");
 
-    let budget = Arc::new(Semaphore::new(RESUME_SESSION_RPC_BODY_MAX_BYTES));
-    let response = read_resume_session_rpc_body(request, &budget)
+    let budget = Arc::new(Semaphore::new(SMALL_RPC_BODY_MAX_BYTES));
+    let response = read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &budget)
         .await
-        .expect_err("oversize resume body must reject before collection");
+        .expect_err("oversize control body must reject before collection");
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
         response_text(*response)
             .await
             .expect("oversize response should be text")
-            .contains("resume-session-request-too-large")
+            .contains("request-too-large")
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
+async fn unary_body_rejects_oversize_chunked_stream_during_collection() {
     let body = Body::from_stream(stream::iter([
         Ok::<_, std::convert::Infallible>(Bytes::from_static(b"1234")),
         Ok(Bytes::from_static(b"56789")),
@@ -316,16 +318,16 @@ async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
         .expect("chunked oversize request fixture must be well-formed");
 
     let budget = Arc::new(Semaphore::new(8));
-    let response = read_bounded_rpc_body(request, 8, &budget, "resume-session-request-too-large")
+    let response = read_bounded_rpc_body(request, 8, &budget, "request-too-large")
         .await
-        .expect_err("chunked resume body must stop at the collection bound");
+        .expect_err("chunked body must stop at the collection bound");
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert!(
         response_text(*response)
             .await
             .expect("oversize response should be text")
-            .contains("resume-session-request-too-large")
+            .contains("request-too-large")
     );
 }
 
@@ -444,7 +446,8 @@ fn destroy_session_request() -> String {
     )
 }
 
-fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
+/// Builds a resume request with a two-frame closure and its canonical wire text.
+pub(super) fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
     let scenario = crucible_engine::happy_path_scenario()
         .expect("resume parser scenario should build")
         .scenario;
@@ -471,7 +474,10 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
         &schedule,
         &checkpoint,
         7,
-        b"production-parser-replay-closure".to_vec(),
+        vec![
+            b"production-parser-replay-closure-root".to_vec(),
+            b"production-parser-replay-closure-frame".to_vec(),
+        ],
     )
     .expect("bounded replay closure should build");
     let observation_source = ResumeObservationSource::new(
@@ -527,14 +533,21 @@ fn resume_request_with_closure() -> (ResumeSessionRequest, String) {
     );
     push_wire_line(
         &mut wire,
-        "campaign-replay-closure-size",
-        &replay_closure.payload_len().to_string(),
+        "campaign-replay-closure-frames",
+        &replay_closure.frames().len().to_string(),
     );
-    push_wire_line(
-        &mut wire,
-        "campaign-replay-closure-payload",
-        &hex_encode(replay_closure.payload()),
-    );
+    for frame in replay_closure.frames() {
+        push_wire_line(
+            &mut wire,
+            "campaign-replay-closure-frame-size",
+            &frame.len().to_string(),
+        );
+        push_wire_line(
+            &mut wire,
+            "campaign-replay-closure-frame",
+            &hex_encode(frame),
+        );
+    }
     push_wire_line(
         &mut wire,
         "campaign-observation-source-version",
@@ -580,14 +593,31 @@ fn production_resume_parser_authenticates_complete_closure_envelope() {
         .replay_closure
         .as_ref()
         .expect("fixture should carry replay closure");
-    let wrong_size = wire.replace(
-        &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+    let first_frame = &closure.frames()[0];
+    let wrong_size = wire.replacen(
+        &format!("campaign-replay-closure-frame-size={}\n", first_frame.len()),
         &format!(
-            "campaign-replay-closure-size={}\n",
-            closure.payload_len().saturating_add(1)
+            "campaign-replay-closure-frame-size={}\n",
+            first_frame.len().saturating_add(1)
         ),
+        1,
     );
     assert!(parse_resume_session_request(wrong_size.as_bytes()).is_err());
+
+    let missing_frame = wire.replace(
+        "campaign-replay-closure-frames=2\n",
+        "campaign-replay-closure-frames=3\n",
+    );
+    assert!(parse_resume_session_request(missing_frame.as_bytes()).is_err());
+
+    let too_many_frames = wire.replace(
+        "campaign-replay-closure-frames=2\n",
+        &format!(
+            "campaign-replay-closure-frames={}\n",
+            RESUME_REPLAY_CLOSURE_MAX_FRAMES.saturating_add(1)
+        ),
+    );
+    assert!(parse_resume_session_request(too_many_frames.as_bytes()).is_err());
 
     let wrong_identity = wire.replace(
         &closure.identity().to_hex(),
@@ -601,24 +631,29 @@ fn production_resume_parser_authenticates_complete_closure_envelope() {
     let partial = wire.lines().take(9).collect::<Vec<_>>().join("\n") + "\n";
     assert!(parse_resume_session_request(partial.as_bytes()).is_err());
 
+    // A frame over the component-message bound is refused from its
+    // declared size, before any hex is decoded.
     let oversize = wire
-        .replace(
-            &format!("campaign-replay-closure-size={}\n", closure.payload_len()),
+        .replacen(
+            &format!("campaign-replay-closure-frame-size={}\n", first_frame.len()),
             &format!(
-                "campaign-replay-closure-size={}\n",
-                RESUME_REPLAY_CLOSURE_MAX_BYTES.saturating_add(1)
+                "campaign-replay-closure-frame-size={}\n",
+                RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES.saturating_add(1)
             ),
+            1,
         )
-        .replace(
+        .replacen(
             &format!(
-                "campaign-replay-closure-payload={}\n",
-                hex_encode(closure.payload())
+                "campaign-replay-closure-frame={}\n",
+                hex_encode(first_frame)
             ),
-            "campaign-replay-closure-payload=\n",
+            "campaign-replay-closure-frame=\n",
+            1,
         );
     assert!(
         parse_resume_session_request(oversize.as_bytes())
-            .expect_err("declared oversize closure must reject")
+            .expect_err("declared oversize closure frame must reject")
+            .to_string()
             .contains("maximum")
     );
 }

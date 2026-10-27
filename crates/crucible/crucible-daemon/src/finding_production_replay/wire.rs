@@ -1,21 +1,40 @@
-//! Canonical wire representation and bounded encoding writers.
+//! Canonical wire representation of the version 6 capture manifest body.
 //!
-//! The codec owns the following versioned outer layout:
+//! The body holds only bounded descriptors. Every byte string that can be
+//! large is a leaf named by its digest and length, and every side log and
+//! side trace is its segment references:
 //!
 //! ```text
-//! CaptureWire { schema_version, reproduction, observed_signature,
-//!               finding_fingerprint, model_reproduction, recipe, deployment,
-//!               selected_side, sides, campaign_replay_closure,
-//!               lifecycle_objects }
+//! CaptureManifestWire { schema_version, reproduction, observed_signature,
+//!                       finding_fingerprint, model_reproduction: Leaf,
+//!                       recipe, deployment, selected_side, sides,
+//!                       campaign_replay_closure: Closure, lifecycle_objects }
+//! Closure { root: Leaf, frames: [Leaf] }           // replay-closure root and frames
+//! Leaf    { digest: bytes[32], length: u64 }       // trace content ID v1
+//! Segment { digest: bytes[32], first_sequence, entry_count, encoded_bytes }
+//! Trace   { mode, work_items, records, chain, segments: [TraceSegment] }
+//! TraceSegment { digest: bytes[32], first_item, item_count, records,
+//!                encoded_bytes }                   // trace content ID v1
 //! ```
 
 use super::*;
+use crucible_store::content_store::{ContentId, ObjectKind};
 use serde::de::{Deserializer, Visitor};
 use serde::{Serializer, de};
 
+use crucible_engine::model::{
+    FaultReplayMode, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA, ResolvedEffectTraceManifest,
+    ResolvedEffectTraceSegmentRef,
+};
+
+use crate::{ATTEMPT_LOG_SEGMENT_SCHEMA, AttemptLogSegmentRef};
+
 const MAX_CBOR_NESTING_DEPTH: usize = 128;
 
-struct ByteBuf(Vec<u8>);
+/// Trace schema version of every non-segment capture leaf.
+pub(super) const CAPTURE_LEAF_SCHEMA_VERSION: u32 = 1;
+
+pub(super) struct ByteBuf(pub(super) Vec<u8>);
 
 impl Serialize for ByteBuf {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -56,17 +75,6 @@ impl<'de> Visitor<'de> for ByteBufVisitor {
         E: de::Error,
     {
         Ok(ByteBuf(value))
-    }
-}
-
-struct BytesRef<'a>(&'a [u8]);
-
-impl Serialize for BytesRef<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(self.0)
     }
 }
 
@@ -153,185 +161,224 @@ fn read_cbor_argument(bytes: &[u8], position: &mut usize, additional: u8) -> Res
     Ok(u64::from_be_bytes(encoded))
 }
 
+/// Complete bounded body of one version 6 capture manifest.
 #[derive(Serialize, Deserialize)]
-pub(super) struct CaptureWire {
+#[serde(deny_unknown_fields)]
+pub(super) struct CaptureManifestWire {
     pub(super) schema_version: u32,
-    reproduction: ReproductionArtifactId,
-    observed_signature: ByteBuf,
-    finding_fingerprint: ContentHash,
-    model_reproduction: ByteBuf,
-    recipe: FindingProductionReplayRecipe,
-    deployment: DeploymentWire,
-    selected_side: FindingProductionReplaySelectedSide,
-    sides: Vec<ExecutionSideWire>,
-    campaign_replay_closure: ByteBuf,
-    lifecycle_objects: Vec<LifecycleObjectWire>,
+    pub(super) reproduction: ReproductionArtifactId,
+    pub(super) observed_signature: ByteBuf,
+    pub(super) finding_fingerprint: ContentHash,
+    pub(super) model_reproduction: LeafWire,
+    pub(super) recipe: FindingProductionReplayRecipe,
+    pub(super) deployment: DeploymentWire,
+    pub(super) selected_side: FindingProductionReplaySelectedSide,
+    pub(super) sides: Vec<SideWire>,
+    pub(super) campaign_replay_closure: ReplayClosureWire,
+    pub(super) lifecycle_objects: Vec<LifecycleObjectWire>,
 }
 
-#[derive(Serialize)]
-pub(super) struct CaptureWireRef<'a> {
-    schema_version: u32,
-    reproduction: ReproductionArtifactId,
-    observed_signature: ByteBuf,
-    finding_fingerprint: ContentHash,
-    model_reproduction: BytesRef<'a>,
-    recipe: FindingProductionReplayRecipe,
-    deployment: DeploymentWireRef<'a>,
-    selected_side: FindingProductionReplaySelectedSide,
-    sides: Vec<ExecutionSideWireRef<'a>>,
-    campaign_replay_closure: BytesRef<'a>,
-    lifecycle_objects: Vec<LifecycleObjectWireRef<'a>>,
+/// The campaign replay closure's root leaf and its frame leaves, in order.
+///
+/// Frames grow with the replayed run and are at most 64 MiB each; the body
+/// holds only their descriptors.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReplayClosureWire {
+    pub(super) root: LeafWire,
+    pub(super) frames: Vec<LeafWire>,
 }
 
-impl<'a> From<&'a FindingProductionReplayCapture> for CaptureWireRef<'a> {
-    fn from(value: &'a FindingProductionReplayCapture) -> Self {
+/// One trace leaf named by its content digest and exact length.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LeafWire {
+    digest: ByteBuf,
+    pub(super) length: u64,
+}
+
+impl LeafWire {
+    pub(super) fn new(id: ContentId, length: u64) -> Self {
         Self {
-            schema_version: FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION,
-            reproduction: value.reproduction,
-            observed_signature: ByteBuf(value.observed_signature.canonical_bytes()),
-            finding_fingerprint: value.finding_fingerprint,
-            model_reproduction: BytesRef(&value.model_reproduction),
-            recipe: value.shared_context.recipe,
-            deployment: DeploymentWireRef::from(&value.shared_context.deployment),
-            selected_side: value.selected_side,
-            sides: value.sides.iter().map(ExecutionSideWireRef::from).collect(),
-            campaign_replay_closure: BytesRef(&value.campaign_replay_closure),
-            lifecycle_objects: value
-                .shared_context
-                .lifecycle_objects
-                .iter()
-                .map(|(identity, bytes)| LifecycleObjectWireRef {
-                    identity,
-                    bytes: BytesRef(bytes),
-                })
-                .collect(),
+            digest: ByteBuf(id.digest().to_vec()),
+            length,
+        }
+    }
+
+    /// Rebuilds the trace leaf identity the digest names.
+    pub(super) fn id(&self) -> Result<ContentId, FindingProductionReplayCaptureError> {
+        trace_id(&self.digest, CAPTURE_LEAF_SCHEMA_VERSION)
+    }
+}
+
+/// One attempt-log segment reference of a side log.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SegmentWire {
+    digest: ByteBuf,
+    first_sequence: u64,
+    entry_count: u64,
+    encoded_bytes: u64,
+}
+
+impl From<&AttemptLogSegmentRef> for SegmentWire {
+    fn from(segment: &AttemptLogSegmentRef) -> Self {
+        Self {
+            digest: ByteBuf(segment.id.digest().to_vec()),
+            first_sequence: segment.first_sequence,
+            entry_count: segment.entry_count,
+            encoded_bytes: segment.encoded_bytes,
         }
     }
 }
 
-impl TryFrom<CaptureWire> for FindingProductionReplayCapture {
-    type Error = FindingProductionReplayCaptureError;
-
-    fn try_from(value: CaptureWire) -> Result<Self, Self::Error> {
-        let mut lifecycle_objects = BTreeMap::new();
-        for object in value.lifecycle_objects {
-            if lifecycle_objects
-                .insert(object.identity, object.bytes.0)
-                .is_some()
-            {
-                return Err(FindingProductionReplayCaptureError::InvalidLifecycleObjects);
-            }
-        }
-        Ok(Self {
-            reproduction: value.reproduction,
-            observed_signature: FindingSignature::from_canonical_bytes(&value.observed_signature.0)
-                .map_err(FindingProductionReplayCaptureError::Campaign)?,
-            finding_fingerprint: value.finding_fingerprint,
-            model_reproduction: value.model_reproduction.0.into(),
-            shared_context: Arc::new(FindingProductionReplaySharedContext {
-                recipe: value.recipe,
-                deployment: FindingProductionReplayDeployment::from(value.deployment),
-                lifecycle_objects,
-            }),
-            selected_side: value.selected_side,
-            sides: value
-                .sides
-                .into_iter()
-                .map(FindingProductionReplayExecutionSide::from)
-                .collect::<Vec<_>>()
-                .into(),
-            campaign_replay_closure: value.campaign_replay_closure.0.into(),
+impl SegmentWire {
+    pub(super) fn segment(
+        &self,
+    ) -> Result<AttemptLogSegmentRef, FindingProductionReplayCaptureError> {
+        Ok(AttemptLogSegmentRef {
+            id: trace_id(&self.digest, ATTEMPT_LOG_SEGMENT_SCHEMA)?,
+            first_sequence: self.first_sequence,
+            entry_count: self.entry_count,
+            encoded_bytes: self.encoded_bytes,
         })
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct DeploymentWire {
-    runtime: FindingProductionReplayRuntimeIdentity,
-    root_image_format: FindingProductionReplayRootImageFormat,
-    guest_assets: Vec<GuestAssetsWire>,
-    initrd: Option<AssetWire>,
+fn trace_id(
+    digest: &ByteBuf,
+    schema_version: u32,
+) -> Result<ContentId, FindingProductionReplayCaptureError> {
+    let digest: [u8; 32] = digest.0.as_slice().try_into().map_err(|_| {
+        FindingProductionReplayCaptureError::InvalidManifest {
+            reason: "leaf digest",
+        }
+    })?;
+    Ok(ContentId::from_parts(
+        ObjectKind::Trace,
+        schema_version,
+        digest,
+    ))
 }
 
-impl From<DeploymentWire> for FindingProductionReplayDeployment {
-    fn from(value: DeploymentWire) -> Self {
+/// A side log's manifest: its totals and ordered segment references.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EventLogWire {
+    pub(super) entry_count: u64,
+    pub(super) chain: ContentHash,
+    pub(super) segments: Vec<SegmentWire>,
+}
+
+/// One resolved-effect trace segment reference of a side trace.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TraceSegmentWire {
+    digest: ByteBuf,
+    first_item: u64,
+    item_count: u64,
+    records: u64,
+    encoded_bytes: u64,
+}
+
+impl From<&ResolvedEffectTraceSegmentRef> for TraceSegmentWire {
+    fn from(segment: &ResolvedEffectTraceSegmentRef) -> Self {
         Self {
-            runtime: value.runtime,
-            root_image_format: value.root_image_format,
-            guest_assets: value
-                .guest_assets
-                .into_iter()
-                .map(FindingProductionReplayGuestAssets::from)
-                .collect(),
-            initrd: value.initrd.map(FindingProductionReplayAsset::from),
+            digest: ByteBuf(segment.id.digest().to_vec()),
+            first_item: segment.first_item,
+            item_count: segment.item_count,
+            records: segment.records,
+            encoded_bytes: segment.encoded_bytes,
         }
     }
 }
 
-#[derive(Serialize)]
-struct DeploymentWireRef<'a> {
-    runtime: &'a FindingProductionReplayRuntimeIdentity,
-    root_image_format: FindingProductionReplayRootImageFormat,
-    guest_assets: Vec<GuestAssetsWireRef<'a>>,
-    initrd: Option<AssetWireRef<'a>>,
+impl TraceSegmentWire {
+    pub(super) fn segment(
+        &self,
+    ) -> Result<ResolvedEffectTraceSegmentRef, FindingProductionReplayCaptureError> {
+        Ok(ResolvedEffectTraceSegmentRef {
+            id: trace_id(&self.digest, RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA)?,
+            first_item: self.first_item,
+            item_count: self.item_count,
+            records: self.records,
+            encoded_bytes: self.encoded_bytes,
+        })
+    }
 }
 
-impl<'a> From<&'a FindingProductionReplayDeployment> for DeploymentWireRef<'a> {
-    fn from(value: &'a FindingProductionReplayDeployment) -> Self {
+/// A side trace's manifest: its replay mode, totals, chain, and ordered
+/// segment references.
+///
+/// The fields are those of the trace's version 4 manifest, so the decoder
+/// rebuilds that manifest from the segment references and requires the
+/// recorded totals and chain to match the ones the references derive.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EffectTraceWire {
+    pub(super) mode: FaultReplayMode,
+    pub(super) work_items: u64,
+    pub(super) records: u64,
+    pub(super) chain: ContentHash,
+    pub(super) segments: Vec<TraceSegmentWire>,
+}
+
+impl From<&ResolvedEffectTraceManifest> for EffectTraceWire {
+    fn from(manifest: &ResolvedEffectTraceManifest) -> Self {
         Self {
-            runtime: &value.runtime,
-            root_image_format: value.root_image_format,
-            guest_assets: value
-                .guest_assets
+            mode: manifest.mode(),
+            work_items: manifest.work_items(),
+            records: manifest.records(),
+            chain: manifest.chain(),
+            segments: manifest
+                .segments()
                 .iter()
-                .map(GuestAssetsWireRef::from)
+                .map(TraceSegmentWire::from)
                 .collect(),
-            initrd: value.initrd.as_ref().map(AssetWireRef::from),
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
-struct GuestAssetsWire {
-    architecture: ArchitectureWire,
-    kernel: AssetWire,
-    root_image: AssetWire,
-    kernel_cmdline_prefix: Option<String>,
+#[serde(deny_unknown_fields)]
+pub(super) struct SideWire {
+    pub(super) outcome: FindingProductionReplayTerminalOutcome,
+    pub(super) completed_quanta: u64,
+    pub(super) frontier_ticks: u64,
+    pub(super) event_log: EventLogWire,
+    pub(super) terminal_fingerprints: Vec<FingerprintWire>,
+    pub(super) resolved_effect_trace: Option<EffectTraceWire>,
 }
 
-impl From<GuestAssetsWire> for FindingProductionReplayGuestAssets {
-    fn from(value: GuestAssetsWire) -> Self {
-        Self {
-            architecture: value.architecture.into(),
-            kernel: value.kernel.into(),
-            root_image: value.root_image.into(),
-            kernel_cmdline_prefix: value.kernel_cmdline_prefix,
-        }
-    }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DeploymentWire {
+    pub(super) runtime: FindingProductionReplayRuntimeIdentity,
+    pub(super) root_image_format: FindingProductionReplayRootImageFormat,
+    pub(super) guest_assets: Vec<GuestAssetsWire>,
+    pub(super) initrd: Option<AssetWire>,
 }
 
-#[derive(Serialize)]
-struct GuestAssetsWireRef<'a> {
-    architecture: ArchitectureWire,
-    kernel: AssetWireRef<'a>,
-    root_image: AssetWireRef<'a>,
-    kernel_cmdline_prefix: Option<&'a str>,
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GuestAssetsWire {
+    pub(super) architecture: ArchitectureWire,
+    pub(super) kernel: AssetWire,
+    pub(super) root_image: AssetWire,
+    pub(super) kernel_cmdline_prefix: Option<String>,
 }
 
-impl<'a> From<&'a FindingProductionReplayGuestAssets> for GuestAssetsWireRef<'a> {
-    fn from(value: &'a FindingProductionReplayGuestAssets) -> Self {
-        Self {
-            architecture: value.architecture.into(),
-            kernel: AssetWireRef::from(&value.kernel),
-            root_image: AssetWireRef::from(&value.root_image),
-            kernel_cmdline_prefix: value.kernel_cmdline_prefix.as_deref(),
-        }
-    }
+/// One guest asset: its BLAKE3 identity and the leaf holding its bytes.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AssetWire {
+    pub(super) identity: ContentHash,
+    pub(super) leaf: LeafWire,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum ArchitectureWire {
+pub(super) enum ArchitectureWire {
     X86_64,
     Aarch64,
 }
@@ -355,109 +402,17 @@ impl From<ArchitectureWire> for VmArchitecture {
 }
 
 #[derive(Serialize, Deserialize)]
-struct AssetWire {
-    identity: ContentHash,
-    bytes: ByteBuf,
-}
-
-impl From<AssetWire> for FindingProductionReplayAsset {
-    fn from(value: AssetWire) -> Self {
-        Self {
-            identity: value.identity,
-            bytes: value.bytes.0.into(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct AssetWireRef<'a> {
-    identity: ContentHash,
-    bytes: BytesRef<'a>,
-}
-
-impl<'a> From<&'a FindingProductionReplayAsset> for AssetWireRef<'a> {
-    fn from(value: &'a FindingProductionReplayAsset) -> Self {
-        Self {
-            identity: value.identity,
-            bytes: BytesRef(&value.bytes),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct ExecutionSideWire {
-    outcome: FindingProductionReplayTerminalOutcome,
-    completed_quanta: u64,
-    frontier_ticks: u64,
-    event_log: Vec<SchedulerEventLogEntry>,
-    terminal_fingerprints: Vec<FingerprintWire>,
-    resolved_effect_trace: Option<ByteBuf>,
-}
-
-#[derive(Serialize)]
-struct ExecutionSideWireRef<'a> {
-    outcome: FindingProductionReplayTerminalOutcome,
-    completed_quanta: u64,
-    frontier_ticks: u64,
-    event_log: &'a [SchedulerEventLogEntry],
-    terminal_fingerprints: Vec<FingerprintWireRef<'a>>,
-    resolved_effect_trace: Option<BytesRef<'a>>,
-}
-
-impl<'a> From<&'a FindingProductionReplayExecutionSide> for ExecutionSideWireRef<'a> {
-    fn from(value: &'a FindingProductionReplayExecutionSide) -> Self {
-        Self {
-            outcome: value.outcome,
-            completed_quanta: value.completed_quanta,
-            frontier_ticks: value.frontier.ticks,
-            event_log: &value.event_log,
-            terminal_fingerprints: value
-                .terminal_fingerprints
-                .iter()
-                .map(FingerprintWireRef::from)
-                .collect(),
-            resolved_effect_trace: value.resolved_effect_trace.as_deref().map(BytesRef),
-        }
-    }
-}
-
-impl From<ExecutionSideWire> for FindingProductionReplayExecutionSide {
-    fn from(value: ExecutionSideWire) -> Self {
-        Self {
-            outcome: value.outcome,
-            completed_quanta: value.completed_quanta,
-            frontier: VirtualTime {
-                ticks: value.frontier_ticks,
-            },
-            event_log: value.event_log,
-            terminal_fingerprints: value
-                .terminal_fingerprints
-                .into_iter()
-                .map(FingerprintSample::from)
-                .collect(),
-            resolved_effect_trace: value.resolved_effect_trace.map(|bytes| bytes.0),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct FingerprintWire {
+#[serde(deny_unknown_fields)]
+pub(super) struct FingerprintWire {
     node: String,
     at_ticks: u64,
     hash: ContentHash,
 }
 
-#[derive(Serialize)]
-struct FingerprintWireRef<'a> {
-    node: &'a str,
-    at_ticks: u64,
-    hash: ContentHash,
-}
-
-impl<'a> From<&'a FingerprintSample> for FingerprintWireRef<'a> {
-    fn from(value: &'a FingerprintSample) -> Self {
+impl From<&FingerprintSample> for FingerprintWire {
+    fn from(value: &FingerprintSample) -> Self {
         Self {
-            node: &value.node.name,
+            node: value.node.name.clone(),
             at_ticks: value.at.ticks,
             hash: value.fingerprint.hash,
         }
@@ -476,16 +431,12 @@ impl From<FingerprintWire> for FingerprintSample {
     }
 }
 
+/// One lifecycle object: its BLAKE3 identity and the leaf holding its bytes.
 #[derive(Serialize, Deserialize)]
-struct LifecycleObjectWire {
-    identity: ContentHash,
-    bytes: ByteBuf,
-}
-
-#[derive(Serialize)]
-struct LifecycleObjectWireRef<'a> {
-    identity: &'a ContentHash,
-    bytes: BytesRef<'a>,
+#[serde(deny_unknown_fields)]
+pub(super) struct LifecycleObjectWire {
+    pub(super) identity: ContentHash,
+    pub(super) leaf: LeafWire,
 }
 
 pub(super) struct BoundedVecWriter {
@@ -529,114 +480,6 @@ impl std::io::Write for BoundedVecWriter {
             .try_reserve(buffer.len())
             .map_err(|_| std::io::Error::other("reserve encoded capture"))?;
         self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-pub(super) struct BoundedHashWriter {
-    hasher: blake3::Hasher,
-    written: u64,
-    limit: u64,
-    limit_exceeded: bool,
-}
-
-impl BoundedHashWriter {
-    pub(super) fn new(limit: u64) -> Self {
-        Self {
-            hasher: blake3::Hasher::new(),
-            written: 0,
-            limit,
-            limit_exceeded: false,
-        }
-    }
-
-    pub(super) const fn limit_exceeded(&self) -> bool {
-        self.limit_exceeded
-    }
-
-    pub(super) fn finish(self) -> ContentHash {
-        ContentHash {
-            bytes: *self.hasher.finalize().as_bytes(),
-        }
-    }
-}
-
-impl std::io::Write for BoundedHashWriter {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let requested = u64::try_from(buffer.len())
-            .map_err(|_| std::io::Error::other("hash write size cannot be represented"))?;
-        let Some(next) = self.written.checked_add(requested) else {
-            self.limit_exceeded = true;
-            return Err(std::io::Error::other("encoded size limit exceeded"));
-        };
-        if next > self.limit {
-            self.limit_exceeded = true;
-            return Err(std::io::Error::other("encoded size limit exceeded"));
-        }
-        self.hasher.update(buffer);
-        self.written = next;
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-pub(super) struct CanonicalComparisonWriter<'a> {
-    expected: &'a [u8],
-    position: usize,
-    written: u64,
-    limit: u64,
-    mismatch: bool,
-    limit_exceeded: bool,
-}
-
-impl<'a> CanonicalComparisonWriter<'a> {
-    pub(super) const fn new(expected: &'a [u8], limit: u64) -> Self {
-        Self {
-            expected,
-            position: 0,
-            written: 0,
-            limit,
-            mismatch: false,
-            limit_exceeded: false,
-        }
-    }
-
-    pub(super) const fn limit_exceeded(&self) -> bool {
-        self.limit_exceeded
-    }
-
-    pub(super) fn matches(&self) -> bool {
-        !self.mismatch && self.position == self.expected.len()
-    }
-}
-
-impl std::io::Write for CanonicalComparisonWriter<'_> {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        let requested = u64::try_from(buffer.len())
-            .map_err(|_| std::io::Error::other("comparison size cannot be represented"))?;
-        let Some(next_written) = self.written.checked_add(requested) else {
-            self.limit_exceeded = true;
-            return Err(std::io::Error::other("encoded size limit exceeded"));
-        };
-        if next_written > self.limit {
-            self.limit_exceeded = true;
-            return Err(std::io::Error::other("encoded size limit exceeded"));
-        }
-        let next_position = self.position.saturating_add(buffer.len());
-        if next_position > self.expected.len()
-            || self.expected[self.position..next_position] != *buffer
-        {
-            self.mismatch = true;
-        }
-        self.position = next_position;
-        self.written = next_written;
         Ok(buffer.len())
     }
 

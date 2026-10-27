@@ -3,6 +3,8 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failure localization.
 #![allow(clippy::expect_used)]
 
+mod scoped_completion;
+
 use std::sync::Arc;
 
 use crate::build_authenticated_production_checkpoint_codec_fixture;
@@ -187,8 +189,9 @@ fn promotion_boundary_check_rejects_mismatched_progress_before_store_work() {
     )
     .expect("quiet replay proof");
 
+    let segments = scheduler.event_log_segment_store();
     assert!(matches!(
-        validate_savepoint_replay_boundary(replay, &configuration, &checkpoint),
+        check_savepoint_replay_boundary(replay, &configuration, &checkpoint, segments.as_ref()),
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
     ));
 }
@@ -212,11 +215,11 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
     )
     .expect("quiet scheduler");
     let checkpoint = scheduler.checkpoint().expect("quiet checkpoint");
-    let proof = crate::QemuSavepointReplayProof::from_reached_boundary(
+    let segments = scheduler.event_log_segment_store();
+    let proof = crate::QemuSavepointReplayProof::from_checkpoint(
         &configuration,
-        checkpoint.quanta(),
-        checkpoint.frontier(),
-        checkpoint.retained_event_log_entries(),
+        &checkpoint,
+        segments.as_ref(),
     )
     .expect("checkpoint boundary proof");
     let offset = checkpoint.event_log_offset();
@@ -225,7 +228,7 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
         proof
             .with_event_log_offset(offset)
             .expect("matching live offset")
-            .matches_checkpoint(&configuration, &checkpoint)
+            .matches_checkpoint(&configuration, &checkpoint, segments.as_ref())
     );
 
     let changed_prefix = crucible_engine::EventLogOffset {
@@ -236,7 +239,7 @@ fn checkpoint_replay_requires_the_exact_segmented_event_offset() {
         !proof
             .with_event_log_offset(changed_prefix)
             .expect("well-formed but foreign live offset")
-            .matches_checkpoint(&configuration, &checkpoint)
+            .matches_checkpoint(&configuration, &checkpoint, segments.as_ref())
     );
 }
 

@@ -148,7 +148,7 @@ pub(super) fn mutate_page(
 }
 
 pub(super) fn apply_changed_bytes(
-    continuation: &BlockFlashContinuation,
+    changed_bytes: &BTreeMap<u64, u8>,
     request_offset: u64,
     bytes: &mut [u8],
 ) -> Result<(), DeviceError> {
@@ -157,7 +157,7 @@ pub(super) fn apply_changed_bytes(
             u64::try_from(bytes.len()).map_err(|_error| invalid("flash read length overflow"))?,
         )
         .ok_or_else(|| invalid("flash read range overflow"))?;
-    for (offset, mask) in continuation.changed_bytes.range(request_offset..end) {
+    for (offset, mask) in changed_bytes.range(request_offset..end) {
         let index = usize::try_from(*offset - request_offset)
             .map_err(|_error| invalid("flash changed-byte index overflow"))?;
         bytes[index] ^= mask;

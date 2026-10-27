@@ -656,7 +656,8 @@ pub(super) async fn drive_streaming_causal_subsequence_projection(
     }
 
     let entries = event_burst(0, 7_000, 8);
-    append_event_log_entries_for_test(&event_log_hub, &entries);
+    append_event_log_entries_for_test(&event_log_hub, &entries)
+        .unwrap_or_else(|error| panic!("burst entries should append: {error}"));
     let projection = capture_streaming_causal_projection(&streaming, session).await;
 
     drop(observer_controls);

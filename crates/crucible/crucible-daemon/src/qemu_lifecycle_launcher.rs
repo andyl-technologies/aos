@@ -354,6 +354,10 @@ where
         self.owner.check_operational_boundary()
     }
 
+    fn release_execution_bindings(&mut self) -> Result<(), LifecycleApiError> {
+        self.owner.detach_execution_cancellation()
+    }
+
     fn prepare_terminal_exact_checkpoint(
         &mut self,
         closure: ProductionExactCheckpointClosure,
@@ -456,7 +460,7 @@ where
             let _ = (admission, run_directories);
             Err(abort_unspawned_generation(
                 lease,
-                launcher_message("exact restore requires descriptor-backed v9 state on Linux"),
+                launcher_message("exact restore requires descriptor-backed v11 state on Linux"),
             ))
         }
     }
@@ -647,7 +651,7 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
                                     identity.generation(),
                                 );
                             } else {
-                                // crucible-lint: allow direct-diagnostic -- retain only the last 32 parsed control rows per node.
+                                // crucible-lint: allow direct-diagnostic -- retain the bounded window of parsed control rows since the last acknowledgement per node.
                                 eprintln!(
                                     "CRUCIBLE-RR-CLAMP-ROW-V2 node={} {row}",
                                     identity.node().name
@@ -835,6 +839,33 @@ mod tests {
         // Reap belongs to the aggregate guard; it does not mint a fresh local
         // generation completion receipt for an abandoned lease.
         assert!(debt.retry_generation(&generation).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn releasing_execution_bindings_reaches_the_attempt_guard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let receipts = Arc::new(Mutex::new(HelperGuardReceipts::default()));
+        let guard = HelperGuard {
+            receipts: Arc::clone(&receipts),
+            cancellation: ExecutionCancellation::default(),
+        };
+        let owner = QemuAttemptGenerationResourceOwner::new(guard, 1)?;
+        let mut launcher = QemuAttemptProductionVmNodeLauncher::new(owner);
+
+        // The fixture guard keeps the default refusal, so the world stays
+        // attempt-owned and the refusal reaches the lifecycle as terminal.
+        let released = ProductionVmNodeLauncher::release_execution_bindings(&mut launcher);
+
+        assert!(matches!(
+            released,
+            Err(LifecycleApiError::AttemptOperational {
+                class: crucible_engine::SchedulerOperationalFailureClass::Terminal,
+                ..
+            })
+        ));
+        drop(launcher);
+        assert!(receipts.lock().expect("fixture receipts").quarantined);
         Ok(())
     }
 

@@ -9,7 +9,7 @@ use super::*;
 
 /// Owns one complete postcommit publication batch.
 pub(super) struct StagedEvaluationPublication {
-    emitted_events: Vec<ReferencedSignalEvent>,
+    referenced_events: ChargedReferencedEvents,
     node_boot_requests: Vec<NodeId>,
     search_choices: Vec<BindingSearchChoice>,
     coordinate: FaultCoordinate,
@@ -18,23 +18,22 @@ pub(super) struct StagedEvaluationPublication {
 
 impl StagedEvaluationPublication {
     /// Reserves every persistent destination and takes preview-owned records.
+    ///
+    /// `referenced_events` is the preview's emitted batch, already validated
+    /// and charged. Referenced events that no consumer needs retire here,
+    /// before the commit, so publication itself never allocates.
     pub(super) fn stage(
         runtime: &mut ProductionFaultRuntime,
         coordinate: FaultCoordinate,
         preview: &mut BindingEvaluation,
+        referenced_events: ChargedReferencedEvents,
     ) -> Result<Self, ProductionFaultRuntimeError> {
-        let emitted_count = preview.emitted_events.len();
         runtime
-            .emitted_events
-            .try_reserve_exact(emitted_count)
-            .map_err(|_| {
-                runtime_collection_reservation(
-                    "event_records",
-                    runtime.emitted_events.len(),
-                    emitted_count,
-                    runtime.resource_limits,
-                )
-            })?;
+            .referenced_events
+            .retire_unneeded(runtime.host.state(), runtime.resource_limits)?;
+        runtime
+            .referenced_events
+            .try_reserve(referenced_events.len(), runtime.resource_limits)?;
 
         let expected_observations = preview.observations.len();
         runtime
@@ -90,7 +89,7 @@ impl StagedEvaluationPublication {
         }
 
         Ok(Self {
-            emitted_events: std::mem::take(&mut preview.emitted_events),
+            referenced_events,
             node_boot_requests,
             search_choices: std::mem::take(&mut preview.search_choices),
             coordinate,
@@ -98,9 +97,14 @@ impl StagedEvaluationPublication {
         })
     }
 
-    /// Returns the deterministic event records expected from the live run.
-    pub(super) fn emitted_events(&self) -> &[ReferencedSignalEvent] {
-        &self.emitted_events
+    /// Reports whether the live run emitted exactly the staged events.
+    pub(super) fn matches_emitted_events(&self, events: &[ReferencedSignalEvent]) -> bool {
+        self.referenced_events.matches(events)
+    }
+
+    /// Returns the cumulative referenced-event charge after publication.
+    pub(super) const fn referenced_usage(&self) -> ReferencedEventUsage {
+        self.referenced_events.usage()
     }
 
     /// Returns the deterministic explorer choices expected from the live run.
@@ -114,8 +118,8 @@ impl StagedEvaluationPublication {
     }
 
     /// Publishes the staged batch without allocating.
-    pub(super) fn publish(mut self, runtime: &mut ProductionFaultRuntime) {
-        runtime.emitted_events.append(&mut self.emitted_events);
+    pub(super) fn publish(self, runtime: &mut ProductionFaultRuntime) {
+        runtime.referenced_events.publish(self.referenced_events);
         runtime.pending_node_boot = self.node_boot_requests;
         if !self.search_choices.is_empty() {
             runtime
@@ -175,9 +179,13 @@ mod tests {
             ..BindingEvaluation::default()
         };
 
-        let publication =
-            StagedEvaluationPublication::stage(&mut runtime, coordinate, &mut preview)
-                .unwrap_or_else(|error| panic!("publication should stage before commit: {error}"));
+        let publication = StagedEvaluationPublication::stage(
+            &mut runtime,
+            coordinate,
+            &mut preview,
+            ChargedReferencedEvents::default(),
+        )
+        .unwrap_or_else(|error| panic!("publication should stage before commit: {error}"));
 
         assert!(preview.search_choices.is_empty());
         assert_eq!(publication.search_choices(), std::slice::from_ref(&choice));

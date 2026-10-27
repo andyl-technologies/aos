@@ -166,8 +166,8 @@ buildable spec, not a slogan.
      `rand::random`, `getrandom`, `/dev/urandom` reads, `RandomState`'s default
      hasher seeding where the seed escapes into ordering, or any equivalent. All
      randomness MUST come from the **seeded decision RNG** ([`04-determinism-contract.md`](04-determinism-contract.md),
-     [`08-scheduling.md`](08-scheduling.md)), whose per-entity streams are forked
-     by entity name-hash so adding a node does not perturb others ([HARN-31]).
+     [`08-scheduling.md`](08-scheduling.md)), whose per-entity streams are keyed
+     by entity name so adding a node does not perturb others ([HARN-31]).
 
   4. **Unordered `select`.** A `select!`/`select` (futures, tokio, crossbeam)
      whose branch choice on simultaneous readiness is nondeterministic, on any
@@ -489,7 +489,7 @@ Time, randomness, numerics
     virtual time is icount-derived [INV-4]. Wall-clock appears only in
     observational tracing that never feeds back.
 [ ] No thread_rng/getrandom/host entropy; all randomness is the seeded decision
-    RNG, forked per-entity by name-hash so adding/renaming a node doesn't
+    RNG, keyed per-entity by name so adding/renaming a node doesn't
     perturb others [HARN-31].
 [ ] No f32/f64 on a decision path; fractional decision quantities are integer
     basis points (or fixed-point) so comparisons are exact and FPU-independent.

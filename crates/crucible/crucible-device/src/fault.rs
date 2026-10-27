@@ -10,11 +10,11 @@
 //!   ([`super::netlink::fault`]) re-exports these so disk, filesystem, and
 //!   network share one implementation.
 //! - The seeded **per-device RNG** ([`DeviceRng`]) supplies those draws in a
-//!   fixed consumption order ([IO-21]). It is forked by name-hash from the
-//!   scenario seed (the fork itself is computed in the `crucible` engine via the
-//!   determinism-contract name-hash; this crate only carries the resulting
-//!   stream seed and the SplitMix64 draw sequence), so adding or renaming an
-//!   unrelated device never perturbs another device's draws.
+//!   fixed consumption order ([IO-21]). Its stream is keyed by domain and
+//!   device name from the scenario root through the L0 `keyed-blake3-v2`
+//!   derivation, so adding or renaming an unrelated device never perturbs
+//!   another device's draws. A stream shared by several producers addresses
+//!   each draw by an event identity ([`LinkFrameDrawKey`]) instead.
 //!
 
 /// A Bernoulli probability expressed as an exact integer fraction.
@@ -135,35 +135,29 @@ pub fn corrupt_payload(payload: &mut [u8], draws: &[u64], bit_flips: u32) {
 /// A seeded per-device RNG: the source of every probabilistic device draw ([IO-21]).
 ///
 /// `DeviceRng` is a thin newtype over the `crucible` engine's
-/// [`crucible_determinism::DecisionStream`], so the PRNG has a **single source of truth**
-/// in L0: the SplitMix64 algorithm, the seed-fork formula, and the draw-cursor
-/// convention are defined once and cannot drift between a device's recorded draws
-/// and an engine replay. A device stream forked by name-hash from the scenario
-/// seed ([DET-25]) therefore reproduces the same sequence an engine
-/// [`crucible_determinism::DecisionRng::fork_in_domain`] would. The RNG tracks a
-/// monotonically increasing **draw cursor** ([`DeviceRng::position`]); that cursor
-/// is the device's RNG state captured in a snapshot and restored on resume so the
-/// next draw resolves identically after a pause as it would have without one
-/// ([IO-23], [EXEC-13]).
+/// [`crucible_determinism::DecisionStream`], so the keyed `keyed-blake3-v2` derivation
+/// has a **single source of truth** in L0 and cannot drift between a device's
+/// recorded draws and an engine replay ([DET-25]).
 ///
-/// Forking by name-hash (rather than by sequential draw from a root) is what
-/// makes the stream order- and topology-stable: adding or renaming an unrelated
-/// device never perturbs this device's sequence ([IO-21]).
+/// A device owned by one node addresses its draws by a **draw cursor**
+/// ([`DeviceRng::position`]): the ordinal its own deterministic request order
+/// assigns. That cursor is the device's RNG state captured in a snapshot and
+/// restored on resume, so the next draw resolves identically after a pause as
+/// it would have without one ([IO-23], [EXEC-13]). A stream shared by several
+/// producers instead opens one event at a time ([`DeviceRng::for_event`]), so a
+/// draw never depends on how producers interleaved ([SCHED-50]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceRng {
     stream: crucible_determinism::DecisionStream,
 }
 
 impl DeviceRng {
-    /// Forks a device RNG by name-hash from the engine's decision-RNG root seed.
+    /// Forks an ordinal-addressed device RNG from the engine's decision-RNG root.
     ///
-    /// Delegates to [`crucible_determinism::DecisionRng::fork_in_domain`], the single L0
-    /// source of the SplitMix64 stream and the `seed XOR stable_hash(domain,
-    /// name)` fork formula ([DET-25]). `root_seed` is the scenario's
-    /// decision-RNG root (`Seed::decision_rng().root_seed()`); `domain` and
-    /// `name` are the device stream's stable domain and the device name. Because
-    /// the fork is by name-hash, an unrelated device never perturbs this device's
-    /// sequence.
+    /// `root_seed` is the scenario's decision-RNG root
+    /// (`Seed::decision_rng().root_seed()`); `domain` and `name` are the device
+    /// stream's stable domain and the device name. An unrelated device never
+    /// perturbs this device's draws.
     #[must_use]
     pub fn fork(root_seed: u64, domain: &str, name: &str) -> Self {
         Self {
@@ -171,24 +165,32 @@ impl DeviceRng {
         }
     }
 
+    /// Opens the role-indexed draws of one event on a shared stream.
+    ///
+    /// `event` is the canonical encoding of an order-independent identity, such
+    /// as [`LinkFrameDrawKey::encode`]. The returned RNG's position counts the
+    /// draws taken for this event only.
+    #[must_use]
+    pub fn for_event(root_seed: u64, domain: &str, name: &str, event: &[u8]) -> Self {
+        Self {
+            stream: crucible_determinism::DecisionRng::new(root_seed)
+                .event_in_domain(domain, name, event),
+        }
+    }
+
     /// Restores a forked device RNG to a captured draw cursor ([IO-23]).
     ///
-    /// Re-forks the stream from `(root_seed, domain, name)` and replays
-    /// `position` draws, so a restored stream's next draw is byte-identical to
-    /// the uninterrupted run's. Restoring to position zero is identical to
-    /// [`DeviceRng::fork`].
+    /// Draws are addressed by position, so a restored stream's next draw is
+    /// byte-identical to the uninterrupted run's. Restoring to position zero is
+    /// identical to [`DeviceRng::fork`].
     #[must_use]
     pub fn restore(root_seed: u64, domain: &str, name: &str, position: u64) -> Self {
         let mut rng = Self::fork(root_seed, domain, name);
-        let mut remaining = position;
-        while remaining > 0 {
-            let _ = rng.next_u64();
-            remaining -= 1;
-        }
+        rng.stream.advance_by(position);
         rng
     }
 
-    /// Returns the forked stream seed this RNG draws from.
+    /// Returns the identifier of the stream this RNG draws from.
     #[must_use]
     pub fn seed(&self) -> u64 {
         self.stream.seed()
@@ -203,6 +205,34 @@ impl DeviceRng {
     /// Draws the next deterministic `u64`, advancing the cursor by one.
     pub fn next_u64(&mut self) -> u64 {
         self.stream.next_u64()
+    }
+}
+
+/// The order-independent identity of one frame's draws on a shared link stream.
+///
+/// A logical link carries both directions on one stream. Each direction has
+/// exactly one producer, whose own frame sequence numbers its emissions, so
+/// `(direction, producer sequence)` names a frame without reference to how the
+/// two directions' frames were admitted relative to each other ([SCHED-50]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkFrameDrawKey {
+    /// `0` for endpoint A to endpoint B, `1` for endpoint B to endpoint A.
+    pub direction: u8,
+    /// The producer's own sequence number for the frame.
+    pub producer_sequence: u64,
+}
+
+impl LinkFrameDrawKey {
+    /// The fixed width of [`LinkFrameDrawKey::encode`].
+    pub const ENCODED_LEN: usize = 9;
+
+    /// Returns the canonical event encoding: `direction || u64le(sequence)`.
+    #[must_use]
+    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        let mut bytes = [0; Self::ENCODED_LEN];
+        bytes[0] = self.direction;
+        bytes[1..].copy_from_slice(&self.producer_sequence.to_le_bytes());
+        bytes
     }
 }
 
@@ -247,8 +277,8 @@ mod tests {
 
     #[test]
     fn device_rng_name_hash_fork_is_topology_stable() {
-        // The engine forks `seed XOR stable_hash(domain, name)`; an unrelated
-        // device must never perturb this device's draw sequence.
+        // Streams are keyed by domain and name; an unrelated device must never
+        // perturb this device's draw sequence.
         let mut a1 = test_rng("disk");
         let mut a2 = test_rng("disk");
         let mut unrelated = test_rng("cache");
@@ -277,5 +307,28 @@ mod tests {
             live_next,
             "restored stream resumes byte-identically ([IO-23])"
         );
+    }
+
+    #[test]
+    fn link_frame_draws_depend_only_on_the_frame_identity() {
+        let a_to_b = LinkFrameDrawKey {
+            direction: 0,
+            producer_sequence: 7,
+        };
+        let b_to_a = LinkFrameDrawKey {
+            direction: 1,
+            producer_sequence: 7,
+        };
+
+        let mut first = DeviceRng::for_event(TEST_ROOT, TEST_DOMAIN, "link", &a_to_b.encode());
+        let _other = DeviceRng::for_event(TEST_ROOT, TEST_DOMAIN, "link", &b_to_a.encode());
+        let mut again = DeviceRng::for_event(TEST_ROOT, TEST_DOMAIN, "link", &a_to_b.encode());
+        let mut reverse = DeviceRng::for_event(TEST_ROOT, TEST_DOMAIN, "link", &b_to_a.encode());
+
+        let first_draw = first.next_u64();
+        assert_eq!(first_draw, again.next_u64());
+        assert_ne!(first_draw, reverse.next_u64());
+        assert_eq!(first.position(), 1);
+        assert_eq!(a_to_b.encode(), [0, 7, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

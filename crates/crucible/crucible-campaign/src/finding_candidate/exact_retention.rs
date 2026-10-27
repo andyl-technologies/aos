@@ -281,7 +281,9 @@ impl FindingAssertionFailureBoundary {
         property: String,
     ) -> Result<Self, CampaignCodecError> {
         if trace.kind() != crucible_store::content_store::ObjectKind::Trace
-            || trace.schema_version() != 2
+            // Replay leaves embed the log (schema 2) or reference it as
+            // segments (schema 3).
+            || !matches!(trace.schema_version(), 2 | 3)
             || quantum_start_events >= terminal_events
             || transition_sequence < quantum_start_events
             || transition_sequence >= terminal_events

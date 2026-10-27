@@ -8,26 +8,38 @@
 //! measurement-ownership, or finding-closure invariants.
 //!
 //! ```text
-//! v7-magic
+//! v11-magic
 //! observation-child, measurements, properties, coverage
 //! discovered-choice-count, discovered-choice records
 //! produced-selection-count, selection records, observation, optional resolved-effect trace
 //! measurement-replay-evidence-count, measurement-replay-evidence records
+//! log-segment-count, encoded attempt-log segment records (identity order)
 //! optional terminal-fingerprint records
 //! finding-present
 //! [discovery-path, minimization-seed, scenario, original configuration,
 //!  original reproduction, minimized configuration, minimized reproduction,
-//!  deduplicated replay record tables, two replay-index passes,
+//!  eight deduplicated replay record identity tables, two replay-index passes,
 //!  four role-specific finding-triage replay records, finding bundle]
 //! ```
 //!
+//! A reproduction names its schedule segments by identity, like the leaves'
+//! log segments, and each triage replay record names the attempt-log segments
+//! its payload references; the caller's segment stores yield them all when
+//! the finding is decoded.
+//!
 //! Every record is a u32-length-prefixed canonical body. Counts and indexes are
-//! u32 values. Decoding caps the complete payload at 1 GiB, each record at 64
-//! MiB, and replay reconstruction by both record and referenced-byte budgets.
+//! u32 values. A replay record identity is a u8-length-prefixed canonical
+//! content-identity string; the record bytes live in the result's record
+//! sources (a journal's own copies once staged), and decoding reads and
+//! authenticates each named record. Decoding caps the complete payload at
+//! 1 GiB, each record at 64 MiB, and replay reconstruction by both reference
+//! and referenced-byte budgets.
 //!
 //! Raw-leaf validation here proves structural ownership: exact trace identity,
-//! singleton measurement edge, and scenario, configuration, and definition
-//! bindings. It also authenticates an observation-stop proof against the owned
+//! a measurement evidence set of exactly the leaf and its log segments, and
+//! scenario, configuration, and definition bindings. The result carries every
+//! referenced segment, and only those, so it is a complete segment source for
+//! its own leaves. It also authenticates an observation-stop proof against the owned
 //! raw event prefix and terminal evidence. This codec does not possess
 //! authenticated scenario measurement definitions and therefore does not
 //! replay the leaf or compare the retained evaluation payload. Production
@@ -38,64 +50,90 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crucible_campaign::{
-    CampaignCodecError, CampaignHash, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity,
-    ConfigurationArtifact, CoverageProjection, FindingCandidateBundle, FindingKind,
-    FindingSignature, FindingTarget, FindingTriageReplayEvidence, MeasurementSet, Observation,
-    ObservationCandidate, ObservationCondition, ObservationStopSatisfaction, PropertyVerdict,
-    PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact, SelectableDeclaration, Selection,
-    StopOutcome,
+    CampaignCodecError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ConfigurationArtifact,
+    CoverageProjection, FindingCandidateBundle, FindingKind, FindingSignature, FindingTarget,
+    FindingTriageReplayEvidence, MeasurementSet, Observation, ObservationCandidate,
+    PropertyVerdict, PropertyVerdictSet, ReproductionArtifact, ScenarioArtifact,
+    SelectableDeclaration, Selection, StopOutcome,
 };
 use crucible_engine::{
-    AssertionPhase, ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
+    ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
     FailureTriageReplayEvidence, FindingReproductionArtifact, FingerprintSample, NodeId,
-    ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    VirtualTime,
+    ScenarioDefForm, VirtualTime,
 };
 use thiserror::Error;
 
 mod replay_records;
 use replay_records::{
-    Decoder, Encoder, ReplayMaterialTables, ReplayRecordTables, decode_replay_indexes,
-    discovery_path_from_tag, discovery_path_tag, encode_records, encode_replays,
-    materialize_replays, record_ids, replay_record_totals, validate_recorded_replays,
+    Decoder, Encoder, ReplayMaterialTables, decode_record_ids, decode_replay_indexes,
+    discovery_path_from_tag, discovery_path_tag, encode_record_ids, encode_replays,
+    materialize_replays, validate_recorded_replays,
 };
 
-use super::finding_replay::PreparedFindingReplayRecords;
+use super::finding_replay::{PreparedFindingReplayRecords, ReplayRecordIds};
 use super::{
     CrucibleArtifactError, FindingReplayIncompatibility, MAX_CRUCIBLE_FINDING_REPLAY_BYTES,
-    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, PreparedCrucibleFindingCandidate,
-    PreparedFindingTriageReplayRecords, RecordedFindingReplay, prepare_minimized_reproduction,
-    prepare_original_reproduction, replay_recorded_signature_pass,
+    MAX_CRUCIBLE_FINDING_REPLAY_RECORDS, MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS,
+    PreparedCrucibleFindingCandidate, PreparedFindingTriageReplayRecords, RecordedFindingReplay,
+    prepare_minimized_reproduction, prepare_original_reproduction, replay_recorded_signature_pass,
 };
 use crate::{
-    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementReplayEvidence, verify_crucible_measurement_publication,
+    AttemptLogSegmentSource, AttemptLogSegmentSources,
+    CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3, CrucibleMeasurementError,
+    CrucibleMeasurementReplayEvidence, ReplayRecordSources, measurement_replay_leaf_id,
+    verify_crucible_measurement_publication,
 };
 
-const PREPARED_RESULT_MAGIC_V7: &[u8] = b"crucible.executor.prepared-semantic-attempt-result.v7\0";
+const PREPARED_RESULT_MAGIC_V10: &[u8] =
+    b"crucible.executor.prepared-semantic-attempt-result.v11\0";
 pub(super) const MAX_PREPARED_RESULT_RECORDS: usize = 200_000;
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPLAY_VALIDATION_REFERENCES: usize = 4 * 1024 * 1024;
+// Every retained replay record is charged at least one validation reference.
+const _: () = assert!(MAX_CRUCIBLE_FINDING_REPLAY_RECORDS <= MAX_REPLAY_VALIDATION_REFERENCES);
 
 /// Maximum encoded bytes retained by one prepared semantic result journal.
 pub const MAX_PREPARED_SEMANTIC_RESULT_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Complete immutable semantic result retained across publication retries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The result references its attempt-log segments by identity through its
+/// measurement leaves, and its resolved-effect trace segments through the
+/// observation's trace reference. It holds only read handles to the stores
+/// containing them, so neither its memory nor its encoding grows with the
+/// attempt log or the trace.
+/// Equality compares the recorded content, never the store handles.
+#[derive(Clone, Debug)]
 pub struct PreparedSemanticAttemptResult {
     observation: ObservationCandidate,
     measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    log_segments: AttemptLogSegmentSources,
     terminal_fingerprints: Option<Vec<FingerprintSample>>,
     finding: Option<PreparedCrucibleFindingCandidate>,
 }
+
+impl PartialEq for PreparedSemanticAttemptResult {
+    fn eq(&self, other: &Self) -> bool {
+        // Segments are content-addressed and named by the leaves, so equal
+        // leaves reference equal segments wherever their bytes are stored.
+        self.observation == other.observation
+            && self.measurement_replay_evidence == other.measurement_replay_evidence
+            && self.terminal_fingerprints == other.terminal_fingerprints
+            && self.finding == other.finding
+    }
+}
+
+impl Eq for PreparedSemanticAttemptResult {}
 
 impl PreparedSemanticAttemptResult {
     /// Binds an observation and finding to all required raw measurement leaves.
     ///
     /// The leaves are retained in content-identity order, and duplicates are
     /// rejected. The supplied set must exactly cover every Crucible measurement
-    /// payload v2 referenced by the observation and both finding replay passes.
-    /// This authenticates closure ownership and any observation-stop proof;
+    /// payload v2 referenced by the observation and both finding replay passes,
+    /// and `log_segments` must yield every segment those leaves reference. The
+    /// finding's reproduction schedule segments are served from its resident
+    /// schedules. This authenticates closure ownership and any observation-stop proof;
     /// callers must separately run [`crate::verify_crucible_measurement_publication`]
     /// with the authenticated scenario definitions before publication.
     ///
@@ -103,23 +141,39 @@ impl PreparedSemanticAttemptResult {
     ///
     /// Returns [`PreparedSemanticResultCodecError`] when a leaf is duplicated,
     /// unowned, absent, or bound to a different scenario, configuration, or
-    /// measurement definition, or when the finding does not belong to the
-    /// observation.
+    /// measurement definition, when a referenced segment is absent or fails
+    /// authentication, or when the finding does not belong to the observation.
     pub fn new(
         observation: ObservationCandidate,
         measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+        log_segments: impl Into<AttemptLogSegmentSources>,
         finding: Option<PreparedCrucibleFindingCandidate>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
+        let mut log_segments = log_segments.into();
+        // A journal stages the finding's schedule and triage log segments only
+        // when it is created, so until then the resident schedules and the
+        // replay stores serve them.
+        if let Some(finding) = &finding {
+            log_segments.push(std::sync::Arc::new(
+                finding.resident_reproduction_segments()?,
+            ));
+            if let Some(triage_replays) = &finding.triage_replays {
+                log_segments.extend(triage_replays.segments.clone());
+            }
+        }
         validate_measurement_evidence_order(&measurement_replay_evidence)?;
+        validate_log_segments(&measurement_replay_evidence, &log_segments)?;
         validate_pair(&observation, finding.as_ref())?;
         validate_measurement_evidence(
             &observation,
             &measurement_replay_evidence,
+            &log_segments,
             finding.as_ref(),
         )?;
         Ok(Self {
             observation,
             measurement_replay_evidence,
+            log_segments,
             terminal_fingerprints: None,
             finding,
         })
@@ -160,23 +214,202 @@ impl PreparedSemanticAttemptResult {
         &self.measurement_replay_evidence
     }
 
-    /// Checks the retained attempt trace against the authenticated scenario contract.
+    /// Returns the stores that yield every log segment the leaves reference.
+    ///
+    /// Publication stores each segment before any leaf that references it.
+    #[must_use]
+    pub const fn log_segments(&self) -> &AttemptLogSegmentSources {
+        &self.log_segments
+    }
+
+    /// Rebinds the result to read its log and trace segments from
+    /// `log_segments` only.
+    ///
+    /// The caller must already have copied every referenced attempt-log and
+    /// resolved-effect trace segment there; later reads authenticate each
+    /// segment against its reference.
+    pub(crate) fn with_log_segments(mut self, log_segments: AttemptLogSegmentSources) -> Self {
+        self.observation = self
+            .observation
+            .with_resolved_effect_trace_segments(log_segments.clone());
+        if let Some(triage_replays) = self
+            .finding
+            .as_mut()
+            .and_then(|finding| finding.triage_replays.as_mut())
+        {
+            triage_replays.segments = log_segments.clone();
+        }
+        self.log_segments = log_segments;
+        self
+    }
+
+    /// Returns each attempt-log segment the finding's triage replay records
+    /// name once, in record order.
+    pub fn referenced_triage_segments(
+        &self,
+    ) -> Vec<crucible_campaign::FindingTriageReplayLogSegment> {
+        self.finding
+            .as_ref()
+            .and_then(|finding| finding.triage_replays.as_ref())
+            .map(|triage_replays| triage_replays.referenced_segments())
+            .unwrap_or_default()
+    }
+
+    /// Returns each referenced log segment once, in leaf order.
+    pub fn referenced_log_segments(&self) -> Vec<crate::AttemptLogSegmentRef> {
+        referenced_segments(&self.measurement_replay_evidence)
+    }
+
+    /// Returns each retained finding replay record identity in table order.
+    pub fn referenced_replay_records(&self) -> Vec<crucible_store::content_store::ContentId> {
+        self.finding
+            .as_ref()
+            .map(|finding| finding.replay_records.ids.content_ids().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns read handles to the stores that hold the retained replay records.
+    ///
+    /// A result without a finding retains no records and returns no stores.
+    #[must_use]
+    pub fn replay_record_sources(&self) -> ReplayRecordSources {
+        self.finding
+            .as_ref()
+            .map(|finding| finding.replay_records.sources.clone())
+            .unwrap_or_default()
+    }
+
+    /// Visits every retained finding replay record's canonical bytes in table order.
+    ///
+    /// Each record is read and authenticated before it is visited.
+    pub(crate) fn try_for_each_replay_record<E>(
+        &self,
+        visit: impl FnMut(crucible_store::content_store::ContentId, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<crate::ReplayRecordError>,
+    {
+        match &self.finding {
+            Some(finding) => finding.replay_records.try_for_each_encoded(visit),
+            None => Ok(()),
+        }
+    }
+
+    /// Rebinds the result to read its replay records from `replay_records` only.
+    ///
+    /// The caller must already have copied every retained record there; later
+    /// reads authenticate each record against its identity.
+    pub(crate) fn with_replay_records(mut self, replay_records: ReplayRecordSources) -> Self {
+        if let Some(finding) = &mut self.finding {
+            finding.replay_records.sources = replay_records;
+        }
+        self
+    }
+
+    /// Returns each finding reproduction segment once, original first.
+    ///
+    /// The original and minimized schedules often share a prefix, and with it
+    /// their leading segments, so a shared segment is listed once.
+    pub fn referenced_reproduction_segments(
+        &self,
+    ) -> Vec<crucible_engine::segment_store::ContentId> {
+        let Some(finding) = &self.finding else {
+            return Vec::new();
+        };
+        let mut seen = BTreeSet::new();
+        finding
+            .original
+            .payload_segments()
+            .iter()
+            .chain(finding.minimized.payload_segments())
+            .map(|segment| segment.content())
+            .filter(|segment| seen.insert(*segment))
+            .collect()
+    }
+
+    /// Visits the bytes of each [`Self::referenced_reproduction_segments`]
+    /// entry, in that order, encoding each from the finding's schedules.
     ///
     /// # Errors
     ///
-    /// Returns an error for noncanonical bytes or a trace outside the authored
-    /// fault resource limits.
+    /// Returns the first error `visit` returns, or a codec error when a
+    /// schedule cannot be segmented.
+    pub(crate) fn try_for_each_reproduction_segment<E>(
+        &self,
+        mut visit: impl FnMut(crucible_engine::segment_store::ContentId, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<PreparedSemanticResultCodecError>,
+    {
+        let Some(finding) = &self.finding else {
+            return Ok(());
+        };
+        let mut seen = BTreeSet::new();
+        for artifact in [&finding.original_artifact, &finding.minimized_artifact] {
+            super::try_for_each_payload_segment(artifact.schedule(), |segment, bytes| {
+                if !seen.insert(segment.content()) {
+                    return Ok(());
+                }
+                visit(segment.content(), bytes).map_err(SegmentVisitError::Visit)
+            })
+            .map_err(|error| match error {
+                SegmentVisitError::Visit(error) => error,
+                SegmentVisitError::Payload(error) => {
+                    E::from(PreparedSemanticResultCodecError::from(error))
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Returns each resolved-effect trace segment the observation names, in
+    /// trace order.
+    pub fn referenced_trace_segments(&self) -> &[crucible_engine::segment_store::ContentId] {
+        self.observation
+            .observation()
+            .resolved_effect_trace()
+            .map_or(&[], |trace| trace.segments())
+    }
+
+    /// Checks the retained attempt trace against the authenticated scenario contract.
+    ///
+    /// The manifest must be canonical, within the authored fault resource
+    /// limits, and list exactly the observation's segments; every segment is
+    /// then read, authenticated, and decoded once, one at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a noncanonical manifest, a trace outside the
+    /// authored fault resource limits, a segment list that differs from the
+    /// observation's, or a segment that is absent, fails authentication, or
+    /// holds an invalid work item.
     pub fn verify_resolved_effect_trace(
         &self,
         scenario: &ScenarioDefForm,
     ) -> Result<(), PreparedSemanticResultCodecError> {
-        if let Some(bytes) = self.observation.resolved_effect_trace() {
-            crucible_engine::model::ResolvedEffectTrace::from_canonical_bytes(
-                bytes,
-                scenario.plan().fault_signals().resource_limits(),
-            )
+        let (Some(reference), Some(manifest), Some(segments)) = (
+            self.observation.observation().resolved_effect_trace(),
+            self.observation.resolved_effect_trace_manifest(),
+            self.observation.resolved_effect_trace_segments(),
+        ) else {
+            return Ok(());
+        };
+
+        let manifest =
+            crucible_engine::model::ResolvedEffectTraceManifest::from_canonical_bytes(manifest)
+                .map_err(|_| inconsistent("resolved-effect trace manifest"))?;
+        manifest
+            .admit(scenario.plan().fault_signals().resource_limits())
             .map_err(|_| inconsistent("resolved-effect trace contract"))?;
+        if !manifest
+            .segment_ids()
+            .eq(reference.segments().iter().copied())
+        {
+            return Err(inconsistent("resolved-effect trace segment list"));
         }
+
+        crucible_engine::model::ResolvedEffectTrace::referencing(manifest, segments.clone())
+            .map_err(|_| inconsistent("resolved-effect trace segments"))?;
         Ok(())
     }
 
@@ -240,6 +473,7 @@ impl PreparedSemanticAttemptResult {
         self,
         finding: PreparedCrucibleFindingCandidate,
         replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+        replay_segments: AttemptLogSegmentSources,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
         if self.finding.is_some() {
             return Err(inconsistent("duplicate finding attachment"));
@@ -254,8 +488,10 @@ impl PreparedSemanticAttemptResult {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
+        let mut log_segments = self.log_segments;
+        log_segments.extend(replay_segments);
         let mut evidence = BTreeMap::new();
-        let mut evidence_bytes = 0usize;
+        let mut evidence_bytes = 0_usize;
         for leaf in self
             .measurement_replay_evidence
             .into_iter()
@@ -281,11 +517,8 @@ impl PreparedSemanticAttemptResult {
         }
 
         let terminal_fingerprints = self.terminal_fingerprints;
-        let result = Self::new(
-            self.observation,
-            evidence.into_values().collect(),
-            Some(finding),
-        )?;
+        let evidence = evidence.into_values().collect::<Vec<_>>();
+        let result = Self::new(self.observation, evidence, log_segments, Some(finding))?;
         match terminal_fingerprints {
             Some(terminal_fingerprints) => result.with_terminal_fingerprints(terminal_fingerprints),
             None => Ok(result),
@@ -310,6 +543,7 @@ impl PreparedSemanticAttemptResult {
         validate_measurement_evidence(
             &self.observation,
             &self.measurement_replay_evidence,
+            &self.log_segments,
             self.finding.as_ref(),
         )?;
 
@@ -330,6 +564,7 @@ impl PreparedSemanticAttemptResult {
             expected_scenario,
             scenario,
             &evidence_by_id,
+            &self.log_segments,
         )?;
         // Structural validation above visits every reference. Replay each
         // distinct retained evaluation/configuration pair once so repeated
@@ -339,60 +574,40 @@ impl PreparedSemanticAttemptResult {
             self.observation.child().configuration(),
         )]);
 
-        let finding_records = self
-            .finding
-            .as_ref()
-            .map(|finding| {
-                let configurations = finding
-                    .replay_records
-                    .configurations
-                    .iter()
-                    .map(|record| record.id().map(|id| (id, record.configuration())))
-                    .collect::<Result<BTreeMap<_, _>, _>>()?;
-                let measurements = finding
-                    .replay_records
-                    .measurements
-                    .iter()
-                    .map(|record| record.id().map(|id| (id, record)))
-                    .collect::<Result<BTreeMap<_, _>, _>>()?;
-                Ok::<_, PreparedSemanticResultCodecError>((finding, configurations, measurements))
-            })
-            .transpose()?;
+        let Some(finding) = &self.finding else {
+            return Ok(());
+        };
+        let records = &finding.replay_records;
+        let retained = RetainedMeasurementIds::new(records);
+        let mut replay_count = 0usize;
+        for replay in finding
+            .minimization_replays
+            .iter()
+            .chain(&finding.verification_replays)
+        {
+            replay_count = replay_count
+                .checked_add(1)
+                .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+            if replay_count > MAX_REPLAY_VALIDATION_REFERENCES {
+                return Err(PreparedSemanticResultCodecError::LimitExceeded);
+            }
 
-        if let Some((finding, configurations, measurements)) = &finding_records {
-            let mut replay_count = 0usize;
-            for replay in finding
-                .minimization_replays
-                .iter()
-                .chain(&finding.verification_replays)
-            {
-                replay_count = replay_count
-                    .checked_add(1)
-                    .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-                if replay_count > MAX_REPLAY_VALIDATION_REFERENCES {
-                    return Err(PreparedSemanticResultCodecError::LimitExceeded);
-                }
-
-                let Some((measurement_id, _, _, _, _)) = replay.observed_components() else {
-                    continue;
-                };
-
-                let measurement = measurements
-                    .get(&measurement_id)
-                    .ok_or_else(|| inconsistent("finding replay measurement record"))?;
-                let configuration = configurations
-                    .get(&replay.configuration())
-                    .copied()
-                    .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
-                if verified_pairs.insert((measurement_id, configuration)) {
-                    verify_measurement_record(
-                        measurement,
-                        configuration,
-                        expected_scenario,
-                        scenario,
-                        &evidence_by_id,
-                    )?;
-                }
+            let Some((measurement_id, _, _, _, _)) = replay.observed_components() else {
+                continue;
+            };
+            retained.measurement(measurement_id)?;
+            retained.configuration(replay.configuration())?;
+            let configuration = records.load::<ConfigurationArtifact>(replay.configuration())?;
+            if verified_pairs.insert((measurement_id, configuration.configuration())) {
+                let measurement = records.load::<MeasurementSet>(measurement_id)?;
+                verify_measurement_record(
+                    &measurement,
+                    configuration.configuration(),
+                    expected_scenario,
+                    scenario,
+                    &evidence_by_id,
+                    &self.log_segments,
+                )?;
             }
         }
         Ok(())
@@ -463,7 +678,7 @@ impl PreparedSemanticAttemptResult {
         }
 
         let mut encoder = Encoder::new(maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES));
-        encoder.raw(PREPARED_RESULT_MAGIC_V7)?;
+        encoder.raw(PREPARED_RESULT_MAGIC_V10)?;
         encode_observation(&mut encoder, &self.observation)?;
         encode_measurement_evidence(&mut encoder, &self.measurement_replay_evidence)?;
         match &self.terminal_fingerprints {
@@ -484,9 +699,11 @@ impl PreparedSemanticAttemptResult {
 
         // Enforce the caller's operational byte ceiling before hashing raw
         // trace tables or reconstructing retained finding replay records.
+        validate_log_segments(&self.measurement_replay_evidence, &self.log_segments)?;
         validate_measurement_evidence(
             &self.observation,
             &self.measurement_replay_evidence,
+            &self.log_segments,
             self.finding.as_ref(),
         )?;
         if let Some(finding) = &self.finding {
@@ -497,34 +714,54 @@ impl PreparedSemanticAttemptResult {
 
     /// Decodes and revalidates strict journal payload bytes.
     ///
+    /// The payload names its log segments and finding replay records only by
+    /// identity; `log_segments` and `replay_records` must yield every one of
+    /// them.
+    ///
     /// # Errors
     ///
     /// Returns [`PreparedSemanticResultCodecError`] for truncated, trailing,
-    /// oversized, noncanonical, or semantically inconsistent bytes.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, PreparedSemanticResultCodecError> {
-        Self::from_canonical_bytes_with_limit(bytes, MAX_PREPARED_SEMANTIC_RESULT_BYTES)
+    /// oversized, noncanonical, or semantically inconsistent bytes, or when a
+    /// referenced segment or replay record is absent or fails authentication.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        log_segments: impl Into<AttemptLogSegmentSources>,
+        replay_records: impl Into<ReplayRecordSources>,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        Self::from_canonical_bytes_with_limit(
+            bytes,
+            MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            log_segments,
+            replay_records,
+        )
     }
 
     /// Decodes strict journal bytes under a caller-selected operational limit.
     ///
     /// # Errors
     ///
-    /// Returns [`PreparedSemanticResultCodecError`] for invalid input or when
-    /// its length exceeds the smaller of `maximum_bytes` and the format ceiling.
+    /// Returns [`PreparedSemanticResultCodecError`] for invalid input, when
+    /// its length exceeds the smaller of `maximum_bytes` and the format
+    /// ceiling, or when a referenced segment or replay record is absent or
+    /// fails authentication.
     pub fn from_canonical_bytes_with_limit(
         bytes: &[u8],
         maximum_bytes: usize,
+        log_segments: impl Into<AttemptLogSegmentSources>,
+        replay_records: impl Into<ReplayRecordSources>,
     ) -> Result<Self, PreparedSemanticResultCodecError> {
+        let replay_records = replay_records.into();
+        let log_segments = log_segments.into();
         let maximum_bytes = maximum_bytes.min(MAX_PREPARED_SEMANTIC_RESULT_BYTES);
         if bytes.len() > maximum_bytes {
             return Err(PreparedSemanticResultCodecError::LimitExceeded);
         }
 
-        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V7) {
+        if !bytes.starts_with(PREPARED_RESULT_MAGIC_V10) {
             return Err(PreparedSemanticResultCodecError::Version);
         }
         let mut decoder = Decoder::new(bytes);
-        decoder.magic(PREPARED_RESULT_MAGIC_V7)?;
+        decoder.magic(PREPARED_RESULT_MAGIC_V10)?;
         let observation = decode_observation(&mut decoder)?;
         let measurement_replay_evidence = decode_measurement_evidence(&mut decoder)?;
         let terminal_fingerprints = match decoder.byte()? {
@@ -534,12 +771,20 @@ impl PreparedSemanticAttemptResult {
         };
         let finding = match decoder.byte()? {
             0 => None,
-            1 => Some(decode_finding(&mut decoder)?),
+            1 => Some(decode_finding(&mut decoder, replay_records, &log_segments)?),
             _ => return Err(PreparedSemanticResultCodecError::InvalidTag),
         };
         decoder.finish()?;
 
-        let value = Self::new(observation, measurement_replay_evidence, finding)?;
+        // The payload names trace and reproduction segments only by identity,
+        // like log segments; all are read from the caller's stores.
+        let observation = observation.with_resolved_effect_trace_segments(log_segments.clone());
+        let value = Self::new(
+            observation,
+            measurement_replay_evidence,
+            log_segments,
+            finding,
+        )?;
         let value = match terminal_fingerprints {
             Some(terminal_fingerprints) => {
                 value.with_terminal_fingerprints(terminal_fingerprints)?
@@ -555,21 +800,30 @@ impl PreparedSemanticAttemptResult {
 
     /// Consumes the durable result into its exact publication records.
     #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        ObservationCandidate,
-        Vec<CrucibleMeasurementReplayEvidence>,
-        Option<Vec<FingerprintSample>>,
-        Option<PreparedCrucibleFindingCandidate>,
-    ) {
-        (
-            self.observation,
-            self.measurement_replay_evidence,
-            self.terminal_fingerprints,
-            self.finding,
-        )
+    pub fn into_parts(self) -> PreparedSemanticAttemptResultParts {
+        PreparedSemanticAttemptResultParts {
+            observation: self.observation,
+            measurement_replay_evidence: self.measurement_replay_evidence,
+            log_segments: self.log_segments,
+            terminal_fingerprints: self.terminal_fingerprints,
+            finding: self.finding,
+        }
     }
+}
+
+/// The publication records of one consumed prepared result.
+#[derive(Debug)]
+pub struct PreparedSemanticAttemptResultParts {
+    /// The complete canonical observation candidate.
+    pub observation: ObservationCandidate,
+    /// Raw measurement leaves in content-identity order.
+    pub measurement_replay_evidence: Vec<CrucibleMeasurementReplayEvidence>,
+    /// The stores that yield every log segment the leaves reference.
+    pub log_segments: AttemptLogSegmentSources,
+    /// The terminal fingerprint set, when terminal capture completed.
+    pub terminal_fingerprints: Option<Vec<FingerprintSample>>,
+    /// The prepared finding closure, when execution found one.
+    pub finding: Option<PreparedCrucibleFindingCandidate>,
 }
 
 /// Failure to encode or authenticate a prepared semantic result.
@@ -608,6 +862,18 @@ pub enum PreparedSemanticResultCodecError {
         /// Stable component label.
         component: &'static str,
     },
+    /// A retained finding replay record is absent or fails authentication.
+    #[error(transparent)]
+    ReplayRecord(#[from] crate::ReplayRecordError),
+    /// A referenced attempt-log segment is absent or fails authentication.
+    #[error("prepared semantic result log segment {segment} is unavailable: {source}")]
+    LogSegment {
+        /// Content identity of the referenced segment.
+        segment: crucible_store::content_store::ContentId,
+        /// Read or authentication failure.
+        #[source]
+        source: crate::AttemptEventLogError,
+    },
 }
 
 fn validate_pair(
@@ -615,17 +881,20 @@ fn validate_pair(
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     if observation.observation().resolved_effect_trace().is_some()
-        != observation.resolved_effect_trace().is_some()
+        != observation.resolved_effect_trace_manifest().is_some()
     {
         return Err(inconsistent("observation resolved-effect trace ownership"));
     }
-    if let Some(bytes) = observation.resolved_effect_trace()
-        && (bytes.len() > MAX_RECORD_BYTES
-            || observation.observation().resolved_effect_trace()
+    if let Some(manifest) = observation.resolved_effect_trace_manifest()
+        && (manifest.len() > crucible_engine::model::MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES
+            || observation
+                .observation()
+                .resolved_effect_trace()
+                .map(crucible_campaign::ResolvedEffectTraceRef::manifest)
                 != Some(crucible_store::content_store::ContentId::for_bytes(
                     crucible_store::content_store::ObjectKind::Trace,
-                    1,
-                    bytes,
+                    crucible_engine::model::RESOLVED_EFFECT_TRACE_MANIFEST_SCHEMA,
+                    manifest,
                 )))
     {
         return Err(inconsistent("observation resolved-effect trace identity"));
@@ -663,15 +932,15 @@ fn validate_pair(
         Some(FindingTarget::Configuration(target)) if target != child => {
             return Err(inconsistent("finding configuration target"));
         }
-        Some(FindingTarget::ChoiceOpportunity(target))
-            if !observed.discovered_choices().contains(&target) =>
-        {
+        Some(FindingTarget::ChoiceOpportunity(target)) if !observation.discovers(target) => {
             return Err(inconsistent("finding choice target"));
         }
         _ => {}
     }
 
-    let mut owned = BTreeSet::from([
+    // The observation owns its fixed records directly and its choice records
+    // through the paged sets whose bodies this candidate carries.
+    let owned = BTreeSet::from([
         observed.attempt().content_id(),
         child.content_id(),
         observed.path().content_id(),
@@ -679,20 +948,10 @@ fn validate_pair(
         observed.properties().content_id(),
         observed.coverage().content_id(),
     ]);
-    owned.extend(
-        observed
-            .discovered_choices()
-            .iter()
-            .map(|id| id.content_id()),
-    );
-    owned.extend(
-        observed
-            .produced_selections()
-            .iter()
-            .map(|id| id.content_id()),
-    );
-    if !signature.causal_evidence().is_subset(&owned) {
-        return Err(inconsistent("finding causal evidence"));
+    for evidence in signature.causal_evidence() {
+        if !owned.contains(evidence) && !observation.carries_choice_record(*evidence)? {
+            return Err(inconsistent("finding causal evidence"));
+        }
     }
     Ok(())
 }
@@ -710,6 +969,43 @@ fn validate_measurement_evidence_order(
             return Err(inconsistent("measurement replay evidence order"));
         }
         previous = Some(id);
+    }
+    Ok(())
+}
+
+/// Returns each segment the leaves reference once, in first-reference order.
+fn referenced_segments(
+    evidence: &[CrucibleMeasurementReplayEvidence],
+) -> Vec<crate::AttemptLogSegmentRef> {
+    let mut seen = BTreeSet::new();
+    evidence
+        .iter()
+        .flat_map(|leaf| leaf.segments().iter().copied())
+        .filter(|segment| seen.insert(segment.id))
+        .collect()
+}
+
+/// Requires `log_segments` to yield every referenced segment, authenticated.
+///
+/// Segments are read one at a time, so validation holds at most one segment
+/// in memory regardless of the attempt log's length.
+fn validate_log_segments(
+    evidence: &[CrucibleMeasurementReplayEvidence],
+    log_segments: &dyn AttemptLogSegmentSource,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    for segment in referenced_segments(evidence) {
+        let bytes = log_segments.segment(segment.id).map_err(|source| {
+            PreparedSemanticResultCodecError::LogSegment {
+                segment: segment.id,
+                source: crate::AttemptEventLogError::Store { source },
+            }
+        })?;
+        crate::decode_segment(&segment, &bytes).map_err(|source| {
+            PreparedSemanticResultCodecError::LogSegment {
+                segment: segment.id,
+                source,
+            }
+        })?;
     }
     Ok(())
 }
@@ -734,20 +1030,72 @@ fn validate_terminal_fingerprints(
     Ok(())
 }
 
+/// Identities of the configuration and measurement records a finding retains.
+///
+/// A replay may name only retained records; a store holding other records
+/// under those names does not make a reference valid.
+struct RetainedMeasurementIds {
+    configurations: BTreeSet<crucible_campaign::ConfigurationArtifactId>,
+    measurements: BTreeSet<crucible_campaign::MeasurementSetId>,
+}
+
+impl RetainedMeasurementIds {
+    fn new(records: &PreparedFindingReplayRecords) -> Self {
+        Self {
+            configurations: records.ids.configurations.iter().copied().collect(),
+            measurements: records.ids.measurements.iter().copied().collect(),
+        }
+    }
+
+    fn measurement(
+        &self,
+        id: crucible_campaign::MeasurementSetId,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        if self.measurements.contains(&id) {
+            Ok(())
+        } else {
+            Err(inconsistent("finding replay measurement record"))
+        }
+    }
+
+    fn configuration(
+        &self,
+        id: crucible_campaign::ConfigurationArtifactId,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        if self.configurations.contains(&id) {
+            Ok(())
+        } else {
+            Err(inconsistent("finding replay measurement configuration"))
+        }
+    }
+}
+
+/// Returns whether any retained finding measurement needs raw replay evidence.
+///
+/// Records are read one at a time and the scan stops at the first match.
+fn finding_measurement_requires_evidence(
+    records: &PreparedFindingReplayRecords,
+) -> Result<bool, PreparedSemanticResultCodecError> {
+    for id in &records.ids.measurements {
+        if measurement_requires_replay_evidence(&records.load::<MeasurementSet>(*id)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn validate_measurement_evidence(
     observation: &ObservationCandidate,
     evidence: &[CrucibleMeasurementReplayEvidence],
+    log_segments: &dyn AttemptLogSegmentSource,
     finding: Option<&PreparedCrucibleFindingCandidate>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let observation_requires_evidence =
         measurement_requires_replay_evidence(observation.measurements());
-    let finding_requires_evidence = finding.is_some_and(|finding| {
-        finding
-            .replay_records
-            .measurements
-            .iter()
-            .any(measurement_requires_replay_evidence)
-    });
+    let finding_requires_evidence = match finding {
+        Some(finding) => finding_measurement_requires_evidence(&finding.replay_records)?,
+        None => false,
+    };
     if evidence.is_empty() && !observation_requires_evidence && !finding_requires_evidence {
         return Ok(());
     }
@@ -768,7 +1116,7 @@ fn validate_measurement_evidence(
         &evidence_by_id,
         &mut owned,
     )?;
-    validate_observation_stop_evidence(observation, &evidence_by_id)?;
+    validate_observation_stop_evidence(observation, &evidence_by_id, log_segments)?;
 
     if let Some(finding) = finding {
         let retained = finding.bundle().exact_retention_evidence();
@@ -781,16 +1129,15 @@ fn validate_measurement_evidence(
                     .get(&boundary.trace())
                     .ok_or_else(|| inconsistent("finding assertion trace"))?;
                 if boundary.property() != property
-                    || observation.measurements().evaluation().evidence().len() != 1
-                    || !observation
-                        .measurements()
-                        .evaluation()
-                        .evidence()
-                        .contains(&boundary.trace())
+                    || measurement_replay_leaf_id(
+                        observation.measurements().evaluation().evidence(),
+                    ) != Some(boundary.trace())
                     || leaf.scenario() != observation.child().scenario()
                     || leaf.configuration() != observation.child().configuration()
                     || !crate::crucible_measurement::verify_assertion_failure_boundary(
-                        leaf, boundary,
+                        leaf,
+                        log_segments,
+                        boundary,
                     )
                 {
                     return Err(inconsistent("finding assertion boundary"));
@@ -818,9 +1165,11 @@ fn validate_measurement_evidence(
                     .map(|(measurements, _, _, _, _)| measurements)
             })
             .collect::<BTreeSet<_>>();
-        for measurement in &finding.replay_records.measurements {
-            if measurement_requires_replay_evidence(measurement)
-                && !referenced_measurements.contains(&measurement.id()?)
+        let records = &finding.replay_records;
+        for id in &records.ids.measurements {
+            let measurement = records.load::<MeasurementSet>(*id)?;
+            if measurement_requires_replay_evidence(&measurement)
+                && !referenced_measurements.contains(id)
             {
                 return Err(inconsistent(
                     "unreferenced finding replay measurement record",
@@ -828,19 +1177,9 @@ fn validate_measurement_evidence(
             }
         }
 
-        let configurations = finding
-            .replay_records
-            .configurations
-            .iter()
-            .map(|record| record.id().map(|id| (id, record)))
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let measurements = finding
-            .replay_records
-            .measurements
-            .iter()
-            .map(|record| record.id().map(|id| (id, record)))
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-
+        // Each distinct measurement/configuration pair is validated once.
+        let retained = RetainedMeasurementIds::new(records);
+        let mut validated = BTreeSet::new();
         for replay in finding
             .minimization_replays
             .iter()
@@ -849,17 +1188,18 @@ fn validate_measurement_evidence(
             let Some((measurement_id, _, _, _, _)) = replay.observed_components() else {
                 continue;
             };
-            let measurement = measurements
-                .get(&measurement_id)
-                .ok_or_else(|| inconsistent("finding replay measurement record"))?;
-            if !measurement_requires_replay_evidence(measurement) {
+            retained.measurement(measurement_id)?;
+            if !validated.insert((measurement_id, replay.configuration())) {
                 continue;
             }
-            let configuration = configurations
-                .get(&replay.configuration())
-                .ok_or_else(|| inconsistent("finding replay measurement configuration"))?;
+            let measurement = records.load::<MeasurementSet>(measurement_id)?;
+            if !measurement_requires_replay_evidence(&measurement) {
+                continue;
+            }
+            retained.configuration(replay.configuration())?;
+            let configuration = records.load::<ConfigurationArtifact>(replay.configuration())?;
             validate_measurement_record(
-                measurement,
+                &measurement,
                 configuration.scenario(),
                 configuration.configuration(),
                 &evidence_by_id,
@@ -875,7 +1215,7 @@ fn validate_measurement_evidence(
 }
 
 fn measurement_requires_replay_evidence(measurement: &MeasurementSet) -> bool {
-    measurement.evaluation().payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
+    measurement.evaluation().payload_schema() == CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3
 }
 
 fn validate_observation_stop_evidence(
@@ -884,6 +1224,7 @@ fn validate_observation_stop_evidence(
         crucible_store::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
+    log_segments: &dyn AttemptLogSegmentSource,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let StopOutcome::ObservationReached(proof) = candidate.observation().stop() else {
         return Ok(());
@@ -896,151 +1237,18 @@ fn validate_observation_stop_evidence(
     }
 
     let evaluation = candidate.measurements().evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2
-        || evaluation.evidence().len() != 1
-    {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Err(inconsistent("observation stop measurement evidence"));
     }
-    let evidence_id = *evaluation
-        .evidence()
-        .first()
+    let evidence = measurement_replay_leaf_id(evaluation.evidence())
+        .and_then(|id| evidence_by_id.get(&id).copied())
         .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
-    let evidence = evidence_by_id
-        .get(&evidence_id)
-        .copied()
-        .ok_or_else(|| inconsistent("observation stop measurement evidence"))?;
-    if evidence.configuration() != proof.child() {
-        return Err(inconsistent("observation stop configuration"));
-    }
 
-    let event_log = proof.event_log();
-    let crate::CrucibleMeasurementStopEvidence::Observation(retained_boundary) = evidence.stop()
-    else {
-        return Err(inconsistent("observation stop execution boundary"));
-    };
-    let retained_offset = retained_boundary.event_log_offset();
-    if retained_boundary.frontier().ticks != boundary.frontier_picoseconds()
-        || retained_boundary.quantum_start_completed_quanta() != boundary.start_completed_quanta()
-        || retained_boundary.completed_quanta() != boundary.completed_quanta()
-        || retained_boundary.quantum_start_events() != boundary.start_events()
-        || CampaignHash::from_bytes(retained_offset.prefix.bytes) != event_log.prefix()
-        || retained_offset
-            .appended_segment
-            .map(|hash| CampaignHash::from_bytes(hash.bytes))
-            != event_log.appended_segment()
-        || retained_offset.bytes != event_log.bytes()
-        || retained_offset.events != event_log.events()
-    {
-        return Err(inconsistent("observation stop execution boundary"));
-    }
-    let event_count = usize::try_from(event_log.events())
-        .map_err(|_| inconsistent("observation stop event count"))?;
-    let quantum_start = usize::try_from(boundary.start_events())
-        .map_err(|_| inconsistent("observation stop quantum event count"))?;
-    let prefix = evidence
-        .entries()
-        .get(..event_count)
-        .ok_or_else(|| inconsistent("observation stop event prefix"))?;
-    if quantum_start > event_count
-        || observation_event_prefix_digest(prefix) != event_log.digest()
-        || prefix
-            .iter()
-            .any(|entry| entry.at().ticks > boundary.frontier_picoseconds())
-        || evidence.terminal().at.ticks < boundary.frontier_picoseconds()
-    {
-        return Err(inconsistent("observation stop event prefix"));
-    }
-
-    match proof.condition() {
-        ObservationCondition::SchedulerQuiescent => {
-            if proof.satisfaction() != ObservationStopSatisfaction::SchedulerQuiescent
-                || proof.assertion_witness().is_some()
-                || !retained_boundary.scheduler_quiescent()
-            {
-                return Err(inconsistent("scheduler-quiescent observation stop"));
-            }
-        }
-        ObservationCondition::AssertionViolationTransition(assertion) => {
-            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-            let witness = proof
-                .assertion_witness()
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            let entry = prefix
-                .get(quantum_start..)
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry.sequence() == witness.sequence())
-                })
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
-                || !matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == *assertion
-                        && name.name == witness.assertion()
-                        && *state == AssertionPhase::Violated
-                )
-            {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-        }
-        ObservationCondition::AnyAssertionViolationTransition => {
-            if proof.satisfaction() != ObservationStopSatisfaction::AssertionViolationTransition {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-            let witness = proof
-                .assertion_witness()
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            let entry = prefix
-                .get(quantum_start..)
-                .and_then(|entries| {
-                    entries
-                        .iter()
-                        .find(|entry| entry.sequence() == witness.sequence())
-                })
-                .ok_or_else(|| inconsistent("assertion observation stop witness"))?;
-            if CampaignHash::from_bytes(entry.content_hash().bytes) != witness.entry()
-                || !matches!(
-                    entry.payload(),
-                    SchedulerEventLogPayload::Observable(
-                        ObservableEventPayload::AssertionStateChanged { name, state }
-                    ) if name.name == witness.assertion()
-                        && *state == AssertionPhase::Violated
-                )
-            {
-                return Err(inconsistent("assertion observation stop witness"));
-            }
-        }
-        ObservationCondition::SchedulerQuiescentOrExecutionQuanta { execution_quanta } => {
-            let expected_satisfaction = if retained_boundary.scheduler_quiescent() {
-                ObservationStopSatisfaction::SchedulerQuiescent
-            } else if boundary.completed_quanta() >= *execution_quanta {
-                ObservationStopSatisfaction::ExecutionQuanta
-            } else {
-                return Err(inconsistent("compound observation stop"));
-            };
-            if proof.satisfaction() != expected_satisfaction || proof.assertion_witness().is_some()
-            {
-                return Err(inconsistent("compound observation stop"));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn observation_event_prefix_digest(entries: &[SchedulerEventLogEntry]) -> CampaignHash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"crucible.savepoint-replay-event-prefix.v1\0");
-    hasher.update(&(entries.len() as u64).to_be_bytes());
-    for entry in entries {
-        hasher.update(&entry.sequence().to_be_bytes());
-        hasher.update(&entry.content_hash().bytes);
-    }
-    CampaignHash::from_bytes(*hasher.finalize().as_bytes())
+    // The leaf owns the exact boundary, prefix, and witness checks; the
+    // result carries every segment the prefix spans.
+    evidence
+        .verify_observation_stop_proof(log_segments, proof)
+        .map_err(|_| inconsistent("observation stop execution boundary"))
 }
 
 fn verify_measurement_record(
@@ -1052,15 +1260,13 @@ fn verify_measurement_record(
         crucible_store::content_store::ContentId,
         &CrucibleMeasurementReplayEvidence,
     >,
+    log_segments: &dyn AttemptLogSegmentSource,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Ok(());
     }
-    let evidence_id = evaluation
-        .evidence()
-        .first()
-        .copied()
+    let evidence_id = measurement_replay_leaf_id(evaluation.evidence())
         .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
     let evidence = evidence_by_id
         .get(&evidence_id)
@@ -1070,6 +1276,7 @@ fn verify_measurement_record(
     verify_crucible_measurement_publication(
         measurement,
         evidence,
+        log_segments,
         expected_scenario,
         configuration,
         scenario.measurements(),
@@ -1088,19 +1295,17 @@ fn validate_measurement_record(
     owned: &mut BTreeSet<crucible_store::content_store::ContentId>,
 ) -> Result<(), PreparedSemanticResultCodecError> {
     let evaluation = measurement.evaluation();
-    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2 {
+    if evaluation.payload_schema() != CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V3 {
         return Ok(());
     }
-    if evaluation.evidence().len() != 1 {
-        return Err(inconsistent("measurement replay evidence edge"));
-    }
-    let evidence_id = *evaluation
-        .evidence()
-        .first()
+    let evidence_id = measurement_replay_leaf_id(evaluation.evidence())
         .ok_or_else(|| inconsistent("measurement replay evidence edge"))?;
     let leaf = evidence_by_id
         .get(&evidence_id)
         .ok_or_else(|| inconsistent("missing measurement replay evidence"))?;
+    if evaluation.evidence() != &leaf.evidence_ids()? {
+        return Err(inconsistent("measurement replay evidence edge"));
+    }
     if leaf.scenario() != scenario
         || leaf.configuration() != configuration
         || leaf.definitions() != evaluation.definitions()
@@ -1134,10 +1339,11 @@ fn encode_observation(
         encoder.record(&selection.canonical_bytes())?;
     }
     encoder.record(&value.observation().canonical_bytes())?;
-    match value.resolved_effect_trace() {
-        Some(bytes) => {
+    // Only the manifest is encoded; segments stay in the segment stores.
+    match value.resolved_effect_trace_manifest() {
+        Some(manifest) => {
             encoder.byte(1)?;
-            encoder.record(bytes)?;
+            encoder.record(manifest)?;
         }
         None => encoder.byte(0)?,
     }
@@ -1252,8 +1458,12 @@ fn decode_observation(
     )?;
     match decoder.byte()? {
         0 => Ok(candidate),
+        // The caller rebinds the segments to its stores after decoding.
         1 => candidate
-            .with_resolved_effect_trace(decoder.record()?.to_vec())
+            .with_resolved_effect_trace(
+                decoder.record()?.to_vec(),
+                crucible_engine::segment_store::SegmentSources::default(),
+            )
             .map_err(Into::into),
         _ => Err(PreparedSemanticResultCodecError::InvalidTag),
     }
@@ -1270,46 +1480,7 @@ fn encode_finding(
     encoder.record(&value.original.canonical_bytes())?;
     encoder.record(&value.minimized_configuration.canonical_bytes())?;
     encoder.record(&value.minimized.canonical_bytes())?;
-    encode_records(
-        encoder,
-        &value.replay_records.configurations,
-        ConfigurationArtifact::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.measurements,
-        MeasurementSet::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.properties,
-        PropertyVerdictSet::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.coverage,
-        CoverageProjection::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.declarations,
-        SelectableDeclaration::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.domains,
-        ChoiceDomain::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.opportunities,
-        ChoiceOpportunity::canonical_bytes,
-    )?;
-    encode_records(
-        encoder,
-        &value.replay_records.selections,
-        Selection::canonical_bytes,
-    )?;
+    encode_record_ids(encoder, &value.replay_records.ids)?;
     encode_replays(encoder, value)?;
     let Some(triage_replays) = &value.triage_replays else {
         return Err(inconsistent("finding triage replay evidence"));
@@ -1321,8 +1492,22 @@ fn encode_finding(
     Ok(())
 }
 
+/// A caller's visit error, or a schedule that could not be segmented.
+enum SegmentVisitError<E> {
+    Visit(E),
+    Payload(CrucibleArtifactError),
+}
+
+impl<E> From<CrucibleArtifactError> for SegmentVisitError<E> {
+    fn from(error: CrucibleArtifactError) -> Self {
+        Self::Payload(error)
+    }
+}
+
 fn decode_finding(
     decoder: &mut Decoder<'_>,
+    replay_record_sources: ReplayRecordSources,
+    segments: &AttemptLogSegmentSources,
 ) -> Result<PreparedCrucibleFindingCandidate, PreparedSemanticResultCodecError> {
     let discovery_path = discovery_path_from_tag(decoder.byte()?)?;
     let minimization_seed = crucible_engine::Seed::from_bytes(
@@ -1335,51 +1520,21 @@ fn decode_finding(
     let original_configuration =
         decoder.decode_record(ConfigurationArtifact::from_canonical_bytes)?;
     let original = decoder.decode_record(ReproductionArtifact::from_canonical_bytes)?;
+    let original_artifact = super::decode_crucible_reproduction(
+        &original,
+        segments,
+        "journal original finding reproduction",
+    )?;
     let minimized_configuration =
         decoder.decode_record(ConfigurationArtifact::from_canonical_bytes)?;
     let minimized = decoder.decode_record(ReproductionArtifact::from_canonical_bytes)?;
-    let mut replay_record_count = 0usize;
-    let mut replay_record_bytes = 0usize;
-    let configurations = decoder.decode_replay_records(
-        ConfigurationArtifact::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
+    let minimized_artifact = super::decode_crucible_reproduction(
+        &minimized,
+        segments,
+        "journal minimized finding reproduction",
     )?;
-    let measurements = decoder.decode_replay_records(
-        MeasurementSet::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let properties = decoder.decode_replay_records(
-        PropertyVerdictSet::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let coverage = decoder.decode_replay_records(
-        CoverageProjection::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let declarations = decoder.decode_replay_records(
-        SelectableDeclaration::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let domains = decoder.decode_replay_records(
-        ChoiceDomain::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let opportunities = decoder.decode_replay_records(
-        ChoiceOpportunity::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
-    let selections = decoder.decode_replay_records(
-        Selection::from_canonical_bytes,
-        &mut replay_record_count,
-        &mut replay_record_bytes,
-    )?;
+    let (replay_record_ids, record_count, record_bytes) =
+        decode_record_ids(decoder, &replay_record_sources)?;
     let mut replay_validation_references = 0usize;
     let minimization_indexes = decode_replay_indexes(decoder, &mut replay_validation_references)?;
     let verification_indexes = decode_replay_indexes(decoder, &mut replay_validation_references)?;
@@ -1392,66 +1547,54 @@ fn decode_finding(
             .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
         verification_selected: decoder
             .decode_record(FindingTriageReplayEvidence::from_canonical_bytes)?,
+        segments: segments.clone(),
     });
     let bundle = decoder.decode_record(FindingCandidateBundle::from_canonical_bytes)?;
 
-    // Resolve every content identity once. Compact replay indexes can refer to
-    // the same large record many times, so hashing on every reference would
-    // perform work far beyond the encoded input bound.
-    let configuration_ids = record_ids(&configurations, ConfigurationArtifact::id)?;
-    let measurement_ids = record_ids(&measurements, MeasurementSet::id)?;
-    let property_ids = record_ids(&properties, PropertyVerdictSet::id)?;
-    let coverage_ids = record_ids(&coverage, CoverageProjection::id)?;
-    let opportunity_ids = record_ids(&opportunities, ChoiceOpportunity::id)?;
-    let selection_ids = record_ids(&selections, Selection::id)?;
-
+    // Identity tables were typed by authenticating each record once, so
+    // compact replay indexes resolve without rehashing any record.
+    let ids = &replay_record_ids;
     let minimization_replays = materialize_replays(
         &minimization_indexes,
         ReplayMaterialTables {
             signatures: bundle.signature_minimization().minimization_pass(),
-            configurations: &configuration_ids,
-            measurements: &measurement_ids,
-            properties: &property_ids,
-            coverage: &coverage_ids,
-            opportunities: &opportunity_ids,
-            selections: &selection_ids,
+            configurations: &ids.configurations,
+            measurements: &ids.measurements,
+            properties: &ids.properties,
+            coverage: &ids.coverage,
+            opportunities: &ids.opportunities,
+            selections: &ids.selections,
         },
     )?;
     let verification_replays = materialize_replays(
         &verification_indexes,
         ReplayMaterialTables {
             signatures: bundle.signature_minimization().verification_pass(),
-            configurations: &configuration_ids,
-            measurements: &measurement_ids,
-            properties: &property_ids,
-            coverage: &coverage_ids,
-            opportunities: &opportunity_ids,
-            selections: &selection_ids,
+            configurations: &ids.configurations,
+            measurements: &ids.measurements,
+            properties: &ids.properties,
+            coverage: &ids.coverage,
+            opportunities: &ids.opportunities,
+            selections: &ids.selections,
         },
     )?;
 
-    let (record_count, canonical_bytes) = replay_record_totals(
-        ReplayRecordTables {
-            configurations: &configurations,
-            measurements: &measurements,
-            properties: &properties,
-            coverage: &coverage,
-            declarations: &declarations,
-            domains: &domains,
-            opportunities: &opportunities,
-            selections: &selections,
-        },
-        &bundle,
-    )?;
+    let signature_bytes = bundle
+        .signature_minimization()
+        .minimization_pass()
+        .iter()
+        .chain(bundle.signature_minimization().verification_pass().iter())
+        .flatten()
+        .fold(0_u64, |total, signature| {
+            total.saturating_add(signature.canonical_bytes().len() as u64)
+        });
+    let canonical_bytes = record_bytes.saturating_add(signature_bytes);
+    if canonical_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
+        return Err(PreparedSemanticResultCodecError::LimitExceeded);
+    }
     let replay_records = PreparedFindingReplayRecords {
-        configurations,
-        measurements,
-        properties,
-        coverage,
-        declarations,
-        domains,
-        opportunities,
-        selections,
+        ids: replay_record_ids,
+        sources: replay_record_sources,
         record_count,
         canonical_bytes,
     };
@@ -1461,8 +1604,10 @@ fn decode_finding(
         scenario,
         original_configuration,
         original,
+        original_artifact,
         minimized_configuration,
         minimized,
+        minimized_artifact,
         replay_records,
         minimization_replays,
         verification_replays,
@@ -1497,6 +1642,7 @@ fn validate_finding(
     validate_recorded_replays(value)?;
     let original_finding = decode_journal_finding_reproduction(
         &value.original,
+        &value.original_artifact,
         value.discovery_path,
         "journal original finding reproduction",
     )?;
@@ -1544,6 +1690,7 @@ fn validate_finding(
     }
     let minimized_finding = decode_journal_finding_reproduction(
         &value.minimized,
+        &value.minimized_artifact,
         value.discovery_path,
         "journal minimized finding reproduction",
     )?;
@@ -1551,17 +1698,17 @@ fn validate_finding(
     Ok(())
 }
 
+/// Replays a journal reproduction's Crucible artifact into a finding.
+///
+/// The artifact's correspondence to `reproduction` is checked by the caller,
+/// which re-derives the record from the returned finding.
 fn decode_journal_finding_reproduction(
     reproduction: &ReproductionArtifact,
+    artifact: &crucible_engine::ReproductionArtifact,
     discovery_path: crucible_engine::FindingDiscoveryPath,
     artifact_name: &'static str,
 ) -> Result<FindingReproductionArtifact, PreparedSemanticResultCodecError> {
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-            .map_err(|source| CrucibleArtifactError::InvalidPayload {
-                artifact: artifact_name,
-                source: Box::new(source),
-            })?;
+    let artifact = artifact.clone();
     let replay = artifact
         .replay()
         .map_err(|source| CrucibleArtifactError::InvalidPayload {
@@ -1591,6 +1738,7 @@ impl PreparedCrucibleFindingCandidate {
     ) -> Result<crate::FindingProductionReplayCaptureLimits, PreparedSemanticResultCodecError> {
         let finding = decode_journal_finding_reproduction(
             &self.original,
+            &self.original_artifact,
             self.discovery_path,
             "journal production replay capture basis",
         )?;
@@ -1679,16 +1827,33 @@ fn validate_finding_triage_replays(
         {
             return Err(inconsistent("finding triage replay evidence basis"));
         }
-        let native_replay =
-            FailureTriageReplayEvidence::from_compact_binary(finding.clone(), record.payload())
-                .map_err(|source| CrucibleArtifactError::InvalidPayload {
-                    artifact: "journal finding triage replay evidence",
-                    source: Box::new(source),
-                })?;
+        let native_replay = FailureTriageReplayEvidence::from_compact_binary(
+            finding.clone(),
+            record.payload(),
+            std::sync::Arc::new(triage_replays.segments.clone()),
+        )
+        .map_err(|source| CrucibleArtifactError::InvalidPayload {
+            artifact: "journal finding triage replay evidence",
+            source: Box::new(source),
+        })?;
         if record.payload_schema() != native_replay.schema_version() {
             return Err(inconsistent(
                 "finding triage replay declared payload schema",
             ));
+        }
+        // The record must name exactly the segments its payload references,
+        // or retention would diverge from what verification reads.
+        let referenced = native_replay.referenced_segments();
+        if record.log_segments().len() != referenced.len()
+            || record
+                .log_segments()
+                .iter()
+                .zip(&referenced)
+                .any(|(named, segment)| {
+                    named.content() != segment.id || named.bytes() != segment.encoded_bytes
+                })
+        {
+            return Err(inconsistent("finding triage replay log segments"));
         }
         let native_signature = native_replay.signature();
         let native_kind = match native_signature.failure_kind {

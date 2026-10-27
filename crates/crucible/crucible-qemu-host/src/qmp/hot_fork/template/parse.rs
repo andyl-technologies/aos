@@ -3,7 +3,7 @@
 //! The versioned envelope records withheld proofs explicitly:
 //!
 //! ```text
-//! { "schema-version": 29, "generation": N, "outcome": "draining",
+//! { "schema-version": 30, "generation": N, "outcome": "draining",
 //!   "acknowledged-proofs": A, "missing-proofs": M, ... }
 //! ```
 //!
@@ -290,9 +290,6 @@ fn parse_hot_fork_template_resource_stage(
         "qmp-staged",
         "qmp-generation",
         "qmp-resource-plan-bound",
-        "console-staged",
-        "console-generation",
-        "console-resource-plan-bound",
         "plugin-endpoints-staged",
         "plugin-endpoint-generation",
         "plugin-private-ring-generation",
@@ -335,9 +332,6 @@ fn parse_hot_fork_template_resource_stage(
     let qmp_staged = bool_field("qmp-staged")?;
     let qmp_generation = u64_field("qmp-generation")?;
     let qmp_resource_plan_bound = bool_field("qmp-resource-plan-bound")?;
-    let console_staged = bool_field("console-staged")?;
-    let console_generation = u64_field("console-generation")?;
-    let console_resource_plan_bound = bool_field("console-resource-plan-bound")?;
     let plugin_endpoints_staged = bool_field("plugin-endpoints-staged")?;
     let plugin_endpoint_generation = u64_field("plugin-endpoint-generation")?;
     let plugin_private_ring_generation = u64_field("plugin-private-ring-generation")?;
@@ -363,9 +357,6 @@ fn parse_hot_fork_template_resource_stage(
         qmp_staged,
         qmp_generation,
         qmp_resource_plan_bound,
-        console_staged,
-        console_generation,
-        console_resource_plan_bound,
         plugin_endpoints_staged,
         plugin_endpoint_generation,
         plugin_private_ring_generation,
@@ -407,7 +398,6 @@ fn resource_stage_shape_valid(
     let resources_staged = state.private_ring_staged
         || state.diagnostics_staged
         || state.qmp_staged
-        || state.console_staged
         || state.plugin_endpoints_staged;
     let disposition_shape = if state.plugin_endpoints_staged && state.template_generation != 0 {
         state.plugin_barrier_generation != 0
@@ -440,7 +430,6 @@ fn resource_stage_shape_valid(
         && state.private_ring_staged
         && state.diagnostics_staged
         && state.qmp_staged
-        && state.console_staged
         && state.plugin_endpoints_staged
         && expected_disposition_bound
         && plugin_barrier.quiescent();
@@ -458,7 +447,6 @@ fn resource_stage_shape_valid(
         && child_plan_shape
         && state.diagnostics_resource_plan_bound == state.plugin_child_plan_bound
         && state.qmp_resource_plan_bound == state.plugin_child_plan_bound
-        && state.console_resource_plan_bound == state.plugin_child_plan_bound
         && state.plugin_child_resource_plan_bound == state.plugin_child_plan_bound
         && disposition_shape
         && (!state.private_ring_staged || state.private_ring_generation != 0)
@@ -466,12 +454,9 @@ fn resource_stage_shape_valid(
         && (!state.diagnostics_staged || state.private_ring_staged)
         && (!state.qmp_staged || state.qmp_generation != 0)
         && (!state.qmp_staged || state.diagnostics_staged)
-        && (!state.console_staged || state.console_generation != 0)
-        && (!state.console_staged || state.qmp_staged)
-        && (!state.plugin_endpoints_staged || state.console_staged)
+        && (!state.plugin_endpoints_staged || state.qmp_staged)
         && (state.diagnostics_staged || !state.diagnostics_resource_plan_bound)
         && (state.qmp_staged || !state.qmp_resource_plan_bound)
-        && (state.console_staged || !state.console_resource_plan_bound)
         && (!state.plugin_endpoints_staged
             || (state.private_ring_staged
                 && state.plugin_endpoint_generation != 0

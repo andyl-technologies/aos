@@ -10,8 +10,9 @@
 //! exported summary contains their full-file hashes and bounded row context.
 //! Setting `CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1` runs the
 //! block-recovery subflight alone for focused failure diagnosis.
-//! Setting `CRUCIBLE_PHASE4_PARTITION_PROBE=1` compares coarse and fine
-//! post-selection scheduler steps across an exact virtual-timer wake.
+//! Setting `CRUCIBLE_PHASE4_PARTITION_PROBE=1` compares five post-selection
+//! ceiling schedules across an exact virtual-timer wake; bounded ceilings must
+//! leave the guest in the same state whatever their frequency.
 //!
 //! ```text
 //! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT
@@ -36,10 +37,7 @@ use crucible_qemu_host::{
     QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
     QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
 };
-use crucible_qemu_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
-};
+use crucible_qemu_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu_shmem::FingerprintSample;
 
@@ -51,6 +49,16 @@ mod runtime_trace;
 
 #[path = "crucible-qemu-production-plugin-flight/partition_probe.rs"]
 mod partition_probe;
+
+#[path = "crucible-qemu-production-plugin-flight/time_ownership.rs"]
+mod time_ownership;
+
+#[path = "crucible-qemu-production-plugin-flight/guest_clock_reads.rs"]
+mod guest_clock_reads;
+
+#[cfg(feature = "test-support")]
+#[path = "crucible-qemu-production-plugin-flight/linux_ack_poll.rs"]
+mod linux_ack_poll;
 
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
@@ -86,6 +94,8 @@ const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
+const TIME_OWNERSHIP_ENVIRONMENT: &str = "CRUCIBLE_TIME_OWNERSHIP_WITNESS";
+const LINUX_ACK_PAIR_ENVIRONMENT: &str = "CRUCIBLE_LINUX_BOOT_ACK_POLL_PAIR";
 
 fn main() -> ExitCode {
     match run() {
@@ -154,7 +164,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
+    let clock_read_flight = guest_clock_reads::requested()?;
+    let selectable_catalog_plan = guest_clock_reads::selectable_catalog_plan(clock_read_flight)?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
         .with_vm_shape(128, 4)
@@ -170,39 +181,74 @@ fn run() -> Result<(), Box<dyn Error>> {
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
 
-    if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
-        let coarse = run_once(
-            &mut factory,
-            &config,
-            qemu,
-            false,
-            Some(partition_probe::POST_SELECTION_SPAN_PS),
+    #[cfg(not(feature = "test-support"))]
+    if std::env::var_os(LINUX_ACK_PAIR_ENVIRONMENT).is_some() {
+        return Err("Linux ACK polling comparison requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    if linux_ack_poll::requested()? {
+        return Ok(linux_ack_poll::run(&mut factory, &config, qemu)?);
+    }
+
+    if clock_read_flight {
+        return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
+    }
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        let reference = run_once(&mut factory, &config, qemu, false, None)?;
+        let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+        compare_boundaries(
+            "clock ownership restart",
+            &reference.boundaries,
+            &hostile.boundaries,
         )?;
-        let fine = run_once(
-            &mut factory,
-            &config,
-            qemu,
-            false,
-            Some(partition_probe::FINE_STEP_PS),
-        )?;
-        fs::write(reference_trace_output, coarse.diagnostics.trace.report())?;
-        compare_boundaries("partitioned replay", &coarse.boundaries, &fine.boundaries)?;
-        if !idle_evidence_matches_across_runs(&coarse.idle, &fine.idle) {
-            return Err(format!(
-                "partitioned replay did not start from the same authenticated timer wake: coarse={:?} fine={:?}",
-                coarse.idle, fine.idle,
-            )
-            .into());
+        if !idle_evidence_matches_across_runs(&reference.idle, &hostile.idle) {
+            return Err("clock ownership idle/wake evidence changed across runs".into());
         }
-        partition_probe::compare(
-            coarse
-                .partition_probe
-                .as_ref()
-                .ok_or("missing coarse partition probe")?,
-            fine.partition_probe
-                .as_ref()
-                .ok_or("missing fine partition probe")?,
-        )?;
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        println!("PASS");
+        println!("diagnostic_mode=time-ownership");
+        println!("loaded_production_plugin=true");
+        println!("idle_hold_clock_unchanged=true");
+        println!("authorized_exact_timer_wake_raw_unchanged=true");
+        return Ok(());
+    }
+
+    if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
+        // Each schedule boots the same guest; the first is the reference.
+        let mut runs = Vec::with_capacity(partition_probe::PartitionSchedule::ALL.len());
+        for schedule in partition_probe::PartitionSchedule::ALL {
+            runs.push(run_once(
+                &mut factory,
+                &config,
+                qemu,
+                false,
+                Some(schedule),
+            )?);
+        }
+        let (reference, candidates) = runs
+            .split_first()
+            .ok_or("partition probe ran no schedules")?;
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        for candidate in candidates {
+            compare_boundaries(
+                "partitioned replay",
+                &reference.boundaries,
+                &candidate.boundaries,
+            )?;
+            if !idle_evidence_matches_across_runs(&reference.idle, &candidate.idle) {
+                return Err(format!(
+                    "partitioned replay did not start from the same authenticated timer wake: reference={:?} candidate={:?}",
+                    reference.idle, candidate.idle,
+                )
+                .into());
+            }
+        }
+        let probes = runs
+            .into_iter()
+            .map(|run| run.partition_probe.ok_or("missing partition probe"))
+            .collect::<Result<Vec<_>, _>>()?;
+        partition_probe::compare(&probes)?;
         println!("PASS");
         println!("diagnostic_mode=phase4-partition-probe");
         return Ok(());
@@ -308,9 +354,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("instruction_exact_window_width_picoseconds={FLIGHT_TICKS_PER_INSTRUCTION}");
     println!("fractional_phase_window_lower_picoseconds={FRACTIONAL_PHASE_LOWER_TARGET}");
     println!("fractional_phase_window_upper_picoseconds={INSTRUCTION_EXACT_LOWER_TARGET}");
-    println!("fractional_phase_no_retirement=true");
-    println!("fractional_phase_timer_projection_changed=true");
-    println!("fractional_phase_fingerprint_changed=true");
+    println!("fractional_phase_clock_not_credited=true");
+    println!(
+        "fractional_phase_retirements={}",
+        instruction_exact.fractional_phase_retirements
+    );
     println!("instruction_exact_raw_retirement_successor=true");
     println!(
         "instruction_exact_lower_rr_vcpu={}",
@@ -411,7 +459,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     print_block_recovery_evidence(block_recovery_hot_fork);
     println!("component_failures=0");
     println!("per_vcpu_register_files_present=true");
-    println!("sample_logical_picoseconds_equal_target=true");
+    println!("sample_logical_picoseconds_settle_target=true");
     Ok(())
 }
 
@@ -464,6 +512,8 @@ struct FlightRun {
     on_demand_acknowledgements: usize,
     shutdown: QemuShutdownReport,
     diagnostics: RuntimeDeterminismDiagnostics,
+    #[cfg(feature = "test-support")]
+    boot_probe: Option<linux_ack_poll::BootProbe>,
 }
 
 #[derive(Debug)]
@@ -492,6 +542,7 @@ struct BoundaryEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InstructionExactEvidence {
+    fractional_phase_retirements: u64,
     lower_target: u64,
     upper_target: u64,
     lower_rr_vcpu: u32,
@@ -609,34 +660,21 @@ fn instruction_exact_evidence(
         .find(|boundary| boundary.target == FRACTIONAL_PHASE_LOWER_TARGET)
         .ok_or_else(|| String::from("fractional-phase lower boundary is absent"))?;
 
+    let stops_at_its_sample = |boundary: &BoundaryEvidence| {
+        boundary.sample.sample_icount == boundary.calibration.logical_icount
+            && settles_target(boundary.calibration.logical_icount, boundary.target)
+    };
     if upper.target != lower.target + FLIGHT_TICKS_PER_INSTRUCTION
-        || lower.sample.sample_icount != lower.target
-        || fractional_lower.sample.sample_icount != fractional_lower.target
-        || upper.sample.sample_icount != upper.target
-        || lower.calibration.logical_icount != lower.target
-        || upper.calibration.logical_icount != upper.target
-        || fractional_lower.calibration.logical_icount != fractional_lower.target
+        || lower.target != fractional_lower.target + 1
+        || !stops_at_its_sample(lower)
+        || !stops_at_its_sample(upper)
+        || !stops_at_its_sample(fractional_lower)
     {
         return Err(format!(
-            "instruction-exact samples do not bind adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
+            "instruction-exact samples do not settle adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
         ));
     }
-    let fractional_differences = sample_differences(&fractional_lower.sample, &lower.sample);
-    let mut expected_fractional_sample = fractional_lower.sample;
-    expected_fractional_sample.sample_icount = lower.target;
-    expected_fractional_sample.device_state_digest = lower.sample.device_state_digest;
-    if lower.target != fractional_lower.target + 1
-        || fractional_differences.len() != 2
-        || fractional_differences[0] != "sample_icount"
-        || fractional_differences[1] != "device_state_digest"
-        || lower.sample != expected_fractional_sample
-        || lower.calibration.raw_icount != fractional_lower.calibration.raw_icount
-        || lower.fingerprint == fractional_lower.fingerprint
-    {
-        return Err(format!(
-            "fractional-phase sample changed retired state or omitted timer projection: lower={fractional_lower:?}, upper={lower:?}, changed_components={fractional_differences:?}"
-        ));
-    }
+    let fractional_phase_retirements = fractional_phase_retirements(fractional_lower, lower)?;
     if Some(upper.calibration.raw_icount) != lower.calibration.raw_icount.checked_add(1) {
         return Err(format!(
             "instruction-exact samples do not advance raw retirement by one: lower={lower:?}, upper={upper:?}"
@@ -691,6 +729,7 @@ fn instruction_exact_evidence(
     let owning_vcpu_state_projection = expected_register_projection;
 
     Ok(InstructionExactEvidence {
+        fractional_phase_retirements,
         lower_target: lower.target,
         upper_target: upper.target,
         lower_rr_vcpu: lower.sample.rr_current_vcpu,
@@ -701,6 +740,35 @@ fn instruction_exact_evidence(
         owning_vcpu_state_projection,
         changed_components,
     })
+}
+
+/// Classifies the one-picosecond step between two busy targets.
+///
+/// A ceiling is never credited to the guest, so the later target either admits
+/// no retirement, leaving the stop bit-identical, or admits exactly the one
+/// retirement that ends on it.
+fn fractional_phase_retirements(
+    fractional_lower: &BoundaryEvidence,
+    lower: &BoundaryEvidence,
+) -> Result<u64, String> {
+    let fractional_raw = fractional_lower.calibration.raw_icount;
+    let lower_raw = lower.calibration.raw_icount;
+    if lower_raw == fractional_raw
+        && lower.calibration == fractional_lower.calibration
+        && lower.sample == fractional_lower.sample
+        && lower.fingerprint == fractional_lower.fingerprint
+    {
+        return Ok(0);
+    }
+    if Some(lower_raw) == fractional_raw.checked_add(1)
+        && lower.calibration.logical_icount == lower.target
+        && lower.fingerprint != fractional_lower.fingerprint
+    {
+        return Ok(1);
+    }
+    Err(format!(
+        "fractional-phase step credited the clock or retired more than one instruction: lower={fractional_lower:?}, upper={lower:?}"
+    ))
 }
 
 fn validate_instruction_exact_shape_stability(
@@ -861,9 +929,9 @@ fn final_busy_raw_boundary(baseline: &RuntimeDeterminismBaseline) -> Result<u64,
         .calibration
         .as_ref()
         .map_err(|error| format!("boundary_calibration_error={error}"))?;
-    if calibration.logical_icount != TARGETS[TARGETS.len() - 1] {
+    if !settles_target(calibration.logical_icount, TARGETS[TARGETS.len() - 1]) {
         return Err(format!(
-            "boundary_logical_picoseconds={} expected={}",
+            "boundary_logical_picoseconds={} settles={}",
             calibration.logical_icount,
             TARGETS[TARGETS.len() - 1]
         ));
@@ -876,7 +944,18 @@ fn run_once(
     config: &QemuLiveNodeStepGateConfig,
     qemu: &Path,
     hostile: bool,
-    partition_step_ps: Option<u64>,
+    partition_schedule: Option<partition_probe::PartitionSchedule>,
+) -> Result<FlightRun, Box<dyn Error>> {
+    run_once_with_boot_probe(factory, config, qemu, hostile, partition_schedule, false)
+}
+
+fn run_once_with_boot_probe(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_schedule: Option<partition_probe::PartitionSchedule>,
+    boot_probe_enabled: bool,
 ) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
@@ -937,7 +1016,12 @@ fn run_once(
             }
         };
         let outcome = observation.outcome;
-        if observation.requested_ceiling.ticks != target || observation.reached.ticks != target {
+        // Each target is a bound (RFC-0010 SCHED-12): the busy guest stops at
+        // its last retirement at or below it and is settled through it.
+        if observation.requested_ceiling.ticks != target
+            || observation.settled_through.ticks != target
+            || !settles_target(observation.reached.ticks, target)
+        {
             return Err(
                 format!("scheduler backend returned invalid boundary: {observation:?}").into(),
             );
@@ -956,9 +1040,10 @@ fn run_once(
         let sample = node.fingerprint_sample()?;
         validate_sample(sample, target)?;
         let calibration = node.logical_time_calibration()?;
-        if calibration.logical_icount != target {
+        if calibration.logical_icount != observation.reached.ticks {
             return Err(format!(
-                "logical/raw calibration did not bind busy target {target}: {calibration:?}"
+                "logical/raw calibration did not bind the stop below busy target {target}: \
+                 {calibration:?}"
             )
             .into());
         }
@@ -998,6 +1083,17 @@ fn run_once(
         rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
     };
 
+    #[cfg(not(feature = "test-support"))]
+    if boot_probe_enabled {
+        return Err("Linux boot segment requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    let boot_probe = if boot_probe_enabled {
+        Some(linux_ack_poll::probe(&mut node)?)
+    } else {
+        None
+    };
+
     let idle = match probe_idle_wake(&mut node) {
         Ok(idle) => idle,
         Err(source) => {
@@ -1023,8 +1119,8 @@ fn run_once(
         }
     };
 
-    let partition_probe = match partition_step_ps
-        .map(|step| partition_probe::run(&mut node, idle.deadline, step))
+    let partition_probe = match partition_schedule
+        .map(|schedule| partition_probe::run(&mut node, idle.deadline, schedule))
         .transpose()
     {
         Ok(probe) => probe,
@@ -1067,11 +1163,15 @@ fn run_once(
         (Ok(_), Err(error)) => return Err(error.into()),
     };
     Ok(FlightRun {
-        on_demand_acknowledgements: boundaries.len() + idle.on_demand_acknowledgements,
+        on_demand_acknowledgements: boundaries.len()
+            + idle.on_demand_acknowledgements
+            + if boot_probe_enabled { 2 } else { 0 },
         boundaries,
         instruction_exact,
         idle,
         partition_probe,
+        #[cfg(feature = "test-support")]
+        boot_probe,
         shutdown,
         diagnostics: RuntimeDeterminismDiagnostics {
             baseline: runtime_baseline,
@@ -1132,6 +1232,21 @@ fn node_state_failure(
          timer_witness={timer_witness:?}"
     )
     .into()
+}
+
+/// Retains the original wake inputs separately from post-shutdown observations.
+fn idle_wake_failure_context(
+    halted_at: Icount,
+    deadline: Icount,
+    armed: QemuLogicalTimeCalibration,
+    prior_timer_generation: Option<u64>,
+    source: impl std::fmt::Display,
+) -> String {
+    format!(
+        "halted_at_ps={}; requested_deadline_ps={}; armed_logical_ps={}; \
+         armed_raw_instructions={}; prior_timer_generation={prior_timer_generation:?}; {source}",
+        halted_at.retired, deadline.retired, armed.logical_icount, armed.raw_icount,
+    )
 }
 
 fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> {
@@ -1237,6 +1352,10 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
     }
     let prior_timer_witness = node.virtual_timer_fire_witness()?;
 
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        time_ownership::hold(node, armed_calibration)?;
+    }
+
     let wake = match SimulationBackend::step_to(
         node,
         VirtualTime {
@@ -1244,7 +1363,16 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
         },
     ) {
         Ok(observation) => observation,
-        Err(source) => return Err(node_state_failure(node, "virtual-timer wake", source)),
+        Err(source) => {
+            let context = idle_wake_failure_context(
+                at,
+                deadline,
+                armed_calibration,
+                prior_timer_witness.map(|witness| witness.generation),
+                source,
+            );
+            return Err(node_state_failure(node, "virtual-timer wake", context));
+        }
     };
     if wake.reached.ticks != deadline.retired {
         return Err(format!("idle wake missed exact deadline: {wake:?}").into());
@@ -1344,21 +1472,6 @@ fn authenticate_readiness_marker(
     Ok(retired_icount.retired)
 }
 
-fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
-    let declaration = SelectablePlanDeclaration::new(
-        READINESS_SELECTABLE_ID,
-        vec![1],
-        vec![1],
-        vec![String::from("readiness")],
-        SelectablePlanPresence::Required,
-    )?;
-    Ok(SelectableCatalogPlan::new(
-        SelectablePlanLimits::new(1, 1, 1)?,
-        vec![declaration],
-        SelectablePlanContinuation::cold(),
-    )?)
-}
-
 fn install_preemption(
     node: &mut QemuNode,
     kind: PreemptionKind,
@@ -1418,8 +1531,14 @@ fn align_preemption_tick(
     Ok(at)
 }
 
+/// Returns whether a busy stop at `logical` settles `target`: the clock is at
+/// most the target and the next retirement would end past it.
+fn settles_target(logical: u64, target: u64) -> bool {
+    logical <= target && target - logical < FLIGHT_TICKS_PER_INSTRUCTION
+}
+
 fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), Box<dyn Error>> {
-    if sample.sample_icount != target
+    if !settles_target(sample.sample_icount, target)
         || sample.vcpu_count != 4
         || sample.rr_current_vcpu >= sample.vcpu_count
         || sample.rr_switch_quantum != RR_SWITCH_QUANTUM

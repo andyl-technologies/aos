@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::model::{BindingSearchChoice, FaultCoordinate};
-use crate::{SelectionDecision, SignalFaultCampaignBranch, SignalFaultSelectable};
+use crate::{
+    NetworkFaultCampaignBranch, SelectionDecision, SignalFaultCampaignBranch, SignalFaultSelectable,
+};
 use crucible_qemu_protocol::app_random_branch_plan::MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES;
 
 impl SingleScheduler {
@@ -64,21 +66,33 @@ impl SingleScheduler {
     /// and immediately before the corresponding [`Decision::Selection`]. The
     /// scheduler consumes a selection only after replay validation succeeds.
     ///
+    /// Every VM receives its own plugin plan of at most
+    /// [`MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES`] substitutions, so the installed
+    /// set is bounded by that count times the World's VM count.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when a decision is not a
-    /// campaign-branch selection or a parent is duplicated.
+    /// campaign-branch selection, a parent is duplicated, or the set exceeds
+    /// the per-VM plan bound summed over the World's VMs.
     pub fn install_app_random_branch_selections(
         &mut self,
         selections: impl IntoIterator<Item = (ContentHash, SelectionDecision)>,
     ) -> Result<(), SchedulerError> {
+        let vm_count = self
+            .world_scheduling_nodes
+            .iter()
+            .filter(|node| node.kind == SchedulingNodeKind::Vm)
+            .count()
+            .max(1);
+        let maximum = MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES.saturating_mul(vm_count);
         let mut installed = BTreeMap::new();
         for (parent, selection) in selections {
-            if installed.len() >= MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES {
+            if installed.len() >= maximum {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "app-random replay plan exceeds {} selections",
-                        MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES
+                        "app-random replay plan exceeds {MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES} \
+                         selections for each of {vm_count} VMs"
                     ),
                 });
             }
@@ -145,10 +159,66 @@ impl SingleScheduler {
         Ok(())
     }
 
-    /// Returns live World-network frontiers captured in execution order.
+    /// Returns the search frontiers retained at the current admission boundary.
+    ///
+    /// Frontiers are kept in execution order. Recording a frontier first
+    /// retires every leading frontier whose virtual time precedes the scheduler
+    /// frontier, because such a frontier can no longer authenticate a branch or
+    /// be published as a discovery. The retained window therefore stays bounded
+    /// by the choices offered at one boundary rather than growing with the run.
     #[must_use]
     pub fn search_frontiers(&self) -> &[SearchRuntimeFrontier] {
         &self.search_frontiers
+    }
+
+    /// Returns the number of search frontiers ever recorded, retired or not.
+    ///
+    /// The count is a stable sequence position: a caller captures it before a
+    /// quantum and passes it to [`Self::search_frontiers_since`] afterwards.
+    #[must_use]
+    pub fn search_frontier_count(&self) -> u64 {
+        self.retired_search_frontiers
+            .saturating_add(u64::try_from(self.search_frontiers.len()).unwrap_or(u64::MAX))
+    }
+
+    /// Returns the retained frontiers recorded at or after sequence `first`.
+    ///
+    /// Frontiers from that range that were already retired precede the
+    /// scheduler frontier and are omitted, as they could not be published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `first` lies beyond
+    /// [`Self::search_frontier_count`].
+    pub fn search_frontiers_since(
+        &self,
+        first: u64,
+    ) -> Result<&[SearchRuntimeFrontier], SchedulerError> {
+        if first > self.search_frontier_count() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("search frontier sequence lies beyond the recorded history"),
+            });
+        }
+        let start = usize::try_from(first.saturating_sub(self.retired_search_frontiers))
+            .unwrap_or(usize::MAX)
+            .min(self.search_frontiers.len());
+        Ok(&self.search_frontiers[start..])
+    }
+
+    /// Records one search frontier after retiring every passed frontier.
+    pub(super) fn record_search_frontier(&mut self, frontier: SearchRuntimeFrontier) {
+        let passed = self
+            .search_frontiers
+            .iter()
+            .take_while(|retained| retained.at < self.frontier)
+            .count();
+        if passed != 0 {
+            self.search_frontiers.drain(..passed);
+            self.retired_search_frontiers = self
+                .retired_search_frontiers
+                .saturating_add(u64::try_from(passed).unwrap_or(u64::MAX));
+        }
+        self.search_frontiers.push(frontier);
     }
 
     /// Records finite signal-fault choices at their pre-evaluation boundary.
@@ -183,7 +253,7 @@ impl SingleScheduler {
                     message: format!("invalid signal-fault search choice: {error}"),
                 }
             })?;
-            self.search_frontiers.push(SearchRuntimeFrontier {
+            self.record_search_frontier(SearchRuntimeFrontier {
                 configuration: parent.clone(),
                 at,
                 choices: SearchFrontierChoices::from_decision_sequences(decisions),
@@ -248,7 +318,7 @@ impl SingleScheduler {
         &mut self,
         branch: &SignalFaultCampaignBranch,
     ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
-        if self.configuration != *branch.parent() || self.frontier != branch.frontier() {
+        if !branch.parent().matches(&self.configuration) || self.frontier != branch.frontier() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "signal-fault campaign branch does not match the current scheduler boundary",
@@ -256,7 +326,7 @@ impl SingleScheduler {
             });
         }
         let configuration = self.step_quantum(branch.decisions())?;
-        if configuration != *branch.selected() {
+        if !branch.selected().matches(&configuration) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "signal-fault campaign branch selected configuration is inconsistent",
@@ -267,6 +337,48 @@ impl SingleScheduler {
             ticks: self.frontier.ticks,
         };
         let append = self.emit_quantum_event_log(&[], branch.decisions(), &[], at, true)?;
+        self.configuration = configuration.clone();
+        self.quanta = self.quanta.saturating_add(1);
+        self.yield_to_control_inbox();
+        Ok((configuration, append))
+    }
+
+    /// Appends one authenticated network fault campaign branch.
+    ///
+    /// The selection applies at the all-VM boundary after every phase-marker
+    /// park joined one frontier. The branch must name this scheduler's exact
+    /// configuration and that joined frontier before its decision is recorded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the branch names a
+    /// different parent or frontier, when its selected configuration differs
+    /// from applying its decision, or when event-log recording fails.
+    pub fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, SchedulerEventLogAppend), SchedulerError> {
+        if self.configuration != *branch.parent() || self.frontier != branch.at() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network fault campaign branch does not match the current scheduler boundary",
+                ),
+            });
+        }
+        let decisions = std::slice::from_ref(branch.decision());
+        let configuration = self.step_quantum(decisions)?;
+        if configuration != *branch.selected() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network fault campaign branch selected configuration is inconsistent",
+                ),
+            });
+        }
+
+        let at = SimInstant {
+            ticks: self.frontier.ticks,
+        };
+        let append = self.emit_quantum_event_log(&[], decisions, &[], at, true)?;
         self.configuration = configuration.clone();
         self.quanta = self.quanta.saturating_add(1);
         self.yield_to_control_inbox();

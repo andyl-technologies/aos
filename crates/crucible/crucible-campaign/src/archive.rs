@@ -13,14 +13,22 @@
 //!   omitted-page-00000000  -> CampaignArchiveInventoryPageV1(Omitted, entries...)
 //!   selected/omitted counts + ordered-entry digests
 //! ```
+//!
+//! Each ordered-entry digest is [`CampaignHash::derive`] over the canonical
+//! encoding of the complete entry sequence (a `u64` count followed by every
+//! entry). The derivation hashes that encoding's length first, so planning and
+//! inspection measure an inventory in one pass and hash it in a second rather
+//! than holding the sequence in memory.
 
-use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crucible_store::content_store::{
     ContentId, ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass,
 };
 
 use crate::codec::{self, Canonical, Decoder, Encoder};
+use crate::identity::StreamingCampaignHash;
+use crate::spill::SpillFile;
 use crate::{
     CampaignArchiveInventoryPageId, CampaignArchiveManifestId, CampaignCodecError, CampaignFactId,
     CampaignHash, CampaignSnapshotId, ConfigurationId, ExactCheckpointId,
@@ -51,8 +59,26 @@ const ARCHIVE_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum direct object entries carried by one archive inventory page.
 pub const MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES: usize = 4_096;
+
+/// Maximum inventory pages one archive manifest can name.
+///
+/// Page identities are the manifest envelope's children, so this is the
+/// content-envelope child limit.
+const MAX_ARCHIVE_MANIFEST_PAGES: usize = 65_536;
+
 /// Maximum selected plus omitted objects represented by one archive.
-pub const MAX_ARCHIVE_INVENTORY_ENTRIES: usize = crate::MAX_CAMPAIGN_CLOSURE_OBJECTS;
+///
+/// This is the manifest format limit rather than a resource budget: planning
+/// and inspection stream the inventory through bounded scratch storage. With
+/// `E` entries per page and `P` manifest pages, splitting `(P - 1) * E`
+/// objects into selected and omitted inventories needs at most
+/// `ceil(s / E) + ceil(o / E) <= (P - 1) + 1 = P` pages, so every partition of
+/// an admitted inventory fits one manifest. A larger archive would need a
+/// second level of page indexing.
+pub const MAX_ARCHIVE_INVENTORY_ENTRIES: usize =
+    (MAX_ARCHIVE_MANIFEST_PAGES - 1) * MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES;
+
+const INVENTORY_DIGEST_DOMAIN: &str = "crucible.campaign.archive-inventory.v1";
 
 /// Closed archive selection policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +339,10 @@ impl CampaignArchiveInventoryPage {
         &self.entries
     }
 
+    pub(crate) fn into_entries(self) -> Vec<ArchiveObjectEntry> {
+        self.entries
+    }
+
     /// Returns strict canonical page bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
@@ -392,23 +422,40 @@ pub struct CampaignArchiveManifest {
     omitted_digest: CampaignHash,
 }
 
-pub(crate) struct CampaignArchiveManifestBasis<'a> {
+pub(crate) struct CampaignArchiveManifestBasis {
     pub(crate) source_snapshot: CampaignSnapshotId,
     pub(crate) policy: CampaignArchivePolicy,
     pub(crate) checkpoint_selections: Vec<CampaignArchiveCheckpointSelection>,
     pub(crate) retained_roots: Vec<ContentId>,
     pub(crate) selected_pages: Vec<CampaignArchiveInventoryPageId>,
     pub(crate) omitted_pages: Vec<CampaignArchiveInventoryPageId>,
-    pub(crate) selected: &'a [ArchiveObjectEntry],
-    pub(crate) omitted: &'a [ArchiveObjectEntry],
+    pub(crate) selected: InventorySummary,
+    pub(crate) omitted: InventorySummary,
+}
+
+/// Entry count and ordered-entry digest of one complete inventory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InventorySummary {
+    pub(crate) count: u64,
+    pub(crate) digest: CampaignHash,
+}
+
+impl InventorySummary {
+    /// Summarizes an in-memory inventory; production paths stream instead.
+    #[cfg(test)]
+    pub(crate) fn of(entries: &[ArchiveObjectEntry]) -> Self {
+        Self {
+            count: entries.len() as u64,
+            digest: CampaignHash::derive(
+                INVENTORY_DIGEST_DOMAIN,
+                &codec::encode(&entries.to_vec()),
+            ),
+        }
+    }
 }
 
 impl CampaignArchiveManifest {
-    pub(crate) fn new(basis: CampaignArchiveManifestBasis<'_>) -> Result<Self, CampaignCodecError> {
-        let selected_count = u64::try_from(basis.selected.len())
-            .map_err(|_| invalid("archive selected count is unrepresentable"))?;
-        let omitted_count = u64::try_from(basis.omitted.len())
-            .map_err(|_| invalid("archive omitted count is unrepresentable"))?;
+    pub(crate) fn new(basis: CampaignArchiveManifestBasis) -> Result<Self, CampaignCodecError> {
         let manifest = Self {
             schema_version: ARCHIVE_SCHEMA_VERSION,
             source_snapshot: basis.source_snapshot,
@@ -417,10 +464,10 @@ impl CampaignArchiveManifest {
             retained_roots: basis.retained_roots,
             selected_pages: basis.selected_pages,
             omitted_pages: basis.omitted_pages,
-            selected_count,
-            omitted_count,
-            selected_digest: inventory_digest(basis.selected),
-            omitted_digest: inventory_digest(basis.omitted),
+            selected_count: basis.selected.count,
+            omitted_count: basis.omitted.count,
+            selected_digest: basis.selected.digest,
+            omitted_digest: basis.omitted.digest,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -649,19 +696,36 @@ impl CampaignArchiveReport {
 }
 
 /// Fully validated direct inventory for one archive manifest.
+///
+/// The inspection keeps only the manifest and aggregate reports. Its selected
+/// and omitted entries stay in the store's inventory pages; the repository's
+/// archive visitors replay and re-authenticate them on demand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignArchiveInspection {
     manifest_id: CampaignArchiveManifestId,
     manifest: CampaignArchiveManifest,
-    selected: Vec<ArchiveObjectEntry>,
-    omitted: Vec<ArchiveObjectEntry>,
-    retained_objects: BTreeSet<ContentId>,
     selected_report: CampaignArchiveReport,
     omitted_report: CampaignArchiveReport,
     omitted_inventory_verified: bool,
 }
 
 impl CampaignArchiveInspection {
+    pub(crate) const fn new(
+        manifest_id: CampaignArchiveManifestId,
+        manifest: CampaignArchiveManifest,
+        selected_report: CampaignArchiveReport,
+        omitted_report: CampaignArchiveReport,
+        omitted_inventory_verified: bool,
+    ) -> Self {
+        Self {
+            manifest_id,
+            manifest,
+            selected_report,
+            omitted_report,
+            omitted_inventory_verified,
+        }
+    }
+
     /// Returns the authenticated manifest identity.
     #[must_use]
     pub const fn manifest_id(&self) -> CampaignArchiveManifestId {
@@ -672,24 +736,6 @@ impl CampaignArchiveInspection {
     #[must_use]
     pub const fn manifest(&self) -> &CampaignArchiveManifest {
         &self.manifest
-    }
-
-    /// Returns the direct selected inventory.
-    #[must_use]
-    pub fn selected(&self) -> &[ArchiveObjectEntry] {
-        &self.selected
-    }
-
-    /// Returns the explicitly omitted source inventory.
-    #[must_use]
-    pub fn omitted(&self) -> &[ArchiveObjectEntry] {
-        &self.omitted
-    }
-
-    /// Returns manifest, page, and selected-object IDs retained by archive GC.
-    #[must_use]
-    pub const fn retained_objects(&self) -> &BTreeSet<ContentId> {
-        &self.retained_objects
     }
 
     /// Returns selected-object sensitivity and size totals.
@@ -715,15 +761,20 @@ impl CampaignArchiveInspection {
     }
 }
 
-/// Effect-free archive selection and canonical manifest material.
+/// Archive selection and canonical manifest material, built without store writes.
+///
+/// Inventory pages are spooled to the planning repository's private scratch
+/// storage, not to the content store, so a plan has no effect on the store
+/// until it is staged or published. Dropping the plan removes its spool.
 #[derive(Clone, Debug)]
 pub struct CampaignArchivePlan {
     pub(crate) manifest_id: CampaignArchiveManifestId,
     pub(crate) manifest: CampaignArchiveManifest,
     pub(crate) manifest_envelope: crate::ObjectEnvelope,
-    pub(crate) page_envelopes: Vec<crate::ObjectEnvelope>,
-    pub(crate) selected: Vec<ArchiveObjectEntry>,
-    pub(crate) omitted: Vec<ArchiveObjectEntry>,
+    /// Canonical selected page envelopes in ordinal order.
+    pub(crate) selected_pages: Arc<SpillFile>,
+    /// Canonical omitted page envelopes in ordinal order.
+    pub(crate) omitted_pages: Arc<SpillFile>,
 }
 
 impl CampaignArchivePlan {
@@ -737,38 +788,6 @@ impl CampaignArchivePlan {
     #[must_use]
     pub const fn manifest(&self) -> &CampaignArchiveManifest {
         &self.manifest
-    }
-
-    /// Returns the selected direct-object inventory.
-    #[must_use]
-    pub fn selected(&self) -> &[ArchiveObjectEntry] {
-        &self.selected
-    }
-
-    /// Returns the explicitly omitted source inventory.
-    #[must_use]
-    pub fn omitted(&self) -> &[ArchiveObjectEntry] {
-        &self.omitted
-    }
-
-    /// Returns every object protected while this plan is being transferred.
-    ///
-    /// The inventory includes selected campaign objects plus canonical page and
-    /// manifest objects. It is sorted and duplicate free.
-    #[must_use]
-    pub fn transfer_objects(&self) -> Vec<(ContentId, u64)> {
-        let mut objects = self
-            .selected
-            .iter()
-            .map(|entry| (entry.id(), entry.logical_length()))
-            .collect::<BTreeSet<_>>();
-        objects.extend(self.page_envelopes.iter().map(|envelope| {
-            let bytes = envelope.canonical_bytes();
-            (envelope.content_id(), bytes.len() as u64)
-        }));
-        let manifest_bytes = self.manifest_envelope.canonical_bytes();
-        objects.insert((self.manifest_id.content_id(), manifest_bytes.len() as u64));
-        objects.into_iter().collect()
     }
 }
 
@@ -807,61 +826,62 @@ impl CampaignArchiveTransferReport {
     }
 }
 
-pub(crate) fn inventory_digest(entries: &[ArchiveObjectEntry]) -> CampaignHash {
-    CampaignHash::derive(
-        "crucible.campaign.archive-inventory.v1",
-        &codec::encode(&entries.to_vec()),
-    )
+/// Entry count and canonical encoded length of an ordered inventory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InventoryLength {
+    entries: u64,
+    entry_bytes: u64,
 }
 
-pub(crate) fn build_inspection(
-    manifest_id: CampaignArchiveManifestId,
-    manifest: CampaignArchiveManifest,
-    selected: Vec<ArchiveObjectEntry>,
-    omitted: Vec<ArchiveObjectEntry>,
-    page_ids: impl IntoIterator<Item = ContentId>,
-    omitted_inventory_verified: bool,
-) -> Result<CampaignArchiveInspection, CampaignCodecError> {
-    if manifest.selected_count != selected.len() as u64
-        || manifest.omitted_count != omitted.len() as u64
-        || manifest.selected_digest != inventory_digest(&selected)
-        || manifest.omitted_digest != inventory_digest(&omitted)
-    {
-        return Err(invalid("archive inventory does not match its manifest"));
-    }
-    if selected
-        .iter()
-        .map(|entry| entry.id)
-        .collect::<BTreeSet<_>>()
-        .intersection(&omitted.iter().map(|entry| entry.id).collect())
-        .next()
-        .is_some()
-    {
-        return Err(invalid("archive selected and omitted inventories overlap"));
+impl InventoryLength {
+    /// Accounts for the next entry in inventory order.
+    pub(crate) fn add(&mut self, entry: ArchiveObjectEntry) -> Result<(), CampaignCodecError> {
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .ok_or_else(|| invalid("archive inventory count overflow"))?;
+        self.entry_bytes = self
+            .entry_bytes
+            .checked_add(codec::encode(&entry).len() as u64)
+            .ok_or_else(|| invalid("archive inventory byte count overflow"))?;
+        Ok(())
     }
 
-    let mut retained_objects = page_ids.into_iter().collect::<BTreeSet<_>>();
-    retained_objects.insert(manifest_id.content_id());
-    retained_objects.extend(selected.iter().map(|entry| entry.id));
+    /// Returns the number of accounted entries.
+    pub(crate) const fn entries(self) -> u64 {
+        self.entries
+    }
+}
 
-    let mut selected_report = CampaignArchiveReport::default();
-    for entry in &selected {
-        selected_report.add(*entry)?;
+/// Second-pass digest of an inventory measured by [`InventoryLength`].
+pub(crate) struct InventoryDigest {
+    hasher: StreamingCampaignHash,
+}
+
+impl InventoryDigest {
+    /// Starts the digest of an inventory with the measured shape.
+    pub(crate) fn new(length: InventoryLength) -> Result<Self, CampaignCodecError> {
+        // The canonical sequence is its u64 entry count followed by each entry.
+        let canonical_length = length
+            .entry_bytes
+            .checked_add(8)
+            .ok_or_else(|| invalid("archive inventory byte count overflow"))?;
+        let mut hasher = CampaignHash::derive_streaming(INVENTORY_DIGEST_DOMAIN, canonical_length);
+        hasher.update(&length.entries.to_be_bytes());
+        Ok(Self { hasher })
     }
-    let mut omitted_report = CampaignArchiveReport::default();
-    for entry in &omitted {
-        omitted_report.add(*entry)?;
+
+    /// Feeds the next entry in inventory order.
+    pub(crate) fn add(&mut self, entry: ArchiveObjectEntry) {
+        self.hasher.update(&codec::encode(&entry));
     }
-    Ok(CampaignArchiveInspection {
-        manifest_id,
-        manifest,
-        selected,
-        omitted,
-        retained_objects,
-        selected_report,
-        omitted_report,
-        omitted_inventory_verified,
-    })
+
+    /// Returns the digest, failing unless the fed entries match the measurement.
+    pub(crate) fn finish(self) -> Result<CampaignHash, CampaignCodecError> {
+        self.hasher
+            .finish()
+            .ok_or_else(|| invalid("archive inventory changed between passes"))
+    }
 }
 
 fn validate_page_count(count: u64, pages: usize) -> Result<(), CampaignCodecError> {

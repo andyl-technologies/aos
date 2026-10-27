@@ -46,8 +46,14 @@
   patchelf,
   bootstrapTools,
   service-management,
+  buildMemoryCgroup ? null,
+  buildMaxLocalActions ? null,
 }: let
   version = "1.37.0";
+  buildResourceFlags = lib.escapeShellArgs (
+    lib.optionals (buildMemoryCgroup != null) ["--cgroup-dir" buildMemoryCgroup]
+    ++ lib.optionals (buildMaxLocalActions != null) ["--max-actions" (toString buildMaxLocalActions)]
+  );
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -128,10 +134,15 @@
     if isCross
     then buildPackages.cmake
     else cmake;
+  # Ninja otherwise launches commands through the absent host /bin/sh.
+  # Scope the compatibility tool to Envoy so compiler identities stay stable.
   buildNinja =
-    if isCross
-    then buildPackages.ninja
-    else ninja;
+    (
+      if isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildBash;
   buildGrep =
     if isCross
     then buildPackages.grep
@@ -1075,6 +1086,10 @@
                 -e "s|/bin/true|${buildCoreutils}/bin/true|g" \
                 "$f" 2>/dev/null || true
             done
+
+          # Bazel executes this build-time generator directly.
+          sed -i '1s|^#!/bin/sh$|#!${buildBash}/bin/bash|' \
+            source/server/admin/html/generate_admin_html.sh
     '';
 in
   mkBazelPackage {
@@ -1326,6 +1341,12 @@ in
         "--cxxopt=-Wno-error"
       ];
     preBazelBuild = ''
+                # Envoy's large C++ actions outgrow Bazel's generic memory estimate.
+                # Limit local admission, preserving the requested Nix cores and flags.
+                ${buildPython}/bin/python3 ${./envoy-patches/build-resources.py} \
+                  --cores "$NIX_BUILD_CORES" ${buildResourceFlags} \
+                  >> .bazelrc
+
                 ${lib.optionalString isSameTripleLinuxCross ''
         # Execution-platform generators linked by rules_go do not retain
         # the compiler launcher's runtime RPATH. The Bazel shell wrapper

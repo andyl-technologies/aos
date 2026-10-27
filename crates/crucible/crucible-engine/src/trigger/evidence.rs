@@ -236,6 +236,7 @@ pub(super) fn observable_event_violation_site(
             ..
         } => Some((Some(*retired_icount), Some(node.clone()))),
         ObservableEventPayload::ConsoleOutput { node, .. }
+        | ObservableEventPayload::NativeConsoleByte { node, .. }
         | ObservableEventPayload::IoCompletion { node, .. }
         | ObservableEventPayload::NodeState { node, .. } => Some((None, Some(node.clone()))),
         ObservableEventPayload::NetworkDelivered { .. }
@@ -377,9 +378,13 @@ pub(super) fn condition_prefix_for_evidence_at(
     if entries.is_empty() {
         return ConditionEventLogPrefix::genesis().with_point(point);
     }
-    ConditionEventLogPrefix::from_scheduler_event_log_entries(entries)
-        .map(|prefix| prefix.with_point(point))
-        .unwrap_or_else(|_| prefix.clone().with_point(point))
+    // A resumed prefix starts at its restored sequence, not at zero.
+    ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
+        entries,
+        prefix.base_sequence,
+    )
+    .map(|prefix| prefix.with_point(point))
+    .unwrap_or_else(|_| prefix.clone().with_point(point))
 }
 
 pub(super) fn condition_observed_evidence(
@@ -411,12 +416,8 @@ pub(super) fn condition_observed_evidence(
             condition_observed_evidence(prefix, predicate, actual, white_box_policies)
         }
         Condition::NetworkMatch { link, predicate } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && network_event_matches(event.payload(), link.as_ref(), predicate)
-            })
+            .observable_events_at_point()
+            .find(|event| network_event_matches(event.payload(), link.as_ref(), predicate))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -427,17 +428,11 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::ConsoleMatch { node, regex } if actual => prefix
-            .observable_events()
-            .iter()
+            .observable_events_at_point()
             .find(|event| {
-                event.at() == prefix.point().at()
-                    && matches!(
-                        event.payload(),
-                        ObservableEventPayload::ConsoleOutput {
-                            node: observed_node,
-                            ..
-                        } if observed_node == node
-                    )
+                event
+                    .console_bytes()
+                    .is_some_and(|(observed, _)| observed == node)
             })
             .map(|event| {
                 observable_event_evidence(
@@ -456,12 +451,8 @@ pub(super) fn condition_observed_evidence(
                 CodePoint::Symbol { .. } => None,
             }?;
             prefix
-                .observable_events()
-                .iter()
-                .find(|event| {
-                    event.at() == prefix.point().at()
-                        && coverage_event_matches(event.payload(), node, resolved)
-                })
+                .observable_events_at_point()
+                .find(|event| coverage_event_matches(event.payload(), node, resolved))
                 .map(|event| {
                     observable_event_evidence(
                         event,
@@ -481,12 +472,8 @@ pub(super) fn condition_observed_evidence(
         } if actual => {
             let resolved = resolved_mem_place_for_evidence(place)?;
             prefix
-                .observable_events()
-                .iter()
-                .find(|event| {
-                    event.at() == prefix.point().at()
-                        && memory_event_matches(event.payload(), node, &resolved, *cmp, *value)
-                })
+                .observable_events_at_point()
+                .find(|event| memory_event_matches(event.payload(), node, &resolved, *cmp, *value))
                 .map(|event| {
                     observable_event_evidence(
                         event,
@@ -501,11 +488,8 @@ pub(super) fn condition_observed_evidence(
                 })
         }
         Condition::IoPattern { node, kind } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at() && io_event_matches(event.payload(), node, *kind)
-            })
+            .observable_events_at_point()
+            .find(|event| io_event_matches(event.payload(), node, *kind))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -517,12 +501,8 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::NodeState { node, state } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && node_state_event_matches(event.payload(), node, *state)
-            })
+            .observable_events_at_point()
+            .find(|event| node_state_event_matches(event.payload(), node, *state))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -534,12 +514,8 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::AssertionState { name, state } if actual => prefix
-            .observable_events()
-            .iter()
-            .find(|event| {
-                event.at() == prefix.point().at()
-                    && assertion_state_event_matches(event.payload(), name, *state)
-            })
+            .observable_events_at_point()
+            .find(|event| assertion_state_event_matches(event.payload(), name, *state))
             .map(|event| {
                 observable_event_evidence(
                     event,
@@ -551,15 +527,9 @@ pub(super) fn condition_observed_evidence(
                 )
             }),
         Condition::GuestMarker { marker } if actual => prefix
-            .observable_events()
-            .iter()
+            .observable_events_at_point()
             .find(|event| {
-                event.at() == prefix.point().at()
-                    && guest_marker_event_matches_policies(
-                        event.payload(),
-                        marker,
-                        white_box_policies,
-                    )
+                guest_marker_event_matches_policies(event.payload(), marker, white_box_policies)
             })
             .map(|event| {
                 observable_event_evidence(
@@ -646,6 +616,7 @@ pub(super) fn guest_marker_event_matches_policies(
         | ObservableEventPayload::GuestMeasurement { .. }
         | ObservableEventPayload::NetworkDelivered { .. }
         | ObservableEventPayload::ConsoleOutput { .. }
+        | ObservableEventPayload::NativeConsoleByte { .. }
         | ObservableEventPayload::CoverageBlock { .. }
         | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
@@ -806,16 +777,6 @@ pub(super) fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTi
     }
 }
 
-pub(super) fn condition_prefix_from_recorded_entries(
-    entries: &[SchedulerEventLogEntry],
-) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
-    if entries.is_empty() {
-        Ok(ConditionEventLogPrefix::genesis())
-    } else {
-        ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec())
-    }
-}
-
 pub(super) fn validate_recorded_event_log_entries(
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), ConditionEvaluationError> {
@@ -825,7 +786,12 @@ pub(super) fn validate_recorded_event_log_entries(
     ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec()).map(|_| ())
 }
 
-pub(super) fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
+pub(super) fn external_formal_trace_bytes<'a, I>(entries: I) -> Vec<u8>
+where
+    I: IntoIterator<Item = &'a SchedulerEventLogEntry>,
+    I::IntoIter: ExactSizeIterator,
+{
+    let entries = entries.into_iter();
     let previous_prefix = scheduler_event_log_empty_prefix();
     let mut lines = Vec::new();
     lines.push(String::from("format=crucible.external-formal-trace.v1"));
@@ -838,6 +804,41 @@ pub(super) fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) ->
         lines.push(external_formal_trace_entry_material(entry));
     }
     lines.join("\n").into_bytes()
+}
+
+/// Hash of [`external_formal_trace_bytes`] computed one entry at a time.
+///
+/// The trace header states the entry count, so the count is fixed up front;
+/// a log streamed from segments knows it from the manifest.
+pub(super) struct ExternalFormalTraceHash {
+    hasher: blake3::Hasher,
+}
+
+impl ExternalFormalTraceHash {
+    pub(super) fn new(entry_count: u64) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"format=crucible.external-formal-trace.v1\n");
+        hasher.update(
+            format!(
+                "scheduler_event_log_previous_prefix={}\nentries={entry_count}",
+                scheduler_event_log_empty_prefix().to_hex()
+            )
+            .as_bytes(),
+        );
+        Self { hasher }
+    }
+
+    pub(super) fn update(&mut self, entry: &SchedulerEventLogEntry) {
+        self.hasher.update(b"\n");
+        self.hasher
+            .update(external_formal_trace_entry_material(entry).as_bytes());
+    }
+
+    pub(super) fn finish(self) -> ContentHash {
+        ContentHash {
+            bytes: *self.hasher.finalize().as_bytes(),
+        }
+    }
 }
 
 pub(super) fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> String {
@@ -1080,6 +1081,7 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                 "decision.stream",
                 &draw.stream,
             ));
+            lines.push(format!("decision.{}", draw.address.canonical_material()));
             lines.push(format!("decision.value={}", draw.value));
         }
         D::Override(override_decision) => {
@@ -1130,6 +1132,26 @@ pub(super) fn external_observable_event_payload_material(
             lines.push(String::from("observable=console-output"));
             lines.push(external_node_id_material("observable.node", node));
             lines.push(format!("observable.bytes={}", external_hex_bytes(bytes)));
+        }
+        ObservableEventPayload::NativeConsoleByte { node, origin } => {
+            lines.push(String::from("observable=native-console-byte"));
+            lines.push(external_node_id_material("observable.node", node));
+            lines.push(format!(
+                "observable.device={}",
+                external_hex_bytes(&origin.device.bytes)
+            ));
+            for (key, value) in [
+                ("stream", u64::from(origin.stream)),
+                ("logical_generation", origin.logical_generation),
+                ("node_sequence", origin.node_sequence),
+                ("stream_sequence", origin.stream_sequence),
+                ("emitted_ps", origin.emitted_ps),
+                ("raw_prefix", origin.raw_prefix),
+                ("vcpu", u64::from(origin.vcpu)),
+                ("byte", u64::from(origin.byte)),
+            ] {
+                lines.push(format!("observable.{key}={value}"));
+            }
         }
         ObservableEventPayload::CoverageBlock {
             execution_icount,
@@ -1793,40 +1815,19 @@ pub(super) fn external_hex_bytes(bytes: &[u8]) -> String {
     encoded
 }
 
-pub(super) fn condition_prefix_from_recorded_log(
-    recorded_log: &RecordedAssertionLog,
-    prefix_len: usize,
-    require_recorded_offset: bool,
-) -> Result<ConditionEventLogPrefix, OfflineAssertionCheckError> {
-    let entries = &recorded_log.entries()[..prefix_len];
-    let prefix = condition_prefix_from_recorded_entries(entries)?
-        .with_prefix_offsets(recorded_log.prefix_offsets.clone());
-    let prefix_len = u64::try_from(prefix_len)
-        .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
-    let Some(offset) = recorded_log.event_log_offset(prefix_len) else {
-        return if require_recorded_offset {
-            Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len })
-        } else {
-            Ok(prefix)
-        };
-    };
-    if offset.events != prefix_len {
-        return Err(OfflineAssertionCheckError::EventLogOffsetMismatch {
-            prefix_len,
-            offset_events: offset.events,
-        });
-    }
-    Ok(prefix.with_event_log_offset(offset))
-}
-
+/// Applies guest assertion markers from observable event `start` onward.
+///
+/// Earlier events were applied by a previous observation; a marker that did
+/// not end its assertion then cannot end it when applied again.
 pub(super) fn observe_guest_marker_assertions(
     states: &mut Vec<GuestMarkerAssertionState>,
     prefix: &ConditionEventLogPrefix,
+    start: usize,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> Vec<HostAssertionOutcome> {
     let mut outcomes = Vec::new();
     let at = prefix.point().at();
-    for event in prefix.observable_events() {
+    for event in prefix.observable_events().iter_from(start) {
         let ObservableEventPayload::GuestAssertionMarker {
             retired_icount,
             node,
@@ -1866,9 +1867,25 @@ pub(super) fn guest_marker_assertion_state_for<'a>(
 pub(super) fn finalize_guest_marker_assertion_state(
     state: &mut GuestMarkerAssertionState,
     at: VirtualTime,
+    end: AssertionPrefixEnd,
 ) -> Option<HostAssertionOutcome> {
     if state.terminal.is_some() {
         return None;
+    }
+
+    // An unreached existential marker can still be reached after a
+    // continuing prefix, so only the end of the run decides it.
+    let awaits_run_end = match state.kind {
+        GuestAssertionKind::Sometimes => true,
+        GuestAssertionKind::Reachable => !state.observed_true,
+        GuestAssertionKind::Always | GuestAssertionKind::Unreachable => false,
+    };
+    if end == AssertionPrefixEnd::Continuing && awaits_run_end {
+        return state.terminal(
+            HostAssertionOutcomeKind::Undecided,
+            at,
+            guest_marker_reason(state, "guest marker is undecided at a continuing prefix"),
+        );
     }
 
     match state.kind {
@@ -1963,7 +1980,8 @@ pub(super) fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> Prop
         HostAssertionOutcomeKind::Passed
         | HostAssertionOutcomeKind::Warning
         | HostAssertionOutcomeKind::NeverTriggered
-        | HostAssertionOutcomeKind::NeverReachedWarn => PropertyLifecycleState::Passing,
+        | HostAssertionOutcomeKind::NeverReachedWarn
+        | HostAssertionOutcomeKind::Undecided => PropertyLifecycleState::Passing,
         HostAssertionOutcomeKind::Satisfied => PropertyLifecycleState::Satisfied,
         HostAssertionOutcomeKind::NeverEvaluated => PropertyLifecycleState::Declared,
         HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail => {
@@ -1982,6 +2000,7 @@ pub(super) fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -
         HostAssertionOutcomeKind::NeverReachedWarn => 5,
         HostAssertionOutcomeKind::NeverReachedFail => 6,
         HostAssertionOutcomeKind::Violated => 7,
+        HostAssertionOutcomeKind::Undecided => 8,
     }
 }
 

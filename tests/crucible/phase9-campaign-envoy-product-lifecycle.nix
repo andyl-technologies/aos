@@ -26,6 +26,7 @@ in
           ${pkgs.grep}/bin/grep -Fxq 'product_branch_steering_authenticated=true' ${finding}/result
           ${pkgs.grep}/bin/grep -Fxq 'product_retention_and_cleanup_authenticated=true' ${finding}/result
           ${pkgs.grep}/bin/grep -Fxq 'fresh_packaged_replay_authenticated=true' ${finding}/result
+          ${pkgs.grep}/bin/grep -Fxq 'source_owner_absent=true' ${finding}/result
 
           mkdir -p "$out/evidence"
           cp ${network}/evidence/envoy-network-vm.output "$out/evidence/success-vm.output"
@@ -39,6 +40,7 @@ in
           finding_to_debug_authenticated=true
           branch_steering_authenticated=true
           retention_and_cleanup_authenticated=true
+          finding_replay_source_owner_absent=true
           evidence_retained=true
           RESULT
         '';

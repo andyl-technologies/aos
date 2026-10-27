@@ -390,65 +390,61 @@ pub fn resume_observation_source_identity(
     let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
     let proof_len = u64::try_from(proof.len()).unwrap_or(u64::MAX);
     let evidence_len = u64::try_from(evidence.len()).unwrap_or(u64::MAX);
-    let mut material = Vec::with_capacity(
-        DOMAIN
-            .len()
-            .saturating_add(32 * 3)
-            .saturating_add(4 + 8 + proof.len() + 8 + evidence.len()),
-    );
-    material.extend_from_slice(DOMAIN);
-    material.extend_from_slice(&scenario.id().bytes);
-    material.extend_from_slice(&configuration.id().bytes);
-    material.extend_from_slice(&checkpoint_material.bytes);
-    material.extend_from_slice(&schema_version.to_be_bytes());
-    material.extend_from_slice(&proof_len.to_be_bytes());
-    material.extend_from_slice(proof);
-    material.extend_from_slice(&evidence_len.to_be_bytes());
-    material.extend_from_slice(evidence);
-    ContentHash::from_bytes(&material)
+
+    // Hash the length-prefixed material incrementally; the digest equals the
+    // concatenated form's, without copying either payload.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN);
+    hasher.update(&scenario.id().bytes);
+    hasher.update(&configuration.id().bytes);
+    hasher.update(&checkpoint_material.bytes);
+    hasher.update(&schema_version.to_be_bytes());
+    hasher.update(&proof_len.to_be_bytes());
+    hasher.update(proof);
+    hasher.update(&evidence_len.to_be_bytes());
+    hasher.update(evidence);
+    ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    }
 }
 
 /// Versioned, content-bound campaign choice evidence supplied to `ResumeSession`.
+///
+/// The evidence is an ordered list of frames: the closure root, then each
+/// closure frame. Every frame stays within
+/// [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`], the ordinary component-message
+/// bound, and the request carries each one as its own wire element. The
+/// unary request bounds their sum by [`RESUME_REPLAY_CLOSURE_MAX_BYTES`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeReplayClosure {
     schema_version: u32,
     identity: ContentHash,
-    payload: Vec<u8>,
+    frames: Vec<Vec<u8>>,
 }
 
 impl ResumeReplayClosure {
-    /// Binds a schema version and exact payload to one resume source.
+    /// Binds a schema version and exact frame list to one resume source.
     ///
     /// # Errors
     ///
     /// Returns [`LifecycleApiError::ResumeReplayClosure`] before hashing when
-    /// `payload` exceeds [`RESUME_REPLAY_CLOSURE_MAX_BYTES`].
+    /// `frames` is empty, holds more than [`RESUME_REPLAY_CLOSURE_MAX_FRAMES`]
+    /// frames, holds a frame over [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`],
+    /// or totals more than [`RESUME_REPLAY_CLOSURE_MAX_BYTES`].
     pub fn new(
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
         checkpoint: &Checkpoint,
         schema_version: u32,
-        payload: Vec<u8>,
+        frames: Vec<Vec<u8>>,
     ) -> Result<Self, LifecycleApiError> {
-        if payload.len() > RESUME_REPLAY_CLOSURE_MAX_BYTES {
-            return Err(LifecycleApiError::ResumeReplayClosure {
-                message: format!(
-                    "campaign replay closure has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}",
-                    payload.len()
-                ),
-            });
-        }
-        let identity = resume_replay_closure_identity(
-            scenario,
-            schedule,
-            checkpoint,
-            schema_version,
-            &payload,
-        );
+        validate_resume_replay_closure_frames(&frames)?;
+        let identity =
+            resume_replay_closure_identity(scenario, schedule, checkpoint, schema_version, &frames);
         Ok(Self {
             schema_version,
             identity,
-            payload,
+            frames,
         })
     }
 
@@ -458,23 +454,57 @@ impl ResumeReplayClosure {
         self.schema_version
     }
 
-    /// Returns the identity binding the resume source, schema, length, and payload.
+    /// Returns the identity binding the resume source, schema, and every frame.
     #[must_use]
     pub const fn identity(&self) -> ContentHash {
         self.identity
     }
 
-    /// Returns the exact canonical replay-closure payload.
+    /// Returns the exact frames: the closure root, then each closure frame.
     #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
+    pub fn frames(&self) -> &[Vec<u8>] {
+        &self.frames
     }
 
-    /// Returns the bound payload length.
+    /// Returns the total bytes of every frame.
     #[must_use]
-    pub const fn payload_len(&self) -> usize {
-        self.payload.len()
+    pub fn total_len(&self) -> usize {
+        self.frames.iter().map(Vec::len).sum()
     }
+}
+
+/// Checks the frame count, per-frame, and aggregate bounds of resume evidence.
+///
+/// # Errors
+///
+/// Returns [`LifecycleApiError::ResumeReplayClosure`] when the closure has no
+/// frames, more than [`RESUME_REPLAY_CLOSURE_MAX_FRAMES`] frames, a frame
+/// larger than [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`], or more than
+/// [`RESUME_REPLAY_CLOSURE_MAX_BYTES`] in total.
+pub fn validate_resume_replay_closure_frames(frames: &[Vec<u8>]) -> Result<(), LifecycleApiError> {
+    let reject = |message: String| Err(LifecycleApiError::ResumeReplayClosure { message });
+    if frames.is_empty() || frames.len() > RESUME_REPLAY_CLOSURE_MAX_FRAMES {
+        return reject(format!(
+            "campaign replay closure has {} frames, expected 1 through {RESUME_REPLAY_CLOSURE_MAX_FRAMES}",
+            frames.len()
+        ));
+    }
+    if let Some(frame) = frames
+        .iter()
+        .find(|frame| frame.len() > RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES)
+    {
+        return reject(format!(
+            "campaign replay closure frame has {} bytes, maximum is {RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES}",
+            frame.len()
+        ));
+    }
+    let total = frames.iter().map(Vec::len).sum::<usize>();
+    if total > RESUME_REPLAY_CLOSURE_MAX_BYTES {
+        return reject(format!(
+            "campaign replay closure has {total} bytes, maximum is {RESUME_REPLAY_CLOSURE_MAX_BYTES}"
+        ));
+    }
+    Ok(())
 }
 
 /// Computes the frozen identity of scenario-bound replay evidence.
@@ -483,31 +513,31 @@ pub fn resume_replay_closure_identity(
     schedule: &Schedule,
     checkpoint: &Checkpoint,
     schema_version: u32,
-    payload: &[u8],
+    frames: &[Vec<u8>],
 ) -> ContentHash {
-    const DOMAIN: &[u8] = b"crucible.resume-replay-closure.v1\0";
+    const DOMAIN: &[u8] = b"crucible.resume-replay-closure.v2\0";
 
     let configuration = Configuration {
         def: scenario.scenario_def(),
         schedule: schedule.clone(),
     };
     let checkpoint_material = ContentHash::from_bytes(&checkpoint.to_compact_binary());
-    let payload_len = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-    let mut material = Vec::with_capacity(
-        DOMAIN
-            .len()
-            .saturating_add(32 * 3)
-            .saturating_add(4 + 8)
-            .saturating_add(payload.len()),
-    );
-    material.extend_from_slice(DOMAIN);
-    material.extend_from_slice(&scenario.id().bytes);
-    material.extend_from_slice(&configuration.id().bytes);
-    material.extend_from_slice(&checkpoint_material.bytes);
-    material.extend_from_slice(&schema_version.to_be_bytes());
-    material.extend_from_slice(&payload_len.to_be_bytes());
-    material.extend_from_slice(payload);
-    ContentHash::from_bytes(&material)
+
+    // Hash incrementally so binding the evidence never concatenates frames.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DOMAIN);
+    hasher.update(&scenario.id().bytes);
+    hasher.update(&configuration.id().bytes);
+    hasher.update(&checkpoint_material.bytes);
+    hasher.update(&schema_version.to_be_bytes());
+    hasher.update(&(frames.len() as u64).to_be_bytes());
+    for frame in frames {
+        hasher.update(&(frame.len() as u64).to_be_bytes());
+        hasher.update(frame);
+    }
+    ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    }
 }
 
 /// Response returned by `ResumeSession`.

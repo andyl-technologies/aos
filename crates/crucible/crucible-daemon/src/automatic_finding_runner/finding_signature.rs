@@ -230,13 +230,14 @@ pub(crate) fn bind_qemu_triage_evidence(
     property: Option<&str>,
     triage: crate::qemu_campaign_driver::QemuFindingCandidateTriageInputs,
 ) -> Result<Option<FailureTriageReplayEvidence>, EngineError> {
-    let (
+    let crate::qemu_campaign_driver::QemuFindingCandidateTriageParts {
         failures,
-        causal_entries,
+        event_log,
         coverage_fingerprint,
-        recorded_event_frames,
         paired_divergence_logs,
-    ) = triage.into_parts();
+        segments,
+    } = triage.into_parts();
+    let segments: crucible_engine::FailureTriageReplaySegments = std::sync::Arc::new(segments);
     let mut matching = failures
         .into_iter()
         .filter(|failure| failure_matches_finding(failure, kind, property));
@@ -264,8 +265,8 @@ pub(crate) fn bind_qemu_triage_evidence(
             finding.clone(),
             expected,
             reproduced,
+            segments,
             coverage_fingerprint,
-            recorded_event_frames,
         )
         .map(Some);
     }
@@ -273,9 +274,9 @@ pub(crate) fn bind_qemu_triage_evidence(
     FailureTriageReplayEvidence::new(
         finding.clone(),
         failure,
-        causal_entries,
+        event_log,
+        segments,
         coverage_fingerprint,
-        recorded_event_frames,
     )
     .map(Some)
 }

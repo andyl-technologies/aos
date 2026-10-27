@@ -154,17 +154,30 @@ that arrives at `B` earlier than its own current clock plus the link latency.
   *Gate:* `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §8.3;
   routes [INV-3], [DET-6], [DET-12].
 
-- **[SCHED-6]** A node's safe **lookahead** MUST be the minimum inbound link
-  latency from any peer that could send to it:
-  `lookahead(B) = min over peers A with a live link A→B of L(A→B)`. A peer cannot
-  deliver to `B` sooner than `vt(B) + lookahead(B)`, so `B` may safely advance at
-  least that far without missing any cross-node dependency. *Gate:*
+- **[SCHED-6]** Every directed coupling edge `j→n` of the effective topology
+  (§8.11), of every coupling type by which `j`'s execution can change `n`'s
+  inputs, MUST carry a minimum latency `d(j→n)`. The scheduler MUST bound each
+  node `n` by its **network bound**
+
+  ```text
+  net(n) = min over nodes j with a path j → … → n of ( vt(j) + d(j, n) )
+  ```
+
+  where `d(j, n)` is the shortest-path latency from `j` to `n`. `vt(j)` MAY be
+  replaced by any later time before which `j` provably emits nothing: an idle
+  node's next wake, a halted node's next input, or the settled endpoint of a
+  completed RUN not yet published. When no path reaches `n`, `net(n) = +∞`.
+  When every upstream node's clock equals `vt(n)`, `net(n) = vt(n) +
+  lookahead(n)` with `lookahead(n) = min over in-edges j→n of d(j→n)`. *Gate:*
   `gate:layer1-injection`. *Spec:* §8.3, §8.4; routes [DET-12].
 
-`lookahead` here is the *network* lookahead — the conservative bound for
-guest→guest links. Exact local events tighten the horizon further and exactly
-(§8.4); the conservative bound governs only the part of the future that depends
-on *another node's* not-yet-executed instructions.
+The network bound is the conservative bound for every cross-node coupling.
+Exact local events tighten the horizon further and exactly (§8.4); the
+conservative bound governs only the part of the future that depends on *another
+node's* not-yet-executed instructions. Nodes keep their own clocks; the bound is
+computed from each upstream clock, never from a shared frontier. Nodes joined by
+zero-latency edges form a lockstep group: each member's bound is the group's
+minimum clock, so the group advances only together.
 
 ### 8.3.2 Progress and liveness (the deadlock argument)
 
@@ -183,12 +196,11 @@ time has a global minimum and the lookahead is strictly positive.
 global-minimum virtual time, and let `m` be a node attaining it (ties broken by
 `node_id`, §8.6). Consider `m`'s horizon:
 
-- Its **network** component is `vt(m) + lookahead(m) = vt_min + lookahead(m)`.
-  Because `lookahead(m) > 0` (positive latencies, §8.7) and `vt(m) = vt_min` is
-  the global minimum, *no peer's clock is behind `m`*, so no peer can emit an
-  event with timestamp `< vt_min + lookahead(m)` that `m` has not already
-  accounted for. The horizon is therefore *achievable*: `m` can run to it without
-  waiting on any peer.
+- Its **network** component is `net(m) = min over upstream j of (vt(j) +
+  d(j, m))`. Every `vt(j) ≥ vt_min` and every path latency is positive (§8.7),
+  so `net(m) > vt_min`: *no peer's clock is behind `m`*, so no peer can emit an
+  event that reaches `m` before `net(m)`. The horizon is therefore *achievable*:
+  `m` can run to it without waiting on any peer.
 - Its **exact-local** component (next timer / I/O completion) is a host-computed
   value that does not depend on any peer at all (§8.4), so it never blocks.
 
@@ -217,14 +229,13 @@ events*.
   the furthest virtual time `n` may advance to before it must synchronize — as
 
   ```text
-  horizon(n) = min( next_exact_local_event(n),
-                    vt(n) + lookahead(n) )
+  horizon(n) = min( next_exact_local_event(n), net(n) )
   ```
 
   where `next_exact_local_event(n)` is the soonest *host-computed, predictable*
   next wakeup of `n` (next timer deadline, next disk/9p I/O completion, next
-  scheduled fault that targets `n` locally) and `lookahead(n)` is the network
-  lookahead of [SCHED-6] (minimum inbound link latency). *Gate:*
+  scheduled fault that targets `n` locally) and `net(n)` is the network bound
+  of [SCHED-6]. *Gate:*
   `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §8.4; routes
   [INV-3], [DET-11], [DET-12].
 
@@ -247,9 +258,9 @@ fundamentally different in their predictability.
 - **Guest→guest network events** are different: whether and when peer `A` emits a
   frame to `n` depends on instructions `A` has *not executed yet*. The host cannot
   compute that exactly in advance. This is the *only* source of genuine
-  cross-node uncertainty, and it is exactly what the conservative CMB lookahead
-  bounds: `n` may run to `vt(n) + lookahead(n)` because no peer can deliver before
-  that, but no further without a guarantee.
+  cross-node uncertainty, and it is exactly what the conservative CMB bound
+  covers: `n` may run to `net(n)` because no peer can deliver before that, but no
+  further without a guarantee.
 
 - **[SCHED-10]** The horizon's `next_exact_local_event(n)` term MUST be an
   *exact* virtual time (no conservative bound applied), because it is a pure
@@ -257,7 +268,9 @@ fundamentally different in their predictability.
   instructions. The conservative lookahead term MUST apply *only* to the
   guest→guest network dependency. A scheduler that applies the conservative bound
   to a local timer or an I/O completion (thereby under-advancing) is correct but
-  *slower*; one that applies *no* bound to a network dependency is *wrong*. *Gate:*
+  *slower*; one that applies *no* bound to a network dependency is *wrong*.
+  `next_exact_local_event(n)` MUST contain only `n`'s own wakeups; another node's
+  timer reaches `n` only through the network bound. *Gate:*
   `gate:layer1-injection`. *Spec:* §8.4.1; routes [DET-11], [DET-12].
 
 This is why I/O is modeled as first-class sub-nodes whose completions are *exact
@@ -276,8 +289,9 @@ fn horizon(n, state) -> VirtualTime:
                                                         #   - n's earliest in-flight I/O completion (15)
                                                         #   - n's next locally-scheduled fault (17)
     # Conservative network bound: no peer can deliver to n before this.
-    let net   = vt(n) + lookahead(n)                    # lookahead(n) = min inbound link latency (SCHED-6)
-                                                        # if n has no inbound links, lookahead = +inf
+    let net   = min over j with a path j -> ... -> n of
+                    emission_floor(j) + d(j, n)         # shortest-path latency (SCHED-6)
+                                                        # +inf when no path reaches n
     match local:
         Some(t) => min(t, net)
         None    => net                                   # purely network-bounded
@@ -286,9 +300,10 @@ fn horizon(n, state) -> VirtualTime:
 ```
 
 `next_exact_local_event` returns the *earliest* of every exact, host-known wakeup
-for `n`. `lookahead(n)` is computed from the current effective topology (§8.10),
-recomputed when faults change the live edge set. When a node has no inbound links
-at all (e.g. during boot before any link is active), its network term is `+∞` and
+for `n`. `net(n)` is computed from the current effective topology (§8.11) and
+the upstream nodes' clocks, recomputed when faults change the live edge set. When
+no node can reach `n` (e.g. during boot before any link is active), its network
+term is `+∞` and
 its horizon is purely its next exact local event — which is why nodes boot
 independently at full speed with no inter-node synchronization (§8.5, §8.7).
 
@@ -484,7 +499,8 @@ exactly. This section is the full algorithm.
 - **[SCHED-25]** **PICK** MUST select the node with the **global-minimum
   horizon** that has a positive representable counter advance, breaking ties by
   ascending `node_id` (a stable, content-addressed identity), so PICK is a total,
-  deterministic order over executable RUNs. An unrepresentable sub-tick candidate
+  deterministic order over executable RUNs. In a concurrent run set (§8.12) this
+  order is the canonical order of the RUNs' commits, not an admission filter. An unrepresentable sub-tick candidate
   may be deferred behind a representable candidate at the same horizon because it
   has no RUN to order. It MUST NOT be bypassed for a later horizon; if every
   candidate at the global minimum is unrepresentable, the scheduler fails loudly.
@@ -725,25 +741,27 @@ ScenarioDef, [`06-spatial-graph.md`](06-spatial-graph.md)), but **faults change
 the *effective* edge set** at run time: a partition removes edges, a heal
 restores them, a latency fault changes a link's latency, a node crash removes all
 of a node's edges. Because lookahead is derived from the live edge set (§8.3),
-the scheduler MUST recompute it when the effective topology changes.
+the scheduler MUST recompute the network bound when the effective topology
+changes.
 
 - **[SCHED-37]** When a fault activation, heal, or latency change alters the
-  effective edge set or a link latency, the scheduler MUST recompute every
-  affected node's `lookahead` (and therefore its horizon) at the quantum boundary
-  where the change takes effect — never mid-RUN. A change that *lowers* a node's
-  lookahead MUST take effect before that node is next PICKed past the new bound,
+  effective edge set or a link latency, the scheduler MUST recompute the network
+  bound (and therefore the horizon) of every node with a changed upstream path at
+  the quantum boundary where the change takes effect — never mid-RUN. A change
+  that *lowers* a node's bound MUST take effect before that node is next PICKed
+  past the new bound,
   so the conservative guarantee is never violated by a stale lookahead. *Gate:*
   `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §8.11; forward-ref
   [`17-fault-injection.md`](17-fault-injection.md); routes [INV-3], [DET-12].
 
 - **[SCHED-38]** A **partition** MUST be modeled as removing the affected
   directed edges from the effective topology for the partition's duration:
-  removed edges no longer contribute to any node's lookahead, and no frame may be
-  delivered across them. A **heal** MUST restore them. The lookahead recompute on
-  partition/heal MUST use the same `min`-inbound-latency rule (§8.3) over the
-  *current* effective edge set. When a partition removes a node's last inbound
-  link, its lookahead becomes `+∞` and it is bounded only by its exact local
-  events (it may run freely until a heal). *Gate:* `gate:layer1-injection`.
+  removed edges no longer contribute to any node's network bound, and no frame
+  may be delivered across them. A **heal** MUST restore them. The recompute on
+  partition/heal MUST use the path rule of [SCHED-6] over the *current* effective
+  edge set. When a partition leaves no path into a node, its network bound
+  becomes `+∞` and it is bounded only by its exact local events (it may run
+  freely until a heal). *Gate:* `gate:layer1-injection`.
   *Spec:* §8.11; forward-ref [`17-fault-injection.md`](17-fault-injection.md);
   routes [INV-3], [DET-12].
 
@@ -768,14 +786,18 @@ knob never moves the fault's activation time; it only governs how often *other*
 
 ## 8.12 Lookahead is the parallelism budget
 
-- **[SCHED-40]** The scheduler MAY execute nodes whose horizons do not constrain
-  each other concurrently, up to the lookahead window: two nodes may run in
-  parallel on the host for as much virtual time as the conservative lookahead
-  guarantees neither can affect the other. The *resolution* of due events
-  (RESOLVE, EMIT) MUST nonetheless be serialized through the single scheduler in
-  the total order of §8.6, so concurrency is an *execution* optimization that
-  never affects the *order*. *Gate:* `gate:layer1-injection`,
-  `gate:e2e-determinism`. *Spec:* §8.12; routes [INV-3], [INV-8].
+- **[SCHED-40]** Every node whose horizon lies beyond its clock MUST be eligible
+  to run concurrently with every other such node, each to its own horizon,
+  whatever their clocks; admission MUST NOT wait for a common frontier or a common
+  target. RESOLVE and EMIT MUST be published in the canonical key order of §8.6
+  across clocks: a completed RUN's events become visible only after every event
+  with a smaller key, so concurrency is an *execution* optimization that never
+  affects the *order*. A choice MUST be offered at a deterministic **cut**: the
+  per-node vector of published clocks together with the contents of every
+  in-flight edge, a pure function of the event log and topology. Thin replay,
+  exact restore, guarded replay and hot fork MUST reproduce the same cut.
+  *Gate:* `gate:layer1-injection`, `gate:e2e-determinism`. *Spec:* §8.12; routes
+  [INV-3], [INV-8].
 
 - **[SCHED-41]** The achievable multi-VM parallelism MUST be understood as the
   lookahead budget: larger minimum link latencies permit larger independent
@@ -794,14 +816,51 @@ total order of §8.6 is computed from the keys, not from which node's host threa
 happened to finish first. The lookahead budget tells you how *fast* a scenario
 can run, not *what* it computes.
 
-[SCHED-40] is written as a MAY because the run set is a scheduling *permission*,
-not a scheduling obligation: this file's job ends once it has named the nodes that
-may run concurrently and the key that orders their outcomes. Whether the runtime
-actually spends host workers on that permission is a performance obligation, and
-it is discharged by [PERF-29]
+[SCHED-40] makes eligibility mandatory and leaves the host cost open: this file's
+job ends once it has named the nodes that may run concurrently and the key that
+orders their outcomes. How many host workers the runtime spends on that set is a
+performance obligation, and it is discharged by [PERF-29]
 ([`25-performance-targets.md`](25-performance-targets.md) §25.12.2) — along with
 the admission rule (§25.12.1) that any *other* proposed use of host threads must
 satisfy before it may touch this path.
+
+### 8.12.1 Horizons across hosts
+
+One world may span many hosts. The horizon rule above is stated so that it does
+not need a shared memory or a global frontier.
+
+- **[SCHED-48]** Horizon bounds MUST be computable from versioned per-edge
+  **guarantees** `(edge, no_delivery_before, topology_epoch)`. A producer's
+  guarantee on an edge is its emission floor plus the edge latency, propagated to
+  a least fixed point over the effective topology; a consumer's network bound is
+  the minimum guarantee over its in-edges. A transport that carries guarantees
+  between hosts MAY delay them: delay MUST change only wall time, never an
+  outcome, and a guarantee from a superseded topology epoch MUST be refused. A
+  single-host scheduler MUST compute its bounds with the same guarantee rule.
+  *Gate:* `gate:layer1-injection`, `gate:e2e-determinism`. *Spec:* §8.12.1;
+  routes [INV-3], [DET-12].
+
+- **[SCHED-49]** A world spanning several hosts MUST order each consumer's
+  inputs by the canonical key of §8.6 and MUST form its event log as a canonical
+  merge of per-consumer streams, so the log is independent of host placement.
+  The cut of [SCHED-40] MUST be derivable from the merged streams and in-flight
+  edge contents without stopping every node at once, and checkpoints and hot
+  forks MUST be taken at such a cut. Loss of a host or of a guarantee stream MUST
+  fail the attempt closed. *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1;
+  routes [INV-3], [INV-8].
+
+- **[SCHED-50]** Each link's random draws MUST be event-addressed draws of the
+  link's stream ([DET-25]) keyed by the frame's direction and producer
+  sequence: the event encodes the direction as one byte (0 from the canonical
+  first endpoint to the second, 1 in reverse) followed by the producer sequence
+  as `u64le`, and the role index orders the frame's draws. A frame's draws
+  therefore need no global commit order and are independent of worker count,
+  host placement and the interleaving of the link's two directions. The
+  scheduling opportunity for a link frame MUST be identified by the same link,
+  direction and producer sequence, never by a cursor shared across frames, and
+  each recorded draw of the frame MUST carry that direction, producer sequence
+  and its role index as its draw address ([DET-26]).
+  *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1; routes [DET-6], [DET-25].
 
 ## 8.13 Worked example: two VMs across a 1 ms link
 
@@ -878,15 +937,15 @@ ONE scheduler (INV-8), an actor that yields between quanta (SCHED-1..4)
   conservative PDES / CMB: advance only where no peer can deliver earlier (SCHED-5..6)
   liveness: the global-min-horizon node can ALWAYS advance ⇒ no deadlock (SCHED-7..8)
   horizon(n) = min( next_exact_local_event(n),         -- timer/IO: EXACT, no slack
-                    vt(n) + lookahead(n) )              -- guest→guest net: conservative
-                lookahead(n) = min inbound link latency  (SCHED-9..10)
+                    net(n) )                            -- cross-node: conservative
+                net(n) = min over paths j→…→n of vt(j) + d(j,n)  (SCHED-6, SCHED-9..10)
   ordering EXACTNESS is never a knob; sync FREQUENCY is the only knob (SCHED-11..14)
   total order (virtual_time, consumer node_id, producer node_id, sequence) (SCHED-15..19)
   min link-latency floor ⇒ positive lookahead ⇒ progress + parallelism (SCHED-20..21)
   quiescence = all idle, no deliveries/timers/IO/faults pending (SCHED-22..23)
   quantum = PICK / RUN / RESOLVE / EMIT / STEP  (03 §5 vocab, SCHED-24..33)
   icount-derived clocks; one max-advance ceiling per RUN + futex wake (SCHED-34..36)
-  faults change EFFECTIVE edges ⇒ recompute lookahead at rendezvous (SCHED-37..39)
+  faults change EFFECTIVE edges ⇒ recompute affected network bounds (SCHED-37..39)
   parallelism = lookahead budget; order is key-derived, not host-timing (SCHED-40..43)
 ```
 
@@ -1407,3 +1466,38 @@ application of explorer-supplied preemption decisions
   quiescence.
   Summary: all vCPUs are halted, timer-free, and input-free before terminal
   quiescence; one scheduler node candidate carries the minimum per-vCPU wake.
+- [x] **T-SCHED-31** Compute each node's network bound from per-edge guarantees
+  over every coupling type, admit every node whose horizon lies beyond its clock
+  into the concurrent run set, including during choice search, publish RESOLVE
+  and EMIT in canonical key order across clocks, and offer choices at the
+  published cut. — satisfies [SCHED-6], [SCHED-9], [SCHED-40], [SCHED-48]; spec
+  §8.3, §8.4, §8.12, §8.12.1.
+  Completed by `checks.crucible.phase3.schedulerConcurrency`. Versioned
+  `EdgeGuarantee` messages carry edge, no-delivery-before time and topology
+  epoch; emission floors propagate to a least fixed point, and the host
+  publisher holds completed RUNs and publishes them in key order. Frequency
+  independence tests compare serialized, parallel and wall-delayed execution on
+  skewed clocks, and choice-cut tests compare offers and settled histories
+  across worker counts.
+- [ ] **T-SCHED-32** Form the event log as a canonical merge of per-consumer
+  streams and derive the [SCHED-40] cut from the streams and in-flight edge
+  contents without a global stop. — satisfies [SCHED-49]; spec §8.12.1.
+- [ ] **T-SCHED-33** Carry per-edge guarantees between per-host scheduling
+  agents behind a transport interface, refuse superseded topology epochs, and
+  fail the attempt closed on host or stream loss. — satisfies [SCHED-48],
+  [SCHED-49]; spec §8.12.1.
+- [x] **T-SCHED-34** Derive each link's random draws from `(link, direction,
+  producer sequence)` behind a versioned RNG derivation change. — satisfies
+  [SCHED-50]; spec §8.12.1.
+  - The `keyed-blake3-v2` derivation opens each frame's draws with
+    `DeviceRng::for_event` over its `LinkFrameDrawKey`, and the live-world
+    network opportunity key names the link, direction and frame without the
+    shared draw cursor. The frequency-independence suite drives a jittery,
+    lossy graph through both directions of each link under serialized, two-worker,
+    parallel and wall-delayed execution and several ceiling schedules, and
+    requires bit-identical guest traces, delivery decisions and event logs. A
+    second test silences one direction of a link and requires the other
+    direction's loss and jitter to stay frame-for-frame identical, which a
+    cursor shared across directions fails.
+- [ ] **T-SCHED-35** Take checkpoints and hot forks at a [SCHED-40] cut without
+  stopping every node at once. — satisfies [SCHED-49]; spec §8.12.1.

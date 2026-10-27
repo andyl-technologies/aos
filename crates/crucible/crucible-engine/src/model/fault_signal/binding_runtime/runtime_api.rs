@@ -124,8 +124,8 @@ impl<'a> FaultBindingRuntime<'a> {
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,
         sink: &mut dyn FaultActionSink,
-        replay: Option<&mut ResolvedEffectTrace>,
-        recorded: &mut Vec<ResolvedReplayWorkItem>,
+        replay: Option<&mut ResolvedEffectTraceReader>,
+        recorded: &mut ResolvedEffectTraceWriter,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.evaluate_matching(
             coordinate,
@@ -166,8 +166,8 @@ impl<'a> FaultBindingRuntime<'a> {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
         sink: &mut dyn FaultActionSink,
-        replay: Option<&mut ResolvedEffectTrace>,
-        recorded: &mut Vec<ResolvedReplayWorkItem>,
+        replay: Option<&mut ResolvedEffectTraceReader>,
+        recorded: &mut ResolvedEffectTraceWriter,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.evaluate_matching(
             opportunity.coordinate(),
@@ -185,7 +185,7 @@ impl<'a> FaultBindingRuntime<'a> {
         coordinate: FaultCoordinate,
         same_coordinate_sequence: u64,
         sink: &mut dyn FaultActionSink,
-        replay: Option<&mut ResolvedEffectTrace>,
+        replay: Option<&mut ResolvedEffectTraceReader>,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.evaluate_matching(
             coordinate,
@@ -203,7 +203,7 @@ impl<'a> FaultBindingRuntime<'a> {
         opportunity: &FaultOpportunity,
         same_coordinate_sequence: u64,
         sink: &mut dyn FaultActionSink,
-        replay: Option<&mut ResolvedEffectTrace>,
+        replay: Option<&mut ResolvedEffectTraceReader>,
     ) -> Result<BindingEvaluation, BindingRuntimeError> {
         self.evaluate_matching(
             opportunity.coordinate(),

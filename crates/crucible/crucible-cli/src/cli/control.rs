@@ -329,6 +329,11 @@ where
     })
 }
 
+/// Reads the session's resolved-effect trace as a transport bundle.
+///
+/// The manifest query is acknowledged like any other command. Each segment it
+/// lists is then requested, authenticated against its reference, and bundled
+/// (RFC-0020 section 15.8), so no single response carries the whole trace.
 async fn query_resolved_effect_trace(
     control: &crucible_control_client::ClientControlStream,
     command_id: &mut u64,
@@ -344,13 +349,81 @@ async fn query_resolved_effect_trace(
         acknowledged_commands,
     )
     .await?;
+    let manifest = match response.query_result {
+        Some(QueryResult::ResolvedEffectTrace(Some(manifest))) => manifest,
+        Some(QueryResult::ResolvedEffectTrace(None)) => return Ok(None),
+        Some(other) => {
+            return Err(backend_error(format!(
+                "resolved-effect trace query returned {other:?}"
+            )));
+        }
+        None => {
+            return Err(backend_error(
+                "resolved-effect trace query returned no result",
+            ));
+        }
+    };
+    let manifest =
+        crucible_session::engine::ResolvedEffectTraceManifest::from_canonical_bytes(&manifest)
+            .map_err(|error| {
+                backend_error(format!("decode resolved-effect trace manifest: {error}"))
+            })?;
+
+    let store = crucible_session::engine::SharedSegmentStore::new();
+    for segment in manifest.segments() {
+        let bytes = query_resolved_effect_trace_segment(control, command_id, segment.id).await?;
+        crucible_session::engine::decode_resolved_effect_trace_segment(segment, &bytes).map_err(
+            |error| {
+                backend_error(format!(
+                    "authenticate resolved-effect trace segment: {error}"
+                ))
+            },
+        )?;
+        crucible_session::engine::SegmentSink::put_segment(&store, segment.id, &bytes).map_err(
+            |error| backend_error(format!("retain resolved-effect trace segment: {error}")),
+        )?;
+    }
+    crucible_session::engine::ResolvedEffectTrace::new(manifest, store.into())
+        .to_bundle_bytes(usize::MAX)
+        .map(Some)
+        .map_err(|error| backend_error(format!("bundle resolved-effect trace: {error}")))
+}
+
+/// Requests one listed segment of the latest manifest query.
+///
+/// Segment reads continue the acknowledged manifest query, so they are not
+/// recorded as separate session commands.
+async fn query_resolved_effect_trace_segment(
+    control: &crucible_control_client::ClientControlStream,
+    command_id: &mut u64,
+    segment: crucible_session::engine::ContentId,
+) -> Result<Vec<u8>, CliError> {
+    let response = control
+        .send_command(
+            *command_id,
+            SessionCommand::Query {
+                kind: QueryKind::ResolvedEffectTraceSegment { segment },
+                reply: CommandReply::discard(),
+            },
+        )
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    if let CommandResultStatus::Rejected { reason } = response.result.status {
+        return Err(backend_error(format!(
+            "resolved-effect trace segment query was rejected: {reason:?}"
+        )));
+    }
     match response.query_result {
-        Some(QueryResult::ResolvedEffectTrace(trace)) => Ok(trace),
+        Some(QueryResult::ResolvedEffectTraceSegment(Some(bytes))) => Ok(bytes),
+        Some(QueryResult::ResolvedEffectTraceSegment(None)) => Err(backend_error(
+            "session no longer serves a segment its trace manifest lists",
+        )),
         Some(other) => Err(backend_error(format!(
-            "resolved-effect trace query returned {other:?}"
+            "resolved-effect trace segment query returned {other:?}"
         ))),
         None => Err(backend_error(
-            "resolved-effect trace query returned no result",
+            "resolved-effect trace segment query returned no result",
         )),
     }
 }

@@ -262,29 +262,6 @@ fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
 }
 
 #[test]
-fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box<dyn Error>> {
-    let log = shared_log();
-    let spool = QemuConsoleObservationSpool::new();
-    spool.append(b"guest output")?;
-    let mut node = scripted_node_with_options(
-        log,
-        ScriptedNodeOptions::default(),
-        [QemuAsyncWaitOutcome::Completed],
-    )?
-    .with_console_observation(node_id("vm-a"), spool);
-
-    let boundary = VirtualTime { ticks: 97 };
-    SimulationBackend::step_to(&mut node, boundary)?;
-    node.last_observed_time = VirtualTime { ticks: 3 };
-    let observations = SimulationBackend::drain_observable_events(&mut node)?;
-
-    assert_eq!(observations.len(), 1);
-    assert_eq!(observations[0].at(), boundary);
-    SimulationBackend::shutdown(&mut node)?;
-    Ok(())
-}
-
-#[test]
 fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);

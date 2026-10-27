@@ -494,7 +494,7 @@ impl PendingAttemptResult {
     /// Consumes the pending value into its linear token and immutable records.
     #[must_use]
     pub fn into_parts(self) -> (QueuedAttempt, ObservationCandidate) {
-        let candidate = self.result.into_parts().0;
+        let candidate = self.result.into_parts().observation;
         (self.queued, candidate)
     }
 }

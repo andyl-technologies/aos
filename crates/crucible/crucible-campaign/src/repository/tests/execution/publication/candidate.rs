@@ -18,12 +18,16 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
         .blobs
         .put_if_absent(trace, &BlobHandle::from_bytes(trace_bytes.clone()))
         .expect("trace leaf");
-    let effect_bytes = b"resolved effects".to_vec();
-    let effect = ContentId::for_bytes(ObjectKind::Trace, 1, &effect_bytes);
-    repository
-        .blobs
-        .put_if_absent(effect, &BlobHandle::from_bytes(effect_bytes.clone()))
-        .expect("resolved effect trace leaf");
+    let effect_bytes = b"resolved effect manifest".to_vec();
+    let effect = ContentId::for_bytes(ObjectKind::Trace, 4, &effect_bytes);
+    let segment_bytes = b"resolved effect segment".to_vec();
+    let segment = ContentId::for_bytes(ObjectKind::Trace, 1, &segment_bytes);
+    for (id, bytes) in [(effect, &effect_bytes), (segment, &segment_bytes)] {
+        repository
+            .blobs
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.clone()))
+            .expect("resolved effect trace leaf");
+    }
     let measurements = MeasurementSet::test_evaluation(b"observed trace", BTreeSet::from([trace]))
         .expect("measurement set");
     let measurements = repository
@@ -40,10 +44,12 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
             base.properties(),
             base.coverage(),
         ),
-        base.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base),
     )
     .expect("observation")
-    .with_resolved_effect_trace(effect)
+    .with_resolved_effect_trace(
+        crate::ResolvedEffectTraceRef::new(effect, vec![segment]).expect("trace reference"),
+    )
     .expect("resolved effect trace attachment");
     let published = repository
         .publish_observation(campaign, admitted.new_snapshot, &observation)
@@ -97,6 +103,48 @@ fn authenticated_trace_chunks_follow_the_observed_attempt_and_exact_snapshot() {
         .expect("authenticated resolved effect trace");
     assert_eq!(resolved_effect.trace(), effect);
     assert_eq!(resolved_effect.chunk(), effect_bytes);
+
+    let segment_request = |kind, offset, limit| {
+        crate::GetCampaignTraceChunkRequest::new(
+            first_request.principal().clone(),
+            first_request.campaign().clone(),
+            published.new_snapshot,
+            observation.attempt(),
+            kind,
+            offset,
+            limit,
+        )
+        .expect("resolved effect segment request")
+    };
+    // Ranged reads return exactly the requested slice of a listed segment.
+    let listed = crate::CampaignTraceKind::ResolvedEffectSegment(segment);
+    let head = client
+        .get_campaign_trace_chunk(&segment_request(listed, 0, 9))
+        .expect("first segment chunk");
+    let tail = client
+        .get_campaign_trace_chunk(&segment_request(listed, 9, 1024))
+        .expect("segment remainder");
+    assert_eq!(head.trace(), segment);
+    assert_eq!(head.total_bytes(), segment_bytes.len() as u64);
+    assert_eq!([head.chunk(), tail.chunk()].concat(), segment_bytes);
+
+    // A segment the observation does not list is refused even when stored.
+    let unlisted_bytes = b"unlisted segment".to_vec();
+    let unlisted = ContentId::for_bytes(ObjectKind::Trace, 1, &unlisted_bytes);
+    repository
+        .blobs
+        .put_if_absent(unlisted, &BlobHandle::from_bytes(unlisted_bytes))
+        .expect("unlisted segment leaf");
+    assert!(matches!(
+        client.get_campaign_trace_chunk(&segment_request(
+            crate::CampaignTraceKind::ResolvedEffectSegment(unlisted),
+            0,
+            1024
+        )),
+        Err(crate::CampaignClientError::Service(
+            crate::CampaignServiceFailure::InvalidRequest
+        ))
+    ));
 
     struct DenyTrace;
 
@@ -202,7 +250,7 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             property_id,
             base.coverage(),
         ),
-        base.discovered_choices().clone(),
+        discovered_choice_ids(&repository, &base),
     )
     .expect("assertion observation");
     let published = repository
@@ -217,14 +265,14 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"original".to_vec(),
+            crate::ReproductionPayload::new(1, b"original".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("original reproduction");
     let final_state = CampaignHash::derive("test.assertion", b"final-state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -244,8 +292,8 @@ fn forged_assertion_boundary_fails_closed_at_executor_publication() {
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"minimized".to_vec(),
+            crate::ReproductionPayload::new(1, b"minimized".to_vec(), Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("minimized reproduction");
@@ -456,7 +504,7 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
             candidate.observation().properties(),
             candidate.observation().coverage(),
         ),
-        candidate.observation().discovered_choices().clone(),
+        candidate_discovered_ids(&candidate),
     )
     .expect("produced-selection observation");
     let selection_candidate = ObservationCandidate::new(
@@ -486,7 +534,7 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
             candidate.observation().properties(),
             candidate.observation().coverage(),
         ),
-        candidate.observation().discovered_choices().clone(),
+        candidate_discovered_ids(&candidate),
     )
     .expect("next-choice observation");
     let next_choice_candidate = ObservationCandidate::new(
@@ -535,7 +583,14 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
         .expect("candidate with produced selection");
     assert_eq!(
         produced_candidate.observation().produced_selections(),
-        &BTreeSet::from([produced_selection.id().expect("produced selection id")])
+        crate::observation::derive_choice_set_root([(
+            choice_set_key(produced_selection.opportunity()),
+            produced_selection
+                .id()
+                .expect("produced selection id")
+                .content_id(),
+        )])
+        .expect("produced selection set root")
     );
     assert!(matches!(
         produced_candidate.with_produced_selections(Vec::new()),
@@ -547,9 +602,10 @@ fn executor_candidate_publishes_fresh_choices_with_shared_contract_records() {
     mismatched_candidate.observation = mismatched_candidate
         .observation
         .clone()
-        .with_produced_selections(BTreeSet::from([produced_selection
-            .id()
-            .expect("produced selection id")]))
+        .with_produced_selections(BTreeMap::from([(
+            produced_selection.opportunity(),
+            produced_selection.id().expect("produced selection id"),
+        )]))
         .expect("mismatched candidate observation");
     assert!(matches!(
         repository.validate_observation_candidate(&mismatched_candidate),
@@ -637,10 +693,9 @@ fn invalid_executor_candidate_is_rejected_before_any_bundle_write() {
         repository
             .load_coverage_projection(observation.coverage())
             .expect("candidate coverage"),
-        observation
-            .discovered_choices()
-            .iter()
-            .map(|id| choice_discovery_fixture(&repository, *id))
+        discovered_choice_ids(&repository, &observation)
+            .into_iter()
+            .map(|id| choice_discovery_fixture(&repository, id))
             .collect(),
         observation,
     )
@@ -851,14 +906,14 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"authenticated original".to_vec(),
+            crate::ReproductionPayload::new(1, b"authenticated original".to_vec(), Vec::new())
+                .expect("reproduction payload"),
         )
         .expect("publish authenticated original");
     let final_state = CampaignHash::derive("test-finding", b"authenticated final state");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"authenticated minimization".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -878,8 +933,8 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             observation.child(),
             observation.child_content(),
             fingerprint,
-            1,
-            b"authenticated minimized".to_vec(),
+            crate::ReproductionPayload::new(1, b"authenticated minimized".to_vec(), Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish authenticated minimized reproduction");

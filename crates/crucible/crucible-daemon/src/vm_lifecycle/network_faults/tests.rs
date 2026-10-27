@@ -4,7 +4,48 @@ use std::error::Error;
 use std::sync::Arc;
 
 use super::*;
-use crucible_engine::model::{FaultReplayMode, ResolvedEffectTrace, ResolvedReplayWorkItem};
+use crucible_engine::model::{
+    FaultReplayMode, FaultTraceStorage, ResolvedEffectRecord, ResolvedEffectTrace,
+    ResolvedReplayWorkItem,
+};
+use crucible_engine::segment_store::{SegmentSink, SharedSegmentStore};
+
+fn test_segments() -> Arc<dyn SegmentSink> {
+    Arc::new(SharedSegmentStore::new())
+}
+
+/// Commits `records` to a fresh in-memory campaign effect log.
+fn campaign_log(records: &[ResolvedEffectRecord]) -> CampaignRecordLog {
+    let mut log = CampaignRecordLog::new(test_segments(), FaultResourceLimits::default());
+    for record in records {
+        log.push(record.clone())
+            .unwrap_or_else(|error| panic!("campaign record should append: {error}"));
+    }
+    log
+}
+
+fn trace_items(trace: &ResolvedEffectTrace) -> Vec<ResolvedReplayWorkItem> {
+    trace
+        .items()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("trace should read: {error}"))
+}
+
+fn trace_records(trace: &ResolvedEffectTrace) -> Vec<ResolvedEffectRecord> {
+    trace_items(trace)
+        .into_iter()
+        .flat_map(|item| item.records)
+        .collect()
+}
+
+/// Round-trips a trace through its transport bundle.
+fn bundle_round_trip(trace: &ResolvedEffectTrace) -> ResolvedEffectTrace {
+    let bytes = trace
+        .to_bundle_bytes(usize::MAX)
+        .unwrap_or_else(|error| panic!("trace should bundle: {error}"));
+    ResolvedEffectTrace::from_bundle_bytes(&bytes, usize::MAX)
+        .unwrap_or_else(|error| panic!("bundle should decode: {error}"))
+}
 #[test]
 fn production_fault_cursor_sequences_only_within_one_coordinate() {
     let mut cursor = ProductionFaultEvaluationCursor::default();
@@ -86,12 +127,20 @@ impl crucible_engine::model::SignalArtifactProvider for NoArtifacts {
     }
 }
 
-fn object_id(value: &str) -> FaultObjectId {
+pub(super) fn object_id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value)
         .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))
 }
 
 fn campaign_frame_record(segment: FaultObjectId) -> ResolvedEffectRecord {
+    campaign_frame_record_at(segment, 0)
+}
+
+/// Builds one committed campaign frame record at a same-coordinate sequence.
+pub(super) fn campaign_frame_record_at(
+    segment: FaultObjectId,
+    same_coordinate_sequence: u64,
+) -> ResolvedEffectRecord {
     let coordinate = FaultCoordinate {
         virtual_ticks: 0,
         retired_instructions: None,
@@ -149,7 +198,7 @@ fn campaign_frame_record(segment: FaultObjectId) -> ResolvedEffectRecord {
     ResolvedEffectRecord::from_committed_action(
         &action,
         Some(&opportunity),
-        0,
+        same_coordinate_sequence,
         ContentHash::from_bytes(b"campaign-checkpoint-derivation"),
         Some(ContentHash::from_bytes(b"campaign-checkpoint-precondition")),
         ContentHash::from_bytes(b"campaign-checkpoint-outcome-v1"),
@@ -160,37 +209,25 @@ fn campaign_frame_record(segment: FaultObjectId) -> ResolvedEffectRecord {
 #[test]
 fn campaign_record_enters_canonical_resolved_trace() {
     let record = campaign_frame_record(object_id("segment-primary"));
-    let limits = FaultResourceLimits::default();
-    let trace = trace_with_campaign_network_records(
-        None,
-        std::slice::from_ref(&record),
-        limits,
-        FaultReplayMode::RecomputedCause,
-    )
-    .unwrap_or_else(|error| panic!("campaign trace should assemble: {error}"))
-    .unwrap_or_else(|| panic!("campaign trace must be present"));
-    let bytes = trace
-        .canonical_bytes()
-        .unwrap_or_else(|error| panic!("campaign trace should encode: {error}"));
-    let decoded = ResolvedEffectTrace::from_canonical_bytes(&bytes, limits)
-        .unwrap_or_else(|error| panic!("campaign trace should decode: {error}"));
-    assert_eq!(decoded.work_items[0].records, vec![record.clone()]);
+    let log = campaign_log(std::slice::from_ref(&record));
+    let trace = trace_with_campaign_network_records(None, &log, FaultReplayMode::RecomputedCause)
+        .unwrap_or_else(|error| panic!("campaign trace should assemble: {error}"))
+        .unwrap_or_else(|| panic!("campaign trace must be present"));
+    let decoded = bundle_round_trip(&trace);
+    assert_eq!(trace_items(&decoded)[0].records, vec![record.clone()]);
 
-    let locked = trace_with_campaign_network_records(
-        None,
-        std::slice::from_ref(&record),
-        limits,
-        FaultReplayMode::LockedEffect,
-    )
-    .unwrap_or_else(|error| panic!("locked campaign trace should assemble: {error}"))
-    .unwrap_or_else(|| panic!("locked campaign trace must be present"));
-    assert_eq!(locked.mode, FaultReplayMode::LockedEffect);
-    assert_eq!(locked.work_items[0].records, vec![record.clone()]);
+    let locked = trace_with_campaign_network_records(None, &log, FaultReplayMode::LockedEffect)
+        .unwrap_or_else(|error| panic!("locked campaign trace should assemble: {error}"))
+        .unwrap_or_else(|| panic!("locked campaign trace must be present"));
+    assert_eq!(locked.mode(), FaultReplayMode::LockedEffect);
+    assert_eq!(trace_items(&locked)[0].records, vec![record.clone()]);
 
+    // A signal pass item at the same scheduler position stays a separate
+    // work item and precedes the campaign item.
     let fingerprint = ContentHash::from_bytes(b"signal-continuation");
-    let shared = ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: vec![ResolvedReplayWorkItem {
+    let shared = ResolvedEffectTrace::from_items(
+        FaultReplayMode::RecomputedCause,
+        [ResolvedReplayWorkItem {
             coordinate: record.coordinate,
             same_coordinate_sequence: record.same_coordinate_sequence,
             opportunity: record.opportunity,
@@ -203,21 +240,19 @@ fn campaign_record_enters_canonical_resolved_trace() {
             derivation_fingerprint: fingerprint,
             records: Vec::new(),
         }],
-        cursor: 0,
-    };
-    let merged = trace_with_campaign_network_records(
-        Some(shared),
-        &[record],
-        limits,
-        FaultReplayMode::RecomputedCause,
+        FaultResourceLimits::default(),
     )
-    .unwrap_or_else(|error| panic!("campaign trace should merge: {error}"))
-    .unwrap_or_else(|| panic!("merged trace must be present"));
-    assert_eq!(merged.work_items.len(), 2);
-    assert_eq!(merged.work_items[0].derivation_fingerprint, fingerprint);
+    .unwrap_or_else(|error| panic!("signal trace fixture: {error}"));
+    let merged =
+        trace_with_campaign_network_records(Some(shared), &log, FaultReplayMode::RecomputedCause)
+            .unwrap_or_else(|error| panic!("campaign trace should merge: {error}"))
+            .unwrap_or_else(|| panic!("merged trace must be present"));
+    let merged = trace_items(&merged);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0].derivation_fingerprint, fingerprint);
     assert_eq!(
-        merged.work_items[1].records[0].derivation_fingerprint,
-        merged.work_items[1].derivation_fingerprint
+        merged[1].records[0].derivation_fingerprint,
+        merged[1].derivation_fingerprint
     );
 }
 
@@ -278,6 +313,8 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         vec![branch],
     )?;
     replay.validate_topology(&topology)?;
+    // The selected 1_000 us outage ends at this exclusive exact tick.
+    let outage_end = 1_000 * 1_000 * crucible_engine::model::SIM_TICKS_PER_NS;
 
     let mut expected_records = None;
     for exact_replay in [false, true] {
@@ -322,7 +359,8 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         // The outage is selected and checkpointable before any frame reaches
         // the interceptor. Its interval ends at the exact virtual deadline.
         assert_eq!(interceptor.active_outages(0)?.len(), 1);
-        assert!(interceptor.active_outages(1_000_000)?.is_empty());
+        assert_eq!(interceptor.active_outages(outage_end - 1)?.len(), 1);
+        assert!(interceptor.active_outages(outage_end)?.is_empty());
         let checkpoint =
             interceptor.checkpoint(&scheduler, VirtualTime { ticks: 0 }, &[], &mut nodes)?;
         let (_, _, _, adapter_bytes, _) = checkpoint
@@ -400,33 +438,34 @@ fn selected_campaign_fault_drops_frames_across_successive_route_calls() -> Resul
         interceptor.intercept_network_outputs(
             &mut scheduler,
             &mut nodes,
-            VirtualTime { ticks: 1_000_000 },
+            VirtualTime { ticks: outage_end },
             &mut pending,
             &mut after_deadline,
         )?;
         assert_eq!(after_deadline.len(), 1, "selected availability restored");
         assert_eq!(interceptor.campaign_effect_records().len(), 2);
-        assert!(interceptor.active_outages(1_000_000)?.is_empty());
+        assert!(interceptor.active_outages(outage_end)?.is_empty());
         if exact_replay {
             interceptor.verify_campaign_effect_replay_exhausted()?;
             assert_eq!(
-                Some(interceptor.campaign_effect_records().to_vec()),
-                expected_records
+                Some(interceptor.campaign_effect_records()),
+                expected_records.as_ref().map(trace_records)
             );
         } else {
             let trace = trace_with_campaign_network_records(
                 None,
-                interceptor.campaign_effect_records(),
-                interceptor.resource_limits(),
+                interceptor.campaign_effect_log(),
                 FaultReplayMode::RecomputedCause,
             )?
             .ok_or("frame actions produce trace evidence")?;
-            let decoded = ResolvedEffectTrace::from_canonical_bytes(
-                &trace.canonical_bytes()?,
+            let decoded = bundle_round_trip(&trace);
+            let (signal, campaign) = split_campaign_network_trace(
+                decoded,
+                true,
+                &test_segments(),
                 interceptor.resource_limits(),
             )?;
-            let (signal, campaign) = split_campaign_network_trace(decoded, true)?;
-            assert!(signal.work_items.is_empty());
+            assert!(signal.is_empty());
             expected_records = Some(campaign);
         }
     }
@@ -759,17 +798,17 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
     assert_eq!(drained.len(), 1);
     drop(journal);
     let campaign_record = campaign_frame_record(segment.clone());
-    interceptor.campaign_records.push(campaign_record.clone());
+    interceptor
+        .campaign_log
+        .push(campaign_record.clone())
+        .unwrap_or_else(|error| panic!("campaign record should append: {error}"));
     let campaign_trace = trace_with_campaign_network_records(
         None,
-        interceptor.campaign_effect_records(),
-        interceptor.resource_limits(),
+        interceptor.campaign_effect_log(),
         FaultReplayMode::RecomputedCause,
     )
     .unwrap_or_else(|error| panic!("campaign trace before capture: {error}"))
-    .unwrap_or_else(|| panic!("campaign trace before capture must exist"))
-    .canonical_bytes()
-    .unwrap_or_else(|error| panic!("encode campaign trace before capture: {error}"));
+    .unwrap_or_else(|| panic!("campaign trace before capture must exist"));
     let checkpoint = interceptor
         .checkpoint(&scheduler, committed_frontier, &pending_outputs, &mut nodes)
         .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
@@ -782,8 +821,9 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         .unwrap_or_else(|error| panic!("decode versioned network adapter: {error}"));
     assert_eq!(
         decoded_adapter.campaign_records,
-        vec![campaign_record.clone()]
+        interceptor.campaign_log.position()
     );
+    assert_eq!(decoded_adapter.campaign_records.records(), 1);
     assert_eq!(
         serde_json::to_vec(&decoded_adapter)
             .unwrap_or_else(|error| panic!("re-encode network adapter: {error}")),
@@ -847,6 +887,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Arc::new(Mutex::new(
             super::storage_faults::ProductionFaultObservationJournal::default(),
         )),
+        FaultTraceStorage::in_memory(),
     )
     .err()
     .unwrap_or_else(|| panic!("mismatched scheduler continuation should fail closed"));
@@ -883,6 +924,7 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
         Arc::new(Mutex::new(
             super::storage_faults::ProductionFaultObservationJournal::default(),
         )),
+        FaultTraceStorage::in_memory(),
     )
     .err()
     .unwrap_or_else(|| panic!("malformed adapter checkpoint should fail closed"));
@@ -916,24 +958,26 @@ fn production_boundary_drops_a_preexisting_world_link_frame() {
             Arc::new(Mutex::new(
                 super::storage_faults::ProductionFaultObservationJournal::default(),
             )),
+            FaultTraceStorage::in_memory(),
         )
         .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
     assert_eq!(restored_committed_frontier, committed_frontier);
     assert_eq!(
         restored_interceptor.campaign_effect_records(),
-        &[campaign_record]
+        vec![campaign_record]
     );
     let restored_campaign_trace = trace_with_campaign_network_records(
         None,
-        restored_interceptor.campaign_effect_records(),
-        restored_interceptor.resource_limits(),
+        restored_interceptor.campaign_effect_log(),
         FaultReplayMode::RecomputedCause,
     )
     .unwrap_or_else(|error| panic!("campaign trace after restore: {error}"))
-    .unwrap_or_else(|| panic!("campaign trace after restore must exist"))
-    .canonical_bytes()
-    .unwrap_or_else(|error| panic!("encode campaign trace after restore: {error}"));
-    assert_eq!(restored_campaign_trace, campaign_trace);
+    .unwrap_or_else(|| panic!("campaign trace after restore must exist"));
+    // Equal manifests name equal segments: restore reproduces the trace.
+    assert_eq!(
+        restored_campaign_trace.manifest(),
+        campaign_trace.manifest()
+    );
     let restored_checkpoint = restored_interceptor
         .checkpoint(
             &restored_scheduler,
@@ -1319,7 +1363,7 @@ fn shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_fi
         journal_sequence: 2,
         observations: super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state.clone(),
-        campaign_records: Vec::new(),
+        campaign_records: CampaignRecordLogPosition::empty(),
         campaign_replay_identity: None,
         campaign_marker_releases: Vec::new(),
     };
@@ -1583,6 +1627,8 @@ fn association_control_bias_and_replacement_preserve_digest_invariants() {
     );
 }
 
+#[path = "tests/campaign_frame_loss.rs"]
+mod campaign_frame_loss;
 #[path = "tests/control_replacements.rs"]
 mod control_replacements;
 #[path = "tests/production_conformance.rs"]

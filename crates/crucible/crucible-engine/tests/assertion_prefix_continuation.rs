@@ -3,10 +3,10 @@
 #![forbid(unsafe_code)]
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, EventLog,
-    HostAssertionCheckpointError, HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint,
-    HostAssertionOutcomeKind, ObservableEvent, ObservedState, Predicate, Properties, Property,
-    SchedulerEvaluationBoundaryKind, VirtualTime, World,
+    AssertionDef, AssertionId, AssertionRunVerdict, EventLog, HostAssertionCheckpointError,
+    HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint, HostAssertionOutcomeKind, NamedLeaf,
+    ObservedBatch, Predicate, Properties, Property, SchedulerEvaluationBoundaryKind, VirtualTime,
+    World,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -68,7 +68,7 @@ fn growing_authenticated_history_preserves_empty_continuation() -> TestResult {
 }
 
 #[test]
-fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult {
+fn restored_deadline_crossing_preserves_equal_points() -> TestResult {
     let world = World::from_nodes(Vec::new())?;
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -82,19 +82,31 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             },
         }],
     )?;
-    let first = crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-        3,
-        Vec::<ObservableEvent>::new(),
-    )?;
+    // The second boundary repeats the first point; the third crosses the
+    // deadline at 5 without an entry there.
+    let entries = [3, 3, 10]
+        .into_iter()
+        .zip(0..)
+        .map(|(ticks, sequence)| {
+            crucible_engine::test_support::condition_boundary_entry_for_test(
+                sequence,
+                time(ticks),
+                SchedulerEvaluationBoundaryKind::Quantum,
+            )
+        })
+        .collect::<Vec<_>>();
+    let prefix = |len: usize| {
+        crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
+            entries[..len].to_vec(),
+        )
+    };
+    let first = prefix(1)?;
     let mut evaluator = HostAssertionEvaluator::new(&properties);
     let mut oracle = crucible_engine::test_support::unchecked_host_assertion_oracle_for_test(
-        |state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
-            ConditionLeaf::Named { name, .. } => match name {
-                "trigger" => state.at() == time(3),
-                "at-deadline" => state.at() == time(5),
-                _ => false,
-            },
-            ConditionLeaf::GuestMarker { .. } => false,
+        |leaf: NamedLeaf<'_>, batch: &ObservedBatch<'_>| match leaf.name() {
+            "trigger" => batch.at() == time(3),
+            "at-deadline" => batch.at() == time(5),
+            _ => false,
         },
     );
     evaluator.observe_prefix(&first, &mut oracle);
@@ -103,12 +115,8 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
     let mut restored = HostAssertionEvaluator::new(&properties);
     checkpoint.restore_into(&mut restored, &first)?;
 
-    for ticks in [3, 1, 10] {
-        let prefix =
-            crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-                ticks,
-                Vec::new(),
-            )?;
+    for len in [2, 3] {
+        let prefix = prefix(len)?;
         assert_eq!(
             restored.observe_prefix(&prefix, &mut oracle),
             evaluator.observe_prefix(&prefix, &mut oracle)
@@ -118,10 +126,7 @@ fn restored_deadline_crossing_preserves_equal_and_earlier_points() -> TestResult
             evaluator.checkpoint().canonical_bytes()?
         );
     }
-    let terminal = crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-        10,
-        Vec::new(),
-    )?;
+    let terminal = prefix(entries.len())?;
     let report = evaluator.finalize_prefix(&terminal, &mut oracle);
 
     assert_eq!(report, restored.finalize_prefix(&terminal, &mut oracle));

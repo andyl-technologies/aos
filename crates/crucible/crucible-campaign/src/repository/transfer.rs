@@ -1,17 +1,25 @@
 //! Authenticated archive selection, inspection, publication, and object transfer.
+//!
+//! Planning streams the source closure through the repository's private
+//! scratch storage: identities are external-sorted, each object is profiled as
+//! the sorted stream passes, and finished inventory pages are spooled rather
+//! than retained. Inspection replays canonical pages from the store. Neither
+//! holds an archive-sized set in memory; see the `inventory` module for the
+//! scratch records and the `inspection` module for the inspection passes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io;
 
 use crucible_store::content_envelope::ContentEnvelope;
 use crucible_store::content_store::{
-    ContentId, DurabilityRequirement, ObjectKind, RefCasOutcome, RefName, RetentionRole,
-    StoreError, StoreObjectProfiler,
+    ContentId, DurabilityRequirement, ObjectKind, ObjectProfile, RefCasOutcome, RefName,
+    RetentionRole, StoreError, StoreObjectProfiler,
 };
 
 use super::*;
-use crate::archive::{build_inspection, inventory_digest};
+use crate::archive::CampaignArchiveManifestBasis;
 use crate::object_profile::profile_authenticated_exact_leaf;
+use crate::spill::{SpillFile, SpillStorage};
 use crate::{
     ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
     CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
@@ -20,6 +28,14 @@ use crate::{
     CampaignObjectProfiler, CampaignRecordKind, MAX_ARCHIVE_INVENTORY_ENTRIES,
     MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES,
 };
+use inventory::{
+    ClosureCursor, ClosureSpill, EdgeSpill, IdMembership, InventoryCursor, PageSpooler,
+    reachable_from,
+};
+
+mod inspection;
+mod inventory;
+mod plan;
 
 impl CampaignRepository {
     /// Validates archive and optional ordinary-head publication intent without mutation.
@@ -49,7 +65,7 @@ impl CampaignRepository {
         Ok(())
     }
 
-    /// Builds a bounded archive plan from one fully authenticated source snapshot.
+    /// Builds an archive plan from one fully authenticated source snapshot.
     ///
     /// Partial policies record a complete selected/omitted partition without
     /// turning selected objects into transitive child roots. Executable archives
@@ -61,114 +77,75 @@ impl CampaignRepository {
     /// existing partial archive must be transferred through its own archive
     /// plan and boundary.
     ///
+    /// The closure is external-sorted and the inventory pages are spooled in
+    /// the repository's scratch storage (see
+    /// [`Self::with_scratch_directory`]), so memory does not grow with the
+    /// archive. Planning writes nothing to the content store.
+    ///
     /// # Errors
     ///
     /// Returns [`CampaignRepositoryError`] when the source closure or a retained
     /// root is unavailable or invalid, a profile cannot be derived from complete
-    /// authenticated bytes, or the bounded canonical manifest cannot be built.
+    /// authenticated bytes, scratch storage fails, or the canonical manifest
+    /// cannot be built within its format limit.
     pub fn plan_campaign_archive(
         &self,
         snapshot: CampaignSnapshotId,
         policy: CampaignArchivePolicy,
         retained_roots: impl IntoIterator<Item = ContentId>,
-        mut checkpoint_resolver: Option<&mut dyn CampaignArchiveCheckpointResolver>,
+        checkpoint_resolver: Option<&mut dyn CampaignArchiveCheckpointResolver>,
     ) -> Result<CampaignArchivePlan, CampaignRepositoryError> {
-        self.validate_complete_head(snapshot.content_id())?;
-        let snapshot_record = self.read_snapshot(snapshot.content_id())?;
-        let snapshot_closure = self.authenticated_closure_ids([snapshot.content_id()])?;
-        let mut exact_leaves = BTreeSet::new();
-
-        let mut expected_exact_pins = BTreeSet::new();
-        self.visit_pin_retention_roots_at(snapshot, &mut |pin| {
-            if pin.retention() == crate::PinRetention::Exact {
-                expected_exact_pins.insert((pin.request().change.configuration(), pin.fact()));
-            }
-        })?;
-        let mut checkpoint_selections = BTreeSet::new();
-        if matches!(
-            policy,
-            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
-        ) {
-            for (configuration, pin_fact) in expected_exact_pins {
-                let resolver = checkpoint_resolver.as_deref_mut().ok_or_else(|| {
-                    integrity("campaign-archive-exact-pin-materialization-missing")
-                })?;
-                let checkpoint = resolver.resolve_checkpoint(configuration, pin_fact)?;
-                checkpoint_selections.insert(CampaignArchiveCheckpointSelection::new(
-                    configuration,
-                    pin_fact,
-                    checkpoint,
-                ));
-            }
-        }
-
-        let retained_roots = retained_roots.into_iter().collect::<BTreeSet<_>>();
+        let retained_roots = retained_roots
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         if policy != CampaignArchivePolicy::Mirror && !retained_roots.is_empty() {
             return Err(CampaignRepositoryError::InvalidRequest {
                 reason: "only mirror archives accept additional retained roots",
             });
         }
-        let retained_closure = if retained_roots.is_empty() {
-            BTreeSet::new()
-        } else {
-            self.authenticated_closure_ids(retained_roots.iter().copied())?
-        };
-        self.reject_nested_archive_metadata(&retained_closure, &BTreeSet::new())?;
-        let mut represented = snapshot_closure.clone();
-        represented.extend(retained_closure);
-        if !checkpoint_selections.is_empty() {
-            let (checkpoint_closure, checkpoint_exact_leaves) = self
-                .authenticated_closure_with_exact_leaves(
-                    checkpoint_selections
-                        .iter()
-                        .map(|selection| selection.checkpoint().content_id()),
-                )?;
-            represented.extend(checkpoint_closure);
-            exact_leaves.extend(checkpoint_exact_leaves);
-        }
-        if represented.len() > MAX_ARCHIVE_INVENTORY_ENTRIES {
-            return Err(integrity("campaign-archive-inventory-limit"));
-        }
+        let storage = self.spill_storage()?;
+
+        // Streaming the head closure runs complete inductive history
+        // validation, so the snapshot is authenticated before its pin index
+        // is trusted below.
+        let mut closure = ClosureSpill::new(&storage);
+        self.spill_head_closure(&mut closure, snapshot)?;
+        let checkpoint_selections =
+            self.resolve_checkpoint_selections(snapshot, policy, checkpoint_resolver)?;
+        let checkpoints = checkpoint_roots(&checkpoint_selections);
+        self.spill_retained_closure(&mut closure, &retained_roots)?;
+        self.spill_checkpoint_closure(&mut closure, &checkpoints)?;
+        let closure = closure.finish()?;
 
         let finding_closure = if policy == CampaignArchivePolicy::Debug {
-            self.authenticated_closure_ids([snapshot_record.snapshot.roots().findings])?
+            let findings = self
+                .read_snapshot(snapshot.content_id())?
+                .snapshot
+                .roots()
+                .findings;
+            Some(self.spill_finding_closure(&storage, &closure, findings)?)
         } else {
-            BTreeSet::new()
+            None
         };
-        let profiler = CampaignObjectProfiler;
-        let mut selected = Vec::new();
-        let mut omitted = Vec::new();
-        for id in represented {
-            let source = self.blobs.read(id, None)?;
-            let profile = if exact_leaves.contains(&id) {
-                profile_authenticated_exact_leaf(id, &source)?
-            } else {
-                profiler.derive_profile(id, &source)?
-            };
-            let entry = ArchiveObjectEntry::from_profile(id, profile);
-            if archive_policy_selects(policy, id, profile.retention_role(), &finding_closure) {
-                selected.push(entry);
-            } else {
-                omitted.push(entry);
-            }
-        }
+        let (selected, omitted) =
+            self.partition_archive_closure(&storage, policy, &closure, finding_closure.as_ref())?;
+        drop(finding_closure);
+        drop(closure);
 
-        let (selected_pages, mut page_envelopes) =
-            archive_pages(ArchiveInventoryDisposition::Selected, &selected)?;
-        let (omitted_pages, omitted_envelopes) =
-            archive_pages(ArchiveInventoryDisposition::Omitted, &omitted)?;
-        page_envelopes.extend(omitted_envelopes);
-        let manifest =
-            CampaignArchiveManifest::new(crate::archive::CampaignArchiveManifestBasis {
-                source_snapshot: snapshot,
-                policy,
-                checkpoint_selections: checkpoint_selections.into_iter().collect(),
-                retained_roots: retained_roots.into_iter().collect(),
-                selected_pages,
-                omitted_pages,
-                selected: &selected,
-                omitted: &omitted,
-            })?;
+        let selected_summary = selected.summary()?;
+        let omitted_summary = omitted.summary()?;
+        let manifest = CampaignArchiveManifest::new(CampaignArchiveManifestBasis {
+            source_snapshot: snapshot,
+            policy,
+            checkpoint_selections,
+            retained_roots,
+            selected_pages: selected.pages,
+            omitted_pages: omitted.pages,
+            selected: selected_summary,
+            omitted: omitted_summary,
+        })?;
         let manifest_envelope = ObjectEnvelope::for_archive_manifest(&manifest)?;
         let manifest_id =
             CampaignArchiveManifestId::from_content_id(manifest_envelope.content_id())?;
@@ -176,9 +153,8 @@ impl CampaignRepository {
             manifest_id,
             manifest,
             manifest_envelope,
-            page_envelopes,
-            selected,
-            omitted,
+            selected_pages: selected.file,
+            omitted_pages: omitted.file,
         })
     }
 
@@ -198,15 +174,10 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
         let _mutation = self.lock_mutation()?;
-        for envelope in &plan.page_envelopes {
-            self.put_envelope(envelope.clone())?;
-        }
-        let id = self.put_envelope(plan.manifest_envelope.clone())?;
-        if id != plan.manifest_id.content_id() {
-            return Err(integrity("campaign-archive-manifest-publication-mismatch"));
-        }
+        self.put_plan_metadata(plan, "campaign-archive-manifest-publication-mismatch")?;
         self.inspect_campaign_archive(plan.manifest_id)?;
         let archive_ref = archive_ref(name)?;
+        let id = plan.manifest_id.content_id();
         let expected = expected.map(CampaignArchiveManifestId::content_id);
         match self.refs.compare_exchange(&archive_ref, expected, id)? {
             RefCasOutcome::Advanced { next } if next == id => Ok(plan.manifest_id),
@@ -238,13 +209,7 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
         self.verify_plan_against_source(plan)?;
-        for envelope in &plan.page_envelopes {
-            self.put_envelope(envelope.clone())?;
-        }
-        let id = self.put_envelope(plan.manifest_envelope.clone())?;
-        if id != plan.manifest_id.content_id() {
-            return Err(integrity("campaign-archive-manifest-staging-mismatch"));
-        }
+        self.put_plan_metadata(plan, "campaign-archive-manifest-staging-mismatch")?;
         self.inspect_campaign_archive(plan.manifest_id)?;
         Ok(plan.manifest_id)
     }
@@ -266,134 +231,6 @@ impl CampaignRepository {
             .ok_or(CampaignRepositoryError::NotFound)?;
         let id = CampaignArchiveManifestId::from_content_id(target)?;
         self.inspect_campaign_archive(id)
-    }
-
-    /// Authenticates one archive manifest, every inventory page, and every selected object.
-    ///
-    /// Selected objects are authenticated independently to EOF and compared
-    /// with their profiler-derived records. Their ordinary child edges are not
-    /// traversed across the declared archive boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CampaignRepositoryError`] for missing or corrupt metadata,
-    /// inconsistent page order/digests, or a missing, corrupt, or misprofiled
-    /// selected object.
-    pub fn inspect_campaign_archive(
-        &self,
-        id: CampaignArchiveManifestId,
-    ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
-        let envelope =
-            self.require_record_kind(id.content_id(), CampaignRecordKind::ArchiveManifest)?;
-        let manifest = CampaignArchiveManifest::from_canonical_bytes(envelope.body())?;
-        if manifest.id()? != id {
-            return Err(integrity("campaign-archive-manifest-envelope-shape"));
-        }
-
-        let (selected, mut page_ids) = self.read_archive_pages(
-            manifest.selected_pages(),
-            ArchiveInventoryDisposition::Selected,
-        )?;
-        let (omitted, omitted_page_ids) = self.read_archive_pages(
-            manifest.omitted_pages(),
-            ArchiveInventoryDisposition::Omitted,
-        )?;
-        page_ids.extend(omitted_page_ids);
-        if selected.len() as u64 != manifest.selected_count()
-            || omitted.len() as u64 != manifest.omitted_count()
-            || inventory_digest(&selected) != manifest.selected_digest()
-            || inventory_digest(&omitted) != manifest.omitted_digest()
-        {
-            return Err(integrity("campaign-archive-inventory-manifest-mismatch"));
-        }
-
-        let declared = selected
-            .iter()
-            .chain(&omitted)
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
-        if !declared.contains(&manifest.source_snapshot().content_id()) {
-            return Err(integrity("campaign-archive-source-snapshot-is-undeclared"));
-        }
-
-        let executable_closure = if matches!(
-            manifest.policy(),
-            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
-        ) {
-            let mut complete =
-                self.authenticated_closure_ids([manifest.source_snapshot().content_id()])?;
-            complete
-                .extend(self.authenticated_closure_ids(manifest.retained_roots().iter().copied())?);
-            let (checkpoints, exact_leaves) = self.authenticated_closure_with_exact_leaves(
-                manifest
-                    .checkpoint_selections()
-                    .iter()
-                    .map(|selection| selection.checkpoint().content_id()),
-            )?;
-            complete.extend(checkpoints);
-            Some((complete, exact_leaves))
-        } else {
-            None
-        };
-        let exact_leaves = executable_closure
-            .as_ref()
-            .map_or_else(BTreeSet::new, |(_, leaves)| leaves.clone());
-        let profiler = CampaignObjectProfiler;
-        let mut selected_children = BTreeMap::new();
-        for entry in &selected {
-            let (profile, children) = self.authenticate_archive_object(
-                entry.id(),
-                &profiler,
-                exact_leaves.contains(&entry.id()),
-            )?;
-            if !entry.matches_profile(profile) {
-                return Err(integrity(
-                    "campaign-archive-selected-object-profile-mismatch",
-                ));
-            }
-            if children.iter().any(|child| !declared.contains(child)) {
-                return Err(integrity("campaign-archive-selected-child-is-undeclared"));
-            }
-            selected_children.insert(entry.id(), children);
-        }
-        let mut omitted_inventory_verified = true;
-        for entry in &omitted {
-            match self.authenticate_archive_object(
-                entry.id(),
-                &profiler,
-                exact_leaves.contains(&entry.id()),
-            ) {
-                Ok((profile, _)) if entry.matches_profile(profile) => {}
-                Ok(_) => {
-                    return Err(integrity(
-                        "campaign-archive-omitted-object-profile-mismatch",
-                    ));
-                }
-                Err(CampaignRepositoryError::Store(StoreError::NotFound { .. })) => {
-                    omitted_inventory_verified = false;
-                }
-                Err(source) => return Err(source),
-            }
-        }
-        self.validate_archive_policy(&manifest, &selected, &omitted, &selected_children)?;
-        if let Some((complete, exact_leaves)) = executable_closure {
-            self.reject_nested_archive_metadata(&complete, &exact_leaves)?;
-            if complete != selected.iter().map(|entry| entry.id()).collect() || !omitted.is_empty()
-            {
-                return Err(integrity(
-                    "campaign-archive-executable-closure-is-incomplete",
-                ));
-            }
-        }
-        build_inspection(
-            id,
-            manifest,
-            selected,
-            omitted,
-            page_ids,
-            omitted_inventory_verified,
-        )
-        .map_err(CampaignRepositoryError::from)
     }
 
     /// Authenticates one finding in a complete imported archive.
@@ -449,6 +286,71 @@ impl CampaignRepository {
         Ok(finding)
     }
 
+    /// Replays one inspected archive inventory in ascending identity order.
+    ///
+    /// Each page is read from this repository and checked against the
+    /// inspected manifest again, so the replay yields exactly the entries the
+    /// manifest digests describe. Memory is bounded by one page.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from `visit`, or a [`CampaignRepositoryError`]
+    /// when a page is missing, corrupt, or inconsistent with the manifest.
+    pub fn visit_campaign_archive_entries<E>(
+        &self,
+        inspection: &CampaignArchiveInspection,
+        disposition: ArchiveInventoryDisposition,
+        mut visit: impl FnMut(ArchiveObjectEntry) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        let manifest = inspection.manifest();
+        let pages = match disposition {
+            ArchiveInventoryDisposition::Selected => manifest.selected_pages(),
+            ArchiveInventoryDisposition::Omitted => manifest.omitted_pages(),
+        };
+        let mut cursor = InventoryCursor::store(self, pages, disposition);
+        while let Some(entry) = cursor.next_entry()? {
+            visit(entry)?;
+        }
+        Ok(())
+    }
+
+    /// Visits the manifest, page, and selected-object IDs that archive GC retains.
+    ///
+    /// The manifest comes first, then every page in manifest order, then the
+    /// selected objects in ascending order. Selected entries are replayed as
+    /// [`Self::visit_campaign_archive_entries`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from `visit`, or a [`CampaignRepositoryError`]
+    /// when a page is missing, corrupt, or inconsistent with the manifest.
+    pub fn visit_campaign_archive_retained_objects<E>(
+        &self,
+        inspection: &CampaignArchiveInspection,
+        mut visit: impl FnMut(ContentId) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        let manifest = inspection.manifest();
+        visit(inspection.manifest_id().content_id())?;
+        for page in manifest
+            .selected_pages()
+            .iter()
+            .chain(manifest.omitted_pages())
+        {
+            visit(page.content_id())?;
+        }
+        self.visit_campaign_archive_entries(
+            inspection,
+            ArchiveInventoryDisposition::Selected,
+            |entry| visit(entry.id()),
+        )
+    }
+
     /// Copies every missing selected object and canonical archive metadata.
     ///
     /// Destination presence is never trusted. An existing object is read to
@@ -480,36 +382,16 @@ impl CampaignRepository {
             .into());
         }
         let mut report = CampaignArchiveTransferReport::new();
-        for entry in &plan.selected {
+        plan.visit_transfer_objects(|id, logical_length| {
             transfer_one(
                 self,
                 destination,
-                entry.id(),
-                entry.logical_length(),
+                id,
+                logical_length,
                 destination_durability,
                 &mut report,
-            )?;
-        }
-        for envelope in &plan.page_envelopes {
-            let bytes = envelope.canonical_bytes();
-            transfer_one(
-                self,
-                destination,
-                envelope.content_id(),
-                bytes.len() as u64,
-                destination_durability,
-                &mut report,
-            )?;
-        }
-        let manifest_bytes = plan.manifest_envelope.canonical_bytes();
-        transfer_one(
-            self,
-            destination,
-            plan.manifest_id.content_id(),
-            manifest_bytes.len() as u64,
-            destination_durability,
-            &mut report,
-        )?;
+            )
+        })?;
         destination.inspect_campaign_archive(plan.manifest_id)?;
         Ok(report)
     }
@@ -558,106 +440,243 @@ impl CampaignRepository {
         }
     }
 
+    /// Resolves the checkpoint selected for every live exact pin of `snapshot`.
+    fn resolve_checkpoint_selections(
+        &self,
+        snapshot: CampaignSnapshotId,
+        policy: CampaignArchivePolicy,
+        mut checkpoint_resolver: Option<&mut dyn CampaignArchiveCheckpointResolver>,
+    ) -> Result<Vec<CampaignArchiveCheckpointSelection>, CampaignRepositoryError> {
+        let mut expected_exact_pins = BTreeSet::new();
+        self.visit_pin_retention_roots_at(snapshot, &mut |pin| {
+            if pin.retention() == crate::PinRetention::Exact {
+                expected_exact_pins.insert((pin.request().change.configuration(), pin.fact()));
+            }
+        })?;
+        let mut checkpoint_selections = BTreeSet::new();
+        if matches!(
+            policy,
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            for (configuration, pin_fact) in expected_exact_pins {
+                let resolver = checkpoint_resolver.as_deref_mut().ok_or_else(|| {
+                    integrity("campaign-archive-exact-pin-materialization-missing")
+                })?;
+                let checkpoint = resolver.resolve_checkpoint(configuration, pin_fact)?;
+                checkpoint_selections.insert(CampaignArchiveCheckpointSelection::new(
+                    configuration,
+                    pin_fact,
+                    checkpoint,
+                ));
+            }
+        }
+        Ok(checkpoint_selections.into_iter().collect())
+    }
+
+    /// Profiles every closure object and spools it into the inventory its policy picks.
+    fn partition_archive_closure(
+        &self,
+        storage: &SpillStorage,
+        policy: CampaignArchivePolicy,
+        closure: &SpillFile,
+        finding_closure: Option<&SpillFile>,
+    ) -> Result<(inventory::SpooledInventory, inventory::SpooledInventory), CampaignRepositoryError>
+    {
+        let profiler = CampaignObjectProfiler;
+        let mut finding_membership = finding_closure.map(IdMembership::open).transpose()?;
+        let mut selected = PageSpooler::new(storage, ArchiveInventoryDisposition::Selected)?;
+        let mut omitted = PageSpooler::new(storage, ArchiveInventoryDisposition::Omitted)?;
+        let mut represented = 0_usize;
+        let mut cursor = ClosureCursor::open(closure)?;
+        while let Some((id, exact_leaf)) = cursor.next()? {
+            represented += 1;
+            if represented > MAX_ARCHIVE_INVENTORY_ENTRIES {
+                return Err(integrity("campaign-archive-inventory-limit"));
+            }
+            let source = self.blobs.read(id, None)?;
+            let profile = if exact_leaf {
+                profile_authenticated_exact_leaf(id, &source)?
+            } else {
+                profiler.derive_profile(id, &source)?
+            };
+            // The closure stream ascends, so membership is a forward merge.
+            let in_finding_closure = match finding_membership.as_mut() {
+                Some(membership) => membership.contains(id)?,
+                None => false,
+            };
+            let entry = ArchiveObjectEntry::from_profile(id, profile);
+            if archive_policy_selects(policy, id, profile.retention_role(), in_finding_closure) {
+                selected.push(entry)?;
+            } else {
+                omitted.push(entry)?;
+            }
+        }
+        Ok((selected.finish()?, omitted.finish()?))
+    }
+
+    /// Computes the closure of the findings root within an already spilled closure.
+    ///
+    /// The closure's child edges are spilled once and joined round by round
+    /// from the findings root.
+    fn spill_finding_closure(
+        &self,
+        storage: &SpillStorage,
+        closure: &SpillFile,
+        findings: ContentId,
+    ) -> Result<SpillFile, CampaignRepositoryError> {
+        let mut edges = EdgeSpill::new(storage);
+        let mut cursor = ClosureCursor::open(closure)?;
+        while let Some((id, exact_leaf)) = cursor.next()? {
+            for child in self.archive_object_links(id, exact_leaf)?.children {
+                edges.push(id, child)?;
+            }
+        }
+        reachable_from(storage, findings, &edges.finish()?)
+    }
+
+    /// Streams the complete closure of the source head into `closure`.
+    fn spill_head_closure(
+        &self,
+        closure: &mut ClosureSpill,
+        snapshot: CampaignSnapshotId,
+    ) -> Result<(), CampaignRepositoryError> {
+        // Only checkpoint selections opt into raw production leaves; the
+        // snapshot's own closure is profiled as ordinary campaign objects.
+        self.visit_validated_head_closure(snapshot.content_id(), &mut |id, _exact_leaf| {
+            closure.push(id, false)
+        })?;
+        Ok(())
+    }
+
+    /// Streams the closures of mirror retained roots, rejecting archive metadata.
+    fn spill_retained_closure(
+        &self,
+        closure: &mut ClosureSpill,
+        roots: &[ContentId],
+    ) -> Result<(), CampaignRepositoryError> {
+        if roots.is_empty() {
+            return Ok(());
+        }
+        self.walk_campaign_closures(
+            roots.iter().copied(),
+            &BTreeSet::new(),
+            false,
+            &mut ChoiceValidationCache::default(),
+            Some(&mut |id, _exact_leaf| {
+                self.reject_archive_metadata(id)?;
+                closure.push(id, false)
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Streams selected exact-checkpoint closures with their raw-leaf flags.
+    fn spill_checkpoint_closure(
+        &self,
+        closure: &mut ClosureSpill,
+        roots: &[ContentId],
+    ) -> Result<(), CampaignRepositoryError> {
+        if roots.is_empty() {
+            return Ok(());
+        }
+        // Only archive checkpoint selections may opt into raw production
+        // leaves. The source resolver and destination exact store
+        // authenticate their semantics.
+        self.walk_campaign_closures(
+            roots.iter().copied(),
+            &BTreeSet::new(),
+            true,
+            &mut ChoiceValidationCache::default(),
+            Some(&mut |id, exact_leaf| closure.push(id, exact_leaf)),
+        )?;
+        Ok(())
+    }
+
+    /// Spills the complete represented closure that a manifest declares.
+    fn spill_archive_closure(
+        &self,
+        storage: &SpillStorage,
+        manifest: &CampaignArchiveManifest,
+    ) -> Result<SpillFile, CampaignRepositoryError> {
+        let mut closure = ClosureSpill::new(storage);
+        self.spill_head_closure(&mut closure, manifest.source_snapshot())?;
+        self.spill_retained_closure(&mut closure, manifest.retained_roots())?;
+        self.spill_checkpoint_closure(
+            &mut closure,
+            &checkpoint_roots(manifest.checkpoint_selections()),
+        )?;
+        closure.finish()
+    }
+
+    /// Proves that a plan's declared partition still equals the source closure.
+    ///
+    /// The source closure is spilled again and merge-compared with the union
+    /// of the plan's spooled inventories, whose pages are bound to the
+    /// manifest's page IDs and therefore to its digests.
     fn verify_plan_against_source(
         &self,
         plan: &CampaignArchivePlan,
     ) -> Result<(), CampaignRepositoryError> {
-        let mut represented =
-            self.authenticated_closure_ids([plan.manifest.source_snapshot().content_id()])?;
-        represented.extend(
-            self.authenticated_closure_with_exact_leaves(
-                plan.manifest
-                    .checkpoint_selections()
-                    .iter()
-                    .map(|selection| selection.checkpoint().content_id()),
-            )?
-            .0,
-        );
-        let retained_closure =
-            self.authenticated_closure_ids(plan.manifest.retained_roots().iter().copied())?;
-        self.reject_nested_archive_metadata(&retained_closure, &BTreeSet::new())?;
-        represented.extend(retained_closure);
-        let declared = plan
-            .selected
-            .iter()
-            .chain(&plan.omitted)
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
-        if represented != declared
-            || plan.manifest.selected_digest() != inventory_digest(&plan.selected)
-            || plan.manifest.omitted_digest() != inventory_digest(&plan.omitted)
-        {
-            return Err(integrity("campaign-archive-plan-no-longer-matches-source"));
+        let storage = self.spill_storage()?;
+        let closure = self.spill_archive_closure(&storage, &plan.manifest)?;
+        let mut closure = ClosureCursor::open(&closure)?;
+        let mut declared = inventory::MergedInventory::new(
+            InventoryCursor::spool(
+                &plan.selected_pages,
+                plan.manifest.selected_pages(),
+                ArchiveInventoryDisposition::Selected,
+            )?,
+            InventoryCursor::spool(
+                &plan.omitted_pages,
+                plan.manifest.omitted_pages(),
+                ArchiveInventoryDisposition::Omitted,
+            )?,
+        )?;
+        loop {
+            match (closure.next()?, declared.next()?) {
+                (None, None) => return Ok(()),
+                (Some((id, _)), Some((_, entry))) if id == entry.id() => {}
+                _ => return Err(integrity("campaign-archive-plan-no-longer-matches-source")),
+            }
         }
-        Ok(())
     }
 
-    fn reject_nested_archive_metadata(
+    /// Places a plan's spooled pages and its manifest in this store.
+    fn put_plan_metadata(
         &self,
-        closure: &BTreeSet<ContentId>,
-        exact_leaves: &BTreeSet<ContentId>,
+        plan: &CampaignArchivePlan,
+        mismatch: &'static str,
     ) -> Result<(), CampaignRepositoryError> {
-        for id in closure {
-            if exact_leaves.contains(id)
-                || !is_campaign_record_kind(id.kind())
-                || id.kind() == ObjectKind::MerkleNode
-            {
-                continue;
+        plan.visit_page_envelopes(|envelope| {
+            let expected = envelope.content_id();
+            if self.put_envelope(envelope)? != expected {
+                return Err(integrity(mismatch));
             }
-            let envelope = self.read_envelope(*id)?;
-            if matches!(
-                envelope.record_kind(),
-                CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage
-            ) {
-                return Err(CampaignRepositoryError::InvalidRequest {
-                    reason: "mirror retained roots cannot contain archive metadata",
-                });
-            }
+            Ok(())
+        })?;
+        if self.put_envelope(plan.manifest_envelope.clone())? != plan.manifest_id.content_id() {
+            return Err(integrity(mismatch));
         }
         Ok(())
     }
 
-    fn read_archive_pages(
-        &self,
-        ids: &[CampaignArchiveInventoryPageId],
-        disposition: ArchiveInventoryDisposition,
-    ) -> Result<(Vec<ArchiveObjectEntry>, Vec<ContentId>), CampaignRepositoryError> {
-        let mut entries = Vec::new();
-        let mut page_ids = Vec::with_capacity(ids.len());
-        for (ordinal, id) in ids.iter().copied().enumerate() {
-            let envelope = self
-                .require_record_kind(id.content_id(), CampaignRecordKind::ArchiveInventoryPage)?;
-            let page = CampaignArchiveInventoryPage::from_canonical_bytes(envelope.body())?;
-            if page.id()? != id
-                || page.disposition() != disposition
-                || page.ordinal() as usize != ordinal
-            {
-                return Err(integrity("campaign-archive-inventory-page-mismatch"));
-            }
-            if entries
-                .last()
-                .is_some_and(|prior: &ArchiveObjectEntry| prior.id() >= page.entries()[0].id())
-            {
-                return Err(integrity("campaign-archive-inventory-order-mismatch"));
-            }
-            entries.extend_from_slice(page.entries());
-            page_ids.push(id.content_id());
+    fn reject_archive_metadata(&self, id: ContentId) -> Result<(), CampaignRepositoryError> {
+        if !is_campaign_record_kind(id.kind()) || id.kind() == ObjectKind::MerkleNode {
+            return Ok(());
         }
-        Ok((entries, page_ids))
+        if is_archive_metadata(self.read_envelope(id)?.record_kind()) {
+            return Err(nested_archive_metadata());
+        }
+        Ok(())
     }
 
+    /// Authenticates one archive object to EOF and derives its profile and links.
     fn authenticate_archive_object(
         &self,
         id: ContentId,
         profiler: &CampaignObjectProfiler,
         exact_leaf: bool,
-    ) -> Result<
-        (
-            crucible_store::content_store::ObjectProfile,
-            BTreeSet<ContentId>,
-        ),
-        CampaignRepositoryError,
-    > {
+    ) -> Result<(ObjectProfile, ArchiveObjectLinks), CampaignRepositoryError> {
         let authenticated = self.blobs.read(id, None)?;
         authenticated.copy_to(&mut io::sink())?;
         let source = self.blobs.read(id, None)?;
@@ -666,105 +685,75 @@ impl CampaignRepository {
         } else {
             profiler.derive_profile(id, &source)?
         };
-        let children = if exact_leaf || is_archive_opaque_leaf(id.kind()) {
-            BTreeSet::new()
-        } else {
-            let bytes = self.blobs.read(id, None)?.read_all(MAX_ENVELOPE_BYTES)?;
-            if is_campaign_record_kind(id.kind()) {
-                let envelope = if id.kind() == ObjectKind::MerkleNode {
-                    ObjectEnvelope::from_canonical_bytes_for_owner(&bytes)?
-                } else {
-                    ObjectEnvelope::from_canonical_bytes(&bytes)?
-                };
-                if envelope.content_id() != id {
-                    return Err(integrity("campaign-archive-object-envelope-id-mismatch"));
-                }
-                envelope
-                    .children()
-                    .iter()
-                    .map(crate::ChildReference::id)
-                    .collect()
-            } else {
-                let envelope = ContentEnvelope::from_canonical_bytes(&bytes)
-                    .map_err(CampaignCodecError::from)?;
-                if envelope.content_id(id.kind()) != id {
-                    return Err(integrity("campaign-archive-generic-envelope-id-mismatch"));
-                }
-                envelope
-                    .children()
-                    .iter()
-                    .map(crate::ChildReference::id)
-                    .collect()
-            }
-        };
-        Ok((profile, children))
+        Ok((profile, self.archive_object_links(id, exact_leaf)?))
     }
 
-    fn validate_archive_policy(
+    /// Reads the child identities of one object without traversing them.
+    fn archive_object_links(
         &self,
-        manifest: &CampaignArchiveManifest,
-        selected: &[ArchiveObjectEntry],
-        omitted: &[ArchiveObjectEntry],
-        selected_children: &BTreeMap<ContentId, BTreeSet<ContentId>>,
-    ) -> Result<(), CampaignRepositoryError> {
-        let selected_ids = selected
-            .iter()
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
-        let source = self.read_snapshot(manifest.source_snapshot().content_id())?;
-        if !selected_ids.contains(&manifest.source_snapshot().content_id()) {
-            return Err(integrity(
-                "campaign-archive-source-snapshot-is-not-selected",
-            ));
+        id: ContentId,
+        exact_leaf: bool,
+    ) -> Result<ArchiveObjectLinks, CampaignRepositoryError> {
+        if exact_leaf || is_archive_opaque_leaf(id.kind()) {
+            return Ok(ArchiveObjectLinks {
+                children: Vec::new(),
+                record_kind: None,
+            });
         }
-
-        let finding_reachable = if manifest.policy() == CampaignArchivePolicy::Debug {
-            direct_reachable(selected_children, source.snapshot.roots().findings)
-        } else {
-            BTreeSet::new()
-        };
-        for entry in selected {
-            if !archive_entry_selected(manifest.policy(), *entry, &finding_reachable) {
-                return Err(integrity(
-                    "campaign-archive-policy-selected-object-mismatch",
-                ));
+        let bytes = self.blobs.read(id, None)?.read_all(MAX_ENVELOPE_BYTES)?;
+        if is_campaign_record_kind(id.kind()) {
+            let envelope = if id.kind() == ObjectKind::MerkleNode {
+                ObjectEnvelope::from_canonical_bytes_for_owner(&bytes)?
+            } else {
+                ObjectEnvelope::from_canonical_bytes(&bytes)?
+            };
+            if envelope.content_id() != id {
+                return Err(integrity("campaign-archive-object-envelope-id-mismatch"));
             }
+            return Ok(ArchiveObjectLinks {
+                children: envelope
+                    .children()
+                    .iter()
+                    .map(crate::ChildReference::id)
+                    .collect(),
+                record_kind: Some(envelope.record_kind()),
+            });
         }
-        for entry in omitted {
-            if archive_entry_selected(manifest.policy(), *entry, &finding_reachable) {
-                return Err(integrity("campaign-archive-policy-omitted-object-mismatch"));
-            }
+        let envelope =
+            ContentEnvelope::from_canonical_bytes(&bytes).map_err(CampaignCodecError::from)?;
+        if envelope.content_id(id.kind()) != id {
+            return Err(integrity("campaign-archive-generic-envelope-id-mismatch"));
         }
-        if matches!(
-            manifest.policy(),
-            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
-        ) {
-            let mut expected = BTreeSet::new();
-            self.visit_pin_retention_roots_at(manifest.source_snapshot(), &mut |pin| {
-                if pin.retention() == crate::PinRetention::Exact {
-                    expected.insert((pin.request().change.configuration(), pin.fact()));
-                }
-            })?;
-            let actual = manifest
-                .checkpoint_selections()
+        Ok(ArchiveObjectLinks {
+            children: envelope
+                .children()
                 .iter()
-                .map(|selection| (selection.configuration(), selection.pin_fact()))
-                .collect::<BTreeSet<_>>();
-            if actual.len() != manifest.checkpoint_selections().len() || actual != expected {
-                return Err(integrity(
-                    "campaign-archive-exact-checkpoint-selection-mismatch",
-                ));
-            }
-        }
-        Ok(())
+                .map(crate::ChildReference::id)
+                .collect(),
+            record_kind: None,
+        })
     }
+}
+
+/// Child identities and campaign record kind of one archive object.
+struct ArchiveObjectLinks {
+    children: Vec<ContentId>,
+    /// Record kind of a campaign envelope; `None` for generic envelopes and raw leaves.
+    record_kind: Option<CampaignRecordKind>,
+}
+
+fn checkpoint_roots(selections: &[CampaignArchiveCheckpointSelection]) -> Vec<ContentId> {
+    selections
+        .iter()
+        .map(|selection| selection.checkpoint().content_id())
+        .collect()
 }
 
 fn archive_policy_selects(
     policy: CampaignArchivePolicy,
     id: ContentId,
     role: RetentionRole,
-    finding_closure: &BTreeSet<ContentId>,
+    in_finding_closure: bool,
 ) -> bool {
     match policy {
         CampaignArchivePolicy::Metadata => role == RetentionRole::CampaignMetadata,
@@ -779,40 +768,23 @@ fn archive_policy_selects(
                 role,
                 RetentionRole::CampaignMetadata | RetentionRole::Evidence
             ) || id.kind() == ObjectKind::Configuration
-                || role == RetentionRole::ExactState && finding_closure.contains(&id)
+                || role == RetentionRole::ExactState && in_finding_closure
         }
         CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror => true,
     }
 }
 
-fn archive_entry_selected(
-    policy: CampaignArchivePolicy,
-    entry: ArchiveObjectEntry,
-    finding_reachable: &BTreeSet<ContentId>,
-) -> bool {
-    archive_policy_selects(
-        policy,
-        entry.id(),
-        entry.retention_role(),
-        finding_reachable,
+const fn is_archive_metadata(kind: CampaignRecordKind) -> bool {
+    matches!(
+        kind,
+        CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage
     )
 }
 
-fn direct_reachable(
-    children: &BTreeMap<ContentId, BTreeSet<ContentId>>,
-    root: ContentId,
-) -> BTreeSet<ContentId> {
-    let mut pending = vec![root];
-    let mut visited = BTreeSet::new();
-    while let Some(id) = pending.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        if let Some(next) = children.get(&id) {
-            pending.extend(next.iter().copied());
-        }
+const fn nested_archive_metadata() -> CampaignRepositoryError {
+    CampaignRepositoryError::InvalidRequest {
+        reason: "mirror retained roots cannot contain archive metadata",
     }
-    visited
 }
 
 const fn is_archive_opaque_leaf(kind: ObjectKind) -> bool {
@@ -823,28 +795,6 @@ const fn is_archive_opaque_leaf(kind: ObjectKind) -> bool {
             | ObjectKind::DeviceState
             | ObjectKind::Trace
     )
-}
-
-fn archive_pages(
-    disposition: ArchiveInventoryDisposition,
-    entries: &[ArchiveObjectEntry],
-) -> Result<(Vec<CampaignArchiveInventoryPageId>, Vec<ObjectEnvelope>), CampaignRepositoryError> {
-    let mut ids = Vec::new();
-    let mut envelopes = Vec::new();
-    for (ordinal, chunk) in entries
-        .chunks(MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES)
-        .enumerate()
-    {
-        let ordinal =
-            u32::try_from(ordinal).map_err(|_| integrity("campaign-archive-page-limit"))?;
-        let page = CampaignArchiveInventoryPage::new(disposition, ordinal, chunk.to_vec())?;
-        let envelope = ObjectEnvelope::for_archive_inventory_page(&page)?;
-        ids.push(CampaignArchiveInventoryPageId::from_content_id(
-            envelope.content_id(),
-        )?);
-        envelopes.push(envelope);
-    }
-    Ok((ids, envelopes))
 }
 
 fn transfer_one(

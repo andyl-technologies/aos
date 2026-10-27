@@ -8,7 +8,6 @@ crucible/crucible-device/src/backpressure.rs	contains non-ASCII comment/doc text
 crucible/crucible-device/src/block.rs	contains non-ASCII comment/doc text	1
 crucible/crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	1
 crucible/crucible-device/src/block/device.rs	contains non-ASCII comment/doc text	3
-crucible/crucible-device/src/block/overlay.rs	contains non-ASCII comment/doc text	3
 crucible/crucible-device/src/error.rs	contains non-ASCII comment/doc text	4
 crucible/crucible-device/src/fault.rs	contains non-ASCII comment/doc text	2
 crucible/crucible-device/src/harness.rs	contains non-ASCII comment/doc text	25

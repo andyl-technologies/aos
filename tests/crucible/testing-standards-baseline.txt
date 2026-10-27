@@ -42,6 +42,14 @@
 # Block and 9p `Retry` variants retain one original request after an injected
 # guest-delivery or ring-settlement refusal; every test runs once and fails on
 # its first unmet assertion. These exact targets expose modeled transport states.
+# The released project-quota drain sleeps a fixed number of short intervals
+# between reads of the kernel's own usage counters, waiting for deferred file
+# release after process reap; held usage at the bound fails release closed.
+# The shared-memory contention backoff sleeps by design so a QEMU callback
+# never spins on host-held slot state; its tests hold that state for a fixed
+# interval and assert the reader parked once and then observed the release.
+# The Envoy attempt-progress probe samples QEMU thread CPU ticks one second
+# apart to name busy threads in a stall report; it asserts nothing on timing.
 crucible-daemon	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-daemon	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-daemon	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -73,6 +81,10 @@ crucible-cli	tests/support/campaign_packaged_process/guest_choice/lifecycle	retr
 crucible-cli	tests/support/campaign_packaged_process/envoy_network/resource_audit	std::thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/envoy_network/resource_audit	thread::sleep	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice/maintenance_transfer	retry	1
+# Interrupted archive transfer retry names the asserted identical public copy
+# after exact repair and completed-copy idempotence, never a failed-test rerun.
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/interrupted_transfer	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/interrupted_transfer/controls	retry	1
 crucible-daemon	src/campaign_bootstrap/tests	thread::sleep	1
 crucible-daemon	src/campaign_transfer/tests	retry	1
 crucible-daemon	src/campaign_server/tests	thread::sleep	1
@@ -129,8 +141,10 @@ crucible-device	src/block/fault/state_admission	retry	1
 # The extracted restore module validates actual old-epoch retry authorization;
 # it never reruns a failed test.
 crucible-device	src/block/fault/state_admission/restore_validation	retry	1
+crucible-device	src/block/fault/state_admission/transport_floor	retry	1
 crucible-device	src/block/fault/state_execution	retry	1
 crucible-device	src/block/fault/observation_effects	retry	1
+crucible-device	src/block/fault_tests/transport_floor	retry	1
 crucible-device	src/block_lifecycle_test	retry	1
 crucible-device	src/block_snapshot_array_test	retry	1
 crucible-guest	src/guest_introspection_agent	retry	1
@@ -168,8 +182,8 @@ crucible-qemu-host	src/shutdown	thread::sleep	1
 crucible-qemu-host	src/spawn_test	std::thread::sleep	1
 crucible-qemu-host	src/spawn_test	thread::sleep	1
 crucible-qemu-host	src/supervision/device_host_work	thread::sleep	1
-crucible-qemu-host	src/supervision/host_io_runtime	thread::sleep	1
 crucible-qemu-host	src/supervision/host_io_runtime/fault_result	thread::sleep	1
+crucible-qemu-host	src/supervision/host_io_runtime/publication	thread::sleep	1
 crucible-qemu-host	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu-host	tests/crash_detection	retry	1
 crucible-qemu-plugin	src/inbound	retry	1
@@ -181,6 +195,7 @@ crucible-qemu-plugin	src/runtime/live_callbacks/tests/block_wait	retry	1
 crucible-qemu-plugin	src/block_io	retry	1
 crucible-qemu-plugin	src/runtime/live_callbacks/devices	retry	1
 crucible-qemu-plugin	src/runtime/live_callbacks/devices/tests/callbacks	retry	1
+crucible-qemu-plugin	src/runtime/live_callbacks/devices/tests/block_floor	retry	1
 crucible-qemu-plugin	src/runtime/live_whitebox/guest_introspection	retry	1
 crucible-store-s3	src/lib	thread::sleep	1
 crucible-qemu-shmem	src/shmem/frame_node	retry	1
@@ -200,9 +215,14 @@ crucible-engine	src/scheduler/tests/concurrent	retry	1
 crucible-engine	src/scheduler/io_inventory/fixed_consumers	retry	1
 crucible-engine	src/scheduler/tests/cap_boundary	retry	1
 crucible-engine	src/scheduler/tests/run_admission/input_boundary	retry	1
-crucible-cli	tests/support/campaign_packaged_process/guest_choice/storage_recovery	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/maintenance_setup	retry	1
 crucible-qemu-plugin	src/block_io/completion	retry	1
 crucible-qemu-plugin	src/block_io_tests	retry	1
 crucible-qemu-plugin	src/ninep_io	retry	1
 crucible-qemu-plugin	src/block_io_tests/inbound_head	retry	1
+crucible-qemu-plugin	src/block_io_tests/request_stamp	retry	1
 crucible-qemu-plugin	src/idle_loop/tests/inbound_cases	retry	1
+crucible-qemu-shmem	src/shmem/frame_node/contention_backoff	std::thread::sleep	1
+crucible-qemu-shmem	src/shmem/frame_node/contention_backoff	thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/attempt_progress	std::thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/attempt_progress	thread::sleep	1

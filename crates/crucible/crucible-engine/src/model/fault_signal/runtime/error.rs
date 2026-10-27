@@ -72,6 +72,30 @@ pub enum FaultRuntimeError {
     },
     /// Runtime semantic version or program identity differs.
     VersionOrIdentityMismatch,
+    /// A segment store could not write or read a resolved-effect trace segment.
+    TraceStorage {
+        /// Content identity of the segment, in its stable text form.
+        segment: String,
+        /// Store diagnostic.
+        reason: String,
+    },
+    /// A resolved-effect trace segment or manifest failed authentication.
+    InvalidTraceSegment {
+        /// Content identity of the rejected object, in its stable text form.
+        segment: String,
+        /// Validation failure.
+        reason: String,
+    },
+    /// Sealing another segment would exceed what one trace manifest references.
+    TraceSegmentLimit {
+        /// Largest number of segments one manifest references.
+        limit: usize,
+    },
+    /// One work item encodes beyond the largest item a segment may hold.
+    TraceItemTooLarge {
+        /// Encoded size of the refused work item.
+        bytes: u64,
+    },
 }
 
 impl fmt::Display for FaultRuntimeError {

@@ -7,6 +7,41 @@
   commandShell ? null,
 }: let
   version = "1.13.2";
+
+  # Exercises dispatch through the declared shell: pipelines, redirection,
+  # incremental no-work runs, and failed-command propagation.
+  shellDispatchCheck = {
+    name = "check";
+    script = ''
+      mkdir shell-dispatch-check
+      cd shell-dispatch-check
+
+      cat > build.ninja <<'EOF'
+      rule declared_shell
+        command = printf '%s\n' 'hermetic shell dispatch' | tr 'a-z' 'A-Z' > "$out"
+      build success: declared_shell
+      default success
+      EOF
+
+      ../ninja -v
+      test "$(cat success)" = 'HERMETIC SHELL DISPATCH'
+      ../ninja -v > incremental.log
+      grep -F 'ninja: no work to do.' incremental.log
+
+      cat > failure.ninja <<'EOF'
+      rule refused
+        command = exit 7
+      build refused: refused
+      EOF
+
+      if ../ninja -f failure.ninja > failure.log 2>&1; then
+        cat failure.log
+        exit 1
+      fi
+      grep -F 'FAILED: [code=7] refused' failure.log
+      cd ..
+    '';
+  };
 in
   mkDerivation {
     platformSupport = {
@@ -147,6 +182,9 @@ in
           $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
         '';
       }
+    ]
+    ++ lib.optional (commandShell != null) shellDispatchCheck
+    ++ [
       {
         name = "install";
         script = ''

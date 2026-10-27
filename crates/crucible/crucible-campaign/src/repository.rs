@@ -14,9 +14,9 @@ use crucible_store::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefCasOutcome,
     RefName, RefPublicationGuard, StoreError,
 };
+use crucible_store::segment_store::{MAX_SEGMENT_BYTES, SegmentSource, SegmentSources};
 use thiserror::Error;
 
-use crate::CampaignViewId;
 use crate::{
     ActiveAttemptPolicy, AdmissionOrdinal, Attempt, AttemptAdmission, AttemptAdmissionId,
     AttemptAdmissionRole, AttemptId, AttemptRetentionPolicyBasis, AttemptStart, AttemptStartMode,
@@ -44,54 +44,58 @@ use crate::{
     PlanningScanPosition, PlanningUsage, PolicyActivation, PolicyArtifact, PropertyVerdict,
     PropertyVerdictSet, PropertyVerdictSetId, Proposal, ProposalId, PurePlannerEngine,
     RankingExplanation, RankingExplanationId, ReproductionArtifact, ReproductionArtifactId,
-    RetainedPlannerRequestId, SavepointCaptureOutcome, SavepointCaptureRequest,
-    SavepointCaptureResolution, SavepointContinuationSelection, ScenarioArtifact,
-    ScenarioArtifactId, ScenarioDefId, SelectableDeclaration, SelectableId, Selection, SelectionId,
-    StopCondition, StopOutcome, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, SurvivorSelection, SurvivorSelectionBundle, SurvivorSelectionId,
+    ReproductionPayload, ReproductionPayloadSegment, RetainedPlannerRequestId,
+    SavepointCaptureOutcome, SavepointCaptureRequest, SavepointCaptureResolution,
+    SavepointContinuationSelection, ScenarioArtifact, ScenarioArtifactId, ScenarioDefId,
+    SelectableDeclaration, SelectableId, Selection, SelectionId, StopCondition, StopOutcome,
+    SubmitAttemptDisposition, SubmitAttemptRequest, SubmitAttemptResponse, SurvivorSelection,
+    SurvivorSelectionBundle, SurvivorSelectionId,
 };
-use crate::{BranchAcceptanceCount, BranchAcceptanceSummary};
+use crate::{
+    BranchAcceptanceCount, BranchAcceptanceSummary, ResolvedEffectTraceRef, choice_set_key,
+};
 
 const MAX_ENVELOPE_BYTES: u64 = crate::codec::MAX_CANONICAL_BYTES as u64;
 /// Bounds the number of snapshots authenticated in one campaign ancestry.
 ///
 /// The million-admission corpus uses a genesis, two controls, two request
 /// transitions per 16 choices, and one ordered finite Issue per 16 choices.
-/// This ceiling covers its 187,503 snapshots with bounded headroom. Closure
-/// object limits independently bound the authenticated objects in that chain.
+/// This ceiling covers its 187,503 snapshots with bounded headroom.
+///
+/// Cold validation retains one transition's state at a time, so this is an
+/// operational bound on validation time rather than on memory.
 pub const MAX_CAMPAIGN_SNAPSHOT_ANCESTRY: usize = 1_250_001;
-const MAX_SNAPSHOT_ANCESTRY: usize = MAX_CAMPAIGN_SNAPSHOT_ANCESTRY;
-/// Maximum unique object-position work charged to one authenticated closure.
-pub const MAX_CAMPAIGN_CLOSURE_OBJECTS: usize = 64_000_000;
+/// Bounds the exact-checkpoint objects one finding's pin retention walk visits.
+const MAX_EXACT_PIN_CLOSURE_OBJECTS: usize = 64_000_000;
+/// Bounds the dense global admission ordinals one request-spending index covers.
+const MAX_REQUEST_SPENDING_ADMISSIONS: u64 = 64_000_000;
+/// Bounds the generator-graph work spent validating one branch-request source.
+const MAX_BRANCH_GENERATOR_VALIDATION_OBJECTS: usize = 64_000_000;
+/// Bounds the dependency objects authenticated for one execution candidate.
+const MAX_CANDIDATE_DEPENDENCY_OBJECTS: usize = 64_000_000;
 const MAX_ISSUE_GENERATOR_VALIDATION_OBJECTS: usize = 1_000_000;
 /// Maximum source positions served by one coordinator planner page.
 pub const MAX_PLANNER_SCAN_PAGE_ITEMS: u32 = 10_000;
 const MAX_VALIDATED_HEADS: usize = 1_024;
 const MAX_CHOICE_VALIDATION_CACHE_ENTRIES: usize = 65_536;
-const MAX_SELECTION_RESOLUTION_RECORDS: usize = 4_096;
-const MAX_SELECTION_RESOLUTION_BYTES: usize = 128 * 1024 * 1024;
-const _: () =
-    assert!(MAX_CHOICE_VALIDATION_CACHE_ENTRIES >= crate::observation::MAX_DISCOVERED_CHOICES);
 const MAX_SIMPLE_SUCCESSOR_GROWTH: usize = 1_024;
 const MAX_PLANNER_ISSUE_SUCCESSOR_GROWTH: usize = 4_000_000;
 // One observation may wake at most this many indexed feedback continuations.
 const MAX_FEEDBACK_FRONTIER_UPDATES: usize = 65_536;
 // One fixed-depth trie insertion rewrites at most one node per digest nibble.
 const MERKLE_UPDATE_NODE_UPPER: usize = 64;
-// Graph has three fixed keys, observations six, corpus/coverage/coordination one
-// each, and strict accounting three. Every discovered choice adds two graph keys
-// plus one nested choice-index insertion. Every credited branch point adds one
+// Graph has three fixed keys, observations seven (including the choice-source
+// anchor), corpus/coverage/coordination one each, and strict accounting three.
+// Every discovered choice adds two graph keys plus one nested choice-index and
+// one nested choice-source insertion. Every credited branch point adds one
 // nested credit insertion, one outer observation-index update, and one immutable
-// credit record.
-const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 15;
-const MAX_OBSERVATION_SUCCESSOR_GROWTH: usize = ((3 * crate::observation::MAX_DISCOVERED_CHOICES
-    + OBSERVATION_FIXED_OWNER_UPSERTS)
-    * MERKLE_UPDATE_NODE_UPPER)
-    + (crate::exploration::MAX_BRANCH_PATH_EDGES * ((2 * MERKLE_UPDATE_NODE_UPPER) + 1))
-    + (MAX_FEEDBACK_FRONTIER_UPDATES * (MERKLE_UPDATE_NODE_UPPER + 1))
-    + MERKLE_UPDATE_NODE_UPPER
-    + (2 * MERKLE_UPDATE_NODE_UPPER)
-    + 1;
+// credit record. A first direct integer selection adds one per-branch-point
+// insertion, one nested anchor-map update, and one outer observation-index
+// update. Coverage-root upserts, which include one global frequency update per
+// unsaturated coverage identity, are charged separately by their count.
+const OBSERVATION_FIXED_OWNER_UPSERTS: usize = 16;
+const OBSERVATION_PER_CHOICE_OWNER_UPSERTS: usize = 4;
+const OBSERVATION_DIRECT_SELECTION_UPSERTS: usize = 3;
 
 /// Authenticated current value of one named campaign ref.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -339,9 +343,11 @@ pub struct ChoiceDiscovery {
 }
 
 /// Maximum aggregate canonical bytes for unique choice records in one candidate.
+///
+/// This bounds the executor's resident choice material while one attempt's
+/// discoveries are held in memory. The observation itself carries only paged
+/// set roots, so no count bound follows from its encoding.
 pub const MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES: usize = 128 * 1024 * 1024;
-/// Maximum number of choice discoveries carried by one candidate.
-pub const MAX_OBSERVATION_CHOICE_DISCOVERIES: usize = crate::observation::MAX_DISCOVERED_CHOICES;
 
 fn charge_choice_discovery_record(
     charged_records: &mut BTreeSet<ContentId>,
@@ -381,11 +387,14 @@ pub struct ObservationCandidate {
     measurements: MeasurementSet,
     properties: PropertyVerdictSet,
     coverage: CoverageProjection,
+    // Parallel ascending identities of `discovered_choices`, kept so lookups
+    // and set derivation do not rehash every opportunity body.
+    discovered_ids: Vec<ChoiceOpportunityId>,
     discovered_choices: Vec<ChoiceDiscovery>,
     produced_selections: Vec<Selection>,
     choice_material_bytes: usize,
     observation: Observation,
-    resolved_effect_trace: Option<Vec<u8>>,
+    resolved_effect_trace: Option<ResolvedEffectTraceContent>,
 }
 
 /// Selection and exact choice records authenticated together by a repository.
@@ -398,8 +407,11 @@ pub struct ResolvedSelection {
 }
 
 mod executor;
+mod selection_resolver;
 
 pub use executor::{CampaignExecutorPublicationGuard, CampaignExecutorStore};
+pub use observation::{DiscoveredChoices, ProducedSelections};
+pub use selection_resolver::SelectionResolver;
 
 impl ResolvedSelection {
     /// Returns the authenticated recorded selection.
@@ -492,58 +504,15 @@ pub enum CampaignRepositoryError {
     /// A local coordinator synchronization primitive was poisoned.
     #[error("campaign coordinator lock was poisoned")]
     Poisoned,
-}
-
-impl CampaignRepositoryError {
-    /// Maps read-only executor validation failure into the wire rejection vocabulary.
-    ///
-    /// Missing or temporarily unreadable immutable input remains retryable under
-    /// a fresh assignment. Authenticated incompatibility and corrupt canonical
-    /// structure fail stably, while backend authorization remains distinct.
-    #[must_use]
-    pub fn executor_rejection(&self) -> ExecutorRejection {
-        match self {
-            Self::Store(error) => store_executor_rejection(error),
-            Self::Merkle(crate::CampaignStoreError::Store(error)) => {
-                store_executor_rejection(error)
-            }
-            Self::NotFound | Self::Poisoned => ExecutorRejection::UnavailableInput,
-            Self::Budget(_)
-            | Self::Codec(_)
-            | Self::SelectionResolutionBudgetExceeded { .. }
-            | Self::Merkle(_)
-            | Self::AlreadyExists
-            | Self::Stale { .. }
-            | Self::CommandReuse
-            | Self::RefConflict { .. }
-            | Self::InvalidRequest { .. }
-            | Self::Integrity { .. }
-            | Self::InvalidTransition { .. } => ExecutorRejection::Incompatible,
-        }
-    }
-}
-
-fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
-    match error {
-        StoreError::NotFound { .. }
-        | StoreError::Quota
-        | StoreError::Unavailable
-        | StoreError::Poisoned { .. }
-        | StoreError::Io { .. }
-        | StoreError::StreamIo { .. } => ExecutorRejection::UnavailableInput,
-        StoreError::Unauthorized => ExecutorRejection::Unauthorized,
-        StoreError::Corrupt { .. }
-        | StoreError::InvalidId
-        | StoreError::InvalidRefName { .. }
-        | StoreError::InvalidRange { .. }
-        | StoreError::InvalidComposition { .. }
-        | StoreError::InvalidGraph { .. }
-        | StoreError::DurabilityUnsatisfied { .. }
-        | StoreError::Incompatible
-        | StoreError::InvalidSourceLength { .. }
-        | StoreError::MultipartCleanupRequired
-        | StoreError::Unsupported { .. } => ExecutorRejection::Incompatible,
-    }
+    /// Private scratch storage for an external sort or page spool failed.
+    #[error("campaign scratch storage failed during {operation}")]
+    Scratch {
+        /// Stable scratch operation category.
+        operation: &'static str,
+        /// Underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Repository and sole-writer transaction boundary for local campaigns.
@@ -556,12 +525,11 @@ pub struct CampaignRepository {
     // validated parent through one of the repository's exact owner mutations.
     // The map is optional bounded acceleration state, never campaign truth.
     validated_heads: Mutex<BTreeMap<ContentId, ValidationCheckpoint>>,
-    // Beam projection is immutable for one exact semantic view and policy.
-    // Retaining only the latest entry bounds memory while allowing planner
-    // pages and response preflight to share the expensive root scans.
-    beam_projection_cache: Mutex<Option<projection::BeamProjectionCacheEntry>>,
     planner_authority: Option<PlannerAuthorityKey>,
     debugger_authority: Option<DebuggerAuthorityKey>,
+    // Operational parent for private archive spill directories. It never
+    // enters campaign state; without it, spills stay in process memory.
+    scratch_directory: Option<std::path::PathBuf>,
 }
 
 struct RepositoryMutationGuard<'a> {
@@ -600,6 +568,9 @@ impl CampaignRepository {
 }
 
 mod candidate;
+
+pub use candidate::MAX_RESOLVED_EFFECT_TRACE_MANIFEST_BYTES;
+use candidate::ResolvedEffectTraceContent;
 mod index_keys;
 
 use index_keys::*;
@@ -616,6 +587,7 @@ mod acceptance;
 mod ancestry;
 mod attempt_closure;
 mod budget;
+mod choice_source_index;
 mod closure;
 #[cfg(feature = "test-support")]
 pub use closure::CampaignValidationCheckpointMetrics;
@@ -623,6 +595,8 @@ mod discovery;
 mod execution;
 mod executor_driver;
 mod fact_references;
+mod fifo_cache;
+use fifo_cache::FifoCache;
 #[cfg(feature = "destructive-recovery-faults")]
 mod fault_injection;
 mod finding;
@@ -631,7 +605,11 @@ mod mode_derivation;
 mod objective;
 mod observation;
 mod planner_driver;
+use crate::merkle::{MerkleReadSession, MerkleValidationReads};
+
 mod planner_issue;
+mod planner_validation;
+use planner_validation::{PlannerValidationContext, ValidatedPlannerRequest, ValidatedPlannerStep};
 mod planner_scan_index;
 mod projection;
 mod queue;
@@ -650,6 +628,7 @@ mod transfer;
 
 use attempt_closure::non_modeled_attempt_key;
 pub use budget::CampaignBudgetProjection;
+use choice_source_index::choice_source_index_anchor_key;
 use finding::finding_occurrence_key;
 pub(crate) use finding::{finding_candidate_occurrence_key, finding_signature_key};
 pub use finding_candidate::{
@@ -677,7 +656,10 @@ pub use queue::{
     AttemptQueue, AttemptQueueCursor, AttemptQueueError, AttemptReservation, ClaimableAttemptPage,
     MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS, WorkerSlotId,
 };
-pub use retention::{CampaignPinRetentionRecord, CampaignPinRetentionSummary};
+pub use retention::{
+    CampaignPinRetentionCursor, CampaignPinRetentionPage, CampaignPinRetentionRecord,
+    CampaignPinRetentionSummary, MAX_PIN_RETENTION_PAGE_ENTRIES,
+};
 pub use savepoint::{
     MAX_SAVEPOINT_CAPTURE_SCAN_PAGE_ITEMS, PendingSavepointCapture, PendingSavepointCapturePage,
     SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
@@ -693,21 +675,35 @@ struct LoadedSnapshot {
     snapshot: CampaignSnapshot,
 }
 
-#[derive(Default)]
+/// Memoized validation results shared by one validation pass.
+///
+/// Every map is FIFO-bounded: a miss only costs re-reading authenticated
+/// records, so memory stays fixed however long the campaign grows.
 struct ChoiceValidationCache {
-    contracts: BTreeMap<(ContentId, ContentId), CampaignHash>,
-    insertion_order: VecDeque<(ContentId, ContentId)>,
-    objective_contracts: BTreeMap<CampaignPolicyId, CampaignHash>,
-    objective_insertion_order: VecDeque<CampaignPolicyId>,
-    validated_attempts: BTreeMap<ContentId, ValidatedAttempt>,
+    contracts: FifoCache<(ContentId, ContentId), CampaignHash>,
+    objective_contracts: FifoCache<CampaignPolicyId, CampaignHash>,
+    validated_attempts: FifoCache<ContentId, ValidatedAttempt>,
 }
 
+/// An attempt whose whole continuation chain has been validated.
+///
+/// Every link of a validated chain shares its path and scenario lineage, so
+/// an `AfterAttempt` entry also vouches for its origin.
 #[derive(Clone)]
 struct ValidatedAttempt {
     attempt: Attempt,
     path: BranchPathId,
     lineage: (ScenarioDefId, ScenarioArtifactId),
-    origin_depth: usize,
+}
+
+impl Default for ChoiceValidationCache {
+    fn default() -> Self {
+        Self {
+            contracts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+            objective_contracts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+            validated_attempts: FifoCache::new(MAX_CHOICE_VALIDATION_CACHE_ENTRIES),
+        }
+    }
 }
 
 impl ChoiceValidationCache {
@@ -716,16 +712,7 @@ impl ChoiceValidationCache {
     }
 
     fn insert(&mut self, key: (ContentId, ContentId), contract: CampaignHash) {
-        if self.contracts.contains_key(&key) {
-            return;
-        }
-        if self.contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
-            && let Some(evicted) = self.insertion_order.pop_front()
-        {
-            self.contracts.remove(&evicted);
-        }
         self.contracts.insert(key, contract);
-        self.insertion_order.push_back(key);
     }
 
     fn objective_contract(&self, policy: CampaignPolicyId) -> Option<CampaignHash> {
@@ -733,16 +720,7 @@ impl ChoiceValidationCache {
     }
 
     fn insert_objective_contract(&mut self, policy: CampaignPolicyId, contract: CampaignHash) {
-        if self.objective_contracts.contains_key(&policy) {
-            return;
-        }
-        if self.objective_contracts.len() >= MAX_CHOICE_VALIDATION_CACHE_ENTRIES
-            && let Some(evicted) = self.objective_insertion_order.pop_front()
-        {
-            self.objective_contracts.remove(&evicted);
-        }
         self.objective_contracts.insert(policy, contract);
-        self.objective_insertion_order.push_back(policy);
     }
 }
 
@@ -821,12 +799,20 @@ impl ProjectedState {
 fn observation_successor_growth(
     choice_count: usize,
     credit_count: usize,
+    indexes_direct_selection: bool,
     indexes_path: bool,
     frontier_update_count: usize,
+    coverage_upsert_count: usize,
 ) -> Result<usize, CampaignRepositoryError> {
+    let direct_selection_upserts = if indexes_direct_selection {
+        OBSERVATION_DIRECT_SELECTION_UPSERTS
+    } else {
+        0
+    };
     let owner_upserts = choice_count
-        .checked_mul(3)
+        .checked_mul(OBSERVATION_PER_CHOICE_OWNER_UPSERTS)
         .and_then(|choices| choices.checked_add(OBSERVATION_FIXED_OWNER_UPSERTS))
+        .and_then(|upserts| upserts.checked_add(direct_selection_upserts))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
     let growth = owner_upserts
         .checked_mul(MERKLE_UPDATE_NODE_UPPER)
@@ -855,11 +841,15 @@ fn observation_successor_growth(
                 nodes.checked_add(MERKLE_UPDATE_NODE_UPPER)
             }
         })
+        .and_then(|nodes| {
+            // Each coverage upsert rewrites one trie path and may name one
+            // new shared frequency record.
+            coverage_upsert_count
+                .checked_mul(MERKLE_UPDATE_NODE_UPPER + 1)
+                .and_then(|coverage| nodes.checked_add(coverage))
+        })
         .and_then(|nodes| nodes.checked_add(1))
         .ok_or_else(|| integrity("observation-successor-growth-overflow"))?;
-    if growth > MAX_OBSERVATION_SUCCESSOR_GROWTH {
-        return Err(integrity("observation-successor-growth-exceeds-schema"));
-    }
     Ok(growth)
 }
 

@@ -392,7 +392,7 @@ pub(crate) fn canonical_log_entries_from_engine_schedule(
     schedule: &crucible_engine::Schedule,
 ) -> Vec<CanonicalLogEntry> {
     schedule
-        .decisions()
+        .decision_history()
         .iter()
         .enumerate()
         .map(|(index, decision)| CanonicalLogEntry {

@@ -103,7 +103,7 @@ pub(super) fn parse_query_result_line(
                             "invalid query result search frontier choice: {error}"
                         ))
                     })?;
-                    choices.push(schedule.decisions().to_vec());
+                    choices.push(schedule.decision_history().to_vec());
                 }
                 frontiers.push(crucible_engine::SearchRuntimeFrontier {
                     configuration: Configuration {
@@ -129,22 +129,41 @@ pub(super) fn parse_query_result_line(
         "resolved-effect-trace" => {
             let value = fields
                 .next()
-                .ok_or_else(|| rpc_decode("missing resolved-effect trace"))?;
-            let trace = if value == "none" {
+                .ok_or_else(|| rpc_decode("missing resolved-effect trace manifest"))?;
+            let manifest = if value == "none" {
                 None
             } else {
                 let bytes = parse_hex_bytes(value).map_err(|error| {
-                    rpc_decode(format!("invalid resolved-effect trace bytes: {error}"))
+                    rpc_decode(format!(
+                        "invalid resolved-effect trace manifest bytes: {error}"
+                    ))
                 })?;
-                let _ = crucible_engine::model::ResolvedEffectTrace::from_canonical_bytes(
-                    &bytes,
-                    crucible_engine::model::FaultResourceLimits::compiled_maximum(),
-                )
-                .map_err(|error| rpc_decode(format!("invalid resolved-effect trace: {error}")))?;
+                crucible_engine::model::ResolvedEffectTraceManifest::from_canonical_bytes(&bytes)
+                    .map_err(|error| {
+                    rpc_decode(format!("invalid resolved-effect trace manifest: {error}"))
+                })?;
                 Some(bytes)
             };
             reject_extra_query_result_fields(fields.next())?;
-            Ok(Some(QueryResult::ResolvedEffectTrace(trace)))
+            Ok(Some(QueryResult::ResolvedEffectTrace(manifest)))
+        }
+        "resolved-effect-trace-segment" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| rpc_decode("missing resolved-effect trace segment"))?;
+            // Segments are authenticated against their manifest reference by
+            // the caller that requested them.
+            let segment = if value == "none" {
+                None
+            } else {
+                Some(parse_hex_bytes(value).map_err(|error| {
+                    rpc_decode(format!(
+                        "invalid resolved-effect trace segment bytes: {error}"
+                    ))
+                })?)
+            };
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::ResolvedEffectTraceSegment(segment)))
         }
         "breakpoint-firings" => {
             let firings = parse_breakpoint_firings_fields(&mut fields)?;

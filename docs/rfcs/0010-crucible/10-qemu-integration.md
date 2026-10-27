@@ -165,7 +165,7 @@ the requirements):
   random-seed entry, E8/[DET-22]) and a deterministic virtio-rng source whose
   draws come from QEMU's seeded internal PRNG (E9/[DET-21]), so the guest CSPRNG
   is never seeded from host entropy. The per-node entropy is derived from the
-  decision RNG by name-hash ([DET-25]) so adding a node does not perturb another
+  decision RNG by name ([DET-25]) so adding a node does not perturb another
   node's seed. *Gate:* `gate:layer0-determinism`. *Spec:* §10.2; satisfies
   [DET-22], [DET-21], references [DET-25].
 
@@ -622,8 +622,9 @@ The cycle, for one running VM in one quantum:
    sets `status = STATUS_IDLE`, and the node publishes its `current_icount`
    ([SHM-24]).
 2. **Scheduler sets the ceiling.** The scheduler reads every node's icount and
-   idle/next-deadline, picks the minimum-horizon node, computes that node's
-   horizon (`min(next exact local event, conservative network lookahead)`, 08),
+   idle/next-deadline, picks every node whose horizon lies beyond its clock,
+   computes each such node's horizon (`min(next exact local event, network
+   bound)`, 08),
    converts it to a target icount via the `ceil` map ([TIME-4]), and stores it
    into the node's `max_advance_icount` with release ordering ([SHM-24],
    [TIME-27]).

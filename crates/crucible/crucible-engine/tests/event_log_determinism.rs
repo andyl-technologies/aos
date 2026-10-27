@@ -18,7 +18,7 @@ use crucible_engine::{
     EventDiagnosticPayload, EventLevel, EventLog, EventSource, MaterializedState, RngDecision,
     RngStreamId, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
     TemporalGraph, VirtualTime, World, bake, compare_event_log_determinism,
-    event_log_causal_projection,
+    event_log_causal_projection, first_event_log_causal_mismatch, is_causal_event_log_entry,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -29,10 +29,11 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
     crucible_engine::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(stream),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(stream),
+            0,
             value,
-        })),
+        ))),
     )
 }
 
@@ -109,6 +110,32 @@ fn causal_projection_renumbers_past_observational_interleaving() {
 }
 
 #[test]
+fn streaming_causal_digest_matches_the_materialized_projection() {
+    let log = vec![
+        diagnostic_entry(0, 0, "executor.poll", EventLevel::Debug, BTreeMap::new()),
+        rng_entry(1, 1, "causal-digest-a", 11),
+        boundary_entry(2, 1),
+        diagnostic_entry(3, 1, "executor.poll", EventLevel::Trace, BTreeMap::new()),
+        rng_entry(4, 2, "causal-digest-b", 17),
+    ];
+    let causal = log
+        .iter()
+        .filter(|entry| is_causal_event_log_entry(entry))
+        .count() as u64;
+
+    let mut digest = crucible_engine::EventLogCausalDigest::new(causal);
+    log.iter().for_each(|entry| digest.observe(entry));
+    let mut short = crucible_engine::EventLogCausalDigest::new(causal + 1);
+    log.iter().for_each(|entry| short.observe(entry));
+
+    assert_eq!(
+        digest.finish(),
+        Some(event_log_causal_projection(&log).summary())
+    );
+    assert_eq!(short.finish(), None);
+}
+
+#[test]
 fn causal_projection_bytes_differ_on_first_causal_payload_change() {
     let expected = vec![
         rng_entry(0, 1, "causal-projection-diff", 11),
@@ -181,6 +208,59 @@ fn causal_mismatch_reports_first_differing_entry_coordinate() {
     assert_eq!(&reproduced_location.kind, &expected_location.kind);
 }
 
+fn streamed(
+    log: &[SchedulerEventLogEntry],
+) -> impl Iterator<Item = Result<SchedulerEventLogEntry, &'static str>> + '_ {
+    log.iter().cloned().map(Ok)
+}
+
+#[test]
+fn streaming_causal_mismatch_matches_the_materialized_comparison() {
+    let expected = vec![
+        diagnostic_entry(0, 8, "before", EventLevel::Debug, BTreeMap::new()),
+        rng_entry(1, 9, "streamed-random", 31),
+        boundary_entry(2, 10),
+        rng_entry(3, 11, "streamed-random", 41),
+    ];
+    let reproduced = vec![
+        rng_entry(0, 9, "streamed-random", 31),
+        diagnostic_entry(1, 9, "between", EventLevel::Trace, BTreeMap::new()),
+        boundary_entry(2, 10),
+        rng_entry(3, 11, "streamed-random", 42),
+    ];
+    let truncated = &expected[..3];
+
+    for (left, right) in [
+        (expected.as_slice(), reproduced.as_slice()),
+        (expected.as_slice(), truncated),
+        (truncated, expected.as_slice()),
+        (expected.as_slice(), expected.as_slice()),
+    ] {
+        let streamed_mismatch = first_event_log_causal_mismatch(streamed(left), streamed(right))
+            .expect("fixture streams do not fail");
+
+        assert_eq!(
+            streamed_mismatch.as_ref(),
+            compare_event_log_determinism(left, right).mismatch()
+        );
+    }
+}
+
+#[test]
+fn streaming_causal_mismatch_stops_at_the_first_difference() {
+    let expected = vec![
+        rng_entry(0, 1, "early-stop", 1),
+        rng_entry(1, 2, "early-stop", 2),
+    ];
+    let reproduced = vec![rng_entry(0, 1, "early-stop", 9)];
+    let failing_tail = streamed(&expected).chain(std::iter::once(Err("never read")));
+
+    let mismatch = first_event_log_causal_mismatch(failing_tail, streamed(&reproduced))
+        .expect("the stream error lies after the first difference");
+
+    assert_eq!(mismatch.map(|mismatch| mismatch.causal_index), Some(0));
+}
+
 #[test]
 fn observational_verbosity_changes_do_not_change_causal_projection() {
     let mut quiet_details = BTreeMap::new();
@@ -223,10 +303,11 @@ fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
     let genesis = Configuration::genesis(scenario.clone());
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("event-log-offset"),
-            value: 31,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("event-log-offset"),
+            0,
+            31
+        )),
     );
     let mut log = EventLog::new();
     let append = log

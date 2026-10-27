@@ -117,6 +117,15 @@ pub(super) fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, Str
             reject_extra_query_field(fields.next())?;
             Ok(QueryKind::ResolvedEffectTrace)
         }
+        "resolved-effect-trace-segment" => {
+            let segment = fields
+                .next()
+                .ok_or_else(|| String::from("missing resolved-effect trace segment"))?;
+            let segment = crucible_engine::segment_store::ContentId::parse(segment)
+                .map_err(|error| format!("invalid resolved-effect trace segment: {error}"))?;
+            reject_extra_query_field(fields.next())?;
+            Ok(QueryKind::ResolvedEffectTraceSegment { segment })
+        }
         "execution-fingerprint" => {
             let node = parse_hex_string_field(fields.next(), "query fingerprint node")?;
             reject_extra_query_field(fields.next())?;
@@ -175,6 +184,12 @@ pub(super) fn query_result_wire(result: Option<&QueryResult>) -> String {
             format!("resolved-effect-trace|{}", hex_encode(trace))
         }
         Some(QueryResult::ResolvedEffectTrace(None)) => String::from("resolved-effect-trace|none"),
+        Some(QueryResult::ResolvedEffectTraceSegment(Some(segment))) => {
+            format!("resolved-effect-trace-segment|{}", hex_encode(segment))
+        }
+        Some(QueryResult::ResolvedEffectTraceSegment(None)) => {
+            String::from("resolved-effect-trace-segment|none")
+        }
         Some(QueryResult::ExecutionFingerprint(sample)) => format!(
             "execution-fingerprint|{}|{}|{}",
             hex_encode(sample.node.name.as_bytes()),

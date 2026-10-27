@@ -30,6 +30,8 @@ where
             retention,
             records,
             active: BTreeMap::new(),
+            admissions: BTreeMap::new(),
+            next_admission: 0,
             checked_out: BTreeMap::new(),
             leased_out: BTreeMap::new(),
             lease_usage: HotCheckpointUsage::default(),
@@ -164,6 +166,28 @@ where
         fallback: HotCheckpointFallback,
     ) -> Result<HotCheckpointAdmissionCommit, ManagedQemuHotForkSourceWorldAdmissionFailure<D::Error>>
     {
+        self.admit_source_reserving(world, signals, fallback, None)
+    }
+
+    /// Admits one source that must also leave room for one child lease.
+    ///
+    /// With `child`, victim planning reserves live leases and that child as
+    /// well as the candidate, so demoting colder sources can free the bytes
+    /// the child needs. A plan that still cannot fit them refuses with
+    /// [`ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity`].
+    /// Without `child` this is [`Self::admit_source`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::admit_source`].
+    pub(crate) fn admit_source_reserving(
+        &mut self,
+        world: ManagedQemuHotForkSourceWorld,
+        signals: HotCheckpointHotnessSignals,
+        fallback: HotCheckpointFallback,
+        child: Option<HotCheckpointResourceProfile>,
+    ) -> Result<HotCheckpointAdmissionCommit, ManagedQemuHotForkSourceWorldAdmissionFailure<D::Error>>
+    {
         let semantic_key = world.key.template_key();
         let manager_key = manager_source_key(&world.key);
         let candidate =
@@ -175,8 +199,47 @@ where
                 ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource,
             ));
         }
-        let plan = match self.manager.plan_admission(candidate) {
+        let reservations = match child {
+            None => Some(HotCheckpointUsage::default()),
+            Some(child) => self.lease_usage.add_resource_reservation(child),
+        };
+        let Some(reservations) = reservations else {
+            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                world,
+                None,
+                ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
+                    crate::HotCheckpointAdmissionRejection::AccountingOverflow,
+                ),
+            ));
+        };
+        let plan = match self
+            .manager
+            .plan_admission_with_reservations(candidate, reservations)
+        {
             Ok(plan) => plan,
+            // A source that must also host its child reports capacity in
+            // terms of that child once no eligible demotion makes room.
+            Err(crate::HotCheckpointAdmissionRejection::InsufficientDemotableCapacity {
+                pressure,
+                ..
+            }) if child.is_some() => {
+                let limits = self.manager.limits();
+                let projected = self
+                    .manager
+                    .usage()
+                    .add(candidate.resources())
+                    .and_then(|usage| usage.add_reservations(reservations))
+                    .unwrap_or_default();
+                return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                    world,
+                    None,
+                    ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
+                        pressure,
+                        projected,
+                        limits,
+                    },
+                ));
+            }
             Err(source) => {
                 return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                     world,
@@ -212,26 +275,36 @@ where
                 ));
             }
         };
-        projected_usage = match projected_usage.add_reservations(self.lease_usage) {
-            Some(usage) => usage,
-            None => {
-                return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
-                    world,
-                    None,
-                    ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
-                        crate::HotCheckpointAdmissionRejection::AccountingOverflow,
-                    ),
-                ));
-            }
+        let reserved = match child {
+            None => Some(self.lease_usage),
+            Some(_) => Some(reservations),
         };
+        projected_usage =
+            match reserved.and_then(|reserved| projected_usage.add_reservations(reserved)) {
+                Some(usage) => usage,
+                None => {
+                    return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                        world,
+                        None,
+                        ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
+                            crate::HotCheckpointAdmissionRejection::AccountingOverflow,
+                        ),
+                    ));
+                }
+            };
         let limits = self.manager.limits();
         if !projected_usage.fits(limits) {
-            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
-                world,
-                None,
-                ManagedQemuHotForkSourceWorldAdmissionError::LeaseCapacity {
-                    pressure: HotCheckpointPressure::for_usage(projected_usage, limits),
+            let pressure = HotCheckpointPressure::for_usage(projected_usage, limits);
+            let error = match child {
+                None => ManagedQemuHotForkSourceWorldAdmissionError::LeaseCapacity { pressure },
+                Some(_) => ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
+                    pressure,
+                    projected: projected_usage,
+                    limits,
                 },
+            };
+            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                world, None, error,
             ));
         }
         if let Err(source) = self
@@ -341,6 +414,7 @@ where
                 ));
             }
             self.active.remove(&victim_key);
+            self.admissions.remove(&victim_key);
             completed.push(victim);
         }
 
@@ -351,6 +425,8 @@ where
             Ok(commit) => {
                 self.worlds.insert(manager_key, world);
                 self.active.insert(manager_key, catalog_slot);
+                self.admissions.insert(manager_key, self.next_admission);
+                self.next_admission = self.next_admission.saturating_add(1);
                 Ok(commit)
             }
             Err(source) => {
@@ -435,6 +511,7 @@ where
             .commit_orderly_demotion(plan)
             .map_err(ManagedQemuHotForkSourceWorldDemotionError::Manager)?;
         self.active.remove(&manager_key);
+        self.admissions.remove(&manager_key);
         Ok(demotion)
     }
 
@@ -460,8 +537,11 @@ where
 
     /// Demotes and reaps every retained source while preserving cold fallbacks.
     ///
-    /// Shutdown attempts every source in canonical key order. Failed sources
-    /// remain owned by the pool and are all reported with their exact keys.
+    /// Shutdown attempts every source, newest admission first. A hot-fork
+    /// source is a process fork of the source it was captured from and can hold
+    /// descriptors into that origin's storage, so retiring descendants first
+    /// lets each origin reap its storage completely. Failed sources remain owned by the pool
+    /// and are all reported with their exact keys.
     ///
     /// # Errors
     ///
@@ -472,7 +552,8 @@ where
         &mut self,
     ) -> Result<Vec<HotCheckpointDemotion>, ManagedQemuHotForkSourceWorldShutdownError<D::Error>>
     {
-        let keys = self.worlds.keys().copied().collect::<Vec<_>>();
+        let mut keys = self.worlds.keys().copied().collect::<Vec<_>>();
+        keys.sort_by_key(|key| std::cmp::Reverse(self.admissions.get(key).copied()));
         let mut demotions = Vec::with_capacity(keys.len());
         let mut failures = Vec::new();
 
@@ -702,13 +783,13 @@ where
         }
 
         // A forked child inherits the source's exact VM configuration and
-        // device roster. Define its reservation as one complete measured source
-        // profile: full guest RAM is charged as template bytes, another full
-        // guest-RAM allowance covers private dirties, and the source's process,
-        // vCPU, descriptor, and writable-overlay counts bound the corresponding
-        // child dimensions. Any future child-only resource class must extend
-        // this profile explicitly before that configuration can be admitted.
-        let resources = world.resources;
+        // device roster. Its reservation is the source's measured child
+        // profile: the bound on what it can newly dirty, charged as its bytes
+        // and its private dirties, plus the source's process, vCPU,
+        // descriptor, and writable-overlay counts. Any future child-only
+        // resource class must extend this profile explicitly before that
+        // configuration can be admitted.
+        let resources = world.child_resources;
         let projected_lease_usage = self
             .lease_usage
             .add_resource_reservation(resources)
@@ -792,6 +873,7 @@ where
         );
         Ok(Some(QemuHotForkSourceWorldLease {
             managed_lease: Some(lease),
+            child_dirty_budget: Some(resources.expected_private_dirty_bytes()),
             template,
             identity,
             source,

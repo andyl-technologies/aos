@@ -353,6 +353,7 @@ fn production_restore_requires_clean_fault_event_ownership() -> Result<(), Box<d
         checkpoint,
         crate::production_fault_runtime::test_support::test_host_manifests(),
         &mut dirty_nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     );
     assert!(matches!(
         restored,
@@ -419,6 +420,7 @@ fn production_restore_rejects_fault_event_published_by_fingerprint() -> Result<(
         checkpoint,
         crate::production_fault_runtime::test_support::test_host_manifests(),
         &mut restore_nodes,
+        crucible_engine::model::FaultTraceStorage::in_memory(),
     );
     assert!(matches!(
         restored,

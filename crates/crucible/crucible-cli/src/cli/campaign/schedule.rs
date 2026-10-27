@@ -3,16 +3,17 @@
 use super::*;
 
 use crate::crucible_engine::{
-    ChoiceTag, Decision, DeliveryOrderDecision, EventKey, IrqVector, NodeId, OverrideDecision,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, Schedule, SchedulerNodeId,
-    SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualInstant, VirtualTime,
+    ChoiceTag, Decision, DeliveryOrderDecision, EventKey, IrqVector, NetworkLinkDirection, NodeId,
+    OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision, RngDrawAddress, RngStreamId,
+    Schedule, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualInstant,
+    VirtualTime,
 };
 use crucible_daemon::MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES;
 use serde::{Deserialize, Serialize};
 
 use super::authoring::{read_bounded_utf8, write_new_record};
 
-const CAMPAIGN_SCHEDULE_AUTHORING_SCHEMA_VERSION: u32 = 2;
+const CAMPAIGN_SCHEDULE_AUTHORING_SCHEMA_VERSION: u32 = 3;
 const CAMPAIGN_SCHEDULE_COMPILATION_REPORT_SCHEMA: &str =
     "crucible.cli.campaign-schedule-compilation.v1";
 const MAX_CAMPAIGN_SCHEDULE_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
@@ -48,6 +49,7 @@ enum AuthoredDecision {
     RngDraw {
         stream_domain: String,
         stream_name: String,
+        address: AuthoredRngDrawAddress,
         value: u64,
     },
     Override {
@@ -63,6 +65,47 @@ enum AuthoredDecision {
         target_vcpu: Option<u32>,
         irq: Option<u32>,
     },
+}
+
+/// The authored address of one draw on its stream.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum AuthoredRngDrawAddress {
+    Ordinal {
+        ordinal: u64,
+    },
+    LinkFrame {
+        direction: AuthoredLinkDirection,
+        producer_sequence: u64,
+        role: u64,
+    },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum AuthoredLinkDirection {
+    AToB,
+    BToA,
+}
+
+impl AuthoredRngDrawAddress {
+    fn into_address(self) -> RngDrawAddress {
+        match self {
+            Self::Ordinal { ordinal } => RngDrawAddress::Ordinal { ordinal },
+            Self::LinkFrame {
+                direction,
+                producer_sequence,
+                role,
+            } => RngDrawAddress::LinkFrame {
+                direction: match direction {
+                    AuthoredLinkDirection::AToB => NetworkLinkDirection::EndpointAToEndpointB,
+                    AuthoredLinkDirection::BToA => NetworkLinkDirection::EndpointBToEndpointA,
+                },
+                producer_sequence,
+                role,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -206,12 +249,14 @@ impl AuthoredDecision {
             Self::RngDraw {
                 stream_domain,
                 stream_name,
+                address,
                 value,
             } => {
                 validate_text("RNG stream domain", &stream_domain)?;
                 validate_text("RNG stream name", &stream_name)?;
                 Ok(Decision::RngDraw(RngDecision {
                     stream: RngStreamId::new(stream_domain, stream_name),
+                    address: address.into_address(),
                     value,
                 }))
             }
@@ -332,7 +377,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn manifest() -> &'static str {
-        r#"schema_version = 2
+        r#"schema_version = 3
 
 [[decisions]]
 kind = "delivery-order"
@@ -348,6 +393,7 @@ sequence = 7
 kind = "rng-draw"
 stream_domain = "crucible.test.schedule"
 stream_name = "loss"
+address = { kind = "link-frame", direction = "a-to-b", producer_sequence = 3, role = 2 }
 value = 42
 
 [[decisions]]
@@ -389,13 +435,27 @@ irq = 32
         assert_eq!(report.schedule, schedule.content_hash().to_hex());
         assert_eq!(schedule.to_compact_binary(), bytes);
         assert!(matches!(
-            schedule.decisions()[0],
+            schedule.decision_history()[0],
             Decision::DeliveryOrder(_)
         ));
-        assert!(matches!(schedule.decisions()[1], Decision::RngDraw(_)));
-        assert!(matches!(schedule.decisions()[2], Decision::Override(_)));
         assert!(matches!(
-            schedule.decisions()[3],
+            &schedule.decision_history()[1],
+            Decision::RngDraw(RngDecision {
+                address: RngDrawAddress::LinkFrame {
+                    direction: NetworkLinkDirection::EndpointAToEndpointB,
+                    producer_sequence: 3,
+                    role: 2,
+                },
+                value: 42,
+                ..
+            })
+        ));
+        assert!(matches!(
+            schedule.decision_history()[2],
+            Decision::Override(_)
+        ));
+        assert!(matches!(
+            schedule.decision_history()[3],
             Decision::Preemption(PreemptionDecision {
                 at: VirtualInstant { ticks: 1000 },
                 kind: PreemptionKind::VcpuSwitch { .. },
@@ -403,7 +463,7 @@ irq = 32
             })
         ));
         assert!(matches!(
-            schedule.decisions()[4],
+            schedule.decision_history()[4],
             Decision::Preemption(PreemptionDecision {
                 at: VirtualInstant { ticks: 2000 },
                 kind: PreemptionKind::InterruptAt { .. },
@@ -420,13 +480,16 @@ irq = 32
         for invalid in [
             "schema_version = 1\ndecisions = []\n",
             "schema_version = 1\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"delivery-order\"\nat_ticks = 1\norder = []\n",
-            "schema_version = 2\nunknown = true\n[[decisions]]\nkind = \"override\"\npoint = \"p\"\nchoice = \"c\"\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\nirq = 32\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\n",
-            "schema_version = 2\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\nfrom_vcpu = 0\n",
+            "schema_version = 2\n[[decisions]]\nkind = \"rng-draw\"\nstream_domain = \"d\"\nstream_name = \"n\"\nvalue = 1\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"rng-draw\"\nstream_domain = \"d\"\nstream_name = \"n\"\nvalue = 1\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"rng-draw\"\nstream_domain = \"d\"\nstream_name = \"n\"\naddress = { kind = \"link-frame\", direction = \"sideways\", producer_sequence = 1, role = 0 }\nvalue = 1\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"delivery-order\"\nat_ticks = 1\norder = []\n",
+            "schema_version = 3\nunknown = true\n[[decisions]]\nkind = \"override\"\npoint = \"p\"\nchoice = \"c\"\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nretired = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"vcpu-switch\"\nfrom_vcpu = 0\nto_vcpu = 1\nirq = 32\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\n",
+            "schema_version = 3\n[[decisions]]\nkind = \"preemption\"\nnode = \"n\"\nat_tick = 1\naction = \"interrupt-at\"\ntarget_vcpu = 0\nirq = 32\nfrom_vcpu = 0\n",
         ] {
             std::fs::write(&input, invalid).expect("write invalid manifest");
             assert!(compile_campaign_schedule(&input, &output).is_err());

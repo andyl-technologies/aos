@@ -1,58 +1,62 @@
-//! Chunked immutable storage for portable finding replay captures.
+//! Content-addressed immutable storage for portable finding replay captures.
 //!
-//! A complete capture is split into deterministic chunks no larger than 64
-//! MiB. A small versioned [`ContentEnvelope`] records the capture hash, total
-//! length, and ordered chunk children. Four role-specific manifests form one
-//! finding capture set; preparation deduplicates equal chunk identities across
-//! all roles before enforcing the 512 MiB finding allowance.
+//! A capture is one manifest envelope whose children are its leaves
+//! ([`FindingProductionReplayCapture::prepare_objects`]). Four role-specific
+//! manifests form one finding capture set. Preparation shares equal leaves
+//! across all roles and charges each distinct leaf once against one of two
+//! per-finding allowances:
 //!
 //! ```text
-//! manifest body := "CRUCFRCM", capture-hash[32], total-length:u64,
-//!                  ordered-chunk-count:u32
-//! children      := chunk-00000000, chunk-00000001, ...
+//! static allowance   manifests, model reproductions, replay-closure roots,
+//!                    guest assets, lifecycle objects
+//!                    <= MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES
+//! segment allowance  side-log attempt segments, side-trace segments, and
+//!                    replay-closure frames (run-length evidence)
+//!                    <= MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES
 //! ```
+//!
+//! A complete role that would exceed either allowance is recorded as
+//! [`FindingReplayCaptureIncomplete::PublicationLimitExceeded`]. Publication
+//! copies leaves one at a time before any manifest, and loading obtains one
+//! handle per child after charging the same allowances, so neither direction
+//! builds a buffer the size of a capture.
+//!
+//! [`FindingProductionReplayCapture::prepare_objects`]: crate::FindingProductionReplayCapture::prepare_objects
+
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use crucible_campaign::{
     CampaignExecutorPublicationGuard, CampaignRepository, CampaignRepositoryError,
     FindingReplayCaptureEvidenceId, FindingReplayCaptureIncomplete, FindingReplayCaptureReference,
-    FindingReplayCaptureSet, MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
+    FindingReplayCaptureSet, MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES,
+    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES,
 };
-use crucible_engine::ContentHash;
-use crucible_store::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_store::content_store::{BlobHandle, ContentId, ObjectKind, PutReceipt, StoreError};
-use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-const CAPTURE_MANIFEST_SCHEMA: &str = "crucible.executor.finding-replay-capture-manifest";
-const CAPTURE_MANIFEST_SCHEMA_VERSION: u32 = 1;
-const CAPTURE_CHUNK_SCHEMA_VERSION: u32 = 1;
-const CAPTURE_MANIFEST_MAGIC: &[u8; 8] = b"CRUCFRCM";
-const MAX_CAPTURE_CHUNK_BYTES: usize = 64 * 1024 * 1024;
-const MAX_CAPTURE_MANIFEST_BYTES: usize = 4 * 1024;
-const MAX_CAPTURE_CHUNKS: usize =
-    MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES as usize / MAX_CAPTURE_CHUNK_BYTES;
+use crate::finding_production_replay::{
+    FindingProductionReplayCaptureError, FindingProductionReplayCaptureObjects,
+    FindingProductionReplayLeafRole, MAX_FINDING_PRODUCTION_REPLAY_MANIFEST_BYTES,
+    decode_finding_production_replay_manifest,
+};
 
 /// One transient complete or durable-incomplete capture outcome.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum FindingReplayCaptureInput {
-    /// Canonical path-free capture bytes and their independently derived hash.
-    Complete {
-        /// Canonical capture bytes.
-        bytes: Vec<u8>,
-        /// Hash returned by the capture producer for these exact bytes.
-        content_hash: ContentHash,
-    },
+    /// The manifest and leaves of one complete capture.
+    Complete(Box<FindingProductionReplayCaptureObjects>),
     /// Stable reason this role has no complete capture.
     Incomplete(FindingReplayCaptureIncomplete),
 }
 
-/// No-write preparation of one four-role chunked capture closure.
+/// No-write preparation of one four-role capture closure.
 #[derive(Clone)]
 pub struct PreparedFindingReplayCaptureSet {
     references: FindingReplayCaptureSet,
     manifests: BTreeMap<ContentId, BlobHandle>,
-    chunks: BTreeMap<ContentId, BlobHandle>,
-    unique_chunk_bytes: u64,
+    leaves: BTreeMap<ContentId, BlobHandle>,
+    charges: CaptureCharges,
 }
 
 impl PreparedFindingReplayCaptureSet {
@@ -62,23 +66,68 @@ impl PreparedFindingReplayCaptureSet {
         self.references
     }
 
-    /// Returns aggregate bytes charged after cross-role chunk deduplication.
+    /// Returns manifest and static leaf bytes charged after sharing.
     #[must_use]
-    pub const fn unique_chunk_bytes(&self) -> u64 {
-        self.unique_chunk_bytes
+    pub const fn unique_static_bytes(&self) -> u64 {
+        self.charges.static_bytes
+    }
+
+    /// Returns side-log segment bytes charged after sharing.
+    #[must_use]
+    pub const fn unique_segment_bytes(&self) -> u64 {
+        self.charges.segment_bytes
     }
 }
 
-/// Complete authenticated bytes loaded for one durable capture outcome.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The authenticated objects of one durable complete capture.
+///
+/// The manifest's identity, schema, and children have been checked, every
+/// child has a handle whose declared length was charged to the finding's
+/// allowances, and no leaf has been read yet.
+/// [`crate::FindingProductionReplayCapture::from_objects`] decodes it.
+#[derive(Clone)]
+pub struct LoadedFindingReplayCaptureObjects {
+    root: FindingReplayCaptureEvidenceId,
+    manifest: Vec<u8>,
+    leaves: BTreeMap<ContentId, BlobHandle>,
+}
+
+impl std::fmt::Debug for LoadedFindingReplayCaptureObjects {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoadedFindingReplayCaptureObjects")
+            .field("root", &self.root)
+            .field("manifest_bytes", &self.manifest.len())
+            .field("leaves", &self.leaves.len())
+            .finish()
+    }
+}
+
+impl LoadedFindingReplayCaptureObjects {
+    /// Returns the manifest identity that names the capture.
+    #[must_use]
+    pub const fn root(&self) -> FindingReplayCaptureEvidenceId {
+        self.root
+    }
+
+    /// Returns the canonical manifest envelope bytes.
+    #[must_use]
+    pub fn manifest(&self) -> &[u8] {
+        &self.manifest
+    }
+
+    /// Returns one unread handle per manifest child, by identity.
+    #[must_use]
+    pub const fn leaves(&self) -> &BTreeMap<ContentId, BlobHandle> {
+        &self.leaves
+    }
+}
+
+/// One durable capture outcome loaded from a capture set.
+#[derive(Clone, Debug)]
 pub enum LoadedFindingReplayCapture {
-    /// Reassembled canonical capture bytes and their authenticated hash.
-    Complete {
-        /// Canonical capture bytes.
-        bytes: Vec<u8>,
-        /// Hash committed by the authenticated manifest.
-        content_hash: ContentHash,
-    },
+    /// The authenticated objects of a complete capture.
+    Complete(Box<LoadedFindingReplayCaptureObjects>),
     /// Stable reason this role has no complete capture.
     Incomplete(FindingReplayCaptureIncomplete),
 }
@@ -87,75 +136,60 @@ pub enum LoadedFindingReplayCapture {
 pub struct FindingReplayCaptureStore;
 
 impl FindingReplayCaptureStore {
-    /// Derives all chunk and manifest identities without repository writes.
+    /// Derives the four-role publication closure without repository writes.
     ///
-    /// Equal chunks are stored once across the four fixed roles. A complete
-    /// role that would exceed the remaining aggregate allowance is represented
-    /// by [`FindingReplayCaptureIncomplete::PublicationLimitExceeded`].
+    /// Equal leaves and manifests are stored once across the four fixed
+    /// roles. A complete role that would exceed the remaining static or
+    /// segment allowance is represented by
+    /// [`FindingReplayCaptureIncomplete::PublicationLimitExceeded`].
     ///
     /// # Errors
     ///
-    /// Returns an error when complete bytes are empty, disagree with their
-    /// producer hash, or cannot be represented by the bounded manifest format.
+    /// Returns an error when the role count cannot form a capture set.
     pub fn prepare_set(
         inputs: [FindingReplayCaptureInput; 4],
     ) -> Result<PreparedFindingReplayCaptureSet, FindingReplayCaptureStoreError> {
         let mut manifests = BTreeMap::new();
-        let mut chunks = BTreeMap::new();
-        let mut unique_chunk_bytes = 0_u64;
+        let mut leaves = BTreeMap::new();
+        let mut charges = CaptureCharges::default();
         let mut references = Vec::with_capacity(4);
 
         for input in inputs {
-            let (bytes, content_hash) = match input {
-                FindingReplayCaptureInput::Complete {
-                    bytes,
-                    content_hash,
-                } => (bytes, content_hash),
+            let objects = match input {
+                FindingReplayCaptureInput::Complete(objects) => objects,
                 FindingReplayCaptureInput::Incomplete(reason) => {
                     references.push(FindingReplayCaptureReference::Incomplete(reason));
                     continue;
                 }
             };
 
-            let prepared = match prepare_capture(bytes, content_hash) {
-                Ok(prepared) => prepared,
-                Err(FindingReplayCaptureStoreError::LimitExceeded {
-                    limit: "finding-replay-capture-bytes",
-                }) => {
-                    references.push(FindingReplayCaptureReference::Incomplete(
-                        FindingReplayCaptureIncomplete::PublicationLimitExceeded,
-                    ));
-                    continue;
+            // Charge only what this role adds, so a role that does not fit
+            // leaves the earlier roles' charges untouched.
+            let root = objects.root().content_id();
+            let mut role_charges = charges;
+            if !manifests.contains_key(&root) {
+                role_charges.charge_static(objects.manifest_bytes().len() as u64);
+            }
+            for (id, leaf) in objects.leaves() {
+                if !leaves.contains_key(id) {
+                    role_charges.charge(leaf.role(), leaf.length());
                 }
-                Err(source) => return Err(source),
-            };
-            let additional_bytes = prepared
-                .chunks
-                .iter()
-                .filter(|(id, _)| !chunks.contains_key(*id))
-                .try_fold(0_u64, |total, (_, source)| {
-                    total.checked_add(source.logical_length()).ok_or(
-                        FindingReplayCaptureStoreError::LimitExceeded {
-                            limit: "finding-replay-capture-unique-chunk-bytes",
-                        },
-                    )
-                })?;
-            if unique_chunk_bytes
-                .checked_add(additional_bytes)
-                .is_none_or(|total| total > MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES)
-            {
+            }
+            if !role_charges.within_allowances() {
                 references.push(FindingReplayCaptureReference::Incomplete(
                     FindingReplayCaptureIncomplete::PublicationLimitExceeded,
                 ));
                 continue;
             }
 
-            unique_chunk_bytes += additional_bytes;
-            chunks.extend(prepared.chunks);
+            charges = role_charges;
             manifests
-                .entry(prepared.root.content_id())
-                .or_insert(prepared.manifest);
-            references.push(FindingReplayCaptureReference::Complete(prepared.root));
+                .entry(root)
+                .or_insert_with(|| objects.manifest_source());
+            for (id, leaf) in objects.leaves() {
+                leaves.entry(*id).or_insert_with(|| leaf.source().clone());
+            }
+            references.push(FindingReplayCaptureReference::Complete(objects.root()));
         }
 
         let references: [FindingReplayCaptureReference; 4] =
@@ -172,15 +206,16 @@ impl FindingReplayCaptureStore {
                 references[3],
             ),
             manifests,
-            chunks,
-            unique_chunk_bytes,
+            leaves,
+            charges,
         })
     }
 
-    /// Publishes chunks first and manifest roots last.
+    /// Publishes leaves first and manifest roots last.
     ///
+    /// Each leaf is copied from its source by the backend, one at a time.
     /// Exact retry is idempotent. The caller must hold repository GC exclusion
-    /// from before the first chunk write through the operational Publishing
+    /// from before the first leaf write through the operational Publishing
     /// transition that retains every complete manifest root. The hidden
     /// prepared-result journal is written before that transition and becomes
     /// visible only after the transition succeeds.
@@ -193,14 +228,7 @@ impl FindingReplayCaptureStore {
         guard: &CampaignExecutorPublicationGuard<'_>,
         prepared: &PreparedFindingReplayCaptureSet,
     ) -> Result<(), FindingReplayCaptureStoreError> {
-        for (id, source) in &prepared.chunks {
-            require_durable_receipt(
-                guard.put_finding_replay_capture_object(*id, source)?,
-                *id,
-                source,
-            )?;
-        }
-        for (id, source) in &prepared.manifests {
+        for (id, source) in prepared.leaves.iter().chain(&prepared.manifests) {
             require_durable_receipt(
                 guard.put_finding_replay_capture_object(*id, source)?,
                 *id,
@@ -210,16 +238,16 @@ impl FindingReplayCaptureStore {
         Ok(())
     }
 
-    /// Loads and authenticates all four manifest/chunk closures.
+    /// Loads and authenticates all four manifests and their child handles.
     ///
     /// The returned array preserves the canonical role order used by
     /// [`FindingReplayCaptureSet::references`].
     ///
     /// # Errors
     ///
-    /// Returns an error when a manifest or chunk is absent, corrupt,
-    /// oversized, out of order, or inconsistent with the committed capture
-    /// length and hash.
+    /// Returns an error when a manifest is absent, corrupt, oversized, or of
+    /// another schema, a child is absent or of another kind, or the distinct
+    /// declared bytes exceed either per-finding allowance.
     pub fn load_set(
         guard: &CampaignExecutorPublicationGuard<'_>,
         references: FindingReplayCaptureSet,
@@ -233,8 +261,8 @@ impl FindingReplayCaptureStore {
     /// Loads a retained capture set from an authenticated imported repository.
     ///
     /// The caller must first prove the finding's membership in a complete
-    /// archive. This reader uses the same bounded manifest and chunk checks as
-    /// live publication, without requiring write or GC-exclusion authority.
+    /// archive. This reader uses the same bounded manifest and child checks
+    /// as live publication, without requiring write or GC-exclusion authority.
     ///
     /// # Errors
     ///
@@ -257,13 +285,15 @@ impl FindingReplayCaptureStore {
     where
         F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
     {
-        Self::preflight_set(read, references)?;
-
+        let mut charged = BTreeMap::new();
+        let mut charges = CaptureCharges::default();
         let mut loaded = Vec::with_capacity(4);
+
         for reference in references.references() {
             match reference {
                 FindingReplayCaptureReference::Complete(root) => {
-                    loaded.push(Self::load_capture(read, root)?);
+                    let objects = Self::load_capture(read, root, &mut charged, &mut charges)?;
+                    loaded.push(LoadedFindingReplayCapture::Complete(Box::new(objects)));
                 }
                 FindingReplayCaptureReference::Incomplete(reason) => {
                     loaded.push(LoadedFindingReplayCapture::Incomplete(reason));
@@ -277,285 +307,99 @@ impl FindingReplayCaptureStore {
             })
     }
 
-    fn preflight_set<F>(
-        read: &F,
-        references: FindingReplayCaptureSet,
-    ) -> Result<(), FindingReplayCaptureStoreError>
-    where
-        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
-    {
-        let mut unique_chunks = BTreeMap::new();
-        let mut unique_chunk_bytes = 0_u64;
-
-        for root in references
-            .references()
-            .into_iter()
-            .filter_map(FindingReplayCaptureReference::evidence)
-        {
-            let (manifest, descriptor) = Self::load_manifest(read, root)?;
-            for (index, child) in manifest.children().iter().enumerate() {
-                validate_chunk_child(index, child)?;
-                let consumed = (index as u64)
-                    .checked_mul(MAX_CAPTURE_CHUNK_BYTES as u64)
-                    .ok_or(FindingReplayCaptureStoreError::LimitExceeded {
-                        limit: "finding-replay-capture-chunk-bytes",
-                    })?;
-                let expected = descriptor
-                    .total_length
-                    .checked_sub(consumed)
-                    .ok_or(FindingReplayCaptureStoreError::InvalidManifest {
-                        reason: "chunk position",
-                    })?
-                    .min(MAX_CAPTURE_CHUNK_BYTES as u64);
-                match unique_chunks.entry(child.id()) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        unique_chunk_bytes = unique_chunk_bytes.checked_add(expected).ok_or(
-                            FindingReplayCaptureStoreError::LimitExceeded {
-                                limit: "finding-replay-capture-unique-chunk-bytes",
-                            },
-                        )?;
-                        if unique_chunk_bytes > MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES {
-                            return Err(FindingReplayCaptureStoreError::LimitExceeded {
-                                limit: "finding-replay-capture-unique-chunk-bytes",
-                            });
-                        }
-                        entry.insert(expected);
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry)
-                        if *entry.get() == expected => {}
-                    std::collections::btree_map::Entry::Occupied(_) => {
-                        return Err(FindingReplayCaptureStoreError::InvalidManifest {
-                            reason: "shared chunk length",
-                        });
-                    }
-                }
-            }
-        }
-
-        // Authenticate presence and declared size for the complete unique
-        // inventory before any role-specific reconstruction allocates its
-        // capture-sized output buffer. Full reads below authenticate bytes.
-        for (id, expected) in unique_chunks {
-            let source = read(id)?;
-            if source.logical_length() != expected {
-                return Err(FindingReplayCaptureStoreError::InvalidManifest {
-                    reason: "chunk declared length",
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn load_manifest<F>(
+    /// Reads one manifest and one handle per child, charging new objects.
+    ///
+    /// Presence and declared length are authenticated for every child before
+    /// any leaf byte is read; leaf bytes are authenticated when decoded.
+    fn load_capture<F>(
         read: &F,
         root: FindingReplayCaptureEvidenceId,
-    ) -> Result<(ContentEnvelope, CaptureManifestDescriptor), FindingReplayCaptureStoreError>
+        charged: &mut BTreeMap<ContentId, u64>,
+        charges: &mut CaptureCharges,
+    ) -> Result<LoadedFindingReplayCaptureObjects, FindingReplayCaptureStoreError>
     where
         F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
     {
         let root_id = root.content_id();
-        let manifest_bytes = read(root_id)?.read_all(MAX_CAPTURE_MANIFEST_BYTES as u64)?;
-        let manifest = ContentEnvelope::from_canonical_bytes(&manifest_bytes)?;
-        if manifest.content_id(ObjectKind::ExactManifest) != root_id
-            || manifest.schema_name() != CAPTURE_MANIFEST_SCHEMA
-            || manifest.schema_version() != CAPTURE_MANIFEST_SCHEMA_VERSION
-        {
-            return Err(FindingReplayCaptureStoreError::InvalidManifest {
-                reason: "manifest identity or schema",
-            });
+        let manifest = read(root_id)?.read_all(MAX_FINDING_PRODUCTION_REPLAY_MANIFEST_BYTES)?;
+        let envelope = decode_finding_production_replay_manifest(root, &manifest)?;
+        if let Entry::Vacant(entry) = charged.entry(root_id) {
+            charges.charge_static(manifest.len() as u64);
+            entry.insert(manifest.len() as u64);
         }
-        let descriptor = decode_manifest(&manifest)?;
-        Ok((manifest, descriptor))
-    }
 
-    fn load_capture<F>(
-        read: &F,
-        root: FindingReplayCaptureEvidenceId,
-    ) -> Result<LoadedFindingReplayCapture, FindingReplayCaptureStoreError>
-    where
-        F: Fn(ContentId) -> Result<BlobHandle, CampaignRepositoryError>,
-    {
-        let (manifest, descriptor) = Self::load_manifest(read, root)?;
-        let capacity = usize::try_from(descriptor.total_length).map_err(|_| {
-            FindingReplayCaptureStoreError::LimitExceeded {
-                limit: "finding-replay-capture-bytes",
-            }
-        })?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| StoreError::Quota)?;
-
-        for (index, child) in manifest.children().iter().enumerate() {
-            validate_chunk_child(index, child)?;
-            let remaining = descriptor.total_length.saturating_sub(bytes.len() as u64);
-            let expected = remaining.min(MAX_CAPTURE_CHUNK_BYTES as u64);
-            let chunk = read(child.id())?.read_all(expected)?;
-            if chunk.len() as u64 != expected {
+        let mut leaves = BTreeMap::new();
+        for child in envelope.children() {
+            let role = FindingProductionReplayLeafRole::from_role(child.role()).ok_or(
+                FindingReplayCaptureStoreError::InvalidManifest {
+                    reason: "child role",
+                },
+            )?;
+            let id = child.id();
+            if id.kind() != ObjectKind::Trace || id.schema_version() != 1 {
                 return Err(FindingReplayCaptureStoreError::InvalidManifest {
-                    reason: "chunk length",
+                    reason: "child identity",
                 });
             }
-            bytes.extend_from_slice(&chunk);
+            if leaves.contains_key(&id) {
+                continue;
+            }
+
+            let handle = read(id)?;
+            match charged.get(&id) {
+                Some(length) if *length != handle.logical_length() => {
+                    return Err(FindingReplayCaptureStoreError::InvalidManifest {
+                        reason: "shared leaf length",
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    charges.charge(role, handle.logical_length());
+                    charged.insert(id, handle.logical_length());
+                }
+            }
+            leaves.insert(id, handle);
+        }
+        if !charges.within_allowances() {
+            return Err(FindingReplayCaptureStoreError::LimitExceeded {
+                limit: "finding-replay-capture-unique-bytes",
+            });
         }
 
-        if bytes.len() as u64 != descriptor.total_length
-            || ContentHash::from_bytes(&bytes) != descriptor.content_hash
-        {
-            return Err(FindingReplayCaptureStoreError::CaptureHashMismatch);
-        }
-        Ok(LoadedFindingReplayCapture::Complete {
-            bytes,
-            content_hash: descriptor.content_hash,
+        Ok(LoadedFindingReplayCaptureObjects {
+            root,
+            manifest,
+            leaves,
         })
     }
 }
 
-struct PreparedCapture {
-    root: FindingReplayCaptureEvidenceId,
-    manifest: BlobHandle,
-    chunks: BTreeMap<ContentId, BlobHandle>,
+/// Distinct bytes charged to one finding's two capture allowances.
+///
+/// Sums saturate, and a saturated sum exceeds either allowance.
+#[derive(Clone, Copy, Debug, Default)]
+struct CaptureCharges {
+    static_bytes: u64,
+    segment_bytes: u64,
 }
 
-fn prepare_capture(
-    bytes: Vec<u8>,
-    content_hash: ContentHash,
-) -> Result<PreparedCapture, FindingReplayCaptureStoreError> {
-    if bytes.is_empty() {
-        return Err(FindingReplayCaptureStoreError::InvalidCapture);
-    }
-    if ContentHash::from_bytes(&bytes) != content_hash {
-        return Err(FindingReplayCaptureStoreError::CaptureHashMismatch);
-    }
-    if bytes.len() as u64 > MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES {
-        return Err(FindingReplayCaptureStoreError::LimitExceeded {
-            limit: "finding-replay-capture-bytes",
-        });
-    }
-
-    let mut children = BTreeSet::new();
-    let mut chunks = BTreeMap::new();
-    for (index, chunk) in bytes.chunks(MAX_CAPTURE_CHUNK_BYTES).enumerate() {
-        if index >= MAX_CAPTURE_CHUNKS {
-            return Err(FindingReplayCaptureStoreError::LimitExceeded {
-                limit: "finding-replay-capture-chunk-count",
-            });
+impl CaptureCharges {
+    fn charge(&mut self, role: FindingProductionReplayLeafRole, length: u64) {
+        if role.is_run_length() {
+            self.segment_bytes = self.segment_bytes.saturating_add(length);
+        } else {
+            self.charge_static(length);
         }
-        let id = ContentId::for_bytes(ObjectKind::Trace, CAPTURE_CHUNK_SCHEMA_VERSION, chunk);
-        children.insert(ContentChild::new(chunk_role(index), id)?);
-        chunks
-            .entry(id)
-            .or_insert_with(|| BlobHandle::from_bytes(chunk.to_vec()));
     }
-    let body = encode_manifest(content_hash, bytes.len() as u64, children.len())?;
-    let envelope = ContentEnvelope::new(
-        CAPTURE_MANIFEST_SCHEMA,
-        CAPTURE_MANIFEST_SCHEMA_VERSION,
-        children,
-        body,
-    )?;
-    let manifest_bytes = envelope.canonical_bytes();
-    if manifest_bytes.len() > MAX_CAPTURE_MANIFEST_BYTES {
-        return Err(FindingReplayCaptureStoreError::LimitExceeded {
-            limit: "finding-replay-capture-manifest-bytes",
-        });
+
+    fn charge_static(&mut self, length: u64) {
+        self.static_bytes = self.static_bytes.saturating_add(length);
     }
-    let root = FindingReplayCaptureEvidenceId::from_manifest_content_id(
-        envelope.content_id(ObjectKind::ExactManifest),
-    )?;
-    Ok(PreparedCapture {
-        root,
-        manifest: BlobHandle::from_bytes(manifest_bytes),
-        chunks,
-    })
-}
 
-#[derive(Clone, Copy)]
-struct CaptureManifestDescriptor {
-    content_hash: ContentHash,
-    total_length: u64,
-}
-
-fn encode_manifest(
-    content_hash: ContentHash,
-    total_length: u64,
-    chunk_count: usize,
-) -> Result<Vec<u8>, FindingReplayCaptureStoreError> {
-    let chunk_count =
-        u32::try_from(chunk_count).map_err(|_| FindingReplayCaptureStoreError::LimitExceeded {
-            limit: "finding-replay-capture-chunk-count",
-        })?;
-    let mut body = Vec::with_capacity(52);
-    body.extend_from_slice(CAPTURE_MANIFEST_MAGIC);
-    body.extend_from_slice(&content_hash.bytes);
-    body.extend_from_slice(&total_length.to_be_bytes());
-    body.extend_from_slice(&chunk_count.to_be_bytes());
-    Ok(body)
-}
-
-fn decode_manifest(
-    envelope: &ContentEnvelope,
-) -> Result<CaptureManifestDescriptor, FindingReplayCaptureStoreError> {
-    let body = envelope.body();
-    if body.len() != 52 || &body[..8] != CAPTURE_MANIFEST_MAGIC {
-        return Err(FindingReplayCaptureStoreError::InvalidManifest {
-            reason: "manifest body framing",
-        });
+    const fn within_allowances(&self) -> bool {
+        self.static_bytes <= MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES
+            && self.segment_bytes <= MAX_FINDING_REPLAY_PUBLICATION_SEGMENT_BYTES
     }
-    let content_hash = ContentHash {
-        bytes: body[8..40].try_into().map_err(|_| {
-            FindingReplayCaptureStoreError::InvalidManifest {
-                reason: "capture hash",
-            }
-        })?,
-    };
-    let total_length = u64::from_be_bytes(body[40..48].try_into().map_err(|_| {
-        FindingReplayCaptureStoreError::InvalidManifest {
-            reason: "capture length",
-        }
-    })?);
-    let chunk_count = u32::from_be_bytes(body[48..52].try_into().map_err(|_| {
-        FindingReplayCaptureStoreError::InvalidManifest {
-            reason: "chunk count",
-        }
-    })?) as usize;
-    let expected_chunks = usize::try_from(total_length)
-        .ok()
-        .map(|length| length.div_ceil(MAX_CAPTURE_CHUNK_BYTES));
-    if total_length == 0
-        || total_length > MAX_FINDING_REPLAY_PUBLICATION_STATIC_BYTES
-        || chunk_count == 0
-        || chunk_count > MAX_CAPTURE_CHUNKS
-        || Some(chunk_count) != expected_chunks
-        || envelope.children().len() != chunk_count
-    {
-        return Err(FindingReplayCaptureStoreError::InvalidManifest {
-            reason: "capture length or chunk count",
-        });
-    }
-    Ok(CaptureManifestDescriptor {
-        content_hash,
-        total_length,
-    })
-}
-
-fn chunk_role(index: usize) -> String {
-    format!("chunk-{index:08x}")
-}
-
-fn validate_chunk_child(
-    index: usize,
-    child: &ContentChild,
-) -> Result<(), FindingReplayCaptureStoreError> {
-    if child.role() != chunk_role(index)
-        || child.id().kind() != ObjectKind::Trace
-        || child.id().schema_version() != CAPTURE_CHUNK_SCHEMA_VERSION
-    {
-        return Err(FindingReplayCaptureStoreError::InvalidManifest {
-            reason: "chunk child",
-        });
-    }
-    Ok(())
 }
 
 fn require_durable_receipt(
@@ -580,36 +424,27 @@ fn require_durable_receipt(
 /// Failure to prepare, publish, or load a portable capture closure.
 #[derive(Debug, Error)]
 pub enum FindingReplayCaptureStoreError {
-    /// Complete capture bytes are empty.
-    #[error("finding replay capture is empty")]
-    InvalidCapture,
     /// A manifest is malformed or inconsistent with its children.
     #[error("finding replay capture manifest has invalid {reason}")]
     InvalidManifest {
         /// Stable rejected field or relationship.
         reason: &'static str,
     },
-    /// Capture bytes disagree with the producer or manifest hash.
-    #[error("finding replay capture content hash mismatch")]
-    CaptureHashMismatch,
     /// A bounded representation or aggregate allowance was exceeded.
     #[error("finding replay capture exceeded {limit}")]
     LimitExceeded {
         /// Stable bound name.
         limit: &'static str,
     },
+    /// The manifest envelope failed capture authentication.
+    #[error(transparent)]
+    Capture(#[from] FindingProductionReplayCaptureError),
     /// The immutable backend failed.
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// A manifest envelope was malformed or oversized.
-    #[error(transparent)]
-    Envelope(#[from] ContentEnvelopeError),
-    /// A typed campaign identity rejected the manifest content ID.
-    #[error(transparent)]
-    Campaign(#[from] crucible_campaign::CampaignCodecError),
     /// The campaign repository rejected guarded capture-object access.
     #[error(transparent)]
-    Repository(#[from] crucible_campaign::CampaignRepositoryError),
+    Repository(#[from] CampaignRepositoryError),
     /// A backend reported a non-durable or inconsistent placement.
     #[error("finding replay capture backend returned an invalid receipt for {id}")]
     InvalidReceipt {

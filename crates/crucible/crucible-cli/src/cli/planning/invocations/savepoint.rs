@@ -225,8 +225,9 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
                                 })?;
                         let evidence_payload =
                             parse_hex_payload_line(line_index, tag, &fields[4], &fields[5])?;
-                        let evidence = crucible_daemon::CrucibleMeasurementReplayEvidence::from_canonical_bytes(
+                        let evidence = crucible_daemon::CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
                             &evidence_payload,
+                            crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
                         )
                         .map_err(|error| {
                             artifact_line_error(
@@ -238,7 +239,8 @@ pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, C
                             )
                         })?;
                         evidence
-                            .verify_observation_stop_proof(&proof)
+                            .evidence()
+                            .verify_observation_stop_proof(evidence.segments(), &proof)
                             .map_err(|error| {
                                 artifact_line_error(
                                     line_index,
@@ -482,7 +484,8 @@ fn validate_savepoint_boundary_proof(
             ));
         }
         evidence
-            .verify_observation_stop_proof(proof)
+            .evidence()
+            .verify_observation_stop_proof(evidence.segments(), proof)
             .map_err(|error| {
                 artifact_error(format!(
                     "campaign observation proof and evidence are inconsistent: {error}"

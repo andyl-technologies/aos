@@ -61,6 +61,7 @@ const RFC_SOURCES: &[&str] = &[
     include_str!(
         "../../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"
     ),
+    include_str!("../../../../docs/rfcs/0020-crucible-campaigns/15-segmented-event-log.md"),
 ];
 
 #[test]
@@ -276,6 +277,60 @@ fn exact_targets_fail_closed_on_source_and_runner_drift() {
             .iter()
             .any(|failure| failure.contains("omits evidence proven=typed-product"))
     );
+}
+
+#[test]
+fn literal_cargo_recipe_authenticates_the_current_equivalence_flight() {
+    let gate = find_campaign_gate("gate:hot-fork-equivalence").expect("registered gate");
+    let CampaignGateContract::Automated { targets, nix_attr } = gate.contract;
+    let target = &targets[0];
+    let CampaignGateTargetKind::LibExact {
+        selectors, ignored, ..
+    } = target.kind
+    else {
+        panic!("equivalence gate must retain its library selector contract");
+    };
+    let nix = include_str!("../../../../tests/crucible/phase7-qemu-hot-fork-equivalence-vm.nix");
+    let recipe = "test --release -p crucible-daemon --lib";
+    assert_eq!(nix.matches(recipe).count(), 1);
+
+    let failures =
+        library_selector_nix_failures(gate.name, target.package, nix_attr, selectors, nix, ignored);
+    assert!(failures.is_empty(), "{failures:?}");
+
+    for (case, rejected) in [
+        (
+            "wrong package",
+            nix.replace(recipe, &recipe.replace("crucible-daemon", "crucible-api")),
+        ),
+        (
+            "non-library target",
+            nix.replace(recipe, &recipe.replace("--lib", "--bins")),
+        ),
+        ("missing command", nix.replace(recipe, "")),
+        (
+            "non-test command",
+            nix.replace(recipe, &recipe.replacen("test", "build", 1)),
+        ),
+        (
+            "unbound recipe string",
+            nix.replace("executables = {", "unrelated = {"),
+        ),
+    ] {
+        let failures = library_selector_nix_failures(
+            gate.name,
+            target.package,
+            nix_attr,
+            selectors,
+            &rejected,
+            ignored,
+        );
+        assert_eq!(
+            failures,
+            ["gate:hot-fork-equivalence: library Nix flight does not build crucible-daemon --lib"],
+            "{case}",
+        );
+    }
 }
 
 #[test]
@@ -978,7 +1033,8 @@ fn library_selector_nix_failures(
     ignored: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
-    let directly_runs_package = contains_word_sequence(nix, &["-p", package, "--lib"]);
+    let directly_runs_package = contains_word_sequence(nix, &["-p", package, "--lib"])
+        || cargo_build_commands_test_library(nix, package);
     let runs_parameterized_helper = contains_word_sequence(nix, &["-p", "\"$package\"", "--lib"])
         && contains_word_sequence(nix, &["run_exact_lib_test", package]);
     if !directly_runs_package && !runs_parameterized_helper {
@@ -1036,6 +1092,38 @@ fn library_selector_nix_failures(
     }
 
     failures
+}
+
+// mkCargoPackage's `cargoBuildCommands` list and mkCrucibleBinaries'
+// `executables` set hold literal Cargo argument strings rather than shell
+// commands. Restrict quote removal to those bindings so unrelated Nix strings
+// are not build evidence.
+fn cargo_build_commands_test_library(nix: &str, package: &str) -> bool {
+    let tests_library = |command: &str| {
+        command.split_whitespace().next() == Some("test")
+            && contains_word_sequence(command, &["-p", package, "--lib"])
+    };
+
+    bound_recipe_lines(nix, "cargoBuildCommands = [", "];")
+        .filter_map(|line| line.strip_prefix('"')?.strip_suffix('"'))
+        .any(tests_library)
+        || bound_recipe_lines(nix, "executables = {", "};")
+            .filter_map(|line| line.split_once(" = \"")?.1.strip_suffix("\";"))
+            .any(tests_library)
+}
+
+/// Yields the trimmed lines of the first `opening` ... `closing` binding.
+fn bound_recipe_lines<'a>(
+    nix: &'a str,
+    opening: &str,
+    closing: &str,
+) -> impl Iterator<Item = &'a str> {
+    nix.split_once(opening)
+        .and_then(|(_, rest)| rest.split_once(closing))
+        .map(|(body, _)| body)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
 }
 
 fn contains_word_sequence(text: &str, expected: &[&str]) -> bool {

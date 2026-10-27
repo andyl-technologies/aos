@@ -52,7 +52,10 @@ async fn fork_child_uses_temporal_graph_fork_and_independent_child_actor() {
     assert!(fork.branch_checkpoint.state.is_none());
     assert_eq!(fork.record.from_checkpoint, base.id());
     assert_eq!(fork.record.branch_checkpoint, expected_branch.id());
-    assert_eq!(fork.record.schedule_delta.decisions(), &[fork_decision]);
+    assert_eq!(
+        fork.record.schedule_delta.decision_history(),
+        &[fork_decision]
+    );
     assert!(matches!(
         fork.child_actor.engine().state(),
         EngineState::Paused {

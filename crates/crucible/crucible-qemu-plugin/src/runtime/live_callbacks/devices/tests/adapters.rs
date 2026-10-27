@@ -10,12 +10,14 @@ fn qemu_discard_callback_maps_to_payload_free_wire_request() {
     assert_eq!(request.offset(), 4096);
     assert_eq!(request.count(), 8192);
     assert!(request.payload().is_empty());
+    let stamp = crate::BlockRequestStamp::new(crate::BlockRequestIdentity::new(0, 7), 0)
+        .unwrap_or_else(|error| panic!("discard stamp is well formed: {error}"));
     let encoded = request
-        .encode(crate::BlockRequestIdentity::new(0, 7))
+        .encode(stamp)
         .unwrap_or_else(|error| panic!("discard wire request should encode: {error}"));
-    let (request_id, decoded) = BlockRequest::decode(&encoded)
+    let (decoded_stamp, decoded) = BlockRequest::decode(&encoded)
         .unwrap_or_else(|error| panic!("discard wire request should decode: {error}"));
-    assert_eq!(request_id, crate::BlockRequestIdentity::new(0, 7));
+    assert_eq!(decoded_stamp, stamp);
     assert_eq!(decoded, request);
 
     assert!(matches!(

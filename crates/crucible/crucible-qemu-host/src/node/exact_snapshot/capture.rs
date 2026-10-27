@@ -475,6 +475,33 @@ impl QemuNode {
         Ok(())
     }
 
+    /// Samples the live fingerprint before a capture when preimage dumps are enabled.
+    ///
+    /// The plugin keeps a sample's exact RAM and device preimages only under
+    /// the opt-in material dump. Sampling the live process here lets a failed
+    /// replay oracle separate a live divergence from an incomplete checkpoint
+    /// preimage. The sample is observation-only and runs only while QEMU is
+    /// held by the simulator rather than a native stop, whose stopped vCPU
+    /// thread could not answer. A failure is reported and otherwise ignored.
+    fn sample_live_fingerprint_for_material_dump(&mut self) {
+        // crucible-lint: allow host-nondeterminism-state -- a default-off diagnostic sample observes state without changing control decisions.
+        if std::env::var_os("CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR").is_none() {
+            return;
+        }
+        if !matches!(
+            self.channels
+                .qmp_machine_control
+                .is_paused_for_hot_fork_template(),
+            Ok(false)
+        ) {
+            return;
+        }
+        if let Err(error) = self.execution_fingerprint() {
+            // crucible-lint: allow direct-diagnostic -- the opt-in trace is captured from packaged-VM stderr.
+            eprintln!("CRUCIBLE-PHASE4-CLOCK-TRACE fingerprint-material live-sample error={error}");
+        }
+    }
+
     fn capture_exact_snapshot_inner(
         &mut self,
         node: &NodeId,
@@ -506,6 +533,7 @@ impl QemuNode {
                 ));
             }
         } else {
+            self.sample_live_fingerprint_for_material_dump();
             self.pause_at_exact_checkpoint_boundary_after_validation()?;
         }
         let capture_result = (|| {
@@ -554,7 +582,11 @@ impl QemuNode {
                 execution_binding: checkpoint.id,
                 last_observed_time: self.last_observed_time,
                 logical_time_calibration,
-                console_observation_boundary: self.console_observation_boundary,
+                native_console_continuation: self
+                    .native_console
+                    .as_ref()
+                    .map(super::super::native_console::QemuNativeConsoleObservation::checkpoint)
+                    .transpose()?,
                 pending_preemption: self.pending_preemption.clone(),
                 pending_network_outputs: self.pending_network_outputs.clone(),
                 network_transport,

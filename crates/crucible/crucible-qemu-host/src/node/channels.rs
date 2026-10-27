@@ -17,6 +17,20 @@ pub trait QemuPluginIpcControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the control channel cannot accept
     /// the teardown request.
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Signals the retained eventfd after an original stopped control request.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable wake ownership or an unsuccessful eventfd write.
+    /// This sends no new control message and grants no execution permission.
+    #[cfg(target_os = "linux")]
+    fn signal_stopped_control(&self) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "wake stopped child control",
+            "the channel has no retained wake owner",
+        ))
+    }
 }
 
 /// Shared-memory hot-path channel for per-quantum data.
@@ -99,13 +113,16 @@ pub trait QemuShmemHotPathChannel: Send {
     /// node slot, so its scheduler ceiling starts at zero while the plugin
     /// still stands at the source's counter; the first control boundary would
     /// publish that counter past the ceiling and abort. Arming the inherited
-    /// counter before any host request, without a wake, lets the child
-    /// publish exactly where the source stopped.
+    /// upper bound before any host request, without a wake, permits the child's
+    /// actual stopped counter to be published within that bound. The ceiling
+    /// does not identify the stopped coordinate.
     ///
     /// # Errors
     ///
     /// Returns [`QemuNodeChannelError`] when this channel cannot arm a ceiling
-    /// or the counter is behind the slot's published counter.
+    /// or the counter is behind the slot's published counter. Refusal occurs
+    /// before publication; success commits the ceiling without a later fallible
+    /// wake, so the installer can retain that success through subsequent retries.
     #[cfg(target_os = "linux")]
     fn arm_hot_fork_child_ceiling(
         &mut self,
@@ -114,6 +131,41 @@ pub trait QemuShmemHotPathChannel: Send {
         Err(QemuNodeChannelError::new(
             "arm hot-fork child ceiling",
             "this shared-memory channel does not implement hot-fork child arming",
+        ))
+    }
+
+    /// Admits fresh physical console custody for the original private child.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing parent setup custody, a mismatched private mapping or
+    /// fresh capability. The caller separately validates actual child RELEASE
+    /// and paused state; this method cannot authenticate a native phase.
+    #[cfg(target_os = "linux")]
+    fn prepare_hot_fork_console_restore(
+        &mut self,
+        _admission: &crate::QemuHotForkConsoleAdmission,
+    ) -> Result<crate::QemuHotForkConsoleRestore, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "prepare child console restore",
+            "this channel has no installed native console continuation",
+        ))
+    }
+
+    /// Attaches only the already accepted private child's runnable custody.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unaccepted Restore or a custody/mapping mismatch. The source
+    /// launch's physical receipts are never transferred to this channel.
+    #[cfg(target_os = "linux")]
+    fn attach_hot_fork_console_restore(
+        &mut self,
+        _restored: &crate::QemuHotForkConsoleRestore,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "attach child console restore",
+            "this channel has no installed native console continuation",
         ))
     }
 
@@ -251,6 +303,24 @@ pub trait QemuShmemHotPathChannel: Send {
         &mut self,
         command: SchedulerPreemptionCommand,
     ) -> Result<(), QemuNodeChannelError>;
+
+    /// Reports whether a published preemption still awaits plugin admission.
+    ///
+    /// The plugin acknowledges a command only after patched QEMU accepted
+    /// its injection, so `false` after publication means QEMU owns the
+    /// command. A channel without a readable mailbox refuses rather than
+    /// report an admission it cannot observe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the node slot cannot be read or
+    /// the channel has no preemption mailbox.
+    fn preemption_command_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "preemption_command_pending",
+            "channel cannot observe the preemption mailbox",
+        ))
+    }
 
     /// Publishes one authenticated fault command at a scheduler boundary.
     ///
@@ -463,6 +533,8 @@ pub trait QemuShmemHotPathChannel: Send {
 pub struct QemuNodePendingQuantum {
     token: Box<dyn Any>,
     completion_fence: Option<QemuAdvanceCompletionFence>,
+    initial_state: Option<QemuNodeIdleState>,
+    pub(crate) completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
 }
 
 impl QemuNodePendingQuantum {
@@ -473,8 +545,10 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: None,
+            initial_state: None,
         }
     }
 
@@ -485,8 +559,10 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: Some(fence),
+            initial_state: None,
         }
     }
 
@@ -494,6 +570,21 @@ impl QemuNodePendingQuantum {
     #[must_use]
     pub const fn completion_fence(&self) -> Option<QemuAdvanceCompletionFence> {
         self.completion_fence
+    }
+
+    /// Returns the coherent node state acquired before scheduler publication.
+    ///
+    /// `Some` retains the live channel's original observation, including an
+    /// observed absence of an idle deadline. `None` means this token's provider
+    /// supplied no start observation; it does not describe a live node state.
+    #[must_use]
+    pub const fn initial_state(&self) -> Option<QemuNodeIdleState> {
+        self.initial_state
+    }
+
+    pub(crate) const fn with_initial_state(mut self, state: QemuNodeIdleState) -> Self {
+        self.initial_state = Some(state);
+        self
     }
 
     /// Recovers the concrete token expected by the finishing channel.
@@ -517,6 +608,18 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    /// Reads the fixed fixture sentinel through this node's existing QMP client.
+    #[cfg(test)]
+    fn read_console_sentinel_for_test(
+        &mut self,
+        _output: &crate::spawn::ConsoleSentinelOutput,
+    ) -> Result<u8, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "read console fixture sentinel",
+            "the retained channel has no real QMP memory observer",
+        ))
+    }
+
     /// Reports whether QEMU is already stopped for template preparation.
     ///
     /// A paused runstate is only a scheduling fact. The native template
@@ -1028,44 +1131,6 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn query_hot_fork_child_qmp(
         &mut self,
     ) -> Result<crate::QmpHotForkChildQmpState, QemuNodeChannelError>;
-
-    /// Imports one branch-private child console stream into QEMU.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when this channel cannot transfer Unix
-    /// descriptors or QEMU cannot authenticate the exact console and template.
-    #[cfg(target_os = "linux")]
-    fn install_hot_fork_child_console(
-        &mut self,
-        _name: &crate::QmpDescriptorName,
-        _descriptor: BorrowedFd<'_>,
-        _socket_cookie: u64,
-        _template_generation: u64,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError>;
-
-    /// Closes the exact child console retained by QEMU and monitor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when either ownership layer cannot be
-    /// released in exact order.
-    #[cfg(target_os = "linux")]
-    fn close_hot_fork_child_console(
-        &mut self,
-        _name: &crate::QmpDescriptorName,
-        _socket_cookie: u64,
-    ) -> Result<(), QemuNodeChannelError>;
-
-    /// Queries QEMU's exact retained child-console state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeChannelError`] when the query or strict response
-    /// validation fails.
-    fn query_hot_fork_child_console(
-        &mut self,
-    ) -> Result<crate::QmpHotForkChildConsoleState, QemuNodeChannelError>;
 
     /// Completes an authenticated terminal lifecycle transition without
     /// expecting QEMU to resume guest execution.

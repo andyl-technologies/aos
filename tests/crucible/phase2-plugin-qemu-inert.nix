@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuPluginQemuInert",
   taskIds ? ["T-PLUG-23"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginInertness = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/inertness.rs;
@@ -171,100 +170,28 @@ in
   if failures != []
   then throw "crucible phase2 plugin qemu-inert check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-qemu-inert";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
-        pkgs.sqlite
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-qemu-inert";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            target_dir="$TMPDIR/crucible-plugin-qemu-inert-target"
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               inertness::tests::plugin_sim_off_observation_has_no_load_or_effects \
-              inertness::tests::plugin_sim_off_observation_has_no_load_or_effects
-            run_exact_test \
               inertness::tests::plugin_sim_off_rejects_every_load_or_effect_vector \
-              inertness::tests::plugin_sim_off_rejects_every_load_or_effect_vector
-            run_exact_test \
               inertness::tests::plugin_sim_on_observation_records_loaded_plugin_effects \
-              inertness::tests::plugin_sim_on_observation_records_loaded_plugin_effects
-            run_exact_test \
-              gate_qemu_inert_plugin_half_is_backed_by_phase_check \
               gate_qemu_inert_plugin_half_is_backed_by_phase_check
           '';
         }

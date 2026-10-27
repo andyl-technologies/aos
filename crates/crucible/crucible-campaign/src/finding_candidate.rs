@@ -463,8 +463,10 @@ impl FindingCandidateBundle {
             signature_minimization,
             exact_pins,
         } = core;
-        if reproduction.content_id().schema_version() != 2
-            || minimized.content_id().schema_version() != 2
+        if reproduction.content_id().schema_version()
+            != crate::reproduction::REPRODUCTION_SCHEMA_VERSION
+            || minimized.content_id().schema_version()
+                != crate::reproduction::REPRODUCTION_SCHEMA_VERSION
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "finding candidate reproduction versions are invalid",
@@ -806,17 +808,17 @@ mod tests {
     fn bundle_round_trip_preserves_an_acyclic_child_graph() -> Result<(), CampaignCodecError> {
         let observation = ObservationId::from_content_id(ContentId::for_bytes(
             ObjectKind::Observation,
-            14,
+            16,
             b"finding-candidate-observation",
         ))?;
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"finding-candidate-original",
         ))?;
         let minimized = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"finding-candidate-minimized",
         ))?;
         let signature = FindingSignature::new(
@@ -829,7 +831,7 @@ mod tests {
         )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"finding-candidate-final-state"),
@@ -867,7 +869,7 @@ mod tests {
         let triage_id = |label: &[u8]| {
             FindingTriageReplayEvidenceId::from_content_id(ContentId::for_bytes(
                 ObjectKind::Finding,
-                2,
+                3,
                 label,
             ))
         };
@@ -903,7 +905,7 @@ mod tests {
         let capture_id = |label: &[u8]| {
             FindingReplayCaptureEvidenceId::from_manifest_content_id(ContentId::for_bytes(
                 ObjectKind::ExactManifest,
-                1,
+                6,
                 label,
             ))
         };
@@ -991,7 +993,7 @@ mod tests {
     -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"signature-evidence-original",
         ))?;
         let fingerprint = CampaignHash::derive("test", b"shared-fingerprint");
@@ -1014,7 +1016,7 @@ mod tests {
         let final_state = CampaignHash::derive("test", b"signature-evidence-final-state");
         let rejected_minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1035,7 +1037,7 @@ mod tests {
         )?;
         let selected_minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,
@@ -1064,7 +1066,7 @@ mod tests {
     {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"verification-mismatch-original",
         ))?;
         let signature = FindingSignature::new(
@@ -1077,7 +1079,7 @@ mod tests {
         )?;
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             Vec::new(),
             CampaignHash::derive("test", b"verification-mismatch-final-state"),
@@ -1100,7 +1102,7 @@ mod tests {
     -> Result<(), CampaignCodecError> {
         let original = ReproductionArtifactId::from_content_id(ContentId::for_bytes(
             ObjectKind::Finding,
-            2,
+            3,
             b"shrinking-winner-original",
         ))?;
         let original_configuration = crate::ConfigurationArtifactId::from_content_id(
@@ -1142,7 +1144,7 @@ mod tests {
         let final_state = CampaignHash::derive("test", b"shrinking-winner-final-state");
         let minimization = FindingMinimizationEvidence::new(
             original,
-            3,
+            4,
             b"test-policy".to_vec(),
             vec![FindingMinimizationAttempt::new(
                 0,

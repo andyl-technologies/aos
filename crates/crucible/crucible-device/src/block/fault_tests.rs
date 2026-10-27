@@ -15,8 +15,12 @@ mod payload;
 mod pipeline;
 #[path = "fault_tests/retained.rs"]
 mod retained;
+#[path = "fault_tests/retirement.rs"]
+mod retirement;
 #[path = "fault_tests/transport.rs"]
 mod transport;
+#[path = "fault_tests/transport_floor.rs"]
+mod transport_floor;
 
 fn state(durability: BlockCompletionDurability) -> BlockFaultState {
     BlockFaultState::new(BlockDurabilityConfig {

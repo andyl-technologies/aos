@@ -1,8 +1,9 @@
 //! Bounded live drainage by the exact retained child diagnostics consumer.
 //!
-//! One turn reads at most eight 8192-byte chunks without blocking. A failed
-//! live read remains sticky: teardown cannot attest a complete capture after
-//! bytes might have been lost. Ordinary full teardown drainage is unchanged.
+//! One turn reads at most eight 8192-byte chunks without blocking, bounding the
+//! work per execution quantum rather than the stream length. A failed live read
+//! remains sticky: teardown cannot attest a complete capture after bytes might
+//! have been lost. Ordinary full teardown drainage is unchanged.
 
 use super::*;
 
@@ -11,17 +12,17 @@ const READ_BYTES: usize = 8192;
 const MAXIMUM_ERROR_CHARS: usize = 256;
 
 impl QemuHotForkChildDiagnosticConsumer {
-    /// Retains at most 64 KiB in eight nonblocking reads during execution.
+    /// Drains at most 64 KiB in eight nonblocking reads during execution.
     ///
-    /// Every byte remains in this consumer's original 16 MiB cumulative
-    /// capture. The first live-drain failure is retained, prevents later reads,
-    /// and refuses complete capture during ordered release. No retry can hide
-    /// a consumed byte that exceeded the capture limit.
+    /// Every byte joins the same counted, folded, tail-bounded retention as a
+    /// full drain. The first live-drain failure is retained, prevents later
+    /// reads, and refuses complete capture during ordered release, so no retry
+    /// can hide a byte that a failed read may have consumed.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeChannelError`] after stream failure, cumulative capture
-    /// exhaustion, a prior live-drain failure, or ordered capture consumption.
+    /// Returns [`QemuNodeChannelError`] after stream failure, a prior
+    /// live-drain failure, or ordered capture consumption.
     pub fn drain_available_bounded(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticDrain, QemuNodeChannelError> {
@@ -71,7 +72,7 @@ impl QemuHotForkChildDiagnosticConsumer {
     fn drain_bounded_inner(
         &mut self,
     ) -> Result<QemuHotForkChildDiagnosticDrain, QemuHotForkChildDiagnosticConsumeError> {
-        let before = self.retained.len();
+        let mut bytes_read = 0_usize;
         let mut buffer = [0_u8; READ_BYTES];
         for _ in 0..MAXIMUM_READ_ATTEMPTS {
             if self.eof {
@@ -80,19 +81,8 @@ impl QemuHotForkChildDiagnosticConsumer {
             match self.host.read(&mut buffer) {
                 Ok(0) => self.eof = true,
                 Ok(count) => {
-                    let attempted = self.retained.len().checked_add(count).ok_or(
-                        QemuHotForkChildDiagnosticConsumeError::Capacity {
-                            attempted: usize::MAX,
-                            limit: MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES,
-                        },
-                    )?;
-                    if attempted > MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES {
-                        return Err(QemuHotForkChildDiagnosticConsumeError::Capacity {
-                            attempted,
-                            limit: MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES,
-                        });
-                    }
-                    self.retained.extend_from_slice(&buffer[..count]);
+                    self.retention.ingest(&buffer[..count]);
+                    bytes_read = bytes_read.saturating_add(count);
                 }
                 Err(source) if source.kind() == io::ErrorKind::WouldBlock => break,
                 // Interrupted is an original read failure, not an unbounded retry.
@@ -101,11 +91,7 @@ impl QemuHotForkChildDiagnosticConsumer {
                 }
             }
         }
-        Ok(QemuHotForkChildDiagnosticDrain {
-            bytes_read: self.retained.len() - before,
-            total_retained: self.retained.len(),
-            eof: self.eof,
-        })
+        Ok(self.drain_result(bytes_read))
     }
 }
 

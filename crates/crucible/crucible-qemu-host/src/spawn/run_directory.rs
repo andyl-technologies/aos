@@ -1,6 +1,5 @@
 //! Pinned authority over one prepared QEMU run directory and its launch artifacts.
 
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::fd::{AsFd, OwnedFd};
@@ -14,23 +13,22 @@ use super::materialization::{
     PreparedDeviceStateMaterialization, PreparedExactCheckpointMaterialization,
     PreparedRootOverlayMaterialization,
 };
+use super::rr_trace_window::RrTraceWindow;
 use super::{
     AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract,
     QemuGuardedExactRamInput, QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
     validate_guarded_launch_resources,
 };
 use crate::QemuLaunchCommand;
-use crate::launch::{
-    MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES, MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
-    MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES, MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-};
+
+#[cfg(test)]
+mod console_sentinel;
+#[cfg(test)]
+pub(crate) use console_sentinel::ConsoleSentinelOutput;
 
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES: u64 = 60 * 1024;
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES: usize = 512;
-const MAXIMUM_RR_STREAM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
-const MAXIMUM_RR_STREAM_TRACE_LINES: usize = 500_000;
 const MAXIMUM_RR_STREAM_ROW_BYTES: u64 = 512;
-const RETAINED_RR_STREAM_TAIL_ROWS: usize = 32;
 
 /// Pinned authority over one pre-provisioned QEMU run directory.
 ///
@@ -289,6 +287,39 @@ impl QemuPreparedRunDirectory {
         )
     }
 
+    /// Creates the private page store for this generation's block overlay.
+    ///
+    /// The store is an unnamed (`O_TMPFILE`) file inside the pinned run
+    /// directory, so its blocks are charged to the attempt's storage quota and
+    /// are freed when the last handle closes, including on abnormal exit. It
+    /// has no name for the QEMU child or any other process to open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError::Io`] when the directory identity changed or
+    /// the filesystem cannot create an unnamed file.
+    pub fn create_block_page_store(
+        &self,
+    ) -> Result<crucible_device::BlockPageStore, QemuSpawnError> {
+        self.revalidate_identity()?;
+        let file = openat(
+            &self.directory,
+            ".",
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "create unnamed block page store",
+            source: source.into(),
+        })?;
+        crucible_device::BlockPageStore::from_unnamed_file(File::from(file)).map_err(|source| {
+            QemuSpawnError::Io {
+                operation: "adopt unnamed block page store",
+                source,
+            }
+        })
+    }
+
     fn prepare_diagnostic_trace(
         &self,
         file_name: &'static str,
@@ -335,33 +366,49 @@ impl QemuPreparedRunDirectory {
         Ok(())
     }
 
-    /// Retains the bounded RR control-boundary trace after QEMU has been reaped.
+    /// Inspects the authenticated RR control-boundary trace with bounded reader memory.
     ///
     /// The read is descriptor-relative and refuses symlinks, non-regular files,
     /// extra links, substituted inodes, unexpected ownership or permissions,
-    /// and files outside the fixed byte and line ceilings. Its bytes also count
-    /// toward the attempt's aggregate writable-file admission.
+    /// files larger than `maximum_bytes`, and files outside the attempt's
+    /// aggregate writable-file admission. The callback must consume the entire
+    /// pinned file; the named inode and size are rechecked after it returns, so
+    /// a replaced or extended trace cannot become accepted evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError`] when the trace is absent, malformed, changed
-    /// during retention, or exceeds its fixed or aggregate storage ceiling.
-    pub fn retain_rr_control_boundary_trace_after_reap(&self) -> Result<String, QemuSpawnError> {
-        self.retain_diagnostic_trace_after_reap(
+    /// Returns the callback's error or a [`QemuSpawnError`] converted into
+    /// `E` when the trace is absent, exceeds its admitted limit, is not fully
+    /// consumed, or changes identity during inspection.
+    pub fn inspect_rr_control_boundary_trace_after_reap<T, E>(
+        &self,
+        maximum_bytes: u64,
+        inspect: impl FnOnce(&mut dyn BufRead) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<QemuSpawnError>,
+    {
+        self.inspect_diagnostic_trace_after_reap(
             crate::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
             &self.rr_control_boundary_trace_identity,
-            MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES,
-            MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
+            maximum_bytes,
+            inspect,
         )
     }
 
-    /// Authenticates a large RR trace while retaining only its final rows.
+    /// Authenticates an RR trace of any admitted length while retaining a bounded window.
     ///
-    /// The diagnostic keeps the original whole-file reader's 4 MiB limit
-    /// unchanged. This separate bounded pass verifies every row and hashes the
-    /// pinned file before rechecking its named inode and size after QEMU reap.
+    /// This single bounded-memory pass verifies every row and hashes the pinned
+    /// file before rechecking its named inode and size after QEMU reap. The
+    /// retained window starts at the last `phase=ack` boundary row, or at the
+    /// first row when none was acknowledged, and always includes at least the
+    /// final 32 rows. It keeps at most the first 256 window rows and the final
+    /// 256 rows, reporting any elided middle in the header. Reader memory is
+    /// therefore one 512-byte row plus at most 512 retained rows, so the trace
+    /// length is limited only by the attempt's aggregate writable-file
+    /// admission, which also bounds how much QEMU could have written.
     /// Advisory delivery rows use a separate schema validator and share the
-    /// existing final 32-row, 512-byte-per-row tail; they are never receipts.
+    /// same window; they are never receipts.
     ///
     /// # Errors
     ///
@@ -372,12 +419,11 @@ impl QemuPreparedRunDirectory {
         let authenticated = self.open_authenticated_diagnostic_trace_after_reap(
             file_name,
             &self.rr_control_boundary_trace_identity,
-            Some(MAXIMUM_RR_STREAM_TRACE_BYTES),
+            None,
         )?;
         let mut reader = BufReader::new(File::from(authenticated.descriptor));
         let mut digest = Sha256::new();
-        let mut tail = VecDeque::with_capacity(RETAINED_RR_STREAM_TAIL_ROWS);
-        let mut row_count = 0usize;
+        let mut window = RrTraceWindow::default();
 
         loop {
             let mut bytes = Vec::new();
@@ -394,7 +440,7 @@ impl QemuPreparedRunDirectory {
             if bytes.last() != Some(&b'\n') || length as u64 > MAXIMUM_RR_STREAM_ROW_BYTES {
                 return Err(QemuSpawnError::DiagnosticTraceMalformed {
                     file: file_name,
-                    line: row_count + 1,
+                    line: window.rows() + 1,
                     reason: "row exceeds 512 bytes or lacks a final newline",
                 });
             }
@@ -411,31 +457,15 @@ impl QemuPreparedRunDirectory {
             {
                 return Err(QemuSpawnError::DiagnosticTraceMalformed {
                     file: file_name,
-                    line: row_count + 1,
+                    line: window.rows() + 1,
                     reason: "row does not match the RR control-boundary trace schema",
                 });
             }
 
-            row_count += 1;
-            if row_count > MAXIMUM_RR_STREAM_TRACE_LINES {
-                return Err(QemuSpawnError::DiagnosticTraceLines {
-                    file: file_name,
-                    actual: row_count,
-                    maximum: MAXIMUM_RR_STREAM_TRACE_LINES,
-                });
-            }
-            if tail.len() == RETAINED_RR_STREAM_TAIL_ROWS {
-                tail.pop_front();
-            }
-            tail.push_back(row.to_owned());
+            window.push(row);
         }
-        if row_count == 0 {
-            return Err(QemuSpawnError::DiagnosticTraceLines {
-                file: file_name,
-                actual: 0,
-                maximum: MAXIMUM_RR_STREAM_TRACE_LINES,
-            });
-        }
+        // Authentication refuses an empty file and every non-empty row either
+        // fails or counts, so at least one row was retained here.
 
         let consumed = reader
             .stream_position()
@@ -453,34 +483,32 @@ impl QemuPreparedRunDirectory {
             authenticated.credentials,
         )?;
 
-        let retained_rows = tail.len();
+        let row_count = window.rows();
+        let retained = window.finish();
+        let retained_rows = retained.rows.len();
+        let anchor = if retained.acknowledged {
+            "ack"
+        } else {
+            "start"
+        };
+        let elided_after = retained
+            .elided_after_row
+            .map(|row| format!(" elided_after_row={row}"))
+            .unwrap_or_default();
         Ok(format!(
-            "bytes={} sha256={:x} rows={} tail_rows={} omitted_rows={}\n{}",
+            "bytes={} sha256={:x} rows={} tail_rows={} omitted_rows={} window_anchor={} \
+             window_start_row={} elided_rows={}{}\n{}",
             authenticated.bytes,
             digest.finalize(),
             row_count,
             retained_rows,
             row_count - retained_rows,
-            tail.into_iter().collect::<Vec<_>>().join("\n")
+            anchor,
+            retained.start_row,
+            retained.elided_rows,
+            elided_after,
+            retained.rows.join("\n")
         ))
-    }
-
-    /// Retains the bounded runtime-determinism trace after QEMU has been reaped.
-    ///
-    /// This applies the same descriptor-relative identity, metadata, bounded
-    /// read, and aggregate-admission checks as the RR trace reader, with the
-    /// larger fixed byte and line ceilings needed by the two-row runtime schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuSpawnError`] when the fixed trace cannot be authenticated.
-    pub fn retain_runtime_determinism_trace_after_reap(&self) -> Result<String, QemuSpawnError> {
-        self.retain_diagnostic_trace_after_reap(
-            crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-            &self.runtime_determinism_trace_identity,
-            MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
-            MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-        )
     }
 
     /// Inspects an authenticated runtime trace with bounded reader memory.
@@ -503,40 +531,17 @@ impl QemuPreparedRunDirectory {
     where
         E: From<QemuSpawnError>,
     {
-        let authenticated = self
-            .open_authenticated_diagnostic_trace_after_reap(
-                crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-                &self.runtime_determinism_trace_identity,
-                Some(maximum_bytes),
-            )
-            .map_err(E::from)?;
-        let mut reader = BufReader::new(File::from(authenticated.descriptor));
-        let value = inspect(&mut reader)?;
-        let consumed = reader.stream_position().map_err(|source| {
-            E::from(QemuSpawnError::Io {
-                operation: "inspect consumed runtime trace length",
-                source,
-            })
-        })?;
-        if consumed != authenticated.bytes {
-            return Err(E::from(QemuSpawnError::DiagnosticTraceChanged {
-                file: crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-            }));
-        }
-
-        self.revalidate_authenticated_diagnostic_trace_after_read(
+        self.inspect_diagnostic_trace_after_reap(
             crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
-            authenticated.identity,
-            authenticated.metadata.st_size,
-            authenticated.credentials,
+            &self.runtime_determinism_trace_identity,
+            maximum_bytes,
+            inspect,
         )
-        .map_err(E::from)?;
-        Ok(value)
     }
 
     /// Retains the authenticated tail of an oversized QMP monitor trace.
     ///
-    /// Unlike [`Self::retain_runtime_determinism_trace_after_reap`], this
+    /// Unlike [`Self::inspect_runtime_determinism_trace_after_reap`], this
     /// diagnostic reads only the final fixed byte window and then retains at
     /// most the final 512 rows. The returned text begins with the
     /// original file size and whether earlier bytes were omitted. The complete
@@ -615,50 +620,46 @@ impl QemuPreparedRunDirectory {
         ))
     }
 
-    fn retain_diagnostic_trace_after_reap(
+    /// Lends one authenticated fixed trace to a whole-file streaming callback.
+    fn inspect_diagnostic_trace_after_reap<T, E>(
         &self,
         file_name: &'static str,
         trace_identity: &OnceLock<PinnedFileIdentity>,
         maximum_bytes: u64,
-        maximum_lines: usize,
-    ) -> Result<String, QemuSpawnError> {
-        let authenticated = self.open_authenticated_diagnostic_trace_after_reap(
-            file_name,
-            trace_identity,
-            Some(maximum_bytes),
-        )?;
+        inspect: impl FnOnce(&mut dyn BufRead) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<QemuSpawnError>,
+    {
+        let authenticated = self
+            .open_authenticated_diagnostic_trace_after_reap(
+                file_name,
+                trace_identity,
+                Some(maximum_bytes),
+            )
+            .map_err(E::from)?;
+        let mut reader = BufReader::new(File::from(authenticated.descriptor));
+        let value = inspect(&mut reader)?;
 
-        let mut bytes = Vec::new();
-        File::from(authenticated.descriptor)
-            .take(maximum_bytes + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|source| QemuSpawnError::Io {
-                operation: "read retained diagnostic trace",
+        let consumed = reader.stream_position().map_err(|source| {
+            E::from(QemuSpawnError::Io {
+                operation: "inspect consumed diagnostic trace length",
                 source,
-            })?;
-        if u64::try_from(bytes.len()) != Ok(authenticated.bytes) {
-            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
-        }
-        let lines = bytes.iter().filter(|byte| **byte == b'\n').count();
-        if lines == 0 || lines > maximum_lines {
-            return Err(QemuSpawnError::DiagnosticTraceLines {
+            })
+        })?;
+        if consumed != authenticated.bytes {
+            return Err(E::from(QemuSpawnError::DiagnosticTraceChanged {
                 file: file_name,
-                actual: lines,
-                maximum: maximum_lines,
-            });
+            }));
         }
-
         self.revalidate_authenticated_diagnostic_trace_after_read(
             file_name,
             authenticated.identity,
             authenticated.metadata.st_size,
             authenticated.credentials,
-        )?;
-
-        String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
-            file: file_name,
-            source,
-        })
+        )
+        .map_err(E::from)?;
+        Ok(value)
     }
 
     fn open_authenticated_diagnostic_trace_after_reap(

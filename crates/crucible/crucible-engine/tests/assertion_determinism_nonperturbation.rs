@@ -5,12 +5,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, GuestAssertionDetail,
-    GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator, HostAssertionPredicate,
-    Icount, LintedHostAssertionOracle, NodeId, NodeTemplate, ObservableEvent, ObservedState,
-    OfflineAssertionChecker, Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, lint_host_assertion_harness_source,
+    AssertionDef, AssertionId, AssertionRunVerdict, GuestAssertionDetail, GuestAssertionKind,
+    GuestAssertionMarker, HostAssertionEvaluator, HostAssertionPredicate, Icount,
+    LintedHostAssertionOracle, NamedLeaf, NamedPredicateError, NodeId, NodeTemplate,
+    ObservableEvent, ObservedBatch, OfflineAssertionChecker, Predicate, Properties, Property,
+    ReadyPoint, RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    lint_host_assertion_harness_source,
 };
 
 #[cfg(feature = "test-double")]
@@ -20,14 +21,22 @@ use crucible_engine::{AdvanceOutcome, Backend, BackendInput, ExecutionHorizon, S
 struct DeterministicOracle;
 
 impl HostAssertionPredicate for DeterministicOracle {
-    fn leaf_is_true(&self, _observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                assert!(nodes.is_empty());
-                matches!(name, "host-always" | "host-hit")
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        }
+    type State = ();
+
+    fn initial(&self, _leaf: NamedLeaf<'_>) {}
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        _state: &(),
+        _batch: &ObservedBatch<'_>,
+    ) -> Result<(), NamedPredicateError> {
+        Ok(())
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, _state: &()) -> bool {
+        assert!(leaf.nodes().is_empty());
+        matches!(leaf.name(), "host-always" | "host-hit")
     }
 }
 
@@ -287,15 +296,15 @@ fn host_assertion_harness_lint_rejects_banned_predicate_operations() {
 }
 
 #[test]
-fn host_assertion_harness_lint_accepts_observed_state_only_predicates() {
+fn host_assertion_harness_lint_accepts_pure_accumulator_predicates() {
     let source = r#"
-        fn predicate(state: ObservedState<'_>) -> bool {
-            state.observable_events().iter().any(|event| event.at().ticks == state.at().ticks)
+        fn step(saw: &bool, batch: &ObservedBatch<'_>) -> Result<bool, NamedPredicateError> {
+            Ok(*saw || batch.observable_events().iter().any(|event| event.at() == batch.at()))
         }
     "#;
 
     lint_host_assertion_harness_source(source)
-        .expect("observed-state-only predicate source should pass host assertion lint");
+        .expect("pure accumulator predicate source should pass host assertion lint");
 }
 
 #[test]

@@ -26,7 +26,7 @@ const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
 const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
-    "application/vnd.crucible.campaign-replay-closure.v1+binary";
+    "application/vnd.crucible.campaign-replay-closure.v2+binary";
 const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.live-qemu-replay-contract.v5+text";
 
@@ -690,6 +690,7 @@ fn require_embedded_component(
 
 fn command() -> Command {
     let binary = std::env::var_os("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_crucible"))
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_crucible").into());
     Command::new(binary)
 }

@@ -2,7 +2,7 @@
 
 use std::env;
 use std::error::Error;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -12,11 +12,6 @@ use std::time::{Duration, Instant};
 
 use crucible_engine::ContentHash;
 use sha2::Digest as _;
-
-use crate::launch::{
-    MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES, MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
-    MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES, MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-};
 
 use super::*;
 
@@ -30,11 +25,14 @@ const PINNED_BLOCK_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_BLOCK_PROBE";
 const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
 const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
 const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
+const THREAD_EXIT_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_THREAD_EXIT_CHILD_PROBE";
 const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE";
 const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
 const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
+const TIME_OWNERSHIP_EXPECTED: &str = "CRUCIBLE_QEMU_TIME_OWNERSHIP_EXPECTED";
 const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
 const DESCENDANT_SUPERVISOR_ENV: &str = "CRUCIBLE_QEMU_DESCENDANT_SUPERVISOR";
+const SMALL_PROCESS_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SMALL_PROCESS_PROBE";
 const GUARDED_PROBE_CHILD_MARKER: &str = "guarded-probe-child";
 const GUARDED_PROBE_DESCENDANT_PID: &str = "guarded-probe-descendant.pid";
 static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
@@ -73,73 +71,252 @@ impl TraceRetentionFixture {
     }
 }
 
-fn write_sparse_trace(path: &std::path::Path, bytes: u64) -> Result<(), Box<dyn Error>> {
-    let mut trace = std::fs::OpenOptions::new().write(true).open(path)?;
-    trace.set_len(bytes)?;
-    trace.seek(SeekFrom::Start(bytes - 1))?;
-    trace.write_all(b"\n")?;
+#[test]
+fn console_sentinel_reads_only_the_pinned_child_owned_inode() -> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    assert_eq!(output.filename(), "console-sentinel.bin");
+    let path = fixture.directory.path().join(output.filename());
+    let metadata = std::fs::metadata(&path)?;
+    use std::os::unix::fs::MetadataExt as _;
+    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(metadata.gid(), rustix::process::getegid().as_raw());
+    assert_eq!(metadata.mode() & 0o7777, 0o600);
+    assert_eq!(metadata.nlink(), 1);
+    assert!(output.read_byte().is_err());
+
+    std::fs::write(&path, [0])?;
+    assert_eq!(output.read_byte()?, 0);
+    let moved = fixture.directory.path().with_extension("moved");
+    std::fs::rename(fixture.directory.path(), &moved)?;
+    let result = output.read_byte();
+    std::fs::rename(&moved, fixture.directory.path())?;
+    assert_eq!(result?, 0);
     Ok(())
 }
 
 #[test]
-fn retained_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(), Box<dyn Error>> {
+fn console_sentinel_refuses_duplicate_allocation_and_substitution() -> Result<(), Box<dyn Error>> {
+    let mut missing = TraceRetentionFixture::new()?;
+    missing.prepared.child_credentials = None;
+    assert!(
+        missing
+            .prepared
+            .prepare_console_sentinel_for_test()
+            .is_err()
+    );
+    assert!(
+        !missing
+            .directory
+            .path()
+            .join("console-sentinel.bin")
+            .exists()
+    );
+
     let fixture = TraceRetentionFixture::new()?;
-    fixture.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(fixture.trace_path(), b"phase=request request=1\n")?;
-    assert_eq!(
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    let path = fixture.directory.path().join(output.filename());
+    std::fs::write(&path, [0])?;
+    assert!(
         fixture
             .prepared
-            .retain_rr_control_boundary_trace_after_reap()?,
-        "phase=request request=1\n"
+            .prepare_console_sentinel_for_test()
+            .is_err()
+    );
+    assert_eq!(output.read_byte()?, 0);
+
+    std::fs::remove_file(&path)?;
+    std::fs::write(&path, [0])?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+    std::fs::remove_file(&path)?;
+    symlink(
+        fixture
+            .directory
+            .path()
+            .join(crate::DEFAULT_VMSTATE_FILE_NAME),
+        &path,
+    )?;
+    assert!(output.read_byte().is_err());
+    Ok(())
+}
+
+#[test]
+fn console_sentinel_refuses_extra_bytes_links_and_permissions() -> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    let output = fixture.prepared.prepare_console_sentinel_for_test()?;
+    let path = fixture.directory.path().join(output.filename());
+    std::fs::write(&path, [0, 1])?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+
+    std::fs::write(&path, [0])?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { .. })
+    ));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let linked = fixture.directory.path().join("sample-link");
+    std::fs::hard_link(&path, &linked)?;
+    assert!(matches!(
+        output.read_byte(),
+        Err(QemuSpawnError::DiagnosticTraceMetadata { .. })
+    ));
+    std::fs::remove_file(linked)?;
+    assert_eq!(output.read_byte()?, 0);
+    Ok(())
+}
+
+const RR_TRACE_ROW: &str =
+    "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
+
+/// Reads a whole authenticated trace inside an inspection callback.
+fn read_inspected_trace(reader: &mut dyn io::BufRead) -> Result<String, QemuSpawnError> {
+    let mut trace = String::new();
+    reader
+        .read_to_string(&mut trace)
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "read inspected test trace",
+            source,
+        })?;
+    Ok(trace)
+}
+
+#[test]
+fn inspected_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(), Box<dyn Error>>
+{
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(fixture.trace_path(), RR_TRACE_ROW)?;
+    let inspected = fixture
+        .prepared
+        .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace)?;
+    assert_eq!(inspected, RR_TRACE_ROW);
+    assert_eq!(
+        crate::parse_qemu_rr_control_boundary_trace(&inspected)?.len(),
+        1
     );
 
     std::fs::remove_file(fixture.trace_path())?;
-    std::fs::write(fixture.trace_path(), b"phase=request request=2\n")?;
+    std::fs::write(fixture.trace_path(), RR_TRACE_ROW)?;
     std::fs::set_permissions(fixture.trace_path(), std::fs::Permissions::from_mode(0o600))?;
     assert!(matches!(
         fixture
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
     Ok(())
 }
 
 #[test]
-fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
+fn streamed_control_boundary_trace_hashes_all_rows_and_retains_a_bounded_window()
 -> Result<(), Box<dyn Error>> {
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_rr_control_boundary_trace()?;
     let row = "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
     let trace = row.repeat(50_000);
     std::fs::write(fixture.trace_path(), &trace)?;
-    assert!(u64::try_from(trace.len())? > MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
 
-    assert!(matches!(
-        fixture
-            .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
     let summary = fixture
         .prepared
         .summarize_rr_control_boundary_trace_after_reap()?;
     let (header, tail) = summary.split_once('\n').ok_or("missing RR summary tail")?;
+
+    // Without an acknowledgement the window starts at the first row: its
+    // first 256 rows and the final 256 rows bound the retained text.
     let digest = sha2::Sha256::digest(trace.as_bytes());
     assert_eq!(
         header,
         format!(
-            "bytes={} sha256={digest:x} rows=50000 tail_rows=32 omitted_rows=49968",
+            "bytes={} sha256={digest:x} rows=50000 tail_rows=512 omitted_rows=49488 \
+             window_anchor=start window_start_row=1 elided_rows=49488 elided_after_row=256",
             trace.len()
         )
     );
-    assert_eq!(tail.lines().count(), 32);
+    assert_eq!(tail.lines().count(), 512);
     assert!(tail.lines().all(|retained| retained == row.trim_end()));
     Ok(())
 }
 
 #[test]
-fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
+fn streamed_control_boundary_trace_retains_rows_since_the_last_acknowledgement()
+-> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let request = "crucible_sim_rr_control_boundary phase=request request=7 ack=6 complete=6 token=0x0 state=5\n";
+    let ack =
+        "crucible_sim_rr_control_boundary phase=ack request=7 ack=7 complete=6 token=0x7 state=5\n";
+    let next = "crucible_sim_rr_control_boundary phase=request request=8 ack=7 complete=7 token=0x0 state=6\n";
+    let drain = "crucible_sim_rr_control_boundary phase=wake-drain request=8 ack=7 complete=7 token=0x0 state=6\n";
+    let trace = format!("{}{ack}{next}{}", request.repeat(100), drain.repeat(200));
+    std::fs::write(fixture.trace_path(), &trace)?;
+
+    let summary = fixture
+        .prepared
+        .summarize_rr_control_boundary_trace_after_reap()?;
+    let mut lines = summary.lines();
+    let header = lines.next().ok_or("missing RR summary header")?;
+
+    // The unacknowledged request stays visible far beyond the final 32 rows.
+    assert!(header.ends_with(
+        "rows=302 tail_rows=202 omitted_rows=100 window_anchor=ack \
+         window_start_row=101 elided_rows=0"
+    ));
+    assert_eq!(lines.next(), Some(ack.trim_end()));
+    assert_eq!(lines.next(), Some(next.trim_end()));
+    assert_eq!(lines.filter(|row| *row == drain.trim_end()).count(), 200);
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_is_limited_only_by_aggregate_admission()
+-> Result<(), Box<dyn Error>> {
+    // The streamed reader once refused traces above 32 MiB or 500,000 rows even
+    // though it keeps only a fixed tail. Exceed both former limits.
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let rows = 500_001_usize;
+    let mut writer = io::BufWriter::new(std::fs::File::create(fixture.trace_path())?);
+    for _ in 0..rows {
+        writer.write_all(RR_TRACE_ROW.as_bytes())?;
+    }
+    writer.into_inner()?.sync_all()?;
+    let trace_bytes = rows * RR_TRACE_ROW.len();
+    assert!(trace_bytes > 32 * 1024 * 1024);
+
+    let summary = fixture
+        .prepared
+        .summarize_rr_control_boundary_trace_after_reap()?;
+    let header = summary.lines().next().ok_or("missing RR summary header")?;
+    assert!(header.starts_with(&format!("bytes={trace_bytes} sha256=")));
+    assert!(header.ends_with(&format!(
+        "rows={rows} tail_rows=512 omitted_rows={omitted} window_anchor=start \
+         window_start_row=1 elided_rows={omitted} elided_after_row=256",
+        omitted = rows - 512
+    )));
+
+    let mut inadmissible = TraceRetentionFixture::new()?;
+    inadmissible.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(inadmissible.trace_path(), RR_TRACE_ROW)?;
+    inadmissible.prepared.admitted_ceiling.2 = 1;
+    assert!(matches!(
+        inadmissible
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_rejects_replacement_and_malformed_rows()
 -> Result<(), Box<dyn Error>> {
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_rr_control_boundary_trace()?;
@@ -178,16 +355,6 @@ fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
             .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
-
-    let oversized = TraceRetentionFixture::new()?;
-    oversized.prepared.prepare_rr_control_boundary_trace()?;
-    write_sparse_trace(&oversized.trace_path(), 32 * 1024 * 1024 + 1)?;
-    assert!(matches!(
-        oversized
-            .prepared
-            .summarize_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
     Ok(())
 }
 
@@ -208,7 +375,7 @@ fn streamed_control_trace_retains_delivery_only_and_mixed_late_rows() -> Result<
             .prepared
             .summarize_rr_control_boundary_trace_after_reap()?;
         assert_eq!(summary.lines().last(), Some(delivery.trim_end()));
-        assert!(summary.lines().skip(1).count() <= 32);
+        assert_eq!(summary.lines().skip(1).count(), trace.lines().count());
     }
     for trace in [
         delivery.trim_end().to_owned(),
@@ -230,17 +397,17 @@ fn streamed_control_trace_retains_delivery_only_and_mixed_late_rows() -> Result<
 }
 
 #[test]
-fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
+fn inspected_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
     let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ps=10 current_ps=10 raw=80\n";
     let fixture = TraceRetentionFixture::new()?;
     fixture.prepared.prepare_runtime_determinism_trace()?;
     std::fs::write(fixture.runtime_trace_path(), trace)?;
-    let retained = fixture
+    let inspected = fixture
         .prepared
-        .retain_runtime_determinism_trace_after_reap()?;
-    assert_eq!(retained, trace);
+        .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace)?;
+    assert_eq!(inspected, trace);
     assert_eq!(
-        crate::parse_qemu_runtime_determinism_trace(&retained)?.len(),
+        crate::parse_qemu_runtime_determinism_trace(&inspected)?.len(),
         1
     );
 
@@ -254,7 +421,7 @@ fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dy
     assert!(matches!(
         fixture
             .prepared
-            .retain_runtime_determinism_trace_after_reap(),
+            .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
     ));
     Ok(())
@@ -382,26 +549,28 @@ fn retained_runtime_liveness_tail_bounds_an_oversized_authenticated_trace()
 }
 
 #[test]
-fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state()
+fn streamed_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state()
 -> Result<(), Box<dyn Error>> {
     let unprepared = TraceRetentionFixture::new()?;
     assert!(
         unprepared
             .prepared
-            .retain_rr_control_boundary_trace_after_reap()
+            .summarize_rr_control_boundary_trace_after_reap()
             .is_err()
     );
 
     let empty = TraceRetentionFixture::new()?;
     empty.prepared.prepare_rr_control_boundary_trace()?;
     assert!(matches!(
-        empty.prepared.retain_rr_control_boundary_trace_after_reap(),
+        empty
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceLength { actual: 0, .. })
     ));
 
     let linked = TraceRetentionFixture::new()?;
     linked.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(linked.trace_path(), b"line\n")?;
+    std::fs::write(linked.trace_path(), RR_TRACE_ROW)?;
     std::fs::hard_link(
         linked.trace_path(),
         linked.directory.path().join("second-link"),
@@ -409,13 +578,13 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     assert!(matches!(
         linked
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceMetadata { links: 2, .. })
     ));
 
     let wrong_mode = TraceRetentionFixture::new()?;
     wrong_mode.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(wrong_mode.trace_path(), b"line\n")?;
+    std::fs::write(wrong_mode.trace_path(), RR_TRACE_ROW)?;
     std::fs::set_permissions(
         wrong_mode.trace_path(),
         std::fs::Permissions::from_mode(0o644),
@@ -423,7 +592,7 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     assert!(matches!(
         wrong_mode
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .summarize_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceMetadata { mode: 0o644, .. })
     ));
 
@@ -431,130 +600,40 @@ fn retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_sta
     symlinked.prepared.prepare_rr_control_boundary_trace()?;
     std::fs::remove_file(symlinked.trace_path())?;
     let target = symlinked.directory.path().join("trace-target");
-    std::fs::write(&target, b"line\n")?;
+    std::fs::write(&target, RR_TRACE_ROW)?;
     symlink(&target, symlinked.trace_path())?;
     assert!(
         symlinked
             .prepared
-            .retain_rr_control_boundary_trace_after_reap()
+            .summarize_rr_control_boundary_trace_after_reap()
             .is_err()
     );
     Ok(())
 }
 
 #[test]
-fn retained_control_boundary_trace_enforces_content_and_aggregate_bounds()
--> Result<(), Box<dyn Error>> {
+fn inspected_traces_enforce_caller_and_aggregate_bounds() -> Result<(), Box<dyn Error>> {
     let oversized = TraceRetentionFixture::new()?;
     oversized.prepared.prepare_rr_control_boundary_trace()?;
-    std::fs::write(
-        oversized.trace_path(),
-        vec![b'x'; usize::try_from(MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES)? + 1],
-    )?;
+    std::fs::write(oversized.trace_path(), RR_TRACE_ROW)?;
+    let below_trace = u64::try_from(RR_TRACE_ROW.len())? - 1;
     assert!(matches!(
         oversized
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(below_trace, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
-
-    let runtime_above_prior_limit = TraceRetentionFixture::new()?;
-    runtime_above_prior_limit
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    let runtime_bytes = MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES / 2 + 1;
-    write_sparse_trace(
-        &runtime_above_prior_limit.runtime_trace_path(),
-        runtime_bytes,
-    )?;
-    assert_eq!(
-        runtime_above_prior_limit
-            .prepared
-            .retain_runtime_determinism_trace_after_reap()?
-            .len(),
-        usize::try_from(runtime_bytes)?
-    );
-
-    let runtime_oversized = TraceRetentionFixture::new()?;
-    runtime_oversized
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    write_sparse_trace(
-        &runtime_oversized.runtime_trace_path(),
-        MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES + 1,
-    )?;
-    assert!(matches!(
-        runtime_oversized
-            .prepared
-            .retain_runtime_determinism_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLength { .. })
-    ));
-
-    let too_many_lines = TraceRetentionFixture::new()?;
-    too_many_lines
-        .prepared
-        .prepare_rr_control_boundary_trace()?;
-    std::fs::write(
-        too_many_lines.trace_path(),
-        vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1],
-    )?;
-    assert!(matches!(
-        too_many_lines
-            .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLines {
-            actual,
-            maximum: MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
-            ..
-        }) if actual == MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1
-    ));
-
-    let runtime_above_rr_line_limit = TraceRetentionFixture::new()?;
-    runtime_above_rr_line_limit
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    let runtime_lines = vec![b'\n'; MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES + 1];
-    std::fs::write(
-        runtime_above_rr_line_limit.runtime_trace_path(),
-        &runtime_lines,
-    )?;
-    assert_eq!(
-        runtime_above_rr_line_limit
-            .prepared
-            .retain_runtime_determinism_trace_after_reap()?
-            .len(),
-        runtime_lines.len()
-    );
-
-    let runtime_too_many_lines = TraceRetentionFixture::new()?;
-    runtime_too_many_lines
-        .prepared
-        .prepare_runtime_determinism_trace()?;
-    std::fs::write(
-        runtime_too_many_lines.runtime_trace_path(),
-        vec![b'\n'; MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1],
-    )?;
-    assert!(matches!(
-        runtime_too_many_lines
-            .prepared
-            .retain_runtime_determinism_trace_after_reap(),
-        Err(QemuSpawnError::DiagnosticTraceLines {
-            actual,
-            maximum: MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
-            ..
-        }) if actual == MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES + 1
     ));
 
     let mut outside_admission = TraceRetentionFixture::new()?;
     outside_admission
         .prepared
         .prepare_rr_control_boundary_trace()?;
-    std::fs::write(outside_admission.trace_path(), b"line\n")?;
+    std::fs::write(outside_admission.trace_path(), RR_TRACE_ROW)?;
     outside_admission.prepared.admitted_ceiling.2 = 1;
     assert!(matches!(
         outside_admission
             .prepared
-            .retain_rr_control_boundary_trace_after_reap(),
+            .inspect_rr_control_boundary_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
     ));
 
@@ -570,7 +649,7 @@ fn retained_control_boundary_trace_enforces_content_and_aggregate_bounds()
     assert!(matches!(
         runtime_outside_admission
             .prepared
-            .retain_runtime_determinism_trace_after_reap(),
+            .inspect_runtime_determinism_trace_after_reap(1024, read_inspected_trace),
         Err(QemuSpawnError::DiagnosticTraceExceedsAdmission { .. })
     ));
     Ok(())
@@ -598,16 +677,7 @@ fn spawn_unpinned_test_process_with_resources(
         credentials: contract.credentials,
     });
 
-    let mut command = Command::new(executable);
-    command
-        .env_clear()
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    for (key, value) in envs {
-        command.env(key, value);
-    }
+    let mut command = guarded_qemu_process_command(executable, args, envs);
 
     // SAFETY: this test-only unpinned launcher exercises the descriptor and
     // containment setup without a run-directory fixture. Its closure has the
@@ -624,8 +694,7 @@ fn spawn_unpinned_test_process_with_resources(
         });
     }
 
-    command
-        .spawn()
+    process_parent::spawn_from_process_parent(command)
         .map_err(|source| QemuSpawnError::Io { operation, source })
 }
 
@@ -861,6 +930,9 @@ fn guarded_probe_times_out_and_reaps_a_live_child() -> Result<(), Box<dyn Error>
 
 #[test]
 fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>> {
+    if reran_in_a_small_process("spawn::tests::guarded_probe_bounds_a_flooding_output_stream")? {
+        return Ok(());
+    }
     let fixture = GuardedProbeFixture::new(
         "spawn::tests::guarded_probe_flood_child",
         ProbeChildDirectoryAccess::ReadOnly,
@@ -1055,6 +1127,67 @@ fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<()
             .require_exact_checkpoint_root(root_b)
             .is_ok()
     );
+    Ok(())
+}
+
+#[test]
+fn concurrent_node_contracts_receive_distinct_cancellation_descriptions()
+-> Result<(), Box<dyn Error>> {
+    let eventfd_id = |contract: &QemuChildProcessContract| {
+        crate::node::eventfd_id(contract.cancellation_event.as_raw_fd())
+    };
+    let (_, cgroup) = pipe_pair()?;
+    let attempt = QemuChildProcessContract::for_test(
+        cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+    )
+    .with_cancellation_fanout(Arc::default());
+
+    let generation = attempt.try_clone_for_attempt_generation()?;
+    let first_node = attempt.try_clone_for_concurrent_node()?;
+    let second_node = attempt.try_clone_for_concurrent_node()?;
+
+    // Generation clones keep the attempt eventfd, which exact-restore
+    // cancellation identity checks rely on; concurrent nodes do not share it.
+    assert_eq!(eventfd_id(&generation)?, eventfd_id(&attempt)?);
+    assert_ne!(eventfd_id(&first_node)?, eventfd_id(&attempt)?);
+    assert_ne!(eventfd_id(&first_node)?, eventfd_id(&second_node)?);
+    validate_cancellation_eventfd(first_node.cancellation_event.as_raw_fd())?;
+    Ok(())
+}
+
+#[test]
+fn retired_concurrent_node_contract_leaves_live_nodes_cancellable() -> Result<(), Box<dyn Error>> {
+    let readable = |event: &OwnedFd| {
+        let mut poll = libc::pollfd {
+            fd: event.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe {
+            // SAFETY: `poll` is one initialized pollfd value.
+            libc::poll(&mut poll, 1, 0)
+        };
+        ready == 1 && poll.revents & libc::POLLIN != 0
+    };
+    let fanout = Arc::new(crate::cancellation_fanout::QemuCancellationFanout::default());
+    let (_, cgroup) = pipe_pair()?;
+    let attempt = QemuChildProcessContract::for_test(
+        cgroup,
+        event_fd_for_test()?,
+        current_file_size_limit()?,
+    )
+    .with_cancellation_fanout(Arc::clone(&fanout));
+
+    let reaped_node = attempt.try_clone_for_concurrent_node()?;
+    let live_node = attempt.try_clone_for_concurrent_node()?;
+    let reaped_event = reaped_node.try_clone_cancellation_event()?;
+    reaped_node.retire_concurrent_node_cancellation_after_reap();
+    fanout.signal()?;
+
+    assert!(!readable(&reaped_event));
+    assert!(readable(&live_node.cancellation_event));
     Ok(())
 }
 
@@ -1716,6 +1849,39 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
         assert!(env::var_os(INHERITED_ENV_SENTINEL).is_none());
         assert!(env::var_os(ENV_CLEAR_PARENT_PROBE).is_none());
         assert_eq!(env::var(EXPLICIT_ENV_SENTINEL)?, "explicit-child-value");
+        let expected = env::var(TIME_OWNERSHIP_EXPECTED)?;
+        assert_eq!(
+            env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").ok(),
+            (expected == "1").then(|| String::from("1")),
+        );
+        let runtime_expected = env::var("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED")?;
+        assert_eq!(
+            env::var_os("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE"),
+            (runtime_expected == "1").then(|| std::ffi::OsString::from("1")),
+        );
+        let idle_minimum = env::var("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED")?;
+        assert_eq!(
+            env::var("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS").ok(),
+            (idle_minimum != "absent").then(|| idle_minimum.clone())
+        );
+        let pending = env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?;
+        assert_eq!(
+            env::var("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").ok(),
+            (pending == "50000").then(|| pending.clone())
+        );
+        let native_summary = env::var("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED")
+            .unwrap_or_else(|_| String::from("absent"));
+        assert_eq!(
+            env::var_os("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY"),
+            (native_summary == "1").then(|| std::ffi::OsString::from("1")),
+        );
+        let barrier_expected = env::var("CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED")
+            .unwrap_or_else(|_| String::from("absent"));
+        assert_eq!(
+            env::var_os("CRUCIBLE_CONSOLE_BARRIER_DIAGNOSTIC"),
+            (barrier_expected == "1").then(|| std::ffi::OsString::from("1")),
+        );
+        assert!(env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
         child_probe_fixed_fds()?;
         return Ok(());
     }
@@ -1743,6 +1909,29 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             &[
                 (ENV_CLEAR_CHILD_PROBE, "1"),
                 (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
+                (TIME_OWNERSHIP_EXPECTED, &env::var(TIME_OWNERSHIP_EXPECTED)?),
+                (
+                    "CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED")?,
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_PENDING_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?,
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED")?,
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED")
+                        .unwrap_or_else(|_| String::from("absent")),
+                ),
+                (
+                    "CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_BARRIER_DIAGNOSTIC_EXPECTED")
+                        .unwrap_or_else(|_| String::from("absent")),
+                ),
                 (SOURCE_FDS_ENV, &source_fds),
             ],
             "spawn child clean-environment probe",
@@ -1754,16 +1943,146 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
     }
 
     let current_exe = env::current_exe()?;
-    let mut parent = Command::new(current_exe)
-        .args([
-            "--exact",
-            "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
-        ])
-        .env(ENV_CLEAR_PARENT_PROBE, "1")
-        .env(INHERITED_ENV_SENTINEL, "parent-only-value")
-        .spawn()?;
+    for (setting, budget, minimum, pending, runtime_trace) in [
+        (None, None, None, "absent", None),
+        (Some("0"), Some("16"), Some("50000"), "50000", None),
+        (Some("1"), Some("16"), Some("050000"), "absent", None),
+        (Some("2"), Some("0"), Some("50000"), "absent", None),
+        (Some("01"), Some("257"), Some("50000"), "absent", None),
+        (None, Some("64"), None, "absent", None),
+        (None, Some("64"), None, "absent", Some("1")),
+        (None, Some("64"), None, "absent", Some("0")),
+        (None, Some("64"), None, "absent", Some("01")),
+        (None, Some("64"), None, "absent", Some("true")),
+    ] {
+        let mut command = Command::new(&current_exe);
+        command
+            .args([
+                "--exact",
+                "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
+            ])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, setting.unwrap_or("absent"))
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", pending)
+            .env(
+                "CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED",
+                runtime_trace.unwrap_or("absent"),
+            )
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", "absent")
+            .env_remove("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS")
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
+            .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY");
+        if let Some(budget) = budget {
+            command.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", budget);
+        }
+        if let Some(minimum) = minimum {
+            command.env("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN", minimum);
+        }
+        if let Some(setting) = setting {
+            command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", setting);
+        }
+        if let Some(setting) = runtime_trace {
+            command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", setting);
+        }
 
-    assert!(parent.wait()?.success());
+        assert!(command.spawn()?.wait()?.success());
+    }
+    Ok(())
+}
+
+#[test]
+fn qemu_spawn_forwards_only_checked_idle_plan_floor() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let current_exe = env::current_exe()?;
+    for (minimum, expected, runtime) in [
+        (std::ffi::OsStr::new("0"), "0", "1"),
+        (std::ffi::OsStr::new("393994554800"), "393994554800", "1"),
+        (
+            std::ffi::OsStr::new("9223372036854775807"),
+            "9223372036854775807",
+            "1",
+        ),
+        (std::ffi::OsStr::new("0393994554800"), "absent", "absent"),
+        (
+            std::ffi::OsStr::new("9223372036854775808"),
+            "absent",
+            "absent",
+        ),
+        (std::ffi::OsStr::new("-1"), "absent", "absent"),
+        (std::ffi::OsStr::new("1x"), "absent", "absent"),
+        (std::ffi::OsStr::from_bytes(&[0xff]), "absent", "absent"),
+    ] {
+        // The original parent probe invokes the production cleared-environment
+        // spawn and its child verifies inherited descriptors and exact values.
+        let status = Command::new(&current_exe)
+            .args(["--exact", "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values"])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, "absent")
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED", runtime)
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", expected)
+            .env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "64")
+            .env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1")
+            .env("CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS", minimum)
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
+            .spawn()?.wait()?;
+        assert!(
+            status.success(),
+            "checked floor child failed for {minimum:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn qemu_spawn_forwards_only_explicit_native_summary() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let current_exe = env::current_exe()?;
+    for (setting, expected) in [
+        (None, "absent"),
+        (Some(std::ffi::OsStr::new("1")), "1"),
+        (Some(std::ffi::OsStr::new("0")), "absent"),
+        (Some(std::ffi::OsStr::new("01")), "absent"),
+        (Some(std::ffi::OsStr::new("true")), "absent"),
+        (Some(std::ffi::OsStr::new("1 ")), "absent"),
+        (Some(std::ffi::OsStr::from_bytes(&[0xff])), "absent"),
+    ] {
+        // This existing probe executes the actual cleared builder and verifies
+        // all three inherited fixed descriptors in the original child process.
+        let mut probe = Command::new(&current_exe);
+        probe
+            .args(["--exact", "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values"])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, "absent")
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_IDLE_MINIMUM_EXPECTED", "absent")
+            .env("CRUCIBLE_QEMU_TEST_NATIVE_SUMMARY_EXPECTED", expected)
+            .env_remove("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY")
+            .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS");
+        if let Some(setting) = setting {
+            probe.env("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY", setting);
+        }
+        assert!(
+            probe.spawn()?.wait()?.success(),
+            "native summary probe {setting:?}"
+        );
+    }
     Ok(())
 }
 
@@ -1793,6 +2112,50 @@ fn qemu_spawn_kills_child_when_parent_exits() -> Result<(), Box<dyn Error>> {
     assert!(output.status.success());
     let pid = parse_pdeath_child_pid(&output.stdout)?;
     assert_process_eventually_gone(pid, Duration::from_secs(2))?;
+    Ok(())
+}
+
+#[test]
+fn qemu_spawn_child_survives_the_exit_of_its_launching_thread() -> Result<(), Box<dyn Error>> {
+    if env::var_os(THREAD_EXIT_CHILD_ENV).is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+        return Ok(());
+    }
+
+    // Linux delivers the parent-death signal when the creating thread exits,
+    // not the process. Executor workers launch QEMU and may exit while the
+    // daemon still owns the node, so a node must outlive its launcher thread.
+    let launcher = std::thread::spawn(|| -> Result<std::process::Child, String> {
+        let (_host, child_resources) =
+            create_spawn_resources(4096).map_err(|error| error.to_string())?;
+        let current_exe = env::current_exe().map_err(|error| error.to_string())?;
+        let args = vec![
+            String::from("--exact"),
+            String::from(
+                "spawn::tests::qemu_spawn_child_survives_the_exit_of_its_launching_thread",
+            ),
+        ];
+        spawn_unpinned_test_process_with_resources(
+            &current_exe.to_string_lossy(),
+            &args,
+            child_resources,
+            &[(THREAD_EXIT_CHILD_ENV, "1")],
+            "spawn launcher-thread probe child",
+            None,
+        )
+        .map_err(|error| error.to_string())
+    });
+    let child = launcher
+        .join()
+        .map_err(|_panic| "launcher thread panicked")??;
+    let mut child = QemuNodeChild::new(child);
+
+    let early_exit = wait_for_child_exit(&mut child, Duration::from_millis(500))?;
+
+    assert!(
+        early_exit.is_none(),
+        "child exited after its launching thread ended: {early_exit:?}"
+    );
     Ok(())
 }
 
@@ -1856,6 +2219,34 @@ fn child_probe_cwd(expected: &Path) -> Result<(), Box<dyn Error>> {
     let actual = std::env::current_dir()?.canonicalize()?;
     assert_eq!(actual, expected);
     child_probe_fixed_fds()
+}
+
+/// Reruns the named test alone in a fresh copy of this test binary.
+///
+/// A probe's deadline covers its own spawn. A full parallel run grows this
+/// process to gigabytes, and forking it then takes long enough to consume a
+/// short probe deadline before the child starts. The rerun forks from a
+/// small process, so the probe limits under test are unchanged.
+///
+/// Returns `true` after the rerun passed, and `false` inside the rerun,
+/// where the caller performs the test itself.
+fn reran_in_a_small_process(test_name: &str) -> Result<bool, Box<dyn Error>> {
+    if env::var_os(SMALL_PROCESS_PROBE_ENV).is_some() {
+        return Ok(false);
+    }
+
+    let output = Command::new(env::current_exe()?)
+        .args(["--exact", test_name, "--test-threads=1"])
+        .env(SMALL_PROCESS_PROBE_ENV, "1")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // A filter that matched nothing would also exit successfully.
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "small-process rerun of {test_name} failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(true)
 }
 
 struct GuardedProbeFixture {
@@ -2077,6 +2468,26 @@ fn assert_fd_closed(fd: RawFd) -> Result<(), Box<dyn Error>> {
     }
 }
 
+// crucible-lint: allow clippy-disallowed-method -- test polling observes OS process exit only.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_child_exit(
+    child: &mut QemuNodeChild,
+    timeout: Duration,
+) -> Result<Option<std::process::ExitStatus>, Box<dyn Error>> {
+    // Test-only host wait: it bounds how long a wrongly signalled child takes
+    // to become a zombie and never feeds Crucible scheduling state.
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait_natural_exit()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn parse_pdeath_child_pid(stdout: &[u8]) -> Result<u32, Box<dyn Error>> {
     let text = String::from_utf8(stdout.to_vec())?;
     for line in text.lines() {
@@ -2154,4 +2565,36 @@ fn source_fds_from_env() -> Result<Vec<RawFd>, Box<dyn Error>> {
     raw.split(',')
         .map(|part| part.parse::<RawFd>().map_err(Into::into))
         .collect()
+}
+
+#[test]
+fn device_wait_floor_travels_only_with_an_admitted_allowance() {
+    let forwarded = |aggregate_admitted: bool, minimum: Option<&str>| {
+        let mut command = Command::new("qemu");
+        forward_device_wait_floor(
+            &mut command,
+            aggregate_admitted,
+            minimum.map(std::ffi::OsStr::new),
+        );
+        command
+            .get_envs()
+            .find(|(key, _)| *key == DEVICE_WAIT_FLOOR)
+            .and_then(|(_, value)| value)
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned)
+    };
+
+    assert_eq!(
+        forwarded(true, Some("663180000000")).as_deref(),
+        Some("663180000000")
+    );
+    assert_eq!(
+        forwarded(true, Some("9223372036854775807")).as_deref(),
+        Some("9223372036854775807")
+    );
+    for refused in ["0663180000000", "9223372036854775808", "-1", "1x", ""] {
+        assert_eq!(forwarded(true, Some(refused)), None, "{refused:?}");
+    }
+    assert_eq!(forwarded(false, Some("663180000000")), None);
+    assert_eq!(forwarded(true, None), None);
 }

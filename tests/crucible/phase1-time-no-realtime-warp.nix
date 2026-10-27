@@ -5,8 +5,7 @@
   taskIds ? [],
   openTaskIds ? ["T-TIME-5"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
   atomicPatchEvidence = import ./phase2-patch-microtests.nix {inherit pkgs lib;};
@@ -135,10 +134,8 @@ in
   if failures != []
   then throw "crucible phase1 time no-realtime/warp check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-time-no-realtime-warp";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
@@ -146,56 +143,21 @@ in
         pkgs.sqlite
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-time-control-tests";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-time-no-realtime-warp-target" \
+            crucible-cargo test \
               -p crucible-qemu-host \
               --test deterministic_launch \
               launch_hash_material_records_every_determinism_field \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-time-no-realtime-warp-target" \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib time_control \
               -- --test-threads=1

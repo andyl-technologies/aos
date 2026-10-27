@@ -254,6 +254,14 @@ pub enum BlockWireError {
         /// The observed payload length.
         len: usize,
     },
+    /// A request names an oldest live epoch newer than its own epoch.
+    #[error("block request oldest live epoch {oldest_live_epoch} exceeds its epoch {epoch}")]
+    OldestLiveEpochAfterEpoch {
+        /// The request's transport epoch.
+        epoch: u64,
+        /// The oldest live epoch carried by the request.
+        oldest_live_epoch: u64,
+    },
     /// Request operation is unknown.
     #[error("block request operation {operation} is unknown")]
     UnknownOperation {

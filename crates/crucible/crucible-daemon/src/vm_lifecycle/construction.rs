@@ -14,49 +14,6 @@ use branch_sequence::{configured_branches, first_configured_branch};
 #[path = "construction_tests.rs"]
 mod tests;
 
-fn hydrate_checkpoint_event_log_dependencies(
-    scheduler: &SingleSchedulerCheckpoint,
-    objects: &BTreeMap<ContentHash, Vec<u8>>,
-    store: &dyn DagStore,
-) -> Result<(), LifecycleApiError> {
-    let dependencies = scheduler.event_log_segment_dependencies();
-    if dependencies.len() != objects.len() {
-        return Err(loop_factory_error(
-            "exact checkpoint event-log dependency count changed before restore",
-        ));
-    }
-
-    // Validate the entire authenticated set before writing into the new run.
-    for identity in dependencies {
-        let bytes = objects.get(identity).ok_or_else(|| {
-            loop_factory_error("exact checkpoint event-log dependency is missing before restore")
-        })?;
-        if ContentHash::from_bytes(bytes) != *identity {
-            return Err(loop_factory_error(
-                "exact checkpoint event-log dependency changed before restore",
-            ));
-        }
-    }
-
-    for identity in dependencies {
-        let bytes = objects.get(identity).ok_or_else(|| {
-            loop_factory_error("exact checkpoint event-log dependency disappeared during restore")
-        })?;
-        let stored = store.put(bytes).map_err(|error| {
-            loop_factory_error(format!(
-                "rehydrate exact checkpoint event-log dependency: {error}"
-            ))
-        })?;
-        if stored != *identity {
-            return Err(loop_factory_error(
-                "exact checkpoint event-log dependency changed while rehydrating",
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn hydrate_checkpoint_signal_artifacts(
     objects: &BTreeMap<ContentHash, Vec<u8>>,
     store: &dyn DagStore,
@@ -84,6 +41,35 @@ pub(super) fn hydrate_checkpoint_signal_artifacts(
     }
 
     Ok(())
+}
+
+/// Keeps the branch-plan entries a launch at `draw_offset` can still serve.
+///
+/// The plugin skips every entry whose node-local draw index precedes the
+/// launch's draw offset, so earlier entries would only enlarge the setup
+/// descriptor. A launch from genesis has offset zero and keeps the whole plan.
+fn branch_plan_launch_window(
+    plan: &crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    draw_offset: u64,
+    node: &NodeId,
+) -> Result<crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan, LifecycleApiError>
+{
+    let first_served = plan
+        .entries()
+        .partition_point(|entry| entry.draw_index() < draw_offset);
+    if first_served == 0 {
+        return Ok(plan.clone());
+    }
+
+    crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::new(
+        plan.entries().iter().skip(first_served).cloned().collect(),
+    )
+    .map_err(|error| {
+        loop_factory_error(format!(
+            "trim app-random branch plan for `{}` to its launch window: {error}",
+            node.name
+        ))
+    })
 }
 
 fn reject_fresh_fault_replay_on_restore(
@@ -178,11 +164,15 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         ));
     }
     if let Some(checkpoint) = &restore_checkpoint {
-        hydrate_checkpoint_event_log_dependencies(
-            &checkpoint.scheduler,
-            &checkpoint.event_log_objects,
-            checkpoint_dag.as_ref(),
-        )?;
+        // Segments move one at a time; restore authenticates each again.
+        checkpoint
+            .event_log_segments
+            .hydrate(&checkpoint.scheduler, checkpoint_dag.as_ref())
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "rehydrate exact checkpoint event-log segments: {error}"
+                ))
+            })?;
     }
     let nodes = source.world().vm_nodes();
     // Reject incompatible per-node initrd identities before launching any VM.
@@ -383,7 +373,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             })
             .map_err(|error| {
                 loop_factory_error(format!(
-                    "derive v9 exact restore identity for `{}`: {error}",
+                    "derive v11 exact restore identity for `{}`: {error}",
                     vm.id.name
                 ))
             })?;
@@ -391,7 +381,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 && QmpCheckpointIdentity::from(exact_ram.identity) != expected
             {
                 return Err(loop_factory_error(format!(
-                    "v9 exact checkpoint identity for `{}` differs from its authenticated restore basis",
+                    "v11 exact checkpoint identity for `{}` differs from its authenticated restore basis",
                     vm.id.name
                 )));
             }
@@ -478,6 +468,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_completion_timeout(config.completion_timeout)
         .with_unbounded_advance_completion(config.unbounded_advance_completion)
         .with_console_capture()
+        .with_guest_derived_code_buffer()
         .with_process_generation(generation)
         .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
         if campaign_marker_parking {
@@ -613,15 +604,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 })?
             } else {
                 production_app_random_launch_config(scenario, &cold_branches, &vm.id)
-            }
-            .with_branch_plan(
-                config
-                    .app_random_branch_plans
-                    .get(&vm.id)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            launch = launch.with_app_random(app_random);
+            };
+            let branch_plan = config
+                .app_random_branch_plans
+                .get(&vm.id)
+                .map(|plan| branch_plan_launch_window(plan, app_random.draw_offset, &vm.id))
+                .transpose()?
+                .unwrap_or_default();
+            launch = launch.with_app_random(app_random.with_branch_plan(branch_plan));
         }
         if !source.world().links().is_empty() {
             launch = launch
@@ -1027,6 +1017,14 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         source.world(),
     )
     .with_scenario_def(scenario.clone());
+    if let Some(checkpoint) = &restore_checkpoint {
+        runtime_scenario = checkpoint
+            .scheduler
+            .prepare_restore_scenario(runtime_scenario)
+            .map_err(|error| {
+                loop_factory_error(format!("prepare exact scheduler ready origins: {error}"))
+            })?;
+    }
     if let Some(interval_ticks) = config.rendezvous_interval_ticks {
         runtime_scenario = runtime_scenario
             .with_rendezvous_interval(SimDuration {
@@ -1128,6 +1126,19 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
         }
+        // A child forked at a joined campaign park inherits each VM's native
+        // marker stop. Without the park proof, start replay could not cross
+        // the recorded branch and would run the parked guests past it.
+        for (node, parked) in std::mem::take(&mut restore.campaign_marker_parks) {
+            backends
+                .adopt_campaign_marker_park(&node, parked)
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "adopt hot-fork campaign marker park for `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+        }
     }
     let repository_exact_ram_rebase = if repository_parent_targets.is_empty() {
         None
@@ -1141,6 +1152,16 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
+    // Property matchers are folded by the assertion evaluator itself; the
+    // scheduler prefix declares only the matchers its triggers evaluate.
+    let console_patterns = crucible_engine::event_graph_console_patterns(&trigger_graph);
+    scheduler
+        .declare_console_patterns(
+            console_patterns
+                .iter()
+                .map(|(node, pattern)| (node, pattern.as_str())),
+        )
+        .map_err(|error| loop_factory_error(error.to_string()))?;
     let signal_plan = source.plan().fault_signals().clone();
     let fault_search_overrides =
         production_fault_search_overrides(config.signal_fault_replay.as_ref())?;
@@ -1208,21 +1229,35 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     } else {
         None
     };
+    // Every sealed resolved-effect segment of this execution, signal and
+    // campaign alike, lands in one sink. A restore hydrates it with the
+    // segments its checkpoint references before any owner reads them.
+    let trace_segments = config.fault_trace_segments();
+    if let Some(checkpoint) = &restore_checkpoint {
+        hydrate_fault_trace_segments(&checkpoint.fault_trace_objects, trace_segments.as_ref())
+            .map_err(|error| loop_factory_error(error.to_string()))?;
+    }
     let (signal_effect_replay, campaign_effect_replay) = match config.fault_replay.clone() {
         Some(trace) => {
-            trace
-                .validate(source.plan().fault_signals().resource_limits())
-                .map_err(|error| loop_factory_error(format!("validate fault replay: {error}")))?;
-            let (signal, campaign) =
-                network_faults::split_campaign_network_trace(trace, network_replay.is_some())
-                    .map_err(|error| {
-                        loop_factory_error(format!("partition fault replay: {error}"))
-                    })?;
-            let signal = (signal_plan_active || !signal.work_items.is_empty()).then_some(signal);
+            let (signal, campaign) = network_faults::split_campaign_network_trace(
+                trace,
+                network_replay.is_some(),
+                &trace_segments,
+                source.plan().fault_signals().resource_limits(),
+            )
+            .map_err(|error| loop_factory_error(format!("partition fault replay: {error}")))?;
+            let signal = (signal_plan_active || !signal.is_empty()).then_some(signal);
             (signal, Some(campaign))
         }
         None => (None, None),
     };
+    // A restored replay cursor names the signal partition's manifest; the
+    // partition's own sources hold its segments.
+    let mut trace_storage =
+        crucible_engine::model::FaultTraceStorage::new(Arc::clone(&trace_segments));
+    if let Some(signal) = &signal_effect_replay {
+        trace_storage = trace_storage.with_replay_segments(signal.segments().clone());
+    }
     let (
         fault_runtime,
         fault_evaluation_cursor,
@@ -1260,6 +1295,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             &mut scheduler,
             &mut pending_outputs,
             Arc::clone(&storage_fault_observations),
+            trace_storage,
         )
         .map_err(|error| {
             loop_factory_error(format!(
@@ -1274,7 +1310,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             committed_frontier,
         )
     } else {
-        let mut runtime = ProductionFaultRuntime::new_with_search_overrides(
+        let mut runtime = ProductionFaultRuntime::new_with_storage(
             signal_plan,
             signal_artifacts,
             SignalBoundarySnapshot::default(),
@@ -1282,6 +1318,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             host_fault_manifests,
             &backends,
             fault_search_overrides.clone(),
+            trace_storage,
         )
         .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
         if let Some(trace) = signal_effect_replay {
@@ -1300,6 +1337,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             source.plan().fault_signals().resource_limits(),
             source.world().fault_topology().clone(),
             source.world().links().to_vec(),
+            Arc::clone(&trace_segments),
         );
         (
             runtime,
@@ -1347,15 +1385,27 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         }
     }
     let block_devices = Arc::new(std::sync::Mutex::new(block_device_map));
+    // Every installed block and 9p coordinator reads referenced events; the
+    // runtime retires events only once no bound consumer can use them.
+    let mut referenced_event_consumers = Vec::new();
     for (node, block) in &block_bindings {
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
         }
+        let consumer = crucible_qemu_host::ReferencedEventConsumer::block_recovery(&block.target)
+            .map_err(|error| {
+            loop_factory_error(format!(
+                "identify block recovery consumer for `{}`: {error}",
+                node.name
+            ))
+        })?;
+        referenced_event_consumers.push(consumer);
         backends
             .install_block_fault_coordinator(
                 node,
                 Box::new(ProductionBlockFaultCoordinator::new(
                     Arc::clone(&fault_runtime),
+                    consumer,
                     Arc::clone(&fault_evaluation_cursor),
                     Arc::clone(&storage_fault_observations),
                     Arc::clone(&block_devices),
@@ -1376,11 +1426,20 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         if node_service_states.get(node) == Some(&ProductionNodeServiceState::PermanentlyFailed) {
             continue;
         }
+        let consumer = crucible_qemu_host::ReferencedEventConsumer::ninep_visibility(&ninep.target)
+            .map_err(|error| {
+                loop_factory_error(format!(
+                    "identify 9p visibility consumer for `{}`: {error}",
+                    node.name
+                ))
+            })?;
+        referenced_event_consumers.push(consumer);
         backends
             .install_ninep_fault_coordinator(
                 node,
                 Box::new(storage_faults::ProductionNinepFaultCoordinator::new(
                     Arc::clone(&fault_runtime),
+                    consumer,
                     Arc::clone(&fault_evaluation_cursor),
                     Arc::clone(&storage_fault_observations),
                     source.world().clone(),
@@ -1395,6 +1454,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 ))
             })?;
     }
+    fault_runtime
+        .lock()
+        .map_err(|_| loop_factory_error("production fault runtime lock is poisoned"))?
+        .bind_referenced_event_consumers(&referenced_event_consumers)
+        .map_err(|error| loop_factory_error(format!("bind referenced-event consumers: {error}")))?;
 
     let (active_branch, continuation_branches) = restore_checkpoint.as_ref().map_or_else(
         || {
@@ -1513,6 +1577,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             .as_ref()
             .map_or_else(Vec::new, |checkpoint| checkpoint.recorded_controls.clone()),
         signal_artifact_objects,
+        fault_trace_segments: trace_segments,
         debug_backend_paths,
         debug_gateway: None,
         debug_attach: None,

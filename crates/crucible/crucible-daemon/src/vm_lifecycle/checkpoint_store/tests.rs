@@ -5,9 +5,11 @@
 
 use super::{ExactSnapshotHandle as Snapshot, *};
 
+#[path = "tests/block_overlay_closure.rs"]
+mod block_overlay_closure;
 #[cfg(feature = "test-support")]
-#[path = "tests/v9_artifact_refusal.rs"]
-mod v9_artifact_refusal;
+#[path = "tests/closure_artifact_refusal.rs"]
+mod closure_artifact_refusal;
 
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
@@ -32,6 +34,8 @@ fn manifest() -> ClosureManifest {
         scheduler: ContentHash::default(),
         event_log_segments: Vec::new(),
         signal_artifacts: Vec::new(),
+        fault_trace_segments: Vec::new(),
+        block_overlay_chunks: Vec::new(),
         trigger_state: ContentHash::default(),
         assertion_state: ContentHash::default(),
         lifecycle_state: ContentHash::default(),
@@ -125,10 +129,26 @@ fn build_one_node_raw_checkpoint(
     NodeId,
     ContentHash,
 ) {
+    build_one_node_raw_checkpoint_with_io(run_state_root, selectable_continuation, Vec::new())
+}
+
+/// Builds the one-node fixture, optionally declaring I/O nodes owned by `vm-a`.
+fn build_one_node_raw_checkpoint_with_io(
+    run_state_root: &Path,
+    selectable_continuation: Option<
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanContinuation,
+    >,
+    io_nodes: Vec<crucible_engine::WorldIoNode>,
+) -> (
+    ScenarioDefForm,
+    ProductionVmExactCheckpointSet,
+    NodeId,
+    ContentHash,
+) {
     let node = NodeId {
         name: String::from("vm-a"),
     };
-    let world = World::from_nodes(vec![crucible_engine::WorldNode {
+    let vm = crucible_engine::WorldNode {
         id: node.clone(),
         arch: VmArchitecture::X86_64,
         memory_mib: 128,
@@ -145,7 +165,17 @@ fn build_one_node_raw_checkpoint(
         kernel: None,
         root_image: None,
         initrd: None,
-    }])
+    };
+    let world = if io_nodes.is_empty() {
+        World::from_nodes(vec![vm])
+    } else {
+        World::from_node_defs_and_links(
+            std::iter::once(crucible_engine::WorldNodeDef::Vm(vm))
+                .chain(io_nodes.into_iter().map(crucible_engine::WorldNodeDef::Io))
+                .collect(),
+            Vec::new(),
+        )
+    }
     .expect("build one-node checkpoint world");
     let mut source = ScenarioDefForm::from_components_with_app_random_draw_cap(
         &world,
@@ -372,8 +402,11 @@ fn build_one_node_raw_checkpoint(
         identity: ContentHash::default(),
         configuration,
         scheduler: Arc::new(scheduler_checkpoint),
-        event_log_objects: Arc::new(BTreeMap::new()),
+        event_log_segments: ProductionEventLogSegments::store(Arc::new(
+            crucible_engine::MemoryDagStore::new(),
+        )),
         signal_artifact_objects: Arc::new(BTreeMap::new()),
+        fault_trace_objects: Arc::new(BTreeMap::new()),
         trigger_state: EventGraphState::default(),
         assertion_state: HostAssertionEvaluator::new(source.properties()).checkpoint(),
         terminal_verdict: None,
@@ -674,7 +707,32 @@ fn closure_manifest_round_trip_is_canonical() {
 }
 
 #[test]
-fn failed_node_fingerprint_fields_bind_the_v9_closure_identity() {
+fn closure_manifest_refuses_the_prior_v11_schema() {
+    // A v11 closure embeds a scheduler continuation without settled node
+    // times. Its body may otherwise be well formed, so only the magic
+    // distinguishes it; the loader must refuse it rather than reinterpret it.
+    let current = encode_manifest(&manifest()).expect("encode canonical closure manifest");
+    let payload = current
+        .strip_prefix(MANIFEST_MAGIC)
+        .expect("current manifest carries the current magic");
+    let mut prior = b"crucible.production-exact-closure.v11\0".to_vec();
+    prior.extend_from_slice(payload);
+
+    let Err(error) = decode::decode_manifest_with_limits(&prior, FaultResourceLimits::default())
+    else {
+        panic!("a v11 closure manifest must be refused");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported closure manifest version"),
+        "{error}"
+    );
+}
+
+#[test]
+fn failed_node_fingerprint_fields_bind_the_v10_closure_identity() {
     let mut original = manifest();
     original.failed_host_io.push(failed_host_io("vm-a"));
     let identity = closure_identity(&original).expect("derive failed-node closure identity");
@@ -704,6 +762,55 @@ fn manifest_rejects_duplicate_failed_node_owners() {
     let bytes = encode_manifest(&duplicate).expect("encode duplicate failed-node manifest");
 
     assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn fault_trace_segments_bind_the_closure_and_must_be_sorted() {
+    let first = ContentHash::from_bytes(b"trace segment one");
+    let second = ContentHash::from_bytes(b"trace segment two");
+    let (low, high) = if first < second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+
+    let mut sorted = manifest();
+    sorted.fault_trace_segments = vec![low, high];
+    let bytes = encode_manifest(&sorted).expect("encode trace-segment manifest");
+    let decoded = decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default())
+        .expect("decode trace-segment manifest");
+    assert_eq!(decoded.fault_trace_segments, vec![low, high]);
+    assert_ne!(
+        closure_identity(&sorted).expect("derive trace-segment closure identity"),
+        closure_identity(&manifest()).expect("derive empty closure identity")
+    );
+
+    let mut unsorted = manifest();
+    unsorted.fault_trace_segments = vec![high, low];
+    let bytes = encode_manifest(&unsorted).expect("encode unsorted trace-segment manifest");
+    assert!(decode::decode_manifest_with_limits(&bytes, FaultResourceLimits::default()).is_err());
+}
+
+#[test]
+fn trace_segment_objects_match_their_continuation_and_hydrate_by_trace_identity() {
+    use crucible_engine::segment_store::SegmentSource as _;
+
+    let bytes = b"sealed trace segment bytes".to_vec();
+    let objects = BTreeMap::from([(ContentHash::from_bytes(&bytes), bytes.clone())]);
+
+    // Without a continuation no segment is referenced, so any object is extra.
+    assert!(validate_fault_trace_objects(None, &BTreeMap::new()).is_ok());
+    assert!(validate_fault_trace_objects(None, &objects).is_err());
+    let mislabeled = BTreeMap::from([(ContentHash::from_bytes(b"other"), bytes.clone())]);
+    assert!(validate_fault_trace_objects(None, &mislabeled).is_err());
+
+    let sink = crucible_engine::segment_store::SharedSegmentStore::new();
+    hydrate_fault_trace_segments(&objects, &sink).expect("hydrate trace segments");
+    let id = crucible_engine::model::resolved_effect_trace_segment_id(&bytes);
+    assert_eq!(
+        sink.segment(id).expect("read hydrated trace segment"),
+        bytes
+    );
 }
 
 #[test]
@@ -755,7 +862,7 @@ fn checkpoint_set_rejects_wrong_failed_node_fingerprint_owner() {
 }
 
 #[test]
-fn failed_node_authority_round_trips_through_the_v9_closure() {
+fn failed_node_authority_round_trips_through_the_v10_closure() {
     let root = tempfile::tempdir().expect("create failed-node checkpoint store");
     let (source, mut checkpoint, node, _) = build_one_node_raw_checkpoint(root.path(), None);
     checkpoint.targets.remove(&node);
@@ -1705,7 +1812,7 @@ fn lifecycle_wire_reopens_passed_trigger_with_matching_checkpoint_cause() {
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_fixture_retains_the_complete_layer_chain() {
+fn v10_exact_ram_fixture_retains_the_complete_layer_chain() {
     let source_root = tempfile::tempdir().expect("create exact RAM source store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(source_root.path())
         .expect("build exact RAM closure fixture");
@@ -1784,7 +1891,7 @@ fn rewrite_exact_ram_fixture_manifest(
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
+fn v10_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
     let store = tempfile::tempdir().expect("create exact RAM store");
     let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())
         .expect("build exact RAM closure fixture");
@@ -1809,7 +1916,7 @@ fn v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state() {
 
 #[cfg(feature = "test-support")]
 #[test]
-fn v9_exact_ram_loader_authenticates_declared_sha256_digests() {
+fn v10_exact_ram_loader_authenticates_declared_sha256_digests() {
     for role in ["device", "RAM layer"] {
         let store = tempfile::tempdir().expect("create exact RAM store");
         let fixture = build_exact_ram_production_checkpoint_codec_fixture(store.path())

@@ -254,10 +254,11 @@ fn gate_replay_oracle_saved_descendant_fat_checkpoint_carries_vm_snapshot_refs()
     let mut graph = TemporalGraph::empty().with_baked_genesis(&scenario, baked)?;
     let target = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("save/descendant"),
-            value: 42,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("save/descendant"),
+            0,
+            42
+        )),
     );
     let checkpoint = graph.save_checkpoint(&target)?;
     let state = checkpoint.state.as_ref().ok_or_else(|| {
@@ -825,10 +826,13 @@ fn gate_replay_oracle_reproduction_artifact_rejects_build_identity_drift()
 #[test]
 fn gate_replay_oracle_reproduction_artifact_detects_schedule_drift() -> Result<(), Box<dyn Error>> {
     let mut artifact = representative_replay_oracle_reproduction_artifact()?;
-    artifact.schedule = artifact.schedule.appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("artifact/drift"),
-        value: 0xdead_beef,
-    }));
+    artifact.schedule = artifact
+        .schedule
+        .appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("artifact/drift"),
+            0,
+            0xdead_beef,
+        )));
 
     let error = match check_replay_oracle_reproduction_artifact_round_trip(
         &artifact,
@@ -959,17 +963,19 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     );
     let second = accepted_step!(
         &first,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_link("link-a-b/drop"),
-            value: 1,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_link("link-a-b/drop"),
+            0,
+            1
+        )),
     );
     let third = accepted_step!(
         &second,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("whitebox/request"),
-            value: 0xabcd,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("whitebox/request"),
+            0,
+            0xabcd
+        )),
     );
 
     let double = SimDouble;
@@ -1069,16 +1075,18 @@ impl AssertionReplayPayload {
 }
 
 fn assertion_replay_schedule(payload: AssertionReplayPayload) -> Schedule {
-    Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("assertion/replay-oracle"),
-        value: payload.schedule_value(),
-    }))
+    Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("assertion/replay-oracle"),
+        0,
+        payload.schedule_value(),
+    )))
 }
 
 fn assertion_replay_payload_from_schedule(
     schedule: &Schedule,
 ) -> Result<AssertionReplayPayload, Box<dyn Error>> {
-    let [Decision::RngDraw(draw)] = schedule.decisions() else {
+    let decisions = schedule.decision_history().to_vec();
+    let [Decision::RngDraw(draw)] = decisions.as_slice() else {
         return Err(Box::new(IoError::new(
             ErrorKind::InvalidData,
             "assertion replay artifact schedule must contain one rng draw",
@@ -1107,7 +1115,7 @@ fn assertion_replay_event_log_from_artifact(
     let payload = assertion_replay_payload_from_schedule(artifact.schedule())?;
     let decision = artifact
         .schedule()
-        .decisions()
+        .decision_history()
         .first()
         .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "missing replay decision"))?
         .clone();
@@ -1171,14 +1179,16 @@ fn representative_replay_oracle_reproduction_artifact()
             at: VirtualTime { ticks: 3 },
             order: vec![event_key(3, 10), event_key(3, 11)],
         }))
-        .appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_link("artifact/link-drop"),
-            value: 1,
-        }))
-        .appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("artifact/request"),
-            value: 0xfeed_0010_0027,
-        }));
+        .appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_link("artifact/link-drop"),
+            0,
+            1,
+        )))
+        .appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("artifact/request"),
+            0,
+            0xfeed_0010_0027,
+        )));
     let configuration = Configuration {
         def: scenario.clone(),
         schedule: schedule.clone(),
@@ -1312,10 +1322,11 @@ fn assert_replay_oracle_excludes_observational_entries(
     let genesis = Configuration::genesis(scenario.clone());
     let checkpoint = Configuration {
         def: scenario,
-        schedule: Schedule::empty().appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("observation/control"),
-            value: 11,
-        })),
+        schedule: Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("observation/control"),
+            0,
+            11,
+        ))),
     };
     let materialized =
         double.materialize_fat_checkpoint(String::from("cp-observation"), &genesis, &checkpoint)?;
@@ -1336,10 +1347,11 @@ fn assert_replay_oracle_excludes_observational_entries(
         crucible_engine::test_support::condition_payload_entry_for_test(
             0,
             VirtualTime { ticks: 0 },
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("observation/control"),
-                value: 11,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("observation/control"),
+                0,
+                11,
+            ))),
         ),
         crucible_engine::test_support::condition_boundary_entry_for_test(
             1,
@@ -1360,10 +1372,11 @@ fn assert_replay_oracle_excludes_observational_entries(
         crucible_engine::test_support::condition_payload_entry_for_test(
             1,
             VirtualTime { ticks: 0 },
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("observation/control"),
-                value: 11,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("observation/control"),
+                0,
+                11,
+            ))),
         ),
         crucible_engine::test_support::condition_boundary_entry_for_test(
             2,
@@ -1447,7 +1460,7 @@ fn schedule_delta(ancestor: &Schedule, schedule: &Schedule) -> Result<Schedule, 
     assert_eq!(prefix, *ancestor);
 
     let mut delta = Schedule::empty();
-    for decision in &schedule.decisions()[ancestor.len()..] {
+    for decision in schedule.decision_history().iter_from(ancestor.len()) {
         delta = delta.appended(decision.clone());
     }
     Ok(delta)
@@ -1455,17 +1468,18 @@ fn schedule_delta(ancestor: &Schedule, schedule: &Schedule) -> Result<Schedule, 
 
 fn replay_schedule(ancestor: &Schedule, delta: &Schedule) -> Schedule {
     let mut schedule = ancestor.clone();
-    for decision in delta.decisions() {
+    for decision in delta.decision_history() {
         schedule = schedule.appended(decision.clone());
     }
     schedule
 }
 
 fn rng_decision(stream: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }
 
 fn baked_with_search_frontier_choices(
@@ -1586,10 +1600,11 @@ fn hash_hex(hash: ContentHash) -> String {
 fn gate_replay_oracle_is_sensitive_to_schedule_order() -> Result<(), Box<dyn Error>> {
     let scenario =
         ScenarioDef::from_canonical_material("crucible.test.replay-oracle", "nodes=a,b\nseed=99");
-    let draw = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("scheduler/order"),
-        value: 1,
-    });
+    let draw = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("scheduler/order"),
+        0,
+        1,
+    ));
     let delivery = Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: 1 },
         order: vec![event_key(1, 7)],

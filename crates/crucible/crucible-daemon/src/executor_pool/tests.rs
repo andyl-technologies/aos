@@ -30,9 +30,8 @@ use crate::{
     ProductionPausedCheckpointReplayFactory, ProductionPausedCheckpointReplaySession,
     RepositoryAttemptAdmission, RepositoryAttemptWorker, RepositoryAttemptWorkerError,
     UnixPeerExecutorIdentity, encode_crucible_configuration_artifact,
-    encode_crucible_scenario_artifact, evaluate_crucible_measurement_publication,
-    prepare_production_paused_checkpoint_promotion_restart, publish_next_objective_evaluation,
-    resolve_production_paused_checkpoint_promotion_recovery,
+    encode_crucible_scenario_artifact, prepare_production_paused_checkpoint_promotion_restart,
+    publish_next_objective_evaluation, resolve_production_paused_checkpoint_promotion_recovery,
 };
 use crate::{
     AuthenticatedProductionCheckpointCodecFixture,
@@ -676,8 +675,13 @@ impl AttemptExecutionModel for CandidateModel {
             .expect("runtime basis log")
             .push(context.runtime_basis().expect("worker runtime basis"));
         self.calls.fetch_add(1, Ordering::AcqRel);
-        let result = PreparedSemanticAttemptResult::new(self.candidate.clone(), Vec::new(), None)
-            .expect("prepare candidate result");
+        let result = PreparedSemanticAttemptResult::new(
+            self.candidate.clone(),
+            Vec::new(),
+            crate::MemorySegmentStore::default(),
+            None,
+        )
+        .expect("prepare candidate result");
         Ok(AttemptExecutionProduct::prepared_semantic(result))
     }
 
@@ -1886,7 +1890,7 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
         .expect("Beam objective VM")
         .id
         .clone();
-    let publication = evaluate_crucible_measurement_publication(
+    let publication = crate::crucible_measurement::test_measurement_publication(
         lineage.scenario(),
         candidate.child().configuration(),
         scenario.measurements(),
@@ -1900,9 +1904,11 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
         crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("production measurement publication");
+    let (publication, segments) = publication;
     let (evidence, _evidence_bytes, measurements) = publication.into_parts();
     let evaluation = evidence
         .replay(
+            &segments,
             lineage.scenario(),
             candidate.child().configuration(),
             scenario.measurements(),
@@ -1920,7 +1926,11 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
             retained.properties(),
             retained.coverage(),
         ),
-        retained.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with retained measurement trace");
     let expected = crate::evaluate_crucible_objectives(
@@ -1945,8 +1955,13 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
         observation,
     )
     .expect("candidate with retained measurement trace");
-    let result = PreparedSemanticAttemptResult::new(observation.clone(), vec![evidence], None)
-        .expect("prepared semantic observation");
+    let result = PreparedSemanticAttemptResult::new(
+        observation.clone(),
+        vec![evidence],
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared semantic observation");
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
     publish_prepared_semantic_attempt_result(
         &store,
@@ -2092,7 +2107,7 @@ fn recover_complete_prepared_journal(
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "prepared-recovery");
     let scenario = minimal_campaign_scenario();
-    let publication = evaluate_crucible_measurement_publication(
+    let publication = crate::crucible_measurement::test_measurement_publication(
         candidate.child().scenario(),
         candidate.child().configuration(),
         scenario.measurements(),
@@ -2105,7 +2120,8 @@ fn recover_complete_prepared_journal(
         },
         crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
-    .expect("measurement publication");
+    .expect("measurement publication")
+    .0;
     let (evidence, _, measurements) = publication.into_parts();
     let observation = candidate.observation();
     let observation = Observation::new(
@@ -2119,7 +2135,11 @@ fn recover_complete_prepared_journal(
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with raw measurement evidence");
     let candidate = ObservationCandidate::new(
@@ -2131,8 +2151,13 @@ fn recover_complete_prepared_journal(
         observation,
     )
     .expect("candidate with raw measurement evidence");
-    let prepared = PreparedSemanticAttemptResult::new(candidate, vec![evidence.clone()], None)
-        .expect("prepared semantic result");
+    let prepared = PreparedSemanticAttemptResult::new(
+        candidate,
+        vec![evidence.clone()],
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared semantic result");
     let expected_observation = prepared
         .observation()
         .observation()
@@ -2203,7 +2228,7 @@ fn recover_complete_prepared_journal(
         store
             .publish_executor_trace_leaf(
                 evidence_id,
-                crate::CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2,
+                evidence.schema_version(),
                 &evidence.canonical_bytes().expect("evidence bytes"),
             )
             .expect("prepublish trace leaf");
@@ -2299,8 +2324,13 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "completed-prepared-cleanup");
     let exact_observation = candidate.observation().id().expect("exact observation ID");
-    let prepared = PreparedSemanticAttemptResult::new(candidate.clone(), Vec::new(), None)
-        .expect("prepared result");
+    let prepared = PreparedSemanticAttemptResult::new(
+        candidate.clone(),
+        Vec::new(),
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared result");
     let key = AttemptExecutionKey::new(lineage.id().expect("lineage ID"), admitted.attempt);
     let execution = ExecutionId::from_bytes([0xa1; 16]).expect("execution");
     let journals = TempDir::new().expect("prepared journals");
@@ -2393,8 +2423,13 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "incomplete-prepared-recovery");
-    let prepared =
-        PreparedSemanticAttemptResult::new(candidate, Vec::new(), None).expect("prepared result");
+    let prepared = PreparedSemanticAttemptResult::new(
+        candidate,
+        Vec::new(),
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared result");
     let epoch = DaemonEpoch::from_bytes([0x85; 16]).expect("daemon epoch");
     let request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x86; 16]).expect("assignment"),
@@ -2427,7 +2462,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             .expect("journal directory name")
     ));
     std::fs::rename(&journal_root, &staged_root).expect("interrupt journal publication");
-    std::fs::remove_file(staged_root.join("state-v2")).expect("leave partial staged journal");
+    std::fs::remove_file(staged_root.join("state-v4")).expect("leave partial staged journal");
 
     let observer: Arc<dyn PausedCheckpointObserver> =
         Arc::new(RecordingPausedCheckpointObserver::default());

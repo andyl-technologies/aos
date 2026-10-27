@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible-engine/test-double"]
+test-support = ["crucible-engine/test-double", "crucible-qemu-shmem/test-support"]
 
 [lints]
 workspace = true
@@ -20,7 +20,7 @@ aos-linux-project-quota = { path = "../../linux/aos-linux-project-quota", defaul
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }
 libc = { workspace = true }
-rustix = { workspace = true, features = ["net", "param", "process"] }
+rustix = { workspace = true, features = ["net", "param", "process", "time"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 ciborium = { workspace = true }
@@ -30,5 +30,6 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-qemu-shmem = { path = "../crucible-qemu-shmem", features = ["test-support"] }
 crucible-engine = { path = "../crucible-engine", features = ["test-double"] }
 rustix = { workspace = true, features = ["time"] }

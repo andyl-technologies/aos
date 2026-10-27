@@ -1,65 +1,137 @@
 //! Canonical replay-record indexing, encoding, and materialization.
+//!
+//! Retained replay records live in a record store and are named here only by
+//! identity. Validation reads each record when it is needed and drops it
+//! afterwards, so no pass holds more than one replay's records at once.
 
 use super::*;
+use crate::{ReplayRecord, load_replay_record_by_content};
+use crucible_campaign::{ChoiceDomainId, ChoiceOpportunityId, SelectableId};
+use crucible_store::content_store::ContentId;
+
+/// Canonical byte length of every retained record, by identity.
+///
+/// Building the index reads and authenticates each record once. Only
+/// identities, lengths, and each opportunity's two references stay resident.
+struct ReplayRecordIndex {
+    lengths: BTreeMap<ContentId, usize>,
+    opportunity_references: BTreeMap<ChoiceOpportunityId, (SelectableId, ChoiceDomainId)>,
+}
+
+impl ReplayRecordIndex {
+    fn build(
+        records: &PreparedFindingReplayRecords,
+    ) -> Result<Self, PreparedSemanticResultCodecError> {
+        let mut index = Self {
+            lengths: BTreeMap::new(),
+            opportunity_references: BTreeMap::new(),
+        };
+        let ids = &records.ids;
+        index.measure::<ConfigurationArtifact>(records, &ids.configurations)?;
+        index.measure::<MeasurementSet>(records, &ids.measurements)?;
+        index.measure::<PropertyVerdictSet>(records, &ids.properties)?;
+        index.measure::<CoverageProjection>(records, &ids.coverage)?;
+        index.measure::<SelectableDeclaration>(records, &ids.declarations)?;
+        index.measure::<ChoiceDomain>(records, &ids.domains)?;
+        index.measure::<Selection>(records, &ids.selections)?;
+        for id in &ids.opportunities {
+            let (opportunity, length) = load_replay_record::<ChoiceOpportunity>(records, *id)?;
+            index.insert(id.content_id(), length)?;
+            index
+                .opportunity_references
+                .insert(*id, (opportunity.declaration(), opportunity.domain()));
+        }
+        Ok(index)
+    }
+
+    fn measure<T: ReplayRecord>(
+        &mut self,
+        records: &PreparedFindingReplayRecords,
+        ids: &[T::Id],
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        for id in ids {
+            let (_, length) = load_replay_record::<T>(records, *id)?;
+            self.insert(T::content_id(*id), length)?;
+        }
+        Ok(())
+    }
+
+    fn insert(
+        &mut self,
+        id: ContentId,
+        length: usize,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        if self.lengths.insert(id, length).is_some() {
+            return Err(inconsistent("duplicate finding replay record"));
+        }
+        Ok(())
+    }
+}
+
+/// Reads one record and its canonical length through the prepared sources.
+fn load_replay_record<T: ReplayRecord>(
+    records: &PreparedFindingReplayRecords,
+    id: T::Id,
+) -> Result<(T, usize), PreparedSemanticResultCodecError> {
+    crate::load_replay_record::<T>(&records.sources, id).map_err(Into::into)
+}
+
+/// Repeated-reference budget for one journal's replay reconstruction.
+///
+/// A compact journal may refer to one large record from every replay, so the
+/// copy work of reconstruction is charged per reference before it starts.
+struct ReferenceCharge<'a> {
+    index: &'a ReplayRecordIndex,
+    bytes: u64,
+    count: usize,
+}
+
+impl ReferenceCharge<'_> {
+    fn charge(
+        &mut self,
+        id: ContentId,
+        component: &'static str,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        let length = self
+            .index
+            .lengths
+            .get(&id)
+            .ok_or(PreparedSemanticResultCodecError::Inconsistent { component })?;
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
+        self.bytes = self.bytes.saturating_add(*length as u64);
+        if self.count > MAX_REPLAY_VALIDATION_REFERENCES
+            || self.bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES
+        {
+            return Err(PreparedSemanticResultCodecError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
 
 pub(super) fn validate_recorded_replays(
     value: &PreparedCrucibleFindingCandidate,
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    let configurations = indexed_by_id(
-        &value.replay_records.configurations,
-        |record| record.id(),
-        ConfigurationArtifact::canonical_bytes,
-    )?;
-    let measurements = indexed_by_id(
-        &value.replay_records.measurements,
-        |record| record.id(),
-        MeasurementSet::canonical_bytes,
-    )?;
-    let properties = indexed_by_id(
-        &value.replay_records.properties,
-        |record| record.id(),
-        PropertyVerdictSet::canonical_bytes,
-    )?;
-    let coverage = indexed_by_id(
-        &value.replay_records.coverage,
-        |record| record.id(),
-        CoverageProjection::canonical_bytes,
-    )?;
-    let declarations = indexed_by_id(
-        &value.replay_records.declarations,
-        |record| record.id(),
-        SelectableDeclaration::canonical_bytes,
-    )?;
-    let domains = indexed_by_id(
-        &value.replay_records.domains,
-        |record| record.id(),
-        ChoiceDomain::canonical_bytes,
-    )?;
-    let opportunities = indexed_by_id(
-        &value.replay_records.opportunities,
-        |record| record.id(),
-        ChoiceOpportunity::canonical_bytes,
-    )?;
-    let selections = indexed_by_id(
-        &value.replay_records.selections,
-        |record| record.id(),
-        Selection::canonical_bytes,
-    )?;
+    let records = &value.replay_records;
+    let index = ReplayRecordIndex::build(records)?;
+    let replays = || {
+        value
+            .minimization_replays
+            .iter()
+            .chain(&value.verification_replays)
+    };
 
-    // A compact journal may refer to one large record from every replay. Bound
-    // that repeated copy work before reconstructing any owned evidence values.
-    let mut referenced_bytes = 0usize;
-    let mut reference_count = 0usize;
-    for replay in value
-        .minimization_replays
-        .iter()
-        .chain(&value.verification_replays)
-    {
-        charge_reference(
-            &configurations,
-            &replay.configuration(),
-            &mut referenced_bytes,
-            &mut reference_count,
+    // Charge every reference before reconstructing any owned evidence value.
+    let mut charge = ReferenceCharge {
+        index: &index,
+        bytes: 0,
+        count: 0,
+    };
+    for replay in replays() {
+        charge.charge(
+            replay.configuration().content_id(),
             "finding replay configuration",
         )?;
         let Some((measurement_id, property_id, coverage_id, opportunity_ids, selection_ids)) =
@@ -67,201 +139,163 @@ pub(super) fn validate_recorded_replays(
         else {
             continue;
         };
-        charge_reference(
-            &measurements,
-            &measurement_id,
-            &mut referenced_bytes,
-            &mut reference_count,
-            "finding replay measurements",
-        )?;
-        charge_reference(
-            &properties,
-            &property_id,
-            &mut referenced_bytes,
-            &mut reference_count,
-            "finding replay properties",
-        )?;
-        charge_reference(
-            &coverage,
-            &coverage_id,
-            &mut referenced_bytes,
-            &mut reference_count,
-            "finding replay coverage",
-        )?;
+        charge.charge(measurement_id.content_id(), "finding replay measurements")?;
+        charge.charge(property_id.content_id(), "finding replay properties")?;
+        charge.charge(coverage_id.content_id(), "finding replay coverage")?;
         for opportunity_id in opportunity_ids {
-            let (opportunity, _) = charge_reference(
-                &opportunities,
-                opportunity_id,
-                &mut referenced_bytes,
-                &mut reference_count,
-                "finding replay opportunity",
-            )?;
-            charge_reference(
-                &declarations,
-                &opportunity.declaration(),
-                &mut referenced_bytes,
-                &mut reference_count,
-                "finding replay declaration",
-            )?;
-            charge_reference(
-                &domains,
-                &opportunity.domain(),
-                &mut referenced_bytes,
-                &mut reference_count,
-                "finding replay domain",
-            )?;
+            charge.charge(opportunity_id.content_id(), "finding replay opportunity")?;
+            let (declaration, domain) = index
+                .opportunity_references
+                .get(opportunity_id)
+                .ok_or_else(|| inconsistent("finding replay opportunity"))?;
+            charge.charge(declaration.content_id(), "finding replay declaration")?;
+            charge.charge(domain.content_id(), "finding replay domain")?;
         }
         for selection_id in selection_ids {
-            charge_reference(
-                &selections,
-                selection_id,
-                &mut referenced_bytes,
-                &mut reference_count,
-                "finding replay selection",
-            )?;
+            charge.charge(selection_id.content_id(), "finding replay selection")?;
         }
     }
 
-    for replay in value
-        .minimization_replays
-        .iter()
-        .chain(&value.verification_replays)
-    {
-        let (configuration, _) = configurations.get(&replay.configuration()).ok_or(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "finding replay configuration",
-            },
-        )?;
+    // Reconstruct one replay at a time; its records drop before the next.
+    for replay in replays() {
         let Some((measurement_id, property_id, coverage_id, opportunity_ids, selection_ids)) =
             replay.observed_components()
         else {
             continue;
         };
-        let (measurement, _) = measurements.get(&measurement_id).ok_or(
-            PreparedSemanticResultCodecError::Inconsistent {
-                component: "finding replay measurements",
-            },
-        )?;
-        let (property, _) =
-            properties
-                .get(&property_id)
-                .ok_or(PreparedSemanticResultCodecError::Inconsistent {
-                    component: "finding replay properties",
-                })?;
-        let (projection, _) =
-            coverage
-                .get(&coverage_id)
-                .ok_or(PreparedSemanticResultCodecError::Inconsistent {
-                    component: "finding replay coverage",
-                })?;
+        let (configuration, _) =
+            load_replay_record::<ConfigurationArtifact>(records, replay.configuration())?;
+        let (measurement, _) = load_replay_record::<MeasurementSet>(records, measurement_id)?;
+        let (property, _) = load_replay_record::<PropertyVerdictSet>(records, property_id)?;
+        let (projection, _) = load_replay_record::<CoverageProjection>(records, coverage_id)?;
+
         let mut discoveries = Vec::with_capacity(opportunity_ids.len());
         for opportunity_id in opportunity_ids {
-            let (opportunity, _) = opportunities.get(opportunity_id).ok_or(
-                PreparedSemanticResultCodecError::Inconsistent {
-                    component: "finding replay opportunity",
-                },
-            )?;
-            let (declaration, _) = declarations.get(&opportunity.declaration()).ok_or(
-                PreparedSemanticResultCodecError::Inconsistent {
-                    component: "finding replay declaration",
-                },
-            )?;
-            let (domain, _) = domains.get(&opportunity.domain()).ok_or(
-                PreparedSemanticResultCodecError::Inconsistent {
-                    component: "finding replay domain",
-                },
-            )?;
-            discoveries.push(ChoiceDiscovery::new(
-                (*declaration).clone(),
-                (*domain).clone(),
-                (*opportunity).clone(),
-            )?);
+            let (opportunity, _) =
+                load_replay_record::<ChoiceOpportunity>(records, *opportunity_id)?;
+            let (declaration, _) =
+                load_replay_record::<SelectableDeclaration>(records, opportunity.declaration())?;
+            let (domain, _) = load_replay_record::<ChoiceDomain>(records, opportunity.domain())?;
+            discoveries.push(ChoiceDiscovery::new(declaration, domain, opportunity)?);
         }
         let replay_selections = selection_ids
             .iter()
-            .map(|id| {
-                selections
-                    .get(id)
-                    .map(|(record, _)| (*record).clone())
-                    .ok_or(PreparedSemanticResultCodecError::Inconsistent {
-                        component: "finding replay selection",
-                    })
-            })
+            .map(|id| load_replay_record::<Selection>(records, *id).map(|(record, _)| record))
             .collect::<Result<Vec<_>, _>>()?;
+
         let reconstructed = crate::CrucibleFindingReplayEvidence::new(
             replay.signature().cloned(),
-            (*configuration).clone(),
-            (*measurement).clone(),
-            (*property).clone(),
-            (*projection).clone(),
+            configuration,
+            measurement,
+            property,
+            projection,
             discoveries,
             replay_selections,
         )?;
         if reconstructed.configuration().id()? != replay.configuration()
             || reconstructed.signature() != replay.signature()
         {
-            return Err(PreparedSemanticResultCodecError::Inconsistent {
-                component: "finding replay reconstruction",
-            });
+            return Err(inconsistent("finding replay reconstruction"));
         }
     }
     Ok(())
 }
 
-fn indexed_by_id<T, I: Ord>(
-    records: &[T],
-    mut id: impl FnMut(&T) -> Result<I, CampaignCodecError>,
-    canonical_bytes: impl Fn(&T) -> Vec<u8>,
-) -> Result<BTreeMap<I, (&T, usize)>, PreparedSemanticResultCodecError> {
-    let mut indexed = BTreeMap::new();
-    for record in records {
-        if indexed
-            .insert(id(record)?, (record, canonical_bytes(record).len()))
-            .is_some()
-        {
-            return Err(PreparedSemanticResultCodecError::Inconsistent {
-                component: "duplicate finding replay record",
-            });
-        }
-    }
-    Ok(indexed)
+/// Encodes the eight identity tables in canonical table order.
+pub(super) fn encode_record_ids(
+    encoder: &mut Encoder,
+    ids: &ReplayRecordIds,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    encode_id_table(encoder, &ids.configurations, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.measurements, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.properties, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.coverage, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.declarations, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.domains, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.opportunities, |id| id.content_id())?;
+    encode_id_table(encoder, &ids.selections, |id| id.content_id())
 }
 
-fn charge_reference<'a, T, I: Ord>(
-    records: &'a BTreeMap<I, (&'a T, usize)>,
-    id: &I,
-    referenced_bytes: &mut usize,
-    reference_count: &mut usize,
-    component: &'static str,
-) -> Result<(&'a T, usize), PreparedSemanticResultCodecError> {
-    let &(record, bytes) = records
-        .get(id)
-        .ok_or(PreparedSemanticResultCodecError::Inconsistent { component })?;
-    *reference_count = reference_count
-        .checked_add(1)
-        .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-    *referenced_bytes = referenced_bytes
-        .checked_add(bytes)
-        .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-    if *reference_count > MAX_REPLAY_VALIDATION_REFERENCES
-        || *referenced_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES
-    {
-        return Err(PreparedSemanticResultCodecError::LimitExceeded);
+fn encode_id_table<I: Copy>(
+    encoder: &mut Encoder,
+    ids: &[I],
+    content_id: impl Fn(I) -> ContentId,
+) -> Result<(), PreparedSemanticResultCodecError> {
+    encoder.count(ids.len())?;
+    for id in ids {
+        encoder.content_id(content_id(*id))?;
     }
-    Ok((record, bytes))
+    Ok(())
+}
+
+/// Decodes the eight identity tables and types each identity by its record.
+///
+/// Every named record is read from `sources` once and authenticated, which
+/// also yields its typed identity and canonical length. Returns the tables
+/// with the distinct record count and aggregate canonical bytes.
+pub(super) fn decode_record_ids(
+    decoder: &mut Decoder<'_>,
+    sources: &crate::ReplayRecordSources,
+) -> Result<(ReplayRecordIds, usize, u64), PreparedSemanticResultCodecError> {
+    let mut tally = RecordTally {
+        sources,
+        seen: BTreeSet::new(),
+        bytes: 0,
+    };
+    let ids = ReplayRecordIds {
+        configurations: tally.table::<ConfigurationArtifact>(decoder)?,
+        measurements: tally.table::<MeasurementSet>(decoder)?,
+        properties: tally.table::<PropertyVerdictSet>(decoder)?,
+        coverage: tally.table::<CoverageProjection>(decoder)?,
+        declarations: tally.table::<SelectableDeclaration>(decoder)?,
+        domains: tally.table::<ChoiceDomain>(decoder)?,
+        opportunities: tally.table::<ChoiceOpportunity>(decoder)?,
+        selections: tally.table::<Selection>(decoder)?,
+    };
+    Ok((ids, tally.seen.len(), tally.bytes))
+}
+
+/// Distinct identities and canonical bytes of the tables decoded so far.
+struct RecordTally<'a> {
+    sources: &'a crate::ReplayRecordSources,
+    seen: BTreeSet<ContentId>,
+    bytes: u64,
+}
+
+impl RecordTally<'_> {
+    fn table<T: ReplayRecord>(
+        &mut self,
+        decoder: &mut Decoder<'_>,
+    ) -> Result<Vec<T::Id>, PreparedSemanticResultCodecError> {
+        let remaining = MAX_CRUCIBLE_FINDING_REPLAY_RECORDS - self.seen.len();
+        let count = decoder.index_count(remaining)?;
+        decoder.preflight_collection(count, 1)?;
+
+        let mut ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            let content = decoder.content_id()?;
+            if !self.seen.insert(content) {
+                return Err(inconsistent("duplicate finding replay record"));
+            }
+            let (id, length) = load_replay_record_by_content::<T>(self.sources, content)?;
+            self.bytes = self.bytes.saturating_add(length as u64);
+            ids.push(id);
+        }
+        Ok(ids)
+    }
 }
 
 pub(super) fn encode_replays(
     encoder: &mut Encoder,
     value: &PreparedCrucibleFindingCandidate,
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    let records = &value.replay_records;
-    let configurations = content_positions(&records.configurations, |record| record.id())?;
-    let measurements = content_positions(&records.measurements, |record| record.id())?;
-    let properties = content_positions(&records.properties, |record| record.id())?;
-    let coverage = content_positions(&records.coverage, |record| record.id())?;
-    let opportunities = content_positions(&records.opportunities, |record| record.id())?;
-    let selections = content_positions(&records.selections, |record| record.id())?;
+    let ids = &value.replay_records.ids;
+    let configurations = content_positions(&ids.configurations)?;
+    let measurements = content_positions(&ids.measurements)?;
+    let properties = content_positions(&ids.properties)?;
+    let coverage = content_positions(&ids.coverage)?;
+    let opportunities = content_positions(&ids.opportunities)?;
+    let selections = content_positions(&ids.selections)?;
     let indexes = ReplayRecordIndexes {
         configurations,
         measurements,
@@ -274,19 +308,18 @@ pub(super) fn encode_replays(
     encode_replay_pass(encoder, &value.verification_replays, &indexes)
 }
 
-fn content_positions<T, I>(
-    records: &[T],
-    mut id: impl FnMut(&T) -> Result<I, CampaignCodecError>,
+fn content_positions<I>(
+    ids: &[I],
 ) -> Result<
     BTreeMap<crucible_store::content_store::ContentId, usize>,
     PreparedSemanticResultCodecError,
 >
 where
-    I: ContentIdentity,
+    I: ContentIdentity + Copy,
 {
     let mut positions = BTreeMap::new();
-    for (index, record) in records.iter().enumerate() {
-        if positions.insert(id(record)?.content_id(), index).is_some() {
+    for (index, id) in ids.iter().enumerate() {
+        if positions.insert(id.content_id(), index).is_some() {
             return Err(PreparedSemanticResultCodecError::Inconsistent {
                 component: "duplicate finding replay record",
             });
@@ -405,7 +438,7 @@ pub(super) fn decode_replay_indexes(
     decoder: &mut Decoder<'_>,
     validation_references: &mut usize,
 ) -> Result<Vec<ReplayIndexes>, PreparedSemanticResultCodecError> {
-    let count = decoder.count_bounded(MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)?;
+    let count = decoder.index_count(MAX_CRUCIBLE_FINDING_REPLAYS_PER_PASS)?;
     charge_validation_references(validation_references, count, 4)?;
     // tag + configuration index + closed incompatibility reason
     let minimum_entry_bytes = 2 + size_of::<u32>();
@@ -428,14 +461,14 @@ pub(super) fn decode_replay_indexes(
         let measurements = decoder.index()?;
         let properties = decoder.index()?;
         let coverage = decoder.index()?;
-        let opportunity_count = decoder.count_bounded(MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)?;
+        let opportunity_count = decoder.index_count(MAX_REPLAY_VALIDATION_REFERENCES)?;
         charge_validation_references(validation_references, opportunity_count, 3)?;
         decoder.preflight_collection(opportunity_count, size_of::<u32>())?;
         let mut opportunities = Vec::with_capacity(opportunity_count);
         for _ in 0..opportunity_count {
             opportunities.push(decoder.index()?);
         }
-        let selection_count = decoder.count_bounded(MAX_CRUCIBLE_FINDING_REPLAY_RECORDS)?;
+        let selection_count = decoder.index_count(MAX_REPLAY_VALIDATION_REFERENCES)?;
         charge_validation_references(validation_references, selection_count, 1)?;
         decoder.preflight_collection(selection_count, size_of::<u32>())?;
         let mut selections = Vec::with_capacity(selection_count);
@@ -549,16 +582,6 @@ pub(super) fn materialize_replays(
         .collect()
 }
 
-pub(super) fn record_ids<T, I>(
-    records: &[T],
-    mut id: impl FnMut(&T) -> Result<I, CampaignCodecError>,
-) -> Result<Vec<I>, PreparedSemanticResultCodecError> {
-    records
-        .iter()
-        .map(|record| id(record).map_err(Into::into))
-        .collect()
-}
-
 fn indexed<T>(records: &[T], index: usize) -> Result<&T, PreparedSemanticResultCodecError> {
     records
         .get(index)
@@ -586,76 +609,6 @@ pub(super) fn discovery_path_from_tag(
         3 => Ok(crucible_engine::FindingDiscoveryPath::RetainedCorpusEntry),
         _ => Err(PreparedSemanticResultCodecError::InvalidTag),
     }
-}
-
-pub(super) struct ReplayRecordTables<'a> {
-    pub(super) configurations: &'a [ConfigurationArtifact],
-    pub(super) measurements: &'a [MeasurementSet],
-    pub(super) properties: &'a [PropertyVerdictSet],
-    pub(super) coverage: &'a [CoverageProjection],
-    pub(super) declarations: &'a [SelectableDeclaration],
-    pub(super) domains: &'a [ChoiceDomain],
-    pub(super) opportunities: &'a [ChoiceOpportunity],
-    pub(super) selections: &'a [Selection],
-}
-
-pub(super) fn replay_record_totals(
-    tables: ReplayRecordTables<'_>,
-    bundle: &FindingCandidateBundle,
-) -> Result<(usize, usize), PreparedSemanticResultCodecError> {
-    let mut identities = BTreeSet::new();
-    let mut bytes = 0usize;
-    macro_rules! charge {
-        ($records:expr, $id:ident) => {
-            for record in $records {
-                if !identities.insert(record.$id()?.content_id()) {
-                    return Err(PreparedSemanticResultCodecError::Inconsistent {
-                        component: "duplicate finding replay record",
-                    });
-                }
-                bytes = bytes
-                    .checked_add(record.canonical_bytes().len())
-                    .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-            }
-        };
-    }
-    charge!(tables.configurations, id);
-    charge!(tables.measurements, id);
-    charge!(tables.properties, id);
-    charge!(tables.coverage, id);
-    charge!(tables.declarations, id);
-    charge!(tables.domains, id);
-    charge!(tables.opportunities, id);
-    charge!(tables.selections, id);
-    for signature in bundle
-        .signature_minimization()
-        .minimization_pass()
-        .iter()
-        .chain(bundle.signature_minimization().verification_pass().iter())
-        .flatten()
-    {
-        bytes = bytes
-            .checked_add(signature.canonical_bytes().len())
-            .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-    }
-    if identities.len() > MAX_CRUCIBLE_FINDING_REPLAY_RECORDS
-        || bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES
-    {
-        return Err(PreparedSemanticResultCodecError::LimitExceeded);
-    }
-    Ok((identities.len(), bytes))
-}
-
-pub(super) fn encode_records<T>(
-    encoder: &mut Encoder,
-    records: &[T],
-    encode: fn(&T) -> Vec<u8>,
-) -> Result<(), PreparedSemanticResultCodecError> {
-    encoder.count(records.len())?;
-    for record in records {
-        encoder.record(&encode(record))?;
-    }
-    Ok(())
 }
 
 pub(super) struct Encoder {
@@ -701,6 +654,18 @@ impl Encoder {
         let index =
             u32::try_from(index).map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?;
         self.raw(&index.to_be_bytes())
+    }
+
+    /// Writes one content identity as a u8-length-prefixed canonical string.
+    pub(super) fn content_id(
+        &mut self,
+        id: crucible_store::content_store::ContentId,
+    ) -> Result<(), PreparedSemanticResultCodecError> {
+        let encoded = id.encode();
+        let length = u8::try_from(encoded.len())
+            .map_err(|_| PreparedSemanticResultCodecError::LimitExceeded)?;
+        self.byte(length)?;
+        self.raw(encoded.as_bytes())
     }
 
     pub(super) fn record(&mut self, record: &[u8]) -> Result<(), PreparedSemanticResultCodecError> {
@@ -790,6 +755,36 @@ impl<'a> Decoder<'a> {
         Ok(count)
     }
 
+    /// Reads the length of an identity or index list.
+    ///
+    /// Identity lists hold no payload records, so they are bounded by
+    /// `maximum` rather than by the payload record count.
+    pub(super) fn index_count(
+        &mut self,
+        maximum: usize,
+    ) -> Result<usize, PreparedSemanticResultCodecError> {
+        let count = u32::from_be_bytes(
+            self.take(4)?
+                .try_into()
+                .map_err(|_| PreparedSemanticResultCodecError::Truncated)?,
+        ) as usize;
+        if count > maximum {
+            return Err(PreparedSemanticResultCodecError::LimitExceeded);
+        }
+        Ok(count)
+    }
+
+    /// Reads one content identity written by [`Encoder::content_id`].
+    pub(super) fn content_id(
+        &mut self,
+    ) -> Result<crucible_store::content_store::ContentId, PreparedSemanticResultCodecError> {
+        let length = usize::from(self.byte()?);
+        let encoded = std::str::from_utf8(self.take(length)?)
+            .map_err(|_| PreparedSemanticResultCodecError::NonCanonical)?;
+        crucible_store::content_store::ContentId::parse(encoded)
+            .map_err(|_| PreparedSemanticResultCodecError::NonCanonical)
+    }
+
     pub(super) fn index(&mut self) -> Result<usize, PreparedSemanticResultCodecError> {
         Ok(u32::from_be_bytes(
             self.take(4)?
@@ -819,33 +814,6 @@ impl<'a> Decoder<'a> {
         decode: fn(&[u8]) -> Result<T, CampaignCodecError>,
     ) -> Result<T, PreparedSemanticResultCodecError> {
         decode(self.record()?).map_err(Into::into)
-    }
-
-    pub(super) fn decode_replay_records<T>(
-        &mut self,
-        decode: fn(&[u8]) -> Result<T, CampaignCodecError>,
-        aggregate_count: &mut usize,
-        aggregate_bytes: &mut usize,
-    ) -> Result<Vec<T>, PreparedSemanticResultCodecError> {
-        let remaining = MAX_CRUCIBLE_FINDING_REPLAY_RECORDS
-            .checked_sub(*aggregate_count)
-            .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-        let count = self.count_bounded(remaining)?;
-        *aggregate_count += count;
-        self.preflight_collection(count, size_of::<u32>())?;
-
-        let mut records = Vec::with_capacity(count);
-        for _ in 0..count {
-            let bytes = self.record()?;
-            *aggregate_bytes = aggregate_bytes
-                .checked_add(bytes.len())
-                .ok_or(PreparedSemanticResultCodecError::LimitExceeded)?;
-            if *aggregate_bytes > MAX_CRUCIBLE_FINDING_REPLAY_BYTES {
-                return Err(PreparedSemanticResultCodecError::LimitExceeded);
-            }
-            records.push(decode(bytes)?);
-        }
-        Ok(records)
     }
 
     pub(super) fn preflight_collection(

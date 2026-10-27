@@ -1,5 +1,9 @@
 //! Exact live-network choice reservation between backend admission and a stop.
+//!
+//! Settling a reserved choice also resumes the held peer publication that the
+//! offer interrupted.
 
+use super::host_run_validation::validate_host_run_outcome;
 use super::*;
 
 /// Backend evidence held after the first unselected World-network route.
@@ -26,8 +30,10 @@ pub(super) struct BackendPendingPreselection {
 impl<L, B, I> BackendQuantumLoop<L, B, I> {
     /// Enables an exact preselection stop for the current choice-search attempt.
     ///
-    /// The backend prepares one canonical RUN at a time while this is enabled,
-    /// so no other QEMU worker can advance beyond the offered parent.
+    /// RUN sets stay concurrent while this is enabled. A choice is offered at
+    /// the canonical publication cut: peers whose RUNs completed physically
+    /// but publish after the choice stay held, and the choice cannot reach
+    /// them before their settled endpoints.
     pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
         self.pause_before_live_network_choice = enabled;
         if !enabled {
@@ -35,11 +41,11 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         }
     }
 
-    /// Allows concurrent boot RUNs while retaining live-network choice interception.
+    /// Marks an audited choice-free prefix while retaining choice interception.
     ///
-    /// A choice found in a parallel batch aborts the unpublished continuation.
-    /// The caller must arm ordinary single-RUN pauses before its first permitted
-    /// choice boundary.
+    /// RUN sets are concurrent with or without this mark. While it is set, a
+    /// choice found in a RUN set aborts the unpublished continuation, because
+    /// the caller proved that the prefix contains no choice.
     pub fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
         self.parallel_choice_free_boot = enabled && self.pause_before_live_network_choice;
     }
@@ -144,6 +150,7 @@ where
                 ),
             });
         }
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("preselection");
         let (decisions, discoveries, configuration, append) = match &pending.selected {
             Some(selection) => self
                 .loop_impl
@@ -187,12 +194,14 @@ where
         outcome.configuration = configuration;
         append_to_outcome(&mut outcome, append);
 
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("preselection");
         for output in pending.remaining_unintercepted_outputs {
             let mut outputs = vec![output];
-            let appends = self.network_output_interceptor.intercept_network_outputs(
+            let appends = super::admission::intercept_at_release_times(
+                &mut self.network_output_interceptor,
                 &mut self.loop_impl,
                 &mut self.backend,
-                outcome.frontier,
+                &self.frozen_network_output_times,
                 &mut self.pending_network_outputs,
                 &mut outputs,
             )?;
@@ -334,8 +343,12 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
         selection: SelectionDecision,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let before_selection = self.loop_impl.clone();
-        if let Some(held) = self.held_host_continuation.as_ref() {
-            held.lineage.ensure_extension_room()?;
+        if let Some(held) = self.held_host_continuation.as_mut() {
+            held.prepare_canonical_extension(
+                &before_selection,
+                &self.held_stop_controller,
+                self.held_union_generation,
+            )?;
             if !held.lineage.context_is_current(&before_selection) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from("live selection changed its retained canonical union"),
@@ -417,4 +430,121 @@ pub(super) fn append_to_outcome(outcome: &mut QuantumOutcome, append: SchedulerE
     outcome.event_log_segment_text = append.segment_text;
     outcome.event_log_segment_hash = append.segment_hash;
     outcome.event_log_offset = append.offset;
+}
+
+impl<B, I> BackendQuantumLoop<SingleScheduler, B, I>
+where
+    B: ConcurrentSimulationBackend,
+    I: BackendNetworkOutputInterceptor<SingleScheduler, B> + Clone,
+{
+    /// Settles a live choice and publishes any already completed peer RUNs.
+    ///
+    /// Physical peer evidence stays private while a selectable is offered.
+    /// Settlement resumes its causal publication before another backend RUN
+    /// can be planned against the peer's old logical counter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if the offered prefix, peer identity, or
+    /// physical evidence changed, or a resumed admission fails.
+    pub fn settle_host_live_network_preselection(
+        &mut self,
+    ) -> Result<Vec<QuantumOutcome>, SchedulerError> {
+        let validation = (|| {
+            if let Some(state) = self.held_host_continuation.as_ref() {
+                if self.loop_impl.configuration() != &state.offer_configuration
+                    || self.loop_impl.event_log_offset() != state.offer_log_offset
+                    || self.loop_impl.effective_topology != state.topology
+                    || state.runs.len() > self.loop_impl.nodes.len()
+                {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "held physical RUNs differ from the offered choice prefix",
+                        ),
+                    });
+                }
+                for (node, held) in &state.runs {
+                    let Some(runtime) = self.loop_impl.nodes.get(held.run.plan.index) else {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "held choice peer `{}` lost its scheduler node",
+                                node.name
+                            ),
+                        });
+                    };
+                    if held.run.plan.node.node != *node
+                        || held.completed.node != *node
+                        || runtime.id != held.run.plan.node
+                        || runtime.counter != held.run.plan.before
+                        || state.generations.get(node) != Some(&held.generation)
+                    {
+                        return Err(SchedulerError::BoundaryViolation {
+                            message: format!(
+                                "held choice peer `{}` changed node, generation, or before counter",
+                                node.name,
+                            ),
+                        });
+                    }
+                    validate_host_run_outcome(&held.run, &held.completed)?;
+                }
+            }
+
+            Ok(())
+        })();
+        validation.map_err(|error| self.poison_continuation(error))?;
+        let before_settlement = self.loop_impl.clone();
+        let settlement_source = self
+            .preselection
+            .as_ref()
+            .map(|pending| pending.choice.output.source.clone());
+        if let Some(state) = self.held_host_continuation.as_mut() {
+            state
+                .prepare_canonical_extension(
+                    &before_settlement,
+                    &self.held_stop_controller,
+                    self.held_union_generation,
+                )
+                .map_err(|error| self.poison_continuation(error))?;
+        }
+        let continuation = self.held_host_continuation.take();
+        let settled = match self.settle_live_network_preselection() {
+            Ok(settled) => settled,
+            Err(error) => {
+                self.held_host_continuation = continuation;
+                return Err(self.poison_continuation(error));
+            }
+        };
+        let mut outcomes = vec![settled];
+        if let Some(mut state) = continuation {
+            let source = settlement_source.ok_or_else(|| {
+                self.poison_continuation(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "canonical choice settlement lost its actual output source",
+                    ),
+                })
+            })?;
+            state
+                .lineage
+                .extend_commit(&before_settlement, &self.loop_impl, &source)
+                .map_err(|error| self.poison_continuation(error))?;
+            for held in state.runs.values_mut() {
+                held.run.canonical_lineage = Some(state.lineage.clone());
+            }
+            for held in state.boundary_runs.values_mut() {
+                held.run.canonical_lineage = Some(state.lineage.clone());
+            }
+            for run in state.original_runs.values_mut() {
+                run.canonical_lineage = Some(state.lineage.clone());
+            }
+            if state.source_stop.is_some() {
+                state.offer_configuration = self.loop_impl.configuration().clone();
+                state.offer_log_offset = self.loop_impl.event_log_offset();
+                self.held_host_continuation = Some(state);
+            } else {
+                let scheduler = self.loop_impl.clone();
+                outcomes.extend(self.publish_held_host_continuation(scheduler, state)?);
+            }
+        }
+        Ok(outcomes)
+    }
 }

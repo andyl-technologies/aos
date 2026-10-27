@@ -333,31 +333,46 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         "combined scheduler publication must enqueue inbox frames before the ceiling wake",
     );
     let source = function_source("pub fn publish_scheduler_inbox_and_advance(");
+    assert!(source.contains("self.publish_scheduler_inbox_and_advance_with_effect("));
+    let source = function_source("pub fn publish_scheduler_inbox_and_advance_with_effect(");
     assert_source_order(
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
             "crate::region::helpers::preflight_ring_enqueue_capacity(",
             ".enqueue(inbox_entries, frame)",
-            "publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;",
+            "self.publish_prevalidated_scheduler_ceiling_with_effect(",
         ],
         "borrowed scheduler publication must enqueue inbox frames before the ceiling wake",
     );
     let source = function_source("pub fn publish_scheduler_advance(");
+    assert!(source.contains("self.publish_scheduler_advance_with_effect("));
+    let source = function_source("pub fn publish_scheduler_advance_with_effect(");
     assert_source_order(
         source,
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
-            "self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)",
+            "self.publish_prevalidated_scheduler_ceiling_with_effect(ceiling, stop_condition, effect)",
         ],
         "node-slot direct publication must validate before the prevalidated publish path",
     );
     let source = function_source("fn publish_prevalidated_scheduler_ceiling(");
+    assert!(source.contains("self.publish_prevalidated_scheduler_ceiling_with_effect("));
+    let source = function_source("fn publish_prevalidated_scheduler_ceiling_with_effect(");
     assert_source_order(
         source,
         &[
-            "self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);",
-            "self.wake_after_signal_increment()",
+            "self.publish_prevalidated_scheduler_ceiling_with_wake(",
+            "|| self.wake_after_signal_increment()",
+        ],
+        "original prevalidated publication must retain its genuine futex wake",
+    );
+    let source = function_source("fn publish_prevalidated_scheduler_ceiling_with_wake(");
+    assert_source_order(
+        source,
+        &[
+            "self.publish_scheduler_advance_fields_with_effect(",
+            "wake().map_err(|source| NodeSlotError::FutexWake { source })",
         ],
         "prevalidated node-slot publication must commit the advance tuple before waking",
     );

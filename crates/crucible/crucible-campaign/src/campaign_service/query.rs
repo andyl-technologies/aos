@@ -1013,16 +1013,29 @@ pub enum CampaignFindingObjectKind {
     Reproduction,
     /// The optional verified minimized reproduction artifact.
     MinimizedReproduction,
+    /// One run-length payload segment of the original or minimized
+    /// reproduction, selected by its position in the record's segment list.
+    ReproductionPayloadSegment {
+        /// Whether the segment belongs to the minimized reproduction.
+        minimized: bool,
+        /// Zero-based position in the reproduction's payload segments.
+        index: u32,
+    },
 }
 
 impl Canonical for CampaignFindingObjectKind {
     fn encode(&self, encoder: &mut Encoder) {
-        encoder.u8(match self {
-            Self::Observation => 0,
-            Self::LatestOccurrence => 1,
-            Self::Reproduction => 2,
-            Self::MinimizedReproduction => 3,
-        });
+        match self {
+            Self::Observation => encoder.u8(0),
+            Self::LatestOccurrence => encoder.u8(1),
+            Self::Reproduction => encoder.u8(2),
+            Self::MinimizedReproduction => encoder.u8(3),
+            Self::ReproductionPayloadSegment { minimized, index } => {
+                encoder.u8(4);
+                encoder.bool(*minimized);
+                encoder.u32(*index);
+            }
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
@@ -1031,6 +1044,10 @@ impl Canonical for CampaignFindingObjectKind {
             1 => Ok(Self::LatestOccurrence),
             2 => Ok(Self::Reproduction),
             3 => Ok(Self::MinimizedReproduction),
+            4 => Ok(Self::ReproductionPayloadSegment {
+                minimized: decoder.bool()?,
+                index: decoder.u32()?,
+            }),
             tag => Err(CampaignCodecError::UnknownTag {
                 kind: "campaign-finding-object-kind",
                 tag,
@@ -1050,6 +1067,18 @@ pub enum CampaignFindingObject {
     Reproduction(ReproductionArtifact),
     /// The verified minimized reproduction artifact.
     MinimizedReproduction(ReproductionArtifact),
+    /// One authenticated reproduction payload segment.
+    ///
+    /// The service authenticates the bytes against the segment the record
+    /// names; a client checks them against the record it read before.
+    ReproductionPayloadSegment {
+        /// Whether the segment belongs to the minimized reproduction.
+        minimized: bool,
+        /// Zero-based position in the reproduction's payload segments.
+        index: u32,
+        /// Exact segment bytes.
+        bytes: Vec<u8>,
+    },
 }
 
 impl CampaignFindingObject {
@@ -1061,6 +1090,12 @@ impl CampaignFindingObject {
             Self::LatestOccurrence(_) => CampaignFindingObjectKind::LatestOccurrence,
             Self::Reproduction(_) => CampaignFindingObjectKind::Reproduction,
             Self::MinimizedReproduction(_) => CampaignFindingObjectKind::MinimizedReproduction,
+            Self::ReproductionPayloadSegment {
+                minimized, index, ..
+            } => CampaignFindingObjectKind::ReproductionPayloadSegment {
+                minimized: *minimized,
+                index: *index,
+            },
         }
     }
 }
@@ -1073,6 +1108,7 @@ impl Canonical for CampaignFindingObject {
             Self::Reproduction(value) | Self::MinimizedReproduction(value) => {
                 value.encode(encoder);
             }
+            Self::ReproductionPayloadSegment { bytes, .. } => bytes.encode(encoder),
         }
     }
 
@@ -1089,6 +1125,17 @@ impl Canonical for CampaignFindingObject {
             }
             CampaignFindingObjectKind::MinimizedReproduction => {
                 ReproductionArtifact::decode(decoder).map(Self::MinimizedReproduction)
+            }
+            CampaignFindingObjectKind::ReproductionPayloadSegment { minimized, index } => {
+                Ok(Self::ReproductionPayloadSegment {
+                    minimized,
+                    index,
+                    bytes: decoder.sequence_bounded(
+                        crucible_store::segment_store::MAX_SEGMENT_BYTES,
+                        "campaign-finding-reproduction-segment-bytes",
+                        u8::decode,
+                    )?,
+                })
             }
         }
     }
@@ -1371,6 +1418,12 @@ fn finding_object_matches(
         CampaignFindingObject::MinimizedReproduction(value) => Ok(finding.minimized()
             == Some(value.id()?)
             && value.finding_fingerprint() == finding.signature().fingerprint()),
+        // A segment's identity lives in the reproduction record, not the
+        // finding, so the client authenticates the bytes against the record
+        // it read through this same snapshot.
+        CampaignFindingObject::ReproductionPayloadSegment {
+            minimized, bytes, ..
+        } => Ok(!bytes.is_empty() && (!*minimized || finding.minimized().is_some())),
     }
 }
 

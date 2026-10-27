@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:c487f917c5d01261a026c86b8f8f472ca03a1120fb6c35ae0e94160e3803832c"
+id = "blake3:3b22883b670808f6c0a2db9491f3590b1f60ec723e4b84fbe9ebb0210180f44d"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = "u64:18446744073709551615"
 selectable_declarations_per_node = 4096
@@ -50,7 +50,7 @@ jitter_nanos = 0
 loss_millionths = 250000
 
 [plan]
-id = "blake3:996a77348355c06c12b44b3801729cd1302d51ac8be8f4a3c6d1135b8ec2ad7e"
+id = "blake3:ca328b2f2045901aada638bc397225b0fb95b29711bbb485d61cc11765bdfde7"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -144,7 +144,6 @@ search_candidates_per_choice = 256
 search_choices_per_state = 65536
 trace_mutation_windows = 65536
 mapping_mutation_points = 65536
-minimization_attempts = 1048576
 
 [properties]
 id = "blake3:e50c95939c09158b59e4fc5d605939b8d43d56f394c17932d0f74795bf60040b"

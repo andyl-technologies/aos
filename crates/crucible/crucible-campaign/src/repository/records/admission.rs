@@ -377,25 +377,51 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<PlannerStep, CampaignRepositoryError> {
         self.read_planner_step_with_request(id)
-            .map(|(step, _)| step)
+            .map(|validated| validated.step)
     }
 
     pub(in crate::repository) fn read_planner_step_with_request(
         &self,
         id: ContentId,
-    ) -> Result<(PlannerStep, PlannerRequest), CampaignRepositoryError> {
+    ) -> Result<ValidatedPlannerStep, CampaignRepositoryError> {
+        self.read_planner_step_with_context(id, None)
+    }
+
+    /// Reuses fully checked step tuples within this validation attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original store, codec, or integrity errors from step, request,
+    /// invocation, next-state, parent-state, and accounting validation.
+    pub(in crate::repository) fn read_planner_step_with_context(
+        &self,
+        id: ContentId,
+        mut context: Option<&mut PlannerValidationContext>,
+    ) -> Result<ValidatedPlannerStep, CampaignRepositoryError> {
+        if let Some(context) = context.as_ref()
+            && let Some(validated) = context.step(id)
+        {
+            return Ok(validated);
+        }
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::PlannerStep)?;
         let step = PlannerStep::from_canonical_bytes(envelope.body())?;
         if step.id()?.content_id() != id {
             return Err(integrity("planner-step-envelope-shape"));
         }
-        let request = self.read_planner_request(step.request().content_id())?;
+        let retained = match context
+            .as_ref()
+            .and_then(|context| context.request(step.request().content_id()))
+        {
+            Some(validated) => validated,
+            None => self.read_planner_request_with_invocation(step.request().content_id())?,
+        };
+        let request = &retained.request;
         if request.invocation_id()? != step.invocation()
             || request.request_digest() != step.request_digest()
         {
             return Err(integrity("planner-step-request-mismatch"));
         }
-        let invocation = self.load_planner_invocation(step.invocation())?;
+        let invocation = &retained.invocation;
         if invocation.engine() != step.engine()
             || invocation.policy_artifact() != step.policy_artifact()
             || invocation.policy() != step.policy()
@@ -403,7 +429,7 @@ impl CampaignRepository {
         {
             return Err(integrity("planner-step-invocation-mismatch"));
         }
-        self.validate_planner_disposition_page(&invocation, step.disposition())?;
+        self.validate_planner_disposition_page(invocation, step.disposition())?;
 
         let next_state_envelope = self.require_record_kind(
             step.next_state().content_id(),
@@ -445,7 +471,11 @@ impl CampaignRepository {
                 return Err(integrity("planner-step-parent-state-discontinuity"));
             }
         }
-        Ok((step, request))
+        let validated = ValidatedPlannerStep { step, retained };
+        if let Some(context) = context.as_mut() {
+            context.insert_step(id, validated.step.request().content_id(), validated.clone());
+        }
+        Ok(validated)
     }
 
     pub(in crate::repository) fn read_expansion_state(

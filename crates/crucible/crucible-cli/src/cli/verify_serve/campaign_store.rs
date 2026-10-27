@@ -8,15 +8,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read, Take};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
 use crucible_daemon::LinuxProjectQuotaBinder;
 use crucible_daemon::campaign_store_composition::{
-    ContentId, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
-    MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind,
+    ContentId, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend, ObjectKind,
     RefInventorySummary, RefStoreAdmin, S3RefBackend, StoreEncryptionKey, StoreEncryptionKeyId,
     StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreGraphKeyring,
     StoreGraphNamespaceAuthorizers, StoreGraphObjectProfilers, StoreGraphPhysicalQuotaBinders,
@@ -42,8 +41,7 @@ const CAMPAIGN_STORE_SCHEMA: &str = "crucible.campaign-repository-store";
 const CAMPAIGN_STORE_VERSION_2: u32 = 2;
 const MAX_CAMPAIGN_STORE_DEPLOYMENT_BYTES: usize = 256 * 1024;
 const MAX_CAMPAIGN_STORE_KEY_BYTES: usize = 32;
-pub(super) const MAX_STORE_VERIFY_PLACEMENTS: u64 = MAX_STORE_GRAPH_VERIFY_PLACEMENTS;
-pub(super) const MAX_STORE_VERIFY_LOGICAL_BYTES: u64 = MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES;
+const STORE_VERIFY_SPOOL_PREFIX: &str = "crucible-store-verify-";
 const CAMPAIGN_STORE_OBJECT_KINDS: [ObjectKind; 14] = [
     ObjectKind::CampaignFact,
     ObjectKind::CampaignSnapshot,
@@ -342,18 +340,22 @@ pub(super) fn load_campaign_store_graph_with_admin(
 
 pub(super) fn verify_campaign_store_inventory(
     deployment_path: &Path,
+    limits: StoreGraphVerificationLimits,
+    spool_parent: Option<&Path>,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
     let loaded = load_campaign_repository_graph(deployment_path)?;
-    verify_loaded_campaign_store_inventory(loaded, StoreGraphVerificationLimits::PRODUCTION)
+    let spool = private_inventory_spool(spool_parent, deployment_path)?;
+    verify_loaded_campaign_store_inventory(loaded, limits, spool.path())
 }
 
 pub(super) fn authenticate_campaign_store_capabilities(
     deployment_path: &Path,
 ) -> Result<AuthenticatedCampaignStoreCapabilities, CliError> {
     let loaded = load_campaign_repository_graph(deployment_path)?;
+    let spool = private_inventory_spool(None, deployment_path)?;
     let physical = loaded
         .maintenance
-        .verify_physical_inventory(StoreGraphVerificationLimits::PRODUCTION)
+        .verify_physical_inventory(StoreGraphVerificationLimits::DEFAULT, spool.path())
         .map_err(|error| {
             campaign_store_error(format!("physical store authentication failed: {error}"))
         })?;
@@ -370,13 +372,44 @@ pub(super) fn authenticate_campaign_store_capabilities(
     })
 }
 
+/// Creates an owner-only directory for the physical-inventory spool.
+///
+/// The spool lists every placement's object ID, so it lives in a fresh `0700`
+/// directory that is removed when the returned guard drops. Its size grows
+/// with the store's placement count, so the default parent is the deployment
+/// file's own directory: operator-owned persistent storage, never the process
+/// temporary directory, which is often RAM-backed.
+fn private_inventory_spool(
+    parent: Option<&Path>,
+    deployment_path: &Path,
+) -> Result<tempfile::TempDir, CliError> {
+    let parent = match parent {
+        Some(parent) => parent.to_path_buf(),
+        None => match deployment_path.parent() {
+            Some(directory) if !directory.as_os_str().is_empty() => directory.to_path_buf(),
+            _ => PathBuf::from("."),
+        },
+    };
+    tempfile::Builder::new()
+        .prefix(STORE_VERIFY_SPOOL_PREFIX)
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in(&parent)
+        .map_err(|error| {
+            campaign_store_error(format!(
+                "cannot create inventory spool directory in {}: {error}",
+                parent.display()
+            ))
+        })
+}
+
 fn verify_loaded_campaign_store_inventory(
     loaded: LoadedCampaignRepositoryStore,
     limits: StoreGraphVerificationLimits,
+    spool_directory: &Path,
 ) -> Result<VerifiedCampaignStoreInventory, CliError> {
     let verified = loaded
         .maintenance
-        .verify_physical_inventory(limits)
+        .verify_physical_inventory(limits, spool_directory)
         .map_err(|error| {
             campaign_store_error(format!("physical store verification failed: {error}"))
         })?;
@@ -1182,7 +1215,7 @@ root = {:?}
     }
 
     #[test]
-    fn physical_verification_preserves_public_aggregate_bounds() {
+    fn physical_verification_enforces_the_logical_byte_bound_in_a_private_spool() {
         let fixture = StoreDeploymentFixture::new();
         let deployment = fixture.write_deployment("");
         let loaded =
@@ -1193,25 +1226,31 @@ root = {:?}
             .graph
             .put_if_absent(first_id, &BlobHandle::from_bytes(first_bytes.to_vec()))
             .expect("publish first physical placement");
+        let spool = private_inventory_spool(None, &deployment).expect("private spool");
+        let spool_mode = fs::metadata(spool.path()).expect("spool metadata").mode();
 
         let Err(error) = verify_loaded_campaign_store_inventory(
             loaded,
-            StoreGraphVerificationLimits::new(0, MAX_STORE_VERIFY_LOGICAL_BYTES)
-                .expect("test verification bounds are valid"),
-        ) else {
-            panic!("placement-count bound must fail during the first inventory");
-        };
-        assert!(error.to_string().contains("fixed verification bound"));
-
-        let loaded = load_campaign_repository_graph(&deployment).expect("reload byte-bound graph");
-        let Err(error) = verify_loaded_campaign_store_inventory(
-            loaded,
-            StoreGraphVerificationLimits::new(1, first_bytes.len() as u64 - 1)
-                .expect("test verification bounds are valid"),
+            StoreGraphVerificationLimits::new(first_bytes.len() as u64 - 1),
+            spool.path(),
         ) else {
             panic!("logical-byte bound must fail during the first inventory");
         };
-        assert!(error.to_string().contains("fixed verification bound"));
+
+        assert!(error.to_string().contains("verification bound"));
+        assert_eq!(spool_mode & 0o077, 0, "spool directory must be owner-only");
+        assert_eq!(
+            spool.path().parent(),
+            deployment.parent(),
+            "the default spool must sit beside the deployment, not in TMPDIR"
+        );
+        assert!(
+            spool
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(STORE_VERIFY_SPOOL_PREFIX))
+        );
     }
 
     #[test]

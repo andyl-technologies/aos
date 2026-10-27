@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn schedule_contains_override(schedule: &Schedule, point: &str, choice: &str) -> bool {
-    schedule.decisions().iter().any(|decision| {
+    schedule.decision_history().iter().any(|decision| {
         matches!(
             decision,
             Decision::Override(override_decision)
@@ -75,6 +75,15 @@ pub(super) fn recorded_node_divergence_event_log(
             SchedulerEventLogPayload::Observable(node_state.payload().clone()),
         ),
     ]
+}
+
+/// Seals `entries` into a fresh in-memory segment store, as an attempt log.
+pub(super) fn sealed_log(
+    entries: &[SchedulerEventLogEntry],
+) -> Result<(AttemptLogManifest, FailureTriageReplaySegments), Box<dyn Error>> {
+    let store = SharedSegmentStore::new();
+    let manifest = seal_attempt_log(entries, &store)?;
+    Ok((manifest, Arc::new(store)))
 }
 
 pub(super) fn recorded_event_log_for_finding(

@@ -15,7 +15,7 @@ impl CampaignRepository {
         Ok(envelope)
     }
 
-    pub(super) fn require_record_kind_with_canonical_byte_limit(
+    pub(in crate::repository) fn require_record_kind_with_canonical_byte_limit(
         &self,
         id: ContentId,
         expected: crate::CampaignRecordKind,

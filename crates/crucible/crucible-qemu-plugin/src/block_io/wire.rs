@@ -127,6 +127,54 @@ impl BlockOperation {
     }
 }
 
+/// The transport identity and liveness floor written into one request header.
+///
+/// `oldest_live_epoch` is the oldest epoch any request the frontend may still
+/// submit can carry, including this one. It never exceeds the identity's epoch
+/// and never decreases in ring order, which lets the host discard retired
+/// per-epoch transport state below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockRequestStamp {
+    pub(super) identity: BlockRequestIdentity,
+    pub(super) oldest_live_epoch: u64,
+}
+
+impl BlockRequestStamp {
+    /// Builds a stamp for `identity` with the frontend's oldest live epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockWireError::OldestLiveEpochAfterEpoch`] when
+    /// `oldest_live_epoch` exceeds the identity's epoch.
+    pub const fn new(
+        identity: BlockRequestIdentity,
+        oldest_live_epoch: u64,
+    ) -> Result<Self, BlockWireError> {
+        if oldest_live_epoch > identity.epoch {
+            return Err(BlockWireError::OldestLiveEpochAfterEpoch {
+                epoch: identity.epoch,
+                oldest_live_epoch,
+            });
+        }
+        Ok(Self {
+            identity,
+            oldest_live_epoch,
+        })
+    }
+
+    /// Returns the epoch-scoped request identity.
+    #[must_use]
+    pub const fn identity(self) -> BlockRequestIdentity {
+        self.identity
+    }
+
+    /// Returns the oldest epoch the frontend may still submit.
+    #[must_use]
+    pub const fn oldest_live_epoch(self) -> u64 {
+        self.oldest_live_epoch
+    }
+}
+
 /// A guest block request before it is assigned a wire request id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockRequest {
@@ -222,14 +270,15 @@ impl BlockRequest {
         &self.payload
     }
 
-    /// Encodes a request in the block wire format with the supplied request id.
+    /// Encodes a request in the block wire format with the supplied stamp.
     ///
     /// # Errors
     ///
     /// Returns [`BlockWireError`] when the request payload is inconsistent with
     /// the operation kind or the encoded frame would exceed the shared-memory
     /// frame payload capacity.
-    pub fn encode(&self, identity: BlockRequestIdentity) -> Result<Vec<u8>, BlockWireError> {
+    pub fn encode(&self, stamp: BlockRequestStamp) -> Result<Vec<u8>, BlockWireError> {
+        let identity = stamp.identity;
         if self.operation == BlockOperation::Write && self.payload.len() != self.count as usize {
             return Err(BlockWireError::CountPayloadMismatch {
                 count: self.count,
@@ -257,31 +306,33 @@ impl BlockRequest {
         }
         let mut out = Vec::with_capacity(payload_len);
         out.push(self.operation.wire_type());
-        out.push(BLOCK_WIRE_VERSION);
+        out.push(BLOCK_REQUEST_WIRE_VERSION);
         out.extend_from_slice(&0_u16.to_le_bytes());
         out.extend_from_slice(&identity.epoch.to_le_bytes());
         out.extend_from_slice(&identity.request_id.to_le_bytes());
         out.extend_from_slice(&self.offset.to_le_bytes());
         out.extend_from_slice(&self.count.to_le_bytes());
+        out.extend_from_slice(&stamp.oldest_live_epoch.to_le_bytes());
         out.extend_from_slice(&self.payload);
         Ok(out)
     }
 
     /// Decodes a request from the block wire format.
     ///
-    /// The returned tuple contains the wire request id and the logical request.
+    /// The returned tuple contains the header stamp and the logical request.
     ///
     /// # Errors
     ///
     /// Returns [`BlockWireError`] when the payload is shorter than the fixed
     /// header, uses an unsupported version or operation, carries nonzero
-    /// reserved bits, or contains an operation-inconsistent body.
-    pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError> {
+    /// reserved bits, names an oldest live epoch after its own epoch, or
+    /// contains an operation-inconsistent body.
+    pub fn decode(payload: &[u8]) -> Result<(BlockRequestStamp, Self), BlockWireError> {
         if payload.len() < BLOCK_REQUEST_HEADER_LEN {
             return Err(BlockWireError::ShortRequest { len: payload.len() });
         }
         let operation = BlockOperation::from_wire(payload[0])?;
-        if payload[1] != BLOCK_WIRE_VERSION {
+        if payload[1] != BLOCK_REQUEST_WIRE_VERSION {
             return Err(BlockWireError::UnsupportedVersion {
                 version: payload[1],
             });
@@ -314,6 +365,15 @@ impl BlockRequest {
                 .try_into()
                 .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
         );
+        let oldest_live_epoch = u64::from_le_bytes(
+            payload[28..36]
+                .try_into()
+                .map_err(|_| BlockWireError::ShortRequest { len: payload.len() })?,
+        );
+        let stamp = BlockRequestStamp::new(
+            BlockRequestIdentity::new(epoch, request_id),
+            oldest_live_epoch,
+        )?;
         let payload_bytes = &payload[BLOCK_REQUEST_HEADER_LEN..];
         match operation {
             BlockOperation::Write => {
@@ -332,7 +392,7 @@ impl BlockRequest {
                     });
                 }
                 Ok((
-                    BlockRequestIdentity::new(epoch, request_id),
+                    stamp,
                     Self {
                         operation,
                         offset,
@@ -346,7 +406,7 @@ impl BlockRequest {
                 payload_len: payload_bytes.len(),
             }),
             _ => Ok((
-                BlockRequestIdentity::new(epoch, request_id),
+                stamp,
                 Self {
                     operation,
                     offset,
@@ -478,7 +538,7 @@ impl BlockResponse {
             })?;
         let mut out = Vec::with_capacity(payload_len);
         out.push(self.status.wire_status());
-        out.push(BLOCK_WIRE_VERSION);
+        out.push(BLOCK_RESPONSE_WIRE_VERSION);
         out.extend_from_slice(&0_u16.to_le_bytes());
         out.extend_from_slice(&self.identity.epoch.to_le_bytes());
         out.extend_from_slice(&self.request_id.to_le_bytes());
@@ -500,7 +560,7 @@ impl BlockResponse {
             return Err(BlockWireError::ShortResponse { len: payload.len() });
         }
         let status = BlockResponseStatus::from_wire(payload[0])?;
-        if payload[1] != BLOCK_WIRE_VERSION {
+        if payload[1] != BLOCK_RESPONSE_WIRE_VERSION {
             return Err(BlockWireError::UnsupportedVersion {
                 version: payload[1],
             });

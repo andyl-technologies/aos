@@ -26,8 +26,13 @@ use crucible_engine::{
 use crucible_qemu_host::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use crucible_qemu_protocol::SelectionReply;
 
+mod rows;
+
+use rows::{note_child_memory, note_install_quarantine};
+
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
+use crate::qemu_hot_fork_world_factory::QemuHotForkStartOrigin;
 use crate::qemu_hot_fork_world_resource::QemuHotForkWorldAuxiliaryResourceBinding;
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionReconciliationStep,
@@ -109,6 +114,8 @@ where
     shutdown_complete: bool,
     aggregate_released: bool,
     source_recovery_failed: bool,
+    /// Where the forked source sits relative to the attempt's own start.
+    start_origin: QemuHotForkStartOrigin,
 }
 
 /// Authorities retained while one adopted child serves as a descendant template.
@@ -166,13 +173,21 @@ where
             shutdown_complete,
             aggregate_released,
             source_recovery_failed,
+            start_origin,
         } = self;
-        if shutdown_complete || aggregate_released || source_recovery_failed {
+        // A child that replayed an ancestor suffix has no boundary proof of
+        // its own, so it can never become a template.
+        let refusal = if matches!(start_origin, QemuHotForkStartOrigin::Ancestor { .. }) {
+            Some("hot-fork child promotion requires a start at its own source boundary")
+        } else if shutdown_complete || aggregate_released || source_recovery_failed {
+            Some("hot-fork child promotion requires a live unreconciled lifecycle")
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
             resources.quarantine();
             let _retained = Box::leak(Box::new((source_lease, source_world, reconciliations)));
-            return Err(lifecycle_error(
-                "hot-fork child promotion requires a live unreconciled lifecycle",
-            ));
+            return Err(lifecycle_error(refusal));
         }
         let Some(source_lease) = source_lease else {
             resources.quarantine();
@@ -216,12 +231,25 @@ where
         self.runtime_basis
     }
 
+    /// Records where the forked source sits relative to the attempt's start.
+    pub(crate) fn with_start_origin(mut self, origin: QemuHotForkStartOrigin) -> Self {
+        self.start_origin = origin;
+        self
+    }
+
+    /// Returns where the forked source sits relative to the attempt's start.
+    #[must_use]
+    pub(crate) const fn start_origin(&self) -> &QemuHotForkStartOrigin {
+        &self.start_origin
+    }
+
     /// Reconstructs the already-materialized start evidence from the lifecycle.
     ///
     /// # Errors
     ///
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
-    /// exact boundary, retained only a suffix, or its event bytes overflow.
+    /// exact boundary, retained only a suffix, or its event log cannot be
+    /// retained within the attempt-log bounds.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
         let (
             configuration,
@@ -239,17 +267,16 @@ where
                 ),
             });
         }
-        let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry.canonical_material_len())
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("hot-fork start event-log byte count overflowed"),
-                })
+        let event_log = crate::qemu_campaign_driver::RetainedAttemptLog::from_entries(
+            crate::qemu_campaign_driver::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+            event_log,
+        )
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("hot-fork start event log cannot be retained: {error}"),
         })?;
         Ok(QemuFreshStartMaterialization::from_resume_parts(
             configuration,
             event_log,
-            event_log_bytes,
             completed_quanta,
             frontier,
             quiescence,
@@ -470,6 +497,10 @@ where
         self.lifecycle.completed_quanta()
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        Ok(self.lifecycle.event_log_offset())
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         QuantumLoop::terminal_verdict_for_stop(&mut self.lifecycle)
     }
@@ -483,6 +514,16 @@ where
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.lifecycle.exact_checkpoint_ready()
+    }
+
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::qemu_campaign_lifecycle::QemuExactCheckpointRefusal>, SchedulerError>
+    {
+        Ok(self
+            .lifecycle
+            .exact_checkpoint_refusal()?
+            .map(crate::qemu_campaign_lifecycle::QemuExactCheckpointRefusal::Named))
     }
 
     fn parked_campaign_marker(
@@ -500,6 +541,25 @@ where
     ) -> Result<(), SchedulerError> {
         self.lifecycle
             .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        self.lifecycle.park_held_campaign_markers(markers, outcome)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.lifecycle.join_campaign_parks_to_frontier()
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible_engine::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        self.lifecycle.append_network_fault_campaign_branch(branch)
     }
 
     fn campaign_marker_release_committed(
@@ -530,6 +590,14 @@ where
         self.lifecycle.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -540,6 +608,13 @@ where
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.lifecycle
             .apply_selectable_reply(parent, decision, selected, pending, reply)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        self.lifecycle.publish_released_host_outcomes(configuration)
     }
 
     fn capture_attempt_checkpoint(
@@ -586,7 +661,9 @@ where
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         // crucible-lint: allow host-nondeterminism-state -- this copies the scheduler-retained RecomputedCause trace; the observation never feeds back into modeled execution.
         QuantumLoop::resolved_effect_trace(&self.lifecycle)
     }
@@ -597,6 +674,11 @@ where
                 message: String::from("hot-fork world lifecycle was shut down more than once"),
             });
         }
+        let budget = self
+            .source_lease
+            .as_ref()
+            .and_then(QemuHotForkSourceWorldLease::child_dirty_budget);
+        note_child_memory(self.lifecycle.measure_live_node_memory(), budget);
         let events = QuantumLoop::shutdown(&mut self.lifecycle)?;
         self.reconciliations
             .validate_operational_handoff()
@@ -734,7 +816,13 @@ where
                 None => {
                     let error =
                         lifecycle_error("assembled hot-fork child disappeared during adoption");
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -749,7 +837,13 @@ where
                         node.name
                     ));
                     child.quarantine_and_retain();
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -757,14 +851,26 @@ where
                 Ok(identity) => identity,
                 Err(error) => {
                     child.quarantine_and_retain();
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
             let adoption = match child.into_world_node_adoption(identity, completed.clone()) {
                 Ok(adoption) => adoption,
                 Err(error) => {
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -780,7 +886,13 @@ where
         ) {
             Ok(lifecycle) => lifecycle,
             Err(error) => {
-                retain_remaining_install_failure(source_world, resources, completed, children);
+                retain_remaining_install_failure(
+                    source_world,
+                    resources,
+                    completed,
+                    children,
+                    &error,
+                );
                 return Err(error);
             }
         };
@@ -796,6 +908,7 @@ where
             shutdown_complete: false,
             aggregate_released: false,
             source_recovery_failed: false,
+            start_origin: QemuHotForkStartOrigin::Exact,
         })
     }
 }
@@ -823,6 +936,7 @@ fn retain_complete_install_failure<G>(
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    note_install_quarantine(&error);
     complete.quarantine();
     resources.quarantine();
     let reconciliations = LinuxQemuHotForkWorldReconciliationSet::new(BTreeSet::new());
@@ -840,9 +954,11 @@ fn retain_remaining_install_failure<G>(
     mut resources: QemuHotForkWorldResourceOwner<G>,
     mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
     children: BTreeMap<NodeId, ProductionWorldChild<G>>,
+    error: &LifecycleApiError,
 ) where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    note_install_quarantine(error);
     for (_node, child) in children {
         child.quarantine_and_retain();
     }

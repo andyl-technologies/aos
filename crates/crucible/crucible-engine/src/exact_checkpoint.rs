@@ -33,14 +33,14 @@ use codec::*;
 /// Maximum number of RAM layers in one authenticated production checkpoint.
 pub const MAX_EXACT_CHECKPOINT_RAM_LAYERS: usize = 8;
 
-/// Maximum canonical v9 closure-manifest size.
+/// Maximum canonical v12 closure-manifest size.
 pub const MAX_EXACT_CHECKPOINT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Current production exact-closure manifest schema version.
-pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 9;
+pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 12;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v9\0";
-const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v9";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v12\0";
+const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v12";
 const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
 const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v2";
 const SPARSE_ARTIFACT_DOMAIN: &str = "crucible.production-exact-sparse-artifact.v1";
@@ -55,6 +55,8 @@ const PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
 const PROMOTION_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const CHOICE_CLOSURE_ROLE: &str = "checkpoint-choice-closure";
 const CHOICE_CLOSURE_SCHEMA_VERSION: u32 = 1;
+const CHOICE_FRAME_ROLE_PREFIX: &str = "checkpoint-choice-frame-";
+const CHOICE_FRAME_SCHEMA_VERSION: u32 = 1;
 const INDEX_ROLE_PREFIX: &str = "production-object-index-";
 const INDEX_SCHEMA: &str = "crucible.executor.production-checkpoint-index";
 const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -208,7 +210,7 @@ struct ExactCheckpointObjectRecord {
     pub length: u64,
 }
 
-/// Complete canonical v9 closure record used to authenticate a target.
+/// Complete canonical v12 closure record used to authenticate a target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExactCheckpointClosureRecord {
@@ -228,6 +230,14 @@ struct ExactCheckpointClosureRecord {
     /// Sorted signal-artifact identities.
     #[serde(deserialize_with = "decode::deserialize_vec")]
     pub signal_artifacts: Vec<ContentHash>,
+    /// Sorted identities of the sealed resolved-effect trace segments the
+    /// fault continuation references (RFC-0020 section 15).
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    pub fault_trace_segments: Vec<ContentHash>,
+    /// Sorted identities of the block overlay chunk objects that the target
+    /// and failed-node block continuations name (RFC-0020 CMEAS-33).
+    #[serde(deserialize_with = "decode::deserialize_vec")]
+    pub block_overlay_chunks: Vec<ContentHash>,
     /// Trigger continuation identity.
     pub trigger_state: ContentHash,
     /// Assertion continuation identity.
@@ -335,11 +345,34 @@ struct RepositoryObjectBinding {
 }
 
 impl ExactCheckpointClosureBinding {
+    /// Returns the ordered event-log segment identities the closure names.
+    ///
+    /// [`Self::visit_semantic_objects`] does not deliver these segments: a
+    /// consumer of the scheduler's log reads and authenticates them one at a
+    /// time through the closure's object opener.
+    #[must_use]
+    pub fn event_log_segments(&self) -> &[ContentHash] {
+        &self.closure.event_log_segments
+    }
+
+    /// Returns the sorted block overlay chunk identities the closure names.
+    ///
+    /// Like event-log segments, these objects count against the semantic
+    /// byte limit but are not delivered by [`Self::visit_semantic_objects`];
+    /// a block-device restore reads and authenticates them one at a time
+    /// through the closure's object opener.
+    #[must_use]
+    pub fn block_overlay_chunks(&self) -> &[ContentHash] {
+        &self.closure.block_overlay_chunks
+    }
+
     /// Consumes and visits every authenticated semantic object once.
     ///
-    /// Each object is opened, bounded, hashed, delivered, and closed before
-    /// the next object is opened. Shared object identities count once against
-    /// `byte_limit` while each semantic role is still delivered.
+    /// Every object is opened, bounded, and hashed before any is delivered.
+    /// Shared object identities count once against `byte_limit` while each
+    /// semantic role is still delivered. Event-log segments also count
+    /// against `byte_limit` but are not opened or delivered; see
+    /// [`Self::event_log_segments`].
     /// The visitor returns the decoded semantic identity for the fault
     /// continuation and `None` for every other role. The resulting target
     /// claims retain that identity for QMP RAM provenance authentication.
@@ -913,7 +946,7 @@ pub enum ExactCheckpointExecutionSourceError {
 /// substitute a snapshot, artifact, RAM layer, parent, or geometry value after
 /// validation.
 /// The decoder admits every owned allocation against `owned_byte_limit`, then
-/// requires the input bytes to match the canonical v9 encoding exactly.
+/// requires the input bytes to match the canonical v12 encoding exactly.
 /// Storage separately authenticates the bytes named by each artifact; QEMU
 /// rechecks those identities while consuming the proof.
 ///

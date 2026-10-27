@@ -252,6 +252,11 @@ fn guarded_absolute_overlay_is_bound_to_its_exact_generation() -> Result<(), Box
 
 #[test]
 fn guarded_probe_exec_inherits_only_read_only_overlay_authority() -> Result<(), Box<dyn Error>> {
+    if reran_in_a_small_process(
+        "spawn::tests::image_launch_tests::guarded_probe_exec_inherits_only_read_only_overlay_authority",
+    )? {
+        return Ok(());
+    }
     let fixture = GuardedProbeFixture::new(
         "spawn::tests::image_launch_tests::guarded_probe_read_only_overlay_child",
         ProbeChildDirectoryAccess::ReadOnly,
@@ -315,6 +320,11 @@ fn guarded_probe_read_only_overlay_child() -> Result<(), Box<dyn Error>> {
 #[test]
 fn overlay_relative_name_requires_actual_original_cwd_and_admitted_inode()
 -> Result<(), Box<dyn Error>> {
+    if reran_in_a_small_process(
+        "spawn::tests::image_launch_tests::overlay_relative_name_requires_actual_original_cwd_and_admitted_inode",
+    )? {
+        return Ok(());
+    }
     let fixture = GuardedProbeFixture::new(
         "spawn::tests::image_launch_tests::overlay_relative_name_original_cwd_child",
         ProbeChildDirectoryAccess::ReadOnly,

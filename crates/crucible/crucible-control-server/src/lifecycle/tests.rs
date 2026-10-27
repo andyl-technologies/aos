@@ -412,7 +412,7 @@ fn observation_resume_request() -> ResumeSessionRequest {
         &schedule,
         &checkpoint,
         1,
-        b"replay-closure".to_vec(),
+        vec![b"replay-closure".to_vec()],
     )
     .unwrap_or_else(|error| panic!("replay closure should build: {error}"));
 

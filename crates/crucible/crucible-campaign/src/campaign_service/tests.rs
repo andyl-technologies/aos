@@ -144,7 +144,7 @@ fn ready_capture_status_remains_bound_after_a_later_selection_snapshot() {
     .expect("paused capture");
     let observation = ObservationId::from_content_id(ContentId::for_bytes(
         ObjectKind::Observation,
-        14,
+        16,
         b"pending-choice",
     ))
     .expect("observation");
@@ -178,28 +178,65 @@ fn trace_chunk_request_round_trips_and_rejects_unbounded_ranges() {
         b"trace-attempt",
     ))
     .expect("attempt");
-    let request = |offset, limit| {
+    let request = |kind, offset, limit| {
         GetCampaignTraceChunkRequest::new(
             principal.clone(),
             campaign.clone(),
             snapshot,
             attempt,
-            CampaignTraceKind::ResolvedEffect,
+            kind,
             offset,
             limit,
         )
     };
 
-    let valid = request(MAX_CAMPAIGN_TRACE_BYTES, MAX_CAMPAIGN_TRACE_CHUNK_BYTES)
-        .expect("maximum bounded request");
+    let valid = request(
+        CampaignTraceKind::MeasurementEventLog,
+        MAX_CAMPAIGN_TRACE_BYTES,
+        MAX_CAMPAIGN_TRACE_CHUNK_BYTES,
+    )
+    .expect("maximum bounded request");
     assert_eq!(
         GetCampaignTraceChunkRequest::from_canonical_bytes(&valid.canonical_bytes())
             .expect("strict round trip"),
         valid
     );
-    assert!(request(0, 0).is_err());
-    assert!(request(0, MAX_CAMPAIGN_TRACE_CHUNK_BYTES + 1).is_err());
-    assert!(request(MAX_CAMPAIGN_TRACE_BYTES + 1, 1).is_err());
+    assert!(request(CampaignTraceKind::MeasurementEventLog, 0, 0).is_err());
+    assert!(
+        request(
+            CampaignTraceKind::MeasurementEventLog,
+            0,
+            MAX_CAMPAIGN_TRACE_CHUNK_BYTES + 1
+        )
+        .is_err()
+    );
+    assert!(
+        request(
+            CampaignTraceKind::MeasurementEventLog,
+            MAX_CAMPAIGN_TRACE_BYTES + 1,
+            1
+        )
+        .is_err()
+    );
+
+    // Resolved-effect leaves have tighter per-kind bounds: one manifest or
+    // one segment, never a whole trace.
+    let segment = CampaignTraceKind::ResolvedEffectSegment(ContentId::for_bytes(
+        ObjectKind::Trace,
+        1,
+        b"segment",
+    ));
+    let segment_request = request(segment, segment.max_leaf_bytes(), 1).expect("segment end");
+    assert_eq!(
+        GetCampaignTraceChunkRequest::from_canonical_bytes(&segment_request.canonical_bytes())
+            .expect("segment round trip"),
+        segment_request
+    );
+    assert!(request(segment, segment.max_leaf_bytes() + 1, 1).is_err());
+    let manifest = CampaignTraceKind::ResolvedEffect;
+    assert!(request(manifest, manifest.max_leaf_bytes(), 1).is_ok());
+    assert!(request(manifest, manifest.max_leaf_bytes() + 1, 1).is_err());
+    assert!(manifest.max_leaf_bytes() < segment.max_leaf_bytes());
 }
 
 fn hash(label: &str) -> CampaignHash {

@@ -101,6 +101,12 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     /// The no-parallelism policy already retains this source coordinate.
     #[error("source-world coordinate already has a retained source")]
     DuplicateSource,
+    /// The coordinate is held by a source that can serve no child.
+    ///
+    /// An invalidated source keeps its coordinate until orderly shutdown, so
+    /// this is not an equal retained source: nothing can fork from it.
+    #[error("source-world coordinate is held by an unusable source")]
+    UnusableSource,
     /// Shared resource/hotness policy rejected the candidate.
     #[error("source-world candidate was rejected by hot-checkpoint policy")]
     Rejected(#[source] HotCheckpointAdmissionRejection),
@@ -109,6 +115,22 @@ pub enum ManagedQemuHotForkSourceWorldAdmissionError<E> {
     LeaseCapacity {
         /// Exact retained-resource dimensions that exceed their ceiling.
         pressure: HotCheckpointPressure,
+    },
+    /// An anchor root fits, but one child forked from it would not.
+    ///
+    /// Admitting it would leave a root no branch can use, so the first hot
+    /// retry would fail lease capacity instead of running.
+    #[error(
+        "anchor root plus one child reservation exceeds retained-resource ceilings: \
+         pressure={pressure:?} projected={projected:?} limits={limits:?}"
+    )]
+    AnchorChildCapacity {
+        /// Exact retained-resource dimensions that exceed their ceiling.
+        pressure: HotCheckpointPressure,
+        /// Retained usage with the root and its one child reservation added.
+        projected: HotCheckpointUsage,
+        /// The ceilings `projected` was checked against.
+        limits: HotCheckpointLimits,
     },
     /// Exact/thin fallback authentication failed.
     #[error("source-world fallback authentication failed")]

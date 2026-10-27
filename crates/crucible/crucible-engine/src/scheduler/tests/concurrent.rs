@@ -68,7 +68,7 @@ impl TestConcurrentBackend {
 impl SimulationBackend for TestConcurrentBackend {
     fn dispatch_contract(&self) -> crate::BackendDispatchContract {
         if self.control_v3 {
-            crate::BackendDispatchContract::ControlV3
+            crate::BackendDispatchContract::BoundedControl
         } else {
             crate::BackendDispatchContract::PhysicalSource
         }
@@ -88,6 +88,15 @@ impl SimulationBackend for TestConcurrentBackend {
 
     fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
         self.inner.apply(effect, at)
+    }
+
+    fn apply_to_node(
+        &mut self,
+        node: &NodeId,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        self.inner.apply_to_node(node, effect, at)
     }
 
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
@@ -307,7 +316,7 @@ fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution()
 }
 
 #[test]
-fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
+fn choice_pause_batches_five_peers_with_or_without_the_boot_mark() {
     let nodes = [
         "router-a",
         "router-b",
@@ -328,66 +337,46 @@ fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
     .collect::<Vec<_>>();
     let scheduler = test_scheduler(nodes, Vec::new());
     let configuration = scheduler.configuration().clone();
-    let mut post_marker =
+    let request = || QuantumRequest {
+        configuration: configuration.clone(),
+        control: Vec::new(),
+    };
+
+    // A choice-search attempt, one worker: the set is fixed before dispatch.
+    let mut serialized =
         BackendQuantumLoop::new(scheduler.clone(), TestConcurrentBackend::new(false));
+    serialized.set_live_network_choice_pause(true);
+    serialized
+        .drive_concurrent_quantum(request(), 1)
+        .expect("serialized choice-pause batch");
 
-    let mut serial = BackendQuantumLoop::new(scheduler.clone(), TestConcurrentBackend::new(false));
-    serial.set_live_network_choice_pause(true);
-    for _ in 0..5 {
-        serial
-            .drive_concurrent_quantum(
-                QuantumRequest {
-                    configuration: configuration.clone(),
-                    control: Vec::new(),
-                },
-                5,
-            )
-            .expect("serial choice pause");
-    }
+    let mut paused = BackendQuantumLoop::new(scheduler.clone(), TestConcurrentBackend::new(false));
+    paused.set_live_network_choice_pause(true);
+    let batch = paused
+        .drive_concurrent_quantum(request(), 5)
+        .expect("parallel choice-pause batch");
 
-    let mut parallel = BackendQuantumLoop::new(scheduler, TestConcurrentBackend::new(false));
-    parallel.set_live_network_choice_pause(true);
-    parallel.set_choice_free_parallel_boot(true);
-    let boot = parallel
-        .drive_concurrent_quantum(
-            QuantumRequest {
-                configuration: configuration.clone(),
-                control: Vec::new(),
-            },
-            5,
-        )
+    let mut boot = BackendQuantumLoop::new(scheduler, TestConcurrentBackend::new(false));
+    boot.set_live_network_choice_pause(true);
+    boot.set_choice_free_parallel_boot(true);
+    boot.drive_concurrent_quantum(request(), 5)
         .expect("choice-free boot batch");
 
-    assert_eq!(boot.run_set.candidates.len(), 5);
-    assert_eq!(serial.backend().run_sizes, vec![1; 5]);
-    assert_eq!(parallel.backend().run_sizes, vec![5]);
-    assert_eq!(
-        parallel.loop_impl().configuration(),
-        serial.loop_impl().configuration()
-    );
-    assert_eq!(
-        parallel.loop_impl().event_log_offset(),
-        serial.loop_impl().event_log_offset()
-    );
-    assert_eq!(
-        parallel.loop_impl().event_log().retained_entries(),
-        serial.loop_impl().event_log().retained_entries()
-    );
-
-    // The owner disables boot batching when it consumes the west marker.
-    post_marker.set_live_network_choice_pause(true);
-    post_marker.set_choice_free_parallel_boot(true);
-    post_marker.set_choice_free_parallel_boot(false);
-    post_marker
-        .drive_concurrent_quantum(
-            QuantumRequest {
-                configuration,
-                control: Vec::new(),
-            },
-            5,
-        )
-        .expect("post-marker choice pause");
-    assert_eq!(post_marker.backend().run_sizes, vec![1; 5]);
+    assert_eq!(batch.run_set.candidates.len(), 5);
+    for actor in [&serialized, &paused, &boot] {
+        assert_eq!(actor.backend().run_sizes, vec![5]);
+    }
+    // PERF-5: worker count and the boot mark change neither state nor log.
+    for actor in [&paused, &boot] {
+        assert_eq!(
+            actor.loop_impl().configuration(),
+            serialized.loop_impl().configuration()
+        );
+        assert_eq!(
+            actor.loop_impl().event_log().retained_entries(),
+            serialized.loop_impl().event_log().retained_entries()
+        );
+    }
 }
 
 #[test]

@@ -12,14 +12,14 @@ use crucible_campaign::{
     ConfigurationArtifactId, ExecutorRejection, ResolvedSelection, StopOutcome,
 };
 use crucible_engine::{
-    Configuration, Decision, NetworkFaultSelectable, ScenarioDefForm, SelectionDecision,
-    SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
+    Configuration, ConfigurationPrefix, Decision, NetworkFaultSelectable, ScenarioDefForm,
+    SelectionDecision, SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
 };
 use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::executor_worker::ResolvedAttemptOrigins;
+use crate::executor_worker::{AttemptOriginChain, ResolvedAttemptOrigin};
 use crate::{
     AttemptExecutionContext, AttemptExecutionDisposition, AttemptExecutionInput,
     AttemptExecutionModel, AttemptExecutionProduct, AttemptExecutionReconciliationStep,
@@ -28,10 +28,18 @@ use crate::{
 };
 
 mod decode_budget;
+mod origins;
+
+#[cfg(test)]
+mod diagnostic_budget_tests;
 
 use decode_budget::{
     MAX_SELECTED_ORIGIN_DECODE_BYTES, SelectedOriginDecodeBudget,
     decode_selected_origin_configuration,
+};
+use origins::OriginLink;
+pub use origins::{
+    CrucibleAttemptOrigin, CrucibleAttemptOrigins, CrucibleOriginMaterializationError,
 };
 
 /// Authenticated Crucible discovery or typed branch start.
@@ -92,110 +100,6 @@ impl CrucibleResolvedAttemptStart {
             Self::AfterAttempt { base, .. } => base.replay_selection(decision_index),
             Self::Discover { .. } | Self::Branch { .. } => None,
         }
-    }
-}
-
-/// One decoded origin attempt and its claimed post-stop replay boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CrucibleAttemptOrigin {
-    attempt: Attempt,
-    reached: Configuration,
-    signal_fault_replay: SignalFaultCampaignReplayPlan,
-    source_stop: Option<StopOutcome>,
-}
-
-/// Nonempty decoded ancestry for one selected continuation boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CrucibleAttemptOrigins {
-    first: CrucibleAttemptOrigin,
-    rest: Vec<CrucibleAttemptOrigin>,
-}
-
-impl CrucibleAttemptOrigins {
-    /// Binds one required origin and any later descendants.
-    #[must_use]
-    pub fn new(first: CrucibleAttemptOrigin, rest: Vec<CrucibleAttemptOrigin>) -> Self {
-        Self { first, rest }
-    }
-
-    /// Returns the final origin that establishes the semantic start boundary.
-    #[must_use]
-    pub fn last(&self) -> &CrucibleAttemptOrigin {
-        self.rest.last().unwrap_or(&self.first)
-    }
-
-    /// Iterates from the authenticated base toward the selected boundary.
-    pub fn iter(&self) -> impl Iterator<Item = &CrucibleAttemptOrigin> {
-        std::iter::once(&self.first).chain(self.rest.iter())
-    }
-
-    /// Returns the number of decoded origin attempts.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        1 + self.rest.len()
-    }
-
-    /// Returns false because a selected continuation always has an origin.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        false
-    }
-}
-
-impl CrucibleAttemptOrigin {
-    /// Binds one immutable origin attempt to its authenticated reached boundary.
-    #[must_use]
-    pub fn new(
-        attempt: Attempt,
-        reached: Configuration,
-        signal_fault_replay: SignalFaultCampaignReplayPlan,
-    ) -> Self {
-        Self {
-            attempt,
-            reached,
-            signal_fault_replay,
-            source_stop: None,
-        }
-    }
-
-    /// Binds a controlled origin to its authenticated final stop outcome.
-    #[must_use]
-    pub fn new_with_source_stop(
-        attempt: Attempt,
-        reached: Configuration,
-        signal_fault_replay: SignalFaultCampaignReplayPlan,
-        source_stop: StopOutcome,
-    ) -> Self {
-        Self {
-            attempt,
-            reached,
-            signal_fault_replay,
-            source_stop: Some(source_stop),
-        }
-    }
-
-    /// Returns the immutable origin attempt whose stop is replayed.
-    #[must_use]
-    pub const fn attempt(&self) -> &Attempt {
-        &self.attempt
-    }
-
-    /// Returns the exact configuration required at the origin stop.
-    #[must_use]
-    pub const fn reached(&self) -> &Configuration {
-        &self.reached
-    }
-
-    /// Returns the promoted signal-fault replay plan for the reached boundary.
-    #[must_use]
-    pub const fn signal_fault_replay(&self) -> &SignalFaultCampaignReplayPlan {
-        &self.signal_fault_replay
-    }
-
-    /// Returns the authenticated final stop outcome for controlled continuation.
-    #[must_use]
-    pub const fn source_stop(&self) -> Option<&StopOutcome> {
-        self.source_stop.as_ref()
     }
 }
 
@@ -369,6 +273,9 @@ impl CrucibleAttemptExecution {
         }
         if let Some((origins, _terminal)) = self.continuation_replay_basis() {
             for origin in origins.iter() {
+                let origin = origin.map_err(|_| CampaignCodecError::InvalidValue {
+                    reason: "finding replay origin does not restrict its terminal origin",
+                })?;
                 let reached = origin.reached();
                 let prefix = configuration
                     .schedule
@@ -483,6 +390,41 @@ impl CrucibleAttemptExecution {
         self
     }
 
+    /// Decodes a branch start exactly as repository dispatch does, for tests
+    /// whose attempts are not stored in a campaign.
+    ///
+    /// The parent's selections and the branch selection must already be
+    /// published to `store`, so recorded network and signal fault branches are
+    /// rebuilt from their records rather than supplied by the test.
+    #[cfg(test)]
+    pub(crate) fn decoded_branch_for_test(
+        store: &CampaignExecutorStore,
+        lineage: CampaignLineage,
+        scenario: ScenarioDefForm,
+        attempt: Attempt,
+        path: BranchPath,
+        parent: crucible_campaign::ConfigurationArtifact,
+        selection: ResolvedSelection,
+    ) -> Result<Self, CrucibleArtifactError> {
+        let scenario_artifact = crate::encode_crucible_scenario_artifact(&scenario)?;
+        let start = ResolvedAttemptStart::Branch {
+            parent,
+            selection: Box::new(selection),
+        };
+        let (start, signal_fault_replay) =
+            decode_base_crucible_start(store, &scenario, &scenario_artifact, &start, None)?;
+
+        Ok(Self {
+            lineage,
+            scenario,
+            attempt,
+            path,
+            start,
+            signal_fault_replay,
+            replay_continuation_basis: None,
+        })
+    }
+
     /// Returns the exact campaign lineage admitted for this execution.
     #[must_use]
     pub const fn lineage(&self) -> &CampaignLineage {
@@ -590,49 +532,19 @@ fn decode_crucible_attempt_execution_with_origin_limit(
                 base,
                 origin_budget.as_mut(),
             )?;
-            let mut decoded_origins = Vec::with_capacity(origins.len());
-            let mut terminal_replay = None;
-            for origin in origins.iter() {
-                let (reached, replay) = decode_selected_origin_configuration(
-                    store,
-                    &scenario,
-                    input.scenario(),
-                    origin.reached(),
-                    origin_budget
-                        .as_mut()
-                        .ok_or(CrucibleArtifactError::ResourceLimit {
-                            resource: "selected-origin-decoded-resident-bytes",
-                        })?,
-                )?;
-                terminal_replay = Some(replay.clone());
-                decoded_origins.push(CrucibleAttemptOrigin {
-                    attempt: origin.attempt().clone(),
-                    reached,
-                    signal_fault_replay: replay,
-                    source_stop: origin.source_stop().cloned(),
-                });
-            }
-            let replay = terminal_replay.ok_or(CrucibleArtifactError::Campaign(
-                crucible_campaign::CampaignCodecError::InvalidValue {
-                    reason: "attempt continuation has no origin boundary",
-                },
-            ))?;
-            let mut decoded_origins = decoded_origins.into_iter();
-            let first = decoded_origins
-                .next()
-                .ok_or(CrucibleArtifactError::Campaign(
-                    crucible_campaign::CampaignCodecError::InvalidValue {
-                        reason: "attempt continuation has no origin boundary",
-                    },
-                ))?;
+            let budget = origin_budget
+                .as_mut()
+                .ok_or(CrucibleArtifactError::ResourceLimit {
+                    resource: "selected-origin-decoded-resident-bytes",
+                })?;
+            let decoded_origins =
+                decode_selected_origins(store, &scenario, input, origins, budget)?;
+            let replay = decoded_origins.last().signal_fault_replay().clone();
             (
                 CrucibleResolvedAttemptStart::AfterAttempt {
                     base: Box::new(base),
                     base_signal_fault_replay,
-                    origins: Box::new(CrucibleAttemptOrigins::new(
-                        first,
-                        decoded_origins.collect(),
-                    )),
+                    origins: Box::new(decoded_origins),
                 },
                 replay,
             )
@@ -648,6 +560,86 @@ fn decode_crucible_attempt_execution_with_origin_limit(
         signal_fault_replay,
         replay_continuation_basis: None,
     })
+}
+
+/// Decodes a continuation ancestry, keeping only the terminal origin resident.
+///
+/// The terminal origin is decoded first. Each intermediate origin is then
+/// reloaded, decoded under the budget, and compared with its restriction of
+/// the terminal: a matching origin keeps only its attempt, stop proof, and
+/// length, and its decode charge is released, so the budget charges the
+/// largest single intermediate decode rather than the sum. An origin that is
+/// not a restriction stays decoded and charged.
+fn decode_selected_origins(
+    store: &CampaignExecutorStore,
+    scenario: &ScenarioDefForm,
+    input: &AttemptExecutionInput,
+    origins: &AttemptOriginChain,
+    budget: &mut SelectedOriginDecodeBudget,
+) -> Result<CrucibleAttemptOrigins, CrucibleArtifactError> {
+    let intermediates = origins.len().saturating_sub(1);
+    let for_each_intermediate = |visit: &mut OriginVisitor<'_>| {
+        // The chain visits the resident terminal origin last; it is decoded
+        // before the walk.
+        let mut visited = 0_usize;
+        origins.try_for_each(store, |origin| {
+            if visited == intermediates {
+                return Ok(());
+            }
+            visited += 1;
+            visit(origin)
+        })
+    };
+    decode_origin_ancestry(
+        store,
+        scenario,
+        input.scenario(),
+        origins.last(),
+        budget,
+        for_each_intermediate,
+    )
+}
+
+/// Visitor that receives one resolved intermediate origin, oldest first.
+type OriginVisitor<'v> =
+    dyn FnMut(&ResolvedAttemptOrigin) -> Result<(), CrucibleArtifactError> + 'v;
+
+/// Decodes a terminal origin and then each intermediate origin in turn.
+fn decode_origin_ancestry(
+    store: &CampaignExecutorStore,
+    scenario: &ScenarioDefForm,
+    scenario_artifact: &crucible_campaign::ScenarioArtifact,
+    terminal: &ResolvedAttemptOrigin,
+    budget: &mut SelectedOriginDecodeBudget,
+    for_each_intermediate: impl FnOnce(&mut OriginVisitor<'_>) -> Result<(), CrucibleArtifactError>,
+) -> Result<CrucibleAttemptOrigins, CrucibleArtifactError> {
+    let decode = |origin: &ResolvedAttemptOrigin,
+                  budget: &mut SelectedOriginDecodeBudget|
+     -> Result<CrucibleAttemptOrigin, CrucibleArtifactError> {
+        let (reached, replay) = decode_selected_origin_configuration(
+            store,
+            scenario,
+            scenario_artifact,
+            origin.reached(),
+            budget,
+        )?;
+        Ok(CrucibleAttemptOrigin {
+            attempt: origin.attempt().clone(),
+            reached,
+            signal_fault_replay: replay,
+            source_stop: origin.source_stop().cloned(),
+        })
+    };
+
+    let mut decoded = CrucibleAttemptOrigins::from_terminal(decode(terminal, budget)?);
+    for_each_intermediate(&mut |origin| {
+        let before = budget.mark();
+        if decoded.push_earlier(decode(origin, budget)?) {
+            budget.release_to(before);
+        }
+        Ok(())
+    })?;
+    Ok(decoded)
 }
 
 fn decode_base_crucible_start(
@@ -712,7 +704,7 @@ fn decode_base_crucible_start(
                     if adapter == crucible_engine::SIGNAL_FAULT_CAMPAIGN_ADAPTER =>
                 {
                     let selectable = SignalFaultSelectable::from_records(
-                        &parent,
+                        &ConfigurationPrefix::whole(&parent),
                         selection.declaration(),
                         selection.opportunity(),
                         selection.domain(),
@@ -737,7 +729,7 @@ fn decode_base_crucible_start(
                 _ => None,
             };
             let selected = if let Some(branch) = signal_fault.as_ref() {
-                branch.selected().clone()
+                branch.selected().to_configuration()
             } else if let Some(branch) = network_fault.as_ref() {
                 branch.selected().clone()
             } else {
@@ -807,6 +799,10 @@ pub trait CrucibleExecutionRunner {
     /// Attempt-charged execution resources must already be stopped before the
     /// successful result is returned; this callback owns only cleanup whose
     /// release is ordered after semantic publication.
+    /// A fresh runner that keeps its stopped world as a published-boundary
+    /// root satisfies this by pausing the world and releasing its attempt
+    /// bindings before returning; this callback then admits the root to the
+    /// hot-fork pool for an accepted observation or retires it otherwise.
     /// A runner returning an execution error must finish or quarantine its
     /// operational owner before returning so a retry cannot overlap it.
     ///

@@ -20,7 +20,7 @@ fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
             .expect("configuration artifact");
     assert_eq!(
         configuration_artifact.payload_schema(),
-        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4
+        CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5
     );
 
     assert_eq!(
@@ -303,15 +303,17 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
     let first = first_selectable
         .resolve_branch(&first_selection)
         .expect("first branch");
-    let second_selectable = signal_fault_selectable(first.selected(), b"second-signal-choice", 29);
+    let first_selected = first.selected().to_configuration();
+    let second_selectable = signal_fault_selectable(&first_selected, b"second-signal-choice", 29);
     let second_selection = second_selectable
-        .branch_selection(first.selected(), 1)
+        .branch_selection(&first_selected, 1)
         .expect("second unmodified selection");
     let second = second_selectable
         .resolve_branch(&second_selection)
         .expect("second branch");
+    let second_selected = second.selected().to_configuration();
     let artifact =
-        encode_crucible_configuration_artifact(&scenario_artifact, &second.selected().schedule)
+        encode_crucible_configuration_artifact(&scenario_artifact, &second_selected.schedule)
             .expect("nested signal configuration");
 
     let repository = Arc::new(CampaignRepository::new(
@@ -332,8 +334,8 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
         &store,
     )
     .expect("nested signal choices should authenticate");
-    assert_eq!(decoded, *second.selected());
-    assert_eq!(replay.target(), second.selected());
+    assert_eq!(decoded, second_selected);
+    assert_eq!(replay.target(), &second_selected);
     assert_eq!(replay.branches(), &[first.clone(), second]);
     let restarted_store = CampaignExecutorStore::new(Arc::clone(&repository));
     let (_, restarted_replay) = decode_crucible_configuration_artifact_with_signal_fault_replay(

@@ -37,6 +37,7 @@ pub struct BlockSubmit {
     pub(super) ring_index: u32,
     pub(super) submit_icount: u64,
     pub(super) request_id: u32,
+    pub(super) oldest_live_epoch: u64,
     pub(super) payload_len: usize,
     pub(super) token: BlockRequestToken,
 }
@@ -58,6 +59,12 @@ impl BlockSubmit {
     #[must_use]
     pub const fn request_id(&self) -> u32 {
         self.request_id
+    }
+
+    /// Returns the oldest live epoch stamped into the request header.
+    #[must_use]
+    pub const fn oldest_live_epoch(&self) -> u64 {
+        self.oldest_live_epoch
     }
 
     /// Returns the encoded wire payload length.

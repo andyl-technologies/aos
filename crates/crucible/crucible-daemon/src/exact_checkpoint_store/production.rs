@@ -20,6 +20,7 @@ const PRODUCTION_MANIFEST_ROLE: &str = "production-manifest";
 const PRODUCTION_PROMOTION_SOURCE_ROLE: &str = "replay-oracle-source";
 const PRODUCTION_PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
 const PRODUCTION_CHOICE_CLOSURE_ROLE: &str = "checkpoint-choice-closure";
+const PRODUCTION_CHOICE_FRAME_ROLE_PREFIX: &str = "checkpoint-choice-frame-";
 const PRODUCTION_INDEX_ROLE_PREFIX: &str = "production-object-index-";
 const PRODUCTION_OBJECT_ROLE_PREFIX: &str = "object-";
 const PRODUCTION_INDEX_SCHEMA: &str = "crucible.executor.production-checkpoint-index";
@@ -35,7 +36,6 @@ const MAX_PRODUCTION_INDEX_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const MAX_PRODUCTION_ROOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PRODUCTION_PROMOTION_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_PRODUCTION_CHOICE_CLOSURE_BYTES: u64 = 128 * 1024 * 1024;
 const PRODUCTION_OBJECT_IDENTITY_BYTES: u64 = 32;
 const REPLAY_ORACLE_EVIDENCE_MAGIC: &[u8] = b"crucible.production-replay-oracle.v1\0";
 #[cfg(feature = "destructive-recovery-faults")]
@@ -93,7 +93,7 @@ pub struct PreparedProductionExactCheckpoint {
     production_identity: ContentHash,
     promotion_source: Option<ExactCheckpointId>,
     promotion_evidence: Option<(ContentId, BlobHandle)>,
-    choice_closure: (ContentId, BlobHandle),
+    choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     scenario: ContentHash,
     configuration: ContentHash,
     object_bytes: u64,
@@ -229,7 +229,7 @@ pub struct LoadedProductionExactCheckpoint {
     promotion_source: Option<ExactCheckpointId>,
     promotion_evidence_id: Option<ContentId>,
     promotion_evidence: Option<Vec<u8>>,
-    choice_closure: Vec<u8>,
+    choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
     scenario: ContentHash,
     configuration: ContentHash,
     manifest: Vec<u8>,
@@ -240,10 +240,15 @@ pub struct LoadedProductionExactCheckpoint {
 }
 
 impl LoadedProductionExactCheckpoint {
-    /// Returns the root-authenticated bounded choice records captured at pause.
-    pub(crate) fn choice_closure(&self) -> &[u8] {
+    /// Returns the root-authenticated choice records captured at pause.
+    ///
+    /// Frames stay behind store handles until a validating walk reads them.
+    pub(crate) const fn choice_closure(
+        &self,
+    ) -> &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure {
         &self.choice_closure
     }
+
     /// Returns the complete campaign exact-checkpoint root.
     #[must_use]
     pub const fn root(&self) -> ExactCheckpointId {
@@ -614,16 +619,17 @@ impl ExactCheckpointStore {
         &self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-            .to_canonical_bytes()
-            .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
-        self.prepare_production_closure_inner(closure, choices, None)
+        self.prepare_production_closure_inner(
+            closure,
+            crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty(),
+            None,
+        )
     }
 
     pub(super) fn prepare_production_closure_with_cancellation(
         &self,
         closure: ProductionExactCheckpointClosure,
-        choice_closure: Vec<u8>,
+        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
         self.prepare_production_closure_inner(closure, choice_closure, Some(cancellation.clone()))
@@ -632,7 +638,7 @@ impl ExactCheckpointStore {
     pub(super) fn prepare_production_closure_inner(
         &self,
         closure: ProductionExactCheckpointClosure,
-        choice_closure: Vec<u8>,
+        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
         cancellation: Option<ExecutionCancellation>,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
         if let Some(cancellation) = cancellation.as_ref() {
@@ -796,14 +802,7 @@ impl ExactCheckpointStore {
                 source.logical_length(),
             )?;
         }
-        check_cancellation(prepared.cancellation.as_ref())?;
-        require_durable_receipt(
-            self.backend
-                .put_if_absent(prepared.choice_closure.0, &prepared.choice_closure.1)
-                .map_err(map_checkpoint_store_error)?,
-            prepared.choice_closure.0,
-            prepared.choice_closure.1.logical_length(),
-        )?;
+        self.publish_choice_closure(prepared)?;
         require_durable_receipt(
             {
                 check_cancellation(prepared.cancellation.as_ref())?;
@@ -938,25 +937,16 @@ impl ExactCheckpointStore {
         )?;
         validate_production_object_inventory_bound(body.manifest_bytes, body.object_count)?;
         validate_production_index_geometry(body.object_count, body.index_count)?;
-        let (manifest_id, index_ids, promotion_source, promotion_evidence_id, choice_id) =
-            decode_production_root_children(&envelope, body.index_count)?;
-
-        let mut choice_handle = self.backend.read(choice_id, None)?;
-        if let Some(cancellation) = cancellation.as_ref() {
-            choice_handle = cancellation_blob_handle(choice_handle, cancellation.clone());
-        }
-        if choice_handle.logical_length() == 0
-            || choice_handle.logical_length() > MAX_PRODUCTION_CHOICE_CLOSURE_BYTES
-        {
-            return Err(invalid_root("checkpoint choice closure length is invalid"));
-        }
-        let choice_closure = choice_handle
-            .read_all(MAX_PRODUCTION_CHOICE_CLOSURE_BYTES)
-            .map_err(map_checkpoint_store_error)?;
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
-            &choice_closure,
-        )
-        .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
+        let children = decode_production_root_children(&envelope, body.index_count)?;
+        let choice_closure = self.load_choice_closure(
+            children.choice_closure,
+            &children.choice_frames,
+            &cancellation,
+        )?;
+        let manifest_id = children.manifest;
+        let index_ids = children.indexes;
+        let promotion_source = children.promotion_source;
+        let promotion_evidence_id = children.promotion_evidence;
 
         let promotion_evidence = if let Some(identity) = promotion_evidence_id {
             let mut handle = self.backend.read(identity, None)?;
@@ -1084,6 +1074,105 @@ impl ExactCheckpointStore {
             backend: Arc::clone(&self.backend),
             cancellation,
         })
+    }
+}
+
+impl ExactCheckpointStore {
+    /// Writes the choice closure's frames, then its root.
+    ///
+    /// A replay-oracle promotion reuses the source root's frames, which
+    /// already live in this backend.
+    fn publish_choice_closure(
+        &self,
+        prepared: &PreparedProductionExactCheckpoint,
+    ) -> Result<(), ExactCheckpointStoreError> {
+        let closure = &prepared.choice_closure;
+        if prepared.reuse_backend.is_none() {
+            for (index, identity) in closure.frame_ids().enumerate() {
+                check_cancellation(prepared.cancellation.as_ref())?;
+                let frame = closure
+                    .frame_bytes(index)
+                    .map_err(|_| invalid_root("checkpoint choice closure frame is unreadable"))?;
+                self.put_choice_object(identity, frame.to_vec(), prepared.cancellation.as_ref())?;
+            }
+        }
+        check_cancellation(prepared.cancellation.as_ref())?;
+        self.put_choice_object(
+            closure.root_id(),
+            closure.root_bytes().to_vec(),
+            prepared.cancellation.as_ref(),
+        )
+    }
+
+    fn put_choice_object(
+        &self,
+        identity: ContentId,
+        bytes: Vec<u8>,
+        cancellation: Option<&ExecutionCancellation>,
+    ) -> Result<(), ExactCheckpointStoreError> {
+        let length = bytes.len() as u64;
+        let mut source = BlobHandle::from_bytes(bytes);
+        if let Some(cancellation) = cancellation {
+            source = cancellation_blob_handle(source, cancellation.clone());
+        }
+        require_durable_receipt(
+            self.backend
+                .put_if_absent(identity, &source)
+                .map_err(map_checkpoint_store_error)?,
+            identity,
+            length,
+        )
+    }
+
+    /// Reads the choice-closure root and opens a handle on every frame.
+    ///
+    /// Only the bounded root is read. Frames are authenticated against its
+    /// digests when a validating walk reads them, so loading a checkpoint
+    /// never reads choice records.
+    fn load_choice_closure(
+        &self,
+        root: ContentId,
+        frames: &[ContentId],
+        cancellation: &Option<ExecutionCancellation>,
+    ) -> Result<
+        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        ExactCheckpointStoreError,
+    > {
+        let open = |identity| -> Result<BlobHandle, ExactCheckpointStoreError> {
+            check_cancellation(cancellation.as_ref())?;
+            let mut handle = self.backend.read(identity, None)?;
+            if let Some(cancellation) = cancellation.as_ref() {
+                handle = cancellation_blob_handle(handle, cancellation.clone());
+            }
+            Ok(handle)
+        };
+
+        let root_handle = open(root)?;
+        let maximum = crate::qemu_campaign_lifecycle::MAX_REPLAY_CLOSURE_ROOT_BYTES as u64;
+        if root_handle.logical_length() == 0 || root_handle.logical_length() > maximum {
+            return Err(invalid_root("checkpoint choice closure length is invalid"));
+        }
+        let root_bytes = root_handle
+            .read_all(maximum)
+            .map_err(map_checkpoint_store_error)?;
+        if crate::qemu_campaign_lifecycle::closure_object_id(&root_bytes) != root {
+            return Err(invalid_root("checkpoint choice closure identity differs"));
+        }
+        let handles = frames
+            .iter()
+            .map(|identity| open(*identity))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let closure = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_stored(
+            root_bytes, handles,
+        )
+        .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
+        if !closure.frame_ids().eq(frames.iter().copied()) {
+            return Err(invalid_root(
+                "checkpoint choice frames differ from the closure root",
+            ));
+        }
+        Ok(closure)
     }
 }
 
@@ -1400,7 +1489,7 @@ mod tests {
             native_retirement: None,
             promotion_source: Some(raw),
             promotion_evidence: Some(evidence),
-            choice_closure: loaded.choice_closure().to_vec(),
+            choice_closure: loaded.choice_closure().clone(),
             reuse: Some(ProductionRepositoryReuse {
                 backend: Arc::clone(&loaded.backend),
                 placements: loaded.placements.clone(),
@@ -1587,9 +1676,7 @@ mod tests {
             native_retirement: None,
             promotion_source: None,
             promotion_evidence: None,
-            choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
-                .to_canonical_bytes()
-                .expect("encode empty checkpoint choices"),
+            choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty(),
             reuse: None,
         })
         .expect("prepare production closure before cancellation");
@@ -1672,7 +1759,7 @@ mod tests {
 
         assert_eq!(
             prepared.root().content_id().encode(),
-            "exact-manifest.5.fda03aae94e21d84722b0cf1446d28b4f7c7407b67feed6eef52ba0a5462dde2"
+            "exact-manifest.5.c9cb8d59d05c1b73044b0bffcf4feba3c813983e1e77fe0f7619a46826887a3d"
         );
     }
 

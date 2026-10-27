@@ -119,7 +119,7 @@ impl SingleScheduler {
                     "fixed input targets a different scheduler node kind",
                 ));
             }
-            let now = self.node_time_for_counter(node, node.counter)?;
+            let now = self.node_scheduler_time(node)?;
             if event.key.virtual_time().ticks < now.ticks {
                 return Err(fixed_input_error(
                     "fixed input contains a past unresolved delivery",
@@ -172,7 +172,7 @@ impl SingleScheduler {
             .collect::<Vec<_>>();
         let material = serde_json::to_vec(&(
             "crucible.scheduler.fixed-input.v1",
-            self.configuration.id(),
+            self.configuration.admission_digest(),
             self.configuration.def.id(),
             edges,
             self.topology_epoch,

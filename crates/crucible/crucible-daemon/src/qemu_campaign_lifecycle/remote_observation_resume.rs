@@ -24,7 +24,7 @@ use crate::qemu_resource_guard::RetainedLinuxQemuAttemptWorkspace;
 use crate::supervision::ProcessDeadline;
 use crate::{
     AttemptExecutionContext, ComposedQemuAttemptResourceGuardFactory,
-    CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutionCancellation,
+    CrucibleMeasurementEvidenceBundle, ExactCheckpointStore, ExecutionCancellation,
     ExecutionCheckpointRequest,
 };
 
@@ -37,6 +37,7 @@ pub struct RemoteObservationResumeFactory {
     host: LinuxQemuAttemptHostConfig,
     resources: AttemptResourceLimits,
     verify_determinism_findings: bool,
+    maximum_event_log_bytes: u64,
 }
 
 impl RemoteObservationResumeFactory {
@@ -60,13 +61,22 @@ impl RemoteObservationResumeFactory {
             host,
             resources,
             verify_determinism_findings,
+            maximum_event_log_bytes: crate::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
         }
     }
 
-    fn apply_determinism_finding_policy(
+    /// Bounds each replayed attempt's encoded event log at `maximum_bytes`.
+    #[must_use]
+    pub const fn with_maximum_event_log_bytes(mut self, maximum_bytes: u64) -> Self {
+        self.maximum_event_log_bytes = maximum_bytes;
+        self
+    }
+
+    fn apply_attempt_policy(
         &self,
         request: GuardedDefaultCampaignRunRequest,
     ) -> GuardedDefaultCampaignRunRequest {
+        let request = request.with_maximum_event_log_bytes(self.maximum_event_log_bytes);
         if self.verify_determinism_findings {
             request.with_determinism_finding_verification()
         } else {
@@ -142,12 +152,14 @@ impl RemoteObservationResumeFactory {
         }
         let proof = ObservationStopProof::from_canonical_bytes(source.proof())
             .map_err(|error| observation_error(format!("decode observation proof: {error}")))?;
-        let evidence = CrucibleMeasurementReplayEvidence::from_canonical_bytes(source.evidence())
-            .map_err(|error| {
-            observation_error(format!("decode observation evidence: {error}"))
-        })?;
+        let evidence = CrucibleMeasurementEvidenceBundle::from_canonical_bytes_with_limit(
+            source.evidence(),
+            crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+        )
+        .map_err(|error| observation_error(format!("decode observation evidence: {error}")))?;
         evidence
-            .verify_observation_stop_proof(&proof)
+            .evidence()
+            .verify_observation_stop_proof(evidence.segments(), &proof)
             .map_err(|error| observation_error(format!("validate observation source: {error}")))?;
         let closure = decode_replay_closure(request)?;
         ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
@@ -176,7 +188,7 @@ impl RemoteObservationResumeFactory {
                     observation_error(format!("open exact checkpoint store: {error}"))
                 })?,
         );
-        let campaign_request = self.apply_determinism_finding_policy(
+        let campaign_request = self.apply_attempt_policy(
             GuardedDefaultCampaignRunRequest::new(
                 request.scenario.clone(),
                 request.seed,
@@ -195,10 +207,12 @@ impl RemoteObservationResumeFactory {
                 Arc::clone(&checkpoints),
             ),
         );
-        let campaign =
-            run_guarded_default_campaign_with_host(campaign_request, workspace.factory()).map_err(
-                |error| observation_error(format!("authenticate source campaign: {error}")),
-            )?;
+        let campaign = run_guarded_default_campaign_with_host(
+            campaign_request,
+            workspace.factory(),
+            &mut super::DiscardGuardedCampaignProgress,
+        )
+        .map_err(|error| observation_error(format!("authenticate source campaign: {error}")))?;
         let captured = campaign
             .resume()
             .and_then(|proof| proof.source_savepoint())
@@ -283,7 +297,7 @@ fn decode_replay_closure(
             envelope.schema_version(),
         )));
     }
-    GuardedCampaignReplayClosure::from_canonical_bytes(envelope.payload())
+    GuardedCampaignReplayClosure::from_frame_objects(envelope.frames())
         .map_err(|error| observation_error(format!("decode replay closure: {error}")))
 }
 
@@ -307,10 +321,10 @@ mod tests {
     #[test]
     fn factory_applies_deployment_determinism_policy_to_authentication_campaign()
     -> Result<(), Box<dyn std::error::Error>> {
-        let request = factory(false)?.apply_determinism_finding_policy(campaign_request()?);
+        let request = factory(false)?.apply_attempt_policy(campaign_request()?);
         assert!(!request.verifies_determinism_findings());
 
-        let request = factory(true)?.apply_determinism_finding_policy(campaign_request()?);
+        let request = factory(true)?.apply_attempt_policy(campaign_request()?);
         assert!(request.verifies_determinism_findings());
         Ok(())
     }

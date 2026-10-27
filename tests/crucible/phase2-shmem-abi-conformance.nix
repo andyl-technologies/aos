@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.shmemAbiConformance",
   taskIds ? ["T-SHM-14" "T-SHM-19"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   # The `#[repr(C)]` structs and their static layout assertions live in the
   # `shmem/` submodules re-exported by lib.rs; concatenate them so the assertion
@@ -919,85 +918,40 @@ in
   if failures != []
   then throw "crucible phase2 shmem ABI conformance check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-shmem-abi-conformance";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.diffutils
+        # rustc expands the golden-vector fixture; it is not a Cargo build.
         pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-shmem-abi-conformance";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-shmem \
               --test gate_abi_conformance \
               -- --test-threads=1
 
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-shmem \
               --test preemption_mailbox \
               -- --test-threads=1
 
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-shmem \
               --test setup_validation \
               hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping \
               -- --test-threads=1
 
-            cargo run \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-shmem-abi-conformance-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo run \
               -p crucible-qemu-shmem \
               --example crucible-shmem-abi-header \
               --quiet \

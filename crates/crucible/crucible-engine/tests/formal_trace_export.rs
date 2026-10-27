@@ -229,9 +229,9 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
         .split("fn external_formal_trace_bytes")
         .nth(1)
         .expect("external trace byte helper should exist")
-        .split("fn condition_prefix_from_recorded_log")
+        .split("fn observe_guest_marker_assertions")
         .next()
-        .expect("external trace helpers should precede recorded log helper");
+        .expect("external trace helpers should precede guest marker observation");
     for required in [
         "fn external_formal_trace_entry_material",
         "fn external_scheduler_event_log_payload_material",

@@ -117,16 +117,21 @@ crucible.api.rpc|crates/crucible/crucible-control-api/src/rpc_abi.rs|number|RPC_
 crucible.production-network-adapter-checkpoint|crates/crucible/crucible-daemon/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
 crucible.production-run-lock|crates/crucible/crucible-daemon/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
 crucible.production-run-state|crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
+crucible.production-lifecycle-exit-log|crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence/exit_log.rs|number|PRODUCTION_LIFECYCLE_EXIT_LOG_VERSION
 crucible.shmem.region|crates/crucible/crucible-qemu-shmem/src/lib.rs|number|ABI_VERSION
 crucible.shmem.fault-clock-evidence|crates/crucible/crucible-qemu-shmem/src/shmem/fault_clock_evidence.rs|magic|FAULT_CLOCK_EVIDENCE_MAGIC_V2
 crucible.shmem.fault-clock-manifest|crates/crucible/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs|number|FAULT_CLOCK_MANIFEST_VERSION_V2
 crucible.executor.crucible-scenario-payload|crates/crucible/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5
-crucible.executor.crucible-configuration-payload|crates/crucible/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V4
+crucible.executor.crucible-configuration-payload|crates/crucible/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5
 crucible.executor.finding-production-replay-capture|crates/crucible/crucible-daemon/src/finding_production_replay.rs|number|FINDING_PRODUCTION_REPLAY_CAPTURE_SCHEMA_VERSION
 crucible.execution.scenario-form|crates/crucible/crucible-engine/src/model/toml.rs|magic|SCENARIO_FORM_BINARY_MAGIC_V9
-crucible.execution.reproduction-artifact|crates/crucible/crucible-engine/src/model/toml.rs|magic|REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9
-crucible.execution.schedule|crates/crucible/crucible-engine/src/model/toml.rs|magic|SCHEDULE_BINARY_MAGIC_V4
-crucible.execution.checkpoint|crates/crucible/crucible-engine/src/model/toml.rs|magic|CHECKPOINT_BINARY_MAGIC_V6
+crucible.executor.crucible-reproduction-payload|crates/crucible/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5
+crucible.execution.reproduction-artifact|crates/crucible/crucible-engine/src/model/toml.rs|magic|REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10
+crucible.execution.reproduction-artifact-manifest|crates/crucible/crucible-engine/src/model/toml.rs|magic|REPRODUCTION_ARTIFACT_STORED_MAGIC_V1
+crucible.execution.schedule|crates/crucible/crucible-engine/src/model/schedule_segments.rs|magic|SCHEDULE_BINARY_MAGIC_V6
+crucible.execution.schedule-manifest|crates/crucible/crucible-engine/src/model/schedule_segments.rs|magic|MANIFEST_MAGIC: &[u8]
+crucible.execution.schedule-segment|crates/crucible/crucible-engine/src/model/schedule_segments.rs|magic|SEGMENT_MAGIC: &[u8]
+crucible.execution.checkpoint|crates/crucible/crucible-engine/src/model/toml.rs|magic|CHECKPOINT_BINARY_MAGIC_V7
 crucible.execution.event-log-segment|crates/crucible/crucible-engine/src/scheduler.rs|number|EVENT_LOG_SEGMENT_BINARY_VERSION
 crucible.execution.backend-network-output|crates/crucible/crucible-engine/src/backend/io/network_checkpoint.rs|number|BACKEND_NETWORK_OUTPUT_VERSION
 crucible.execution.scheduler-network|crates/crucible/crucible-engine/src/scheduler/runtime_state/network_checkpoint.rs|magic|SCHEDULER_NETWORK_CHECKPOINT_MAGIC
@@ -135,12 +140,14 @@ crucible.execution.signal-trace-manifest|crates/crucible/crucible-engine/src/mod
 crucible.execution.signal-trace-chunk|crates/crucible/crucible-engine/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/crucible-engine/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
 crucible.execution.host-assertion-continuation|crates/crucible/crucible-engine/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
-crucible.execution.single-scheduler-continuation|crates/crucible/crucible-engine/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v6
-crucible.execution.device-scheduling-subnode|crates/crucible/crucible-engine/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v1
+crucible.execution.single-scheduler-continuation|crates/crucible/crucible-engine/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v11
+crucible.execution.device-scheduling-subnode|crates/crucible/crucible-engine/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v3
 crucible.execution.scenario-selectable-component|crates/crucible/crucible-engine/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
 crucible.execution.fault-adapter-checkpoint|crates/crucible/crucible-engine/src/model/fault_signal/adapter_runtime.rs|number|ADAPTER_CHECKPOINT_VERSION
 crucible.execution.fault-runtime-checkpoint|crates/crucible/crucible-engine/src/model/fault_signal/runtime.rs|number|FAULT_RUNTIME_STATE_VERSION
-crucible.execution.resolved-effect-trace|crates/crucible/crucible-engine/src/model/fault_signal/runtime.rs|magic|RESOLVED_EFFECT_TRACE_MAGIC
+crucible.execution.resolved-effect-trace|crates/crucible/crucible-engine/src/model/fault_signal/runtime/trace_format.rs|magic|MANIFEST_MAGIC
+crucible.execution.resolved-effect-trace-segment|crates/crucible/crucible-engine/src/model/fault_signal/runtime/trace_format.rs|number|RESOLVED_EFFECT_TRACE_SEGMENT_SCHEMA
+crucible.execution.resolved-effect-trace-bundle|crates/crucible/crucible-engine/src/model/fault_signal/runtime/trace_reader.rs|magic|BUNDLE_MAGIC
 crucible.execution.signal-inverse-cdf-table|crates/crucible/crucible-engine/src/model/fault_signal/sampler.rs|magic|CRCDFTB1
 crucible.execution.signal-spatial-artifact|crates/crucible/crucible-engine/src/model/fault_signal/spatial.rs|magic|CRSPAT01
 crucible.execution.signal-evaluator-checkpoint|crates/crucible/crucible-engine/src/model/fault_signal/evaluator.rs|magic|EVALUATOR_CHECKPOINT_MAGIC
@@ -150,9 +157,10 @@ crucible.device.io-core-snapshot|crates/crucible/crucible-device/src/subnode/sna
 crucible.device.link-snapshot|crates/crucible/crucible-device/src/netlink/link/snapshot.rs|magic|LINK_SNAPSHOT_MAGIC
 crucible.device.ninep-snapshot|crates/crucible/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
 crucible.qemu.checkpoint-qmp|crates/crucible/crucible-qemu-host/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
-crucible.qemu.host-io-checkpoint|crates/crucible/crucible-qemu-host/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
-crucible.qemu.production-fault-runtime|crates/crucible/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
-crucible.qemu.node-continuation|crates/crucible/crucible-qemu-host/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v7
+crucible.qemu.host-io-checkpoint|crates/crucible/crucible-qemu-host/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v7
+crucible.qemu.production-fault-runtime|crates/crucible/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v8
+crucible.qemu.node-continuation|crates/crucible/crucible-qemu-host/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v9
+crucible.qemu.native-console-continuation|crates/crucible/crucible-qemu-host/src/native_console_owner/continuation.rs|magic|MAGIC
 crucible.qemu.accelerator-checkpoint|crates/crucible/crucible-qemu-host/src/supervision/accelerator_io_servicer.rs|magic|ACCELERATOR_CHECKPOINT_MAGIC
 crucible.live-qemu-replay-contract|crates/crucible/crucible-cli/src/cli/artifact/live_qemu.rs|magic|LIVE_QEMU_REPLAY_CONTRACT_SCHEMA
 crucible.qemu.hot-fork.template|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/template.rs|number|QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION
@@ -168,7 +176,6 @@ crucible.qemu.hot-fork.child-process|crates/crucible/crucible-qemu-host/src/qmp/
 crucible.qemu.hot-fork.child-process-contract|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/child_process_contract.rs|number|QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-files|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/child_files.rs|number|QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-qmp|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/child_qmp.rs|number|QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION
-crucible.qemu.hot-fork.child-console|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/child_console.rs|number|QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-diagnostics|crates/crucible/crucible-qemu-host/src/qmp/hot_fork/diagnostics.rs|number|QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION
 "#;
 
@@ -310,7 +317,7 @@ fn measurement_hash_domains_do_not_relabel_payload_versions() {
         "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-definitions.v2\""
     ));
     assert!(evaluation.contains(
-        "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-evaluation.v2\""
+        "ContentHash::from_canonical_hex_bytes(\n            \"crucible.model.measurement-evaluation.v3\""
     ));
     assert_eq!(
         registry.get("crucible.execution.measurement-definitions"),

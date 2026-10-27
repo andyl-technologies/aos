@@ -112,14 +112,57 @@ pub(super) fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     .into_bytes()
 }
 
-pub(super) fn reproduction_artifact_canonical_bytes(
+/// Streams [`ReproductionArtifact::id`] over the logical version 9 bytes.
+///
+/// The schedule blob's length prefix precedes its bytes, so one pass sizes
+/// every encoded decision and a second hashes them; neither keeps the encoded
+/// schedule.
+/// Hashes the version 10 transport of `(scenario, schedule)` without
+/// materializing its schedule blob.
+///
+/// The result equals the BLAKE3 hash of the bytes
+/// [`ReproductionArtifact::to_compact_binary`] writes, so a DAG store keys the
+/// transport by the artifact id.
+pub(super) fn reproduction_artifact_id(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
-) -> Vec<u8> {
-    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V9);
-    writer.write_binary_blob(&scenario.to_compact_binary());
-    writer.write_binary_blob(&schedule.to_compact_binary());
-    writer.finish()
+) -> ContentHash {
+    let scenario_bytes = scenario.to_compact_binary();
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10);
+    hasher.update(&(scenario_bytes.len() as u64).to_le_bytes());
+    hasher.update(&scenario_bytes);
+    hash_schedule_v6_blob(schedule, &mut hasher);
+    ContentHash {
+        bytes: *hasher.finalize().as_bytes(),
+    }
+}
+
+/// Reads and checks the scenario blob that opens a reproduction encoding.
+pub(super) fn read_reproduction_scenario(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ScenarioDefForm, EngineError> {
+    let scenario_bytes = reader.read_binary_blob_bounded(
+        "reproduction-artifact.scenario",
+        MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
+    )?;
+    if !scenario_bytes.starts_with(SCENARIO_FORM_BINARY_MAGIC_V9) {
+        return Err(scenario_serialization_error(
+            "reproduction-artifact scenario version does not match its outer version",
+        ));
+    }
+    ScenarioDefForm::from_compact_binary(scenario_bytes)
+}
+
+/// Reads the schedule-manifest blob of a stored reproduction form.
+pub(super) fn read_stored_schedule_manifest(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<ScheduleManifest, EngineError> {
+    ScheduleManifest::from_bytes(reader.read_binary_blob_bounded(
+        "reproduction-artifact.schedule-manifest",
+        MAX_SCHEDULE_MANIFEST_BYTES,
+    )?)
 }
 
 pub(super) fn reproduction_event_log_artifact_id(
@@ -249,9 +292,9 @@ pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
         String::from("crucible.dag-store.schedule-delta.v3"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
-        format!("decisions={}", schedule.decisions().len()),
+        format!("decisions={}", schedule.decision_history().len()),
     ];
-    for (index, decision) in schedule.decisions().iter().enumerate() {
+    for (index, decision) in schedule.decision_history().iter().enumerate() {
         push_decision_lines(index, decision, &mut lines);
     }
     lines.join("\n").into_bytes()
@@ -331,6 +374,7 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
         Decision::RngDraw(draw) => {
             lines.push(format!("{prefix}.kind=rng-draw"));
             push_rng_stream_lines(&prefix, &draw.stream, lines);
+            lines.push(format!("{prefix}.{}", draw.address.canonical_material()));
             lines.push(format!("{prefix}.value={}", draw.value));
         }
         Decision::Override(override_decision) => {

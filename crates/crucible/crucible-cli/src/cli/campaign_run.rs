@@ -20,14 +20,20 @@ use crucible_control_server::InProcessLifecycleClient;
 use crucible_daemon::ExactCheckpointStore;
 use crucible_daemon::campaign_store_composition::{DirectoryBlobBackend, ImmutableBlobBackend};
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
+    GuardedCampaignReplayClosure, GuardedCampaignRunSink, GuardedCampaignRunSinkError,
+    GuardedDefaultCampaignObservation, GuardedDefaultCampaignObservationSource,
     GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest, GuardedDefaultCampaignSavepoint,
     GuardedDefaultCampaignWatchFrame, run_guarded_default_campaign,
+    run_guarded_default_campaign_with_sink,
 };
 
 #[path = "campaign_run/execution.rs"]
 mod execution;
 use execution::execute_local_qemu_campaign;
+
+#[path = "campaign_run/progress.rs"]
+mod progress;
+pub(crate) use progress::CampaignRunProgress;
 
 /// Returns whether the shared campaign owner can resume this logical checkpoint exactly.
 pub(super) fn guarded_campaign_resume_eligible(
@@ -43,7 +49,7 @@ pub(super) fn guarded_campaign_resume_eligible(
 }
 
 fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
-    evidence.schedule.decisions().iter().all(|decision| {
+    evidence.schedule.decision_history().iter().all(|decision| {
         matches!(
             decision,
             crucible_engine::Decision::DeliveryOrder(_)
@@ -51,7 +57,7 @@ fn campaign_resume_evidence_supported(evidence: &ResumeHandleEvidence) -> bool {
                 | crucible_engine::Decision::Preemption(_)
                 | crucible_engine::Decision::Selection(_)
         )
-    }) && evidence.schedule.decisions().iter().all(|decision| {
+    }) && evidence.schedule.decision_history().iter().all(|decision| {
         let crucible_engine::Decision::Selection(decision) = decision else {
             return true;
         };
@@ -91,7 +97,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         resolve_guarded_campaign_deployment_path(resume_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, None)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -125,7 +131,7 @@ fn run_local_qemu_campaign_continuation_workflow(
         deployment.host,
         resources,
     );
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let request =
         attach_guarded_resume_source(request, evidence, final_stop, Arc::clone(&checkpoints));
     let request = if resume_plan.watch_streams_live_status {
@@ -133,9 +139,12 @@ fn run_local_qemu_campaign_continuation_workflow(
     } else {
         request
     };
-    let result = run_guarded_default_campaign(request)
+    let mut progress = CampaignRunProgress::default();
+    let result = run_guarded_default_campaign_with_sink(request, &mut progress)
         .map_err(|error| campaign_run_error("resume through shared campaign owner", error))
-        .and_then(|campaign| campaign_resume_workflow_report(resume_plan, evidence, &campaign));
+        .and_then(|campaign| {
+            campaign_resume_workflow_report(resume_plan, evidence, &campaign, &progress)
+        });
     complete_transient_checkpoint_workflow(
         checkpoints,
         checkpoint_directory,
@@ -222,7 +231,7 @@ pub(super) fn run_local_qemu_campaign_replay(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -247,16 +256,23 @@ pub(super) fn run_local_qemu_campaign_replay(
     )
     .with_discovery_stop(guarded_discovery_stop(run_plan)?)
     .with_initial_replay(schedule, Some(replay_closure));
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let request = if run_plan.watch_streams_live_status {
         request.with_watch_frames()
     } else {
         request
     };
-    let campaign = run_guarded_default_campaign(request)
+    let mut progress = CampaignRunProgress::default();
+    let campaign = run_guarded_default_campaign_with_sink(request, &mut progress)
         .map_err(|error| campaign_run_error("replay through shared campaign owner", error))?;
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
-    campaign_run_report(run_plan, &campaign, terminal_outcome, status)
+    campaign_run_report(
+        run_plan,
+        &campaign,
+        progress.watch_frames(),
+        terminal_outcome,
+        status,
+    )
 }
 
 /// Returns whether the shared batch campaign owner can execute this run exactly.
@@ -299,7 +315,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     let qemu_build_id = match backend {
         ResolvedLocalBackend::Qemu { qemu_build_id, .. } => qemu_build_id.clone(),
         #[cfg(any(test, feature = "test-double"))]
@@ -325,7 +341,9 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
         ExactCheckpointStore::new(checkpoint_backend, resources.maximum_disk_bytes())
             .map_err(|error| campaign_run_error("open exact checkpoint store", error))?,
     );
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
     let scenario = run_plan.scenario.scenario_form().clone();
     let seed = run_plan
         .request_seed
@@ -341,7 +359,7 @@ pub(super) fn run_local_qemu_campaign_save_workflow(
     )
     .with_discovery_stop(stop.clone())
     .with_reached_stop_savepoint_capture(Arc::clone(&checkpoints));
-    let request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    let request = attempt_policy.apply(request);
     let report = run_guarded_default_campaign(request)
         .map_err(|error| {
             campaign_run_error("capture savepoint through shared campaign owner", error)
@@ -403,6 +421,7 @@ fn campaign_save_workflow_report(
     let mut run = campaign_run_report(
         &save_plan.run_plan,
         campaign,
+        &[],
         OutcomeKind::Passed,
         BackendCommandStatus::Passed,
     )?;
@@ -432,7 +451,7 @@ fn campaign_save_workflow_report(
 }
 
 fn validate_portable_campaign_save_schedule(schedule: &Schedule) -> Result<(), CliError> {
-    let supports_portable_resume = schedule.decisions().iter().all(|decision| {
+    let supports_portable_resume = schedule.decision_history().iter().all(|decision| {
         matches!(
             decision,
             crucible_engine::Decision::DeliveryOrder(_)
@@ -453,6 +472,7 @@ fn campaign_resume_workflow_report(
     resume_plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
     campaign: &GuardedDefaultCampaignRun,
+    progress: &CampaignRunProgress,
 ) -> Result<ResumeWorkflowReport, CliError> {
     let resume = campaign.resume().ok_or_else(|| {
         campaign_run_error_message("campaign completed without authenticated resume evidence")
@@ -460,10 +480,7 @@ fn campaign_resume_workflow_report(
     if resume.source_checkpoint() != evidence.checkpoint.id
         || resume.source_configuration().as_hash().as_bytes() != evidence.configuration.id().bytes
         || resume.source_frontier() != evidence.checkpoint.virtual_time
-        || !campaign
-            .observations()
-            .iter()
-            .any(|observation| observation.id() == resume.source_observation())
+        || resume.source_observation_record().id() != resume.source_observation()
     {
         return Err(CliError::Identity(String::from(
             "campaign resume source proof differs from the requested checkpoint",
@@ -482,7 +499,7 @@ fn campaign_resume_workflow_report(
             )));
         }
     }
-    validate_replayed_source_observation(evidence, campaign, resume.source_observation())?;
+    validate_replayed_source_observation(evidence, resume.source_observation_record())?;
 
     let configuration = campaign.terminal_configuration();
     validate_resume_terminal_source_ancestor(evidence, configuration)?;
@@ -503,6 +520,7 @@ fn campaign_resume_workflow_report(
     let final_state = campaign_resume_final_state(resume_plan, stop, terminal_outcome);
     let mut run = campaign_run_report_with_state(
         campaign,
+        progress.watch_frames(),
         terminal_outcome,
         status,
         final_state,
@@ -522,8 +540,7 @@ fn campaign_resume_workflow_report(
 
 fn validate_replayed_source_observation(
     evidence: &ResumeHandleEvidence,
-    campaign: &GuardedDefaultCampaignRun,
-    source_observation: crucible_campaign::ObservationId,
+    actual: &GuardedDefaultCampaignObservation,
 ) -> Result<(), CliError> {
     let (Some(expected), Some(expected_evidence)) = (
         evidence.source_observation_proof.as_deref(),
@@ -531,15 +548,6 @@ fn validate_replayed_source_observation(
     ) else {
         return Ok(());
     };
-    let actual = campaign
-        .observations()
-        .iter()
-        .find(|observation| observation.id() == source_observation)
-        .ok_or_else(|| {
-            CliError::Identity(String::from(
-                "campaign resume omitted the replayed source observation",
-            ))
-        })?;
     if !matches!(
         actual.observation().stop(),
         StopOutcome::ObservationReached(proof) if proof.as_ref() == expected
@@ -554,11 +562,13 @@ fn validate_replayed_source_observation(
         ))
     })?;
     actual_evidence
-        .verify_observation_stop_proof(expected)
+        .evidence()
+        .verify_observation_stop_proof(actual_evidence.segments(), expected)
         .map_err(|error| {
             campaign_run_error("authenticate replayed source observation evidence", error)
         })?;
-    if actual_evidence != expected_evidence {
+    // Equal manifests name equal segment chains, hence equal entries.
+    if actual_evidence.evidence() != expected_evidence.evidence() {
         return Err(CliError::Identity(String::from(
             "campaign resume did not reproduce the portable source observation evidence",
         )));
@@ -738,7 +748,7 @@ fn campaign_save_boundary_proof(
     plan: &SaveInvocationPlan,
     terminal: &StopOutcome,
     evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
-    observation_evidence: Option<&crucible_daemon::CrucibleMeasurementReplayEvidence>,
+    observation_evidence: Option<&crucible_daemon::CrucibleMeasurementEvidenceBundle>,
 ) -> Result<SaveBoundaryProof, CliError> {
     match (plan.at, plan.selector.as_ref(), terminal) {
         (SaveAtArg::VirtualTime, None, _) => return Ok(SaveBoundaryProof::Coordinate),
@@ -754,7 +764,8 @@ fn campaign_save_boundary_proof(
                 )
             })?;
             observation_evidence
-                .verify_observation_stop_proof(proof)
+                .evidence()
+                .verify_observation_stop_proof(observation_evidence.segments(), proof)
                 .map_err(|error| {
                     campaign_run_error(
                         "authenticate campaign observation save boundary evidence",
@@ -763,9 +774,13 @@ fn campaign_save_boundary_proof(
                 })?;
             return Ok(SaveBoundaryProof::CampaignObservation {
                 proof: proof.clone(),
-                evidence: observation_evidence.canonical_bytes().map_err(|error| {
-                    campaign_run_error("encode campaign observation boundary evidence", error)
-                })?,
+                evidence: observation_evidence
+                    .canonical_bytes_with_limit(
+                        crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+                    )
+                    .map_err(|error| {
+                        campaign_run_error("encode campaign observation boundary evidence", error)
+                    })?,
             });
         }
         (SaveAtArg::Marker, Some(SaveAtSelector::Marker { .. }), _) => {}
@@ -781,22 +796,27 @@ fn campaign_save_boundary_proof(
         ));
     };
     let marker = crucible_engine::MarkerId::from_name(name);
-    let entry = evidence
-        .event_log_entries()
-        .iter()
-        .rev()
-        .find(|entry| {
-            matches!(
+    // The proof is the latest matching marker; one ordered pass over the
+    // segmented evidence keeps the last match.
+    let mut latest = None;
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            if matches!(
                 entry.payload(),
                 crucible_model::SchedulerEventLogPayload::Observable(_)
             ) && entry.event_payload().kind() == "guest_marker"
                 && entry.event_payload().string("marker") == Some(name)
+            {
+                latest = Some(entry.clone());
+            }
+            Ok::<(), std::convert::Infallible>(())
         })
-        .ok_or_else(|| {
-            campaign_run_error_message(format!(
-                "campaign marker save reached `{name}` without its scheduler event proof"
-            ))
-        })?;
+        .map_err(|error| campaign_run_error("read campaign marker evidence", error))?;
+    let entry = latest.ok_or_else(|| {
+        campaign_run_error_message(format!(
+            "campaign marker save reached `{name}` without its scheduler event proof"
+        ))
+    })?;
 
     // The campaign owner stops directly on NamedBoundary and does not register
     // a session breakpoint. Preserve the scheduler-owned marker identity so
@@ -858,8 +878,10 @@ pub(super) fn run_local_qemu_campaign_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
-    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
+    let (campaign, progress) = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
 
     campaign_run_outcome(
         CampaignRunOutcomeContext {
@@ -870,6 +892,7 @@ pub(super) fn run_local_qemu_campaign_workflow(
             backend,
         },
         campaign,
+        &progress,
     )
 }
 
@@ -891,7 +914,9 @@ pub(super) fn run_local_qemu_interactive_workflow(
         resolve_guarded_campaign_deployment_path(run_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, run_plan.max_quanta)?;
-    let lifecycle = production_qemu_lifecycle_config(backend)?;
+    let lifecycle = production_qemu_lifecycle_config(backend)?.with_run_ceiling_ticks(
+        interactive_run_ceiling_ticks(run_plan.max_virtual_time_ticks),
+    );
     let host = deployment.host;
     let control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
         "crucible-cli-interactive-qemu",
@@ -941,9 +966,15 @@ pub(crate) fn run_local_qemu_campaign_report(
     run_plan: &RunInvocationPlan,
     lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
 ) -> Result<RunWorkflowReport, CliError> {
-    let campaign = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
+    let (campaign, progress) = execute_local_qemu_campaign(backend, run_plan, lifecycle)?;
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
-    campaign_run_report(run_plan, &campaign, terminal_outcome, status)
+    campaign_run_report(
+        run_plan,
+        &campaign,
+        progress.watch_frames(),
+        terminal_outcome,
+        status,
+    )
 }
 
 pub(crate) fn guarded_run_resources(
@@ -1036,6 +1067,7 @@ struct CampaignRunOutcomeContext<'a> {
 fn campaign_run_outcome(
     context: CampaignRunOutcomeContext<'_>,
     campaign: GuardedDefaultCampaignRun,
+    progress: &CampaignRunProgress,
 ) -> Result<BackendCommandOutcome, CliError> {
     let CampaignRunOutcomeContext {
         thin_plan,
@@ -1048,7 +1080,13 @@ fn campaign_run_outcome(
     let observation = terminal.observation();
     let configuration = campaign.terminal_configuration();
     let (status, terminal_outcome) = campaign_terminal_status(run_plan, &campaign)?;
-    let report = campaign_run_report(run_plan, &campaign, terminal_outcome, status)?;
+    let report = campaign_run_report(
+        run_plan,
+        &campaign,
+        progress.watch_frames(),
+        terminal_outcome,
+        status,
+    )?;
     let mut outcome =
         finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)?;
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "run-campaign-default-path");
@@ -1059,25 +1097,16 @@ fn campaign_run_outcome(
         terminal.id(),
         observation.child(),
         campaign_stop_label(observation.stop()),
-        campaign.observations().len(),
+        campaign.observation_count(),
         campaign.branch_request_count(),
     ));
-    for (index, accepted) in campaign.observations().iter().enumerate() {
-        let observation_ordinal = u64::try_from(index)
-            .map_err(|_| backend_error("campaign observation ordinal overflowed"))?;
+    for accepted in progress.observations() {
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
-            virtual_time_ticks: accepted.virtual_time_ticks(),
+            virtual_time_ticks: accepted.virtual_time_ticks,
             node: String::from("campaign"),
             kind: String::from("authenticated_observation"),
-            summary: format!(
-                "ordinal={} observation={} attempt={} child={} stop={}",
-                observation_ordinal,
-                accepted.id(),
-                accepted.observation().attempt(),
-                accepted.observation().child(),
-                campaign_stop_label(accepted.observation().stop()),
-            ),
+            summary: accepted.summary.clone(),
         });
     }
     outcome.canonical_log.push(CanonicalLogEntry {
@@ -1167,11 +1196,13 @@ fn campaign_run_primary_boundary_matches(
 pub(crate) fn campaign_run_report(
     run_plan: &RunInvocationPlan,
     campaign: &GuardedDefaultCampaignRun,
+    watch_frames: &[GuardedDefaultCampaignWatchFrame],
     terminal_outcome: OutcomeKind,
     status: BackendCommandStatus,
 ) -> Result<RunWorkflowReport, CliError> {
     campaign_run_report_with_state(
         campaign,
+        watch_frames,
         terminal_outcome,
         status,
         terminal_final_state(run_plan, Some(terminal_outcome)),
@@ -1181,6 +1212,7 @@ pub(crate) fn campaign_run_report(
 
 fn campaign_run_report_with_state(
     campaign: &GuardedDefaultCampaignRun,
+    watch_frames: &[GuardedDefaultCampaignWatchFrame],
     terminal_outcome: OutcomeKind,
     status: BackendCommandStatus,
     final_state: String,
@@ -1192,29 +1224,37 @@ fn campaign_run_report_with_state(
         evidence.execution_fingerprints(),
         evidence.terminal_fingerprints(),
     )?;
-    let streamed_events = evidence
-        .event_log_entries()
-        .iter()
-        .map(serde_json::to_string)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| campaign_run_error("encode scheduler event evidence", error))?;
-    let streamed_event_frames = evidence
-        .event_log_entries()
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
+    // The report carries every event in two encodings plus coverage; build
+    // them in one streamed pass instead of first copying the whole log.
+    let mut streamed_events = Vec::new();
+    let mut streamed_event_frames = Vec::new();
+    let mut coverage = crucible_engine::EventLogCoverageFold::new();
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            coverage.observe(entry);
+            streamed_events.push(serde_json::to_string(entry)?);
+            streamed_event_frames.push(canonical_streaming_event_frame_bytes(
+                &campaign_output_api::StreamingEventFrame {
+                    generation: 0,
+                    cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
+                    next_cursor: campaign_output_api::EventLogCursor::new(
+                        entry.sequence().saturating_add(1),
+                    ),
+                    event: campaign_output_api::open_set_event_envelope_from_entry(entry),
+                },
+            ));
+            Ok::<(), serde_json::Error>(())
         })
-        .collect();
+        .map_err(|error| match error {
+            crucible_daemon::AttemptEventLogVisitError::Log(error) => {
+                campaign_run_error("read scheduler event evidence", error)
+            }
+            crucible_daemon::AttemptEventLogVisitError::Visit(error) => {
+                campaign_run_error("encode scheduler event evidence", error)
+            }
+        })?;
     let watch_statuses = if watch_streams_live_status {
-        campaign
-            .watch_frames()
+        watch_frames
             .iter()
             .map(|frame| campaign_watch_status(frame, campaign.final_snapshot(), terminal_outcome))
             .collect()
@@ -1247,11 +1287,12 @@ fn campaign_run_report_with_state(
             .collect(),
         streamed_events,
         streamed_event_frames,
-        coverage_feedback: crucible_engine::EventLogCoverageFeedback::from_event_log(
-            evidence.event_log_entries(),
-        ),
+        coverage_feedback: coverage.finish(),
         execution_fingerprints,
-        resolved_effect_trace: evidence.resolved_effect_trace().map(ToOwned::to_owned),
+        resolved_effect_trace: evidence
+            .resolved_effect_trace()
+            .map(crate::resolved_effect_trace_bundle)
+            .transpose()?,
         acknowledged_commands: Vec::new(),
         reproduction_commands: Vec::new(),
         watch_statuses,

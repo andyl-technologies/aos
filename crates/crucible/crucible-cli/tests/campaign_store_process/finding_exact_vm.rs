@@ -334,7 +334,15 @@ fn assert_localized_minimization(report: &Value) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn verify_command(bundle: &Path, working_directory: &Path) -> Result<Command, Box<dyn Error>> {
+/// Builds the packaged exact verifier without original campaign environment paths.
+///
+/// # Errors
+///
+/// Returns an error if the packaged binary or host deployment is not configured.
+pub(super) fn verify_command(
+    bundle: &Path,
+    working_directory: &Path,
+) -> Result<Command, Box<dyn Error>> {
     let mut process = packaged_command(working_directory)?;
     process
         .args(["campaign", "finding-bundle", "verify"])
@@ -749,7 +757,14 @@ fn write_rsp_packet(stream: &mut UnixStream, packet: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
-fn bundle_fingerprints(bundle: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>, Box<dyn Error>> {
+/// Fingerprints every regular bundle file under its relative path.
+///
+/// # Errors
+///
+/// Returns an error for nonregular entries or filesystem failures.
+pub(super) fn bundle_fingerprints(
+    bundle: &Path,
+) -> Result<BTreeMap<PathBuf, [u8; 32]>, Box<dyn Error>> {
     fn visit(
         root: &Path,
         directory: &Path,
@@ -802,7 +817,12 @@ fn reject_bundle(
     Ok(())
 }
 
-fn copy_bundle(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+/// Copies only regular files and directories to a fresh bundle directory.
+///
+/// # Errors
+///
+/// Returns an error for nonregular entries or filesystem failures.
+pub(super) fn copy_bundle(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
     fs::create_dir(destination)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;

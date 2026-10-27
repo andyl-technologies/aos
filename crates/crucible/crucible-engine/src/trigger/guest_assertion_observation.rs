@@ -6,6 +6,42 @@ use super::{
     guest_marker_payload_reason,
 };
 
+/// Observable events already applied to guest marker assertion states.
+///
+/// Applying a marker payload again leaves its state unchanged, so a cursor
+/// that does not describe the supplied prefix costs only a rescan from the
+/// start; it can never skip an unapplied marker.
+#[derive(Clone, Debug)]
+pub(super) struct ObservableEventCursor {
+    applied: usize,
+    last: Option<ObservableEvent>,
+}
+
+impl ObservableEventCursor {
+    pub(super) fn at_end(events: &crate::History<ObservableEvent>) -> Self {
+        Self {
+            applied: events.len(),
+            last: events.last().cloned(),
+        }
+    }
+
+    /// Returns where `events` continues past this cursor, or zero when
+    /// `events` does not extend the history the cursor was taken from.
+    pub(super) fn resume_index(
+        cursor: Option<&Self>,
+        events: &crate::History<ObservableEvent>,
+    ) -> usize {
+        let Some(cursor) = cursor else {
+            return 0;
+        };
+        let extends = match cursor.applied.checked_sub(1) {
+            None => true,
+            Some(last) => events.get(last) == cursor.last.as_ref(),
+        };
+        if extends { cursor.applied } else { 0 }
+    }
+}
+
 pub(super) fn observe_guest_marker_assertion_state(
     state: &mut GuestMarkerAssertionState,
     at: VirtualTime,

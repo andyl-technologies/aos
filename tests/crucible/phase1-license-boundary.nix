@@ -5,8 +5,7 @@
   taskIds ? ["BOUND-1" "BOUND-2" "BOUND-3" "BOUND-4" "BOUND-5" "BOUND-6" "BOUND-7" "BOUND-8" "BOUND-9" "BOUND-10" "BOUND-11" "BOUND-12"],
   campaignComposition ? null,
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   campaignMode =
     if campaignComposition == null
     then null
@@ -59,7 +58,7 @@
     cp "$TMPDIR/campaign-system-closure" "$out/campaign-system-closure"
     cat >> "$out/result" <<RESULT
     campaign_mode=${campaignMode}
-    campaign_configuration_identity=${campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity}
+    campaign_configuration_identity=${campaignSystem.config.aos.crucibleCampaign._runtimeIdentity}
     campaign_toplevel=${campaignToplevel}
     campaign_runtime_identity=${builtins.hashString "sha256" campaignRuntime}
     executor_derivation=$out
@@ -67,10 +66,8 @@
     RESULT
   '';
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase1-license-boundary";
-    version = "0";
-    src = crucibleSrc;
     # Use Nix's realized graph because the sandbox has no store database.
     outputChecks =
       if campaignComposition == null
@@ -100,33 +97,10 @@ in
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          export CRUCIBLE_GATE_SOURCE="$PWD"
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed 's|@vendor@|${cargoDeps}|g' \
-              "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "check-packaging-boundary";
         script = ''
           set -eu
+          export CRUCIBLE_GATE_SOURCE="$PWD"
 
           controller=${pkgs.crucible-controller}
           controller_info="$controller/nix-support/crucible-build-info"
@@ -277,6 +251,9 @@ in
               "$source_root/plugin/cargo-vendor" \
               > "$archived_workspace/.cargo/config.toml"
           fi
+          # This compile is deliberately separate from the workspace test
+          # builds: it proves that the archived corresponding source, with
+          # its own lockfile and vendor tree, still builds offline.
           (
             cd "$archived_workspace"
             CARGO_HOME="$archived_cargo_home" cargo check --frozen --offline \
@@ -324,11 +301,7 @@ in
       {
         name = "run-license-boundary";
         script = ''
-          cd crates
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-license-boundary-target" \
+          crucible-cargo test \
             -p crucible-test-support \
             --test gate_license_boundary \
             -- --test-threads=1

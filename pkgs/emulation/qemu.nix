@@ -51,10 +51,23 @@
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
+  clockAdapterUnitTestsOnly ? false,
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
+  clockUnitQualification = import ./_qemu-clock-unit-qualification.nix {
+    inherit lib applyCruciblePatch testOnlyNonDistributable fullUpstreamTestSuiteOnly enableLinuxUser;
+    enabled = clockAdapterUnitTestsOnly;
+    isNativeLinux = !stdenv.isCross && stdenv.hostPlatform.isLinux;
+    ninja =
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja;
+    python3 = buildPython;
+    inherit qemuBuildIdentity qemuBuildIdentityMaterial;
+  };
+
   _testArtifactPolicy =
     if testOnlyNonDistributable && !applyCruciblePatch
     then throw "test-only QEMU artifacts require the tracked Crucible atomic patch"
@@ -248,6 +261,9 @@
   shmemGeneratedHeader = ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
+  nativeConsoleGeneratedHeader = ../../crates/crucible/crucible-qemu-shmem/include/crucible_native_console_draft.h;
+  nativeConsoleHeaderInstallPath = "include/crucible_native_console_draft.h";
+  nativeConsoleHeaderHash = builtins.hashFile "sha256" nativeConsoleGeneratedHeader;
   qemuSimCapability =
     if applyCruciblePatch
     then "qemu-crucible"
@@ -271,7 +287,9 @@
   # The stock Linux package also executes foreign build tools. Keep Crucible's
   # system-emulator target set and its inertness reference unchanged.
   qemuTargetFlag =
-    if enableLinuxUser
+    if clockAdapterUnitTestsOnly
+    then clockUnitQualification.targetFlag
+    else if enableLinuxUser
     then "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user"
     else "--target-list=x86_64-softmmu,aarch64-softmmu";
   qemuTargetList = lib.removePrefix "--target-list=" qemuTargetFlag;
@@ -378,16 +396,18 @@
   sambaSmbdSourceHash = lib.optionalString (!isDarwinCross) samba-smbd.src.outputHash;
   sambaSmbdSourceHashAlgo =
     lib.optionalString (!isDarwinCross) samba-smbd.src.outputHashAlgo;
-  qemuConfigureIdentityMaterial = ''
-    ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
-    ${lib.optionalString (!isDarwinCross) ''
-      samba_smbd_version=${sambaSmbdVersion}
-      samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
-      samba_smbd_source_hash=${sambaSmbdSourceHash}
-      samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
-      samba_smbd_executable=${sambaSmbdExecutable}
-    ''}
-  '';
+  qemuConfigureIdentityMaterial =
+    ''
+      ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
+      ${lib.optionalString (!isDarwinCross) ''
+        samba_smbd_version=${sambaSmbdVersion}
+        samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
+        samba_smbd_source_hash=${sambaSmbdSourceHash}
+        samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
+        samba_smbd_executable=${sambaSmbdExecutable}
+      ''}
+    ''
+    + lib.optionalString clockAdapterUnitTestsOnly clockUnitQualification.identityMaterial;
   qemuConfigureFlagsHash = builtins.hashString "sha256" qemuConfigureIdentityMaterial;
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
   qemuRuntimeDeps =
@@ -480,37 +500,42 @@
   '';
   fullUpstreamTestHarnessMutationHash =
     builtins.hashString "sha256" fullUpstreamTestHarnessMutationMaterial;
-  qemuBuildIdentityMaterial = ''
-    qemu_package=${pname}
-    qemu_version=${version}
-    qemu_source_hash=${atomicPatch.qemuSourceHash}
-    qemu_nix_hash=${qemuNixHash}
-    qemu_configure_flags_hash=${qemuConfigureFlagsHash}
-    qemu_configure_target_list=${qemuTargetList}
-    qemu_atomic_patch_hash=${atomicPatchHash}
-    qemu_patch_branch_ref=${atomicPatch.branchRef}
-    qemu_patch_branch_model=${atomicPatch.branchModel}
-    qemu_patch_branch_bundle_hash=${patchBranchBundleHash}
-    qemu_patch_branch_base_commit=${atomicPatch.baseCommit}
-    qemu_patch_branch_base_tree=${atomicPatch.baseTree}
-    qemu_patch_branch_head_commit=${atomicPatch.commit}
-    qemu_patch_branch_material_hash=${patchBranchMaterialHash}
-    qemu_plugins_enabled=${
-      if enablePlugins
-      then "true"
-      else "false"
-    }
-    qemu_crucible_atomic_patch_applied=${
-      if applyCruciblePatch
-      then "true"
-      else "false"
-    }
-    qemu_sim_capability=${qemuSimCapability}
-    qemu_shmem_abi_version=${shmemAbiVersion}
-    qemu_shmem_abi=${shmemAbi}
-    qemu_shmem_header=${shmemHeaderInstallPath}
-    qemu_shmem_header_hash=${shmemHeaderHash}
-  '';
+  qemuBuildIdentityMaterial =
+    ''
+      qemu_package=${pname}
+      qemu_version=${version}
+      qemu_source_hash=${atomicPatch.qemuSourceHash}
+      qemu_nix_hash=${qemuNixHash}
+      qemu_configure_flags_hash=${qemuConfigureFlagsHash}
+      qemu_configure_target_list=${qemuTargetList}
+      qemu_atomic_patch_hash=${atomicPatchHash}
+      qemu_patch_branch_ref=${atomicPatch.branchRef}
+      qemu_patch_branch_model=${atomicPatch.branchModel}
+      qemu_patch_branch_bundle_hash=${patchBranchBundleHash}
+      qemu_patch_branch_base_commit=${atomicPatch.baseCommit}
+      qemu_patch_branch_base_tree=${atomicPatch.baseTree}
+      qemu_patch_branch_head_commit=${atomicPatch.commit}
+      qemu_patch_branch_material_hash=${patchBranchMaterialHash}
+      qemu_plugins_enabled=${
+        if enablePlugins
+        then "true"
+        else "false"
+      }
+      qemu_crucible_atomic_patch_applied=${
+        if applyCruciblePatch
+        then "true"
+        else "false"
+      }
+      qemu_sim_capability=${qemuSimCapability}
+      qemu_shmem_abi_version=${shmemAbiVersion}
+      qemu_shmem_abi=${shmemAbi}
+      qemu_shmem_header=${shmemHeaderInstallPath}
+      qemu_shmem_header_hash=${shmemHeaderHash}
+    ''
+    + lib.optionalString applyCruciblePatch ''
+      qemu_native_console_header=${nativeConsoleHeaderInstallPath}
+      qemu_native_console_header_hash=${nativeConsoleHeaderHash}
+    '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
   patchPhase =
     if applyCruciblePatch
@@ -521,6 +546,7 @@ in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
+  assert clockUnitQualification.policy == null;
     mkDerivation {
       platformSupport =
         if pname == "qemu"
@@ -709,6 +735,12 @@ in
           script = ''
             tar xf $src
             cd qemu-${version}
+            ${patchPhase}
+            ${lib.optionalString applyCruciblePatch ''
+              # The atomic tree carries the exact host-generated ABI inputs.
+              cmp include/aos/crucible/crucible_shmem_abi.h ${shmemGeneratedHeader}
+              cmp ${nativeConsoleHeaderInstallPath} ${nativeConsoleGeneratedHeader}
+            ''}
             mkdir -p include/aos/crucible
             cp ${shmemGeneratedHeader} include/aos/crucible/crucible_shmem_abi.h
             grep -q '#define CRUCIBLE_SHMEM_ABI_VERSION ${shmemAbiVersion}u' \
@@ -740,7 +772,6 @@ in
               -DCRUCIBLE_EXPECTED_SHMEM_ABI_VERSION=${shmemAbiVersion} \
               -c "$TMPDIR/qemu-crucible-shmem-abi-probe.c" \
               -o "$TMPDIR/qemu-crucible-shmem-abi-probe.o"
-            ${patchPhase}
             ${lib.optionalString isDarwinCross ''
               # QEMU's macOS packaging helper assumes Xcode's proprietary
               # codesign, Rez, and SetFile utilities. ldid supplies the runtime-
@@ -755,6 +786,45 @@ in
               grep -q 'ldid -S"$ENTITLEMENT" "$SRC"' scripts/entitlement.sh
               ! grep -Eq '^(Rez|SetFile|codesign) ' scripts/entitlement.sh
             ''}
+            # Configure re-executes itself; Meson executes its helpers directly.
+            # Bind only build-time entry points to the declared build-host shell.
+            for build_script in \
+              configure \
+              scripts/git-submodule.sh \
+              scripts/hxtool \
+              scripts/make-config-poison.sh \
+              scripts/qemu-version.sh \
+              scripts/rust/rust_root_crate.sh \
+              scripts/entitlement.sh; do
+              case "$(head -n 1 "$build_script")" in
+                '#!/bin/sh'|'#! /bin/sh')
+                  shell_options=
+                  ;;
+                '#!/bin/sh -e')
+                  shell_options=' -e'
+                  ;;
+                *)
+                  printf 'Unexpected build-script shebang: %s\n' "$build_script" >&2
+                  exit 1
+                  ;;
+              esac
+
+              sed -i "1c#!${buildBash}/bin/bash$shell_options" "$build_script"
+              test "$(head -n 1 "$build_script")" = "#!${buildBash}/bin/bash$shell_options"
+            done
+            # libqtest launches QEMU through a POSIX shell, which the sandbox
+            # does not provide at a host path. Preserve its command and argv.
+            ${buildPython}/bin/python3 - <<'PY_QTEST_SHELL'
+            from pathlib import Path
+
+            path = Path("tests/qtest/libqtest.c")
+            source = path.read_text()
+            original = 'execlp("/bin/sh", "sh", "-c", command->str, NULL);'
+            replacement = 'execlp("${buildBash}/bin/bash", "sh", "-c", command->str, NULL);'
+            if source.count(original) != 1:
+                raise SystemExit("libqtest POSIX shell launcher occurrence drifted")
+            path.write_text(source.replace(original, replacement))
+            PY_QTEST_SHELL
             # Patch Python shebangs for Nix sandbox
             find . -type f -name '*.py' | while read f; do
               if head -1 "$f" | grep -q '^#!'; then
@@ -855,7 +925,9 @@ in
             # resulting emulator binaries are byte-reproducible.
             export PYTHONHASHSEED=0
             ${
-              if focusedUpstreamTest != null
+              if clockAdapterUnitTestsOnly
+              then clockUnitQualification.buildScript
+              else if focusedUpstreamTest != null
               then ''
                 ${buildNinja}/bin/ninja -C build -j$NIX_BUILD_CORES \
                   qemu-img qemu-io qemu-nbd \
@@ -1672,8 +1744,71 @@ in
         {
           name = "check";
           script =
-            if runCrucibleChecks
+            if clockAdapterUnitTestsOnly
+            then clockUnitQualification.checkScript
+            else if runCrucibleChecks
             then ''
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                  # Check the generated public API ledger and the actual linked
+                  # executables against the GPL plugin's retained lookup names.
+                  ${python3}/bin/python3 - <<'PY_CONSOLE_EXPORTS'
+                import hashlib
+                import json
+                from pathlib import Path
+                import re
+                import subprocess
+
+                plugin_source = Path("${../../crates/crucible/crucible-qemu-plugin/src/runtime/installed_console.rs}")
+                required = re.findall(
+                    r'symbol!\(\s*"(qemu_plugin_crucible_console_\w+)"',
+                    plugin_source.read_text(),
+                )
+                if len(required) != 15 or len(set(required)) != 15:
+                    raise SystemExit("native console plugin lookup set must contain exactly 15 unique endpoints")
+                required = sorted(required)
+
+                ledger = Path("build/plugins/qemu-plugin.symbols")
+                generated = subprocess.check_output([
+                    "${python3}/bin/python3", "scripts/qemu-plugin-symbols.py",
+                    "include/plugins/qemu-plugin.h",
+                ])
+                if ledger.read_bytes() != generated:
+                    raise SystemExit("native console API ledger differs from the genuine header generator")
+                declared = sorted(re.findall(
+                    r"(qemu_plugin_crucible_console_\w+);", generated.decode(),
+                ))
+                if declared != required:
+                    raise SystemExit("native console API ledger differs from the plugin's exact lookup set")
+
+                linked = {}
+                for target in ("x86_64", "aarch64"):
+                    executable = Path(f"build/qemu-system-{target}")
+                    symbols = subprocess.check_output([
+                        "${buildBinutils}/bin/readelf", "--wide", "--dyn-syms",
+                        str(executable),
+                    ], text=True)
+                    rows = [line.split() for line in symbols.splitlines()]
+                    console_rows = [row for row in rows if len(row) == 8
+                                    and row[7].startswith("qemu_plugin_crucible_console_")]
+                    names = sorted(row[7] for row in console_rows)
+                    if names != required or any(
+                        row[3:6] != ["FUNC", "GLOBAL", "DEFAULT"] or row[6] == "UND"
+                        for row in console_rows
+                    ):
+                        raise SystemExit(f"{executable}: required native console APIs are not exact defined public dynamic symbols")
+                    linked[target] = {
+                        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+                        "symbols": names,
+                    }
+
+                result = {"required": required, "linked": linked,
+                          "ledger_sha256": hashlib.sha256(generated).hexdigest()}
+                Path("native-console-plugin-exports.result").write_text(
+                    json.dumps(result, indent=2) + "\n",
+                )
+                print("NATIVE_CONSOLE_PLUGIN_EXPORTS_PASS")
+                PY_CONSOLE_EXPORTS
+              ''}
               ${python3}/bin/python3 tests/unit/test-crucible-rr-halted-neighbor.py \
                 > rr-halted-neighbor.result
               cat rr-halted-neighbor.result
@@ -1681,6 +1816,12 @@ in
               mkdir -p "$out/share/aos/crucible"
               cp rr-halted-neighbor.result \
                 "$out/share/aos/crucible/rr-halted-neighbor.result"
+              ${python3}/bin/python3 tests/unit/test-crucible-icount-standalone-warp.py \
+                > icount-standalone-warp.result
+              cat icount-standalone-warp.result
+              grep -Fxq 'ICOUNT_STANDALONE_WARP_PASS' icount-standalone-warp.result
+              cp icount-standalone-warp.result \
+                "$out/share/aos/crucible/icount-standalone-warp.result"
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-coroutine --tap -p /locking/co-sleep
               build/tests/unit/test-crucible-vfio-timer --tap
@@ -1698,6 +1839,11 @@ in
               build/tests/unit/test-crucible-s390-tod-wide-clock --tap
               build/tests/unit/test-crucible-arm-timer-wide-clock --tap
               build/tests/unit/test-crucible-ich9-aux-wide-clock --tap
+              build/tests/unit/test-crucible-apic-timer-wide-clock --tap
+              build/tests/unit/test-crucible-rtc-timer-wide-clock --tap
+              build/tests/unit/test-crucible-pit-timer-wide-clock --tap
+              build/tests/unit/test-crucible-acpi-pm-wide-clock --tap
+              build/tests/unit/test-crucible-serial-kbd-timer-wide-clock --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot
@@ -1705,6 +1851,10 @@ in
                 -p /aio/hot-fork/async-worker-barrier \
                 > aio-hot-fork-tests.tap
               cat aio-hot-fork-tests.tap
+              # Ending poll mode for the GLib loop must not leave ready
+              # handlers linked into aio_prepare()'s dead stack frame.
+              build/tests/unit/test-nested-aio-poll --tap \
+                -p /aio-prepare/poll-ready-unlinked
               # Keep the exact native fixture output with the package; a
               # separate certificate checks named cases, not a boot proxy.
               # Pin GLib's seed so the installed transcript is reproducible.
@@ -1719,6 +1869,57 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                # Exercise the command's actual storage declaration across libc
+                # fork/stack reuse, without dereferencing inherited stack storage.
+                mkdir -p hot-fork-operation-storage-proof
+                ${python3}/bin/python3 \
+                  tests/unit/extract-crucible-hot-fork-operation-storage.py \
+                  monitor/qmp-cmds.c \
+                  hot-fork-operation-storage-proof/operation-storage-generated.h
+                ${python3}/bin/python3 - <<'PYTHON'
+                import hashlib
+                import json
+                import os
+                from pathlib import Path
+                import shlex
+                import subprocess
+
+                proof = Path("hot-fork-operation-storage-proof")
+                flags = shlex.split(subprocess.check_output(
+                    ["pkg-config", "--cflags", "--libs", "glib-2.0"],
+                    text=True))
+                command = shlex.split(os.environ["CC"]) + [
+                    "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+                    "-I" + str(proof),
+                    "tests/unit/test-crucible-hot-fork-operation-storage.c",
+                    "-o", str(proof / "control"),
+                    "-Wl,-rpath,${glib}/lib",
+                ] + flags
+                (proof / "compile-command.json").write_text(
+                    json.dumps(command, indent=2) + "\n")
+                sources = [
+                    "monitor/qmp-cmds.c",
+                    "tests/unit/test-crucible-hot-fork-operation-storage.c",
+                    "tests/unit/extract-crucible-hot-fork-operation-storage.py",
+                    str(proof / "operation-storage-generated.h"),
+                ]
+                (proof / "source-bindings.json").write_text(json.dumps({
+                    source: hashlib.sha256(Path(source).read_bytes()).hexdigest()
+                    for source in sources
+                }, indent=2) + "\n")
+                subprocess.run(command, check=True)
+                with open("hot-fork-operation-storage.result", "w") as output:
+                    subprocess.run([
+                        "${coreutils}/bin/timeout", "--kill-after=2", "10",
+                        str(proof / "control"),
+                    ], stdout=output, check=True)
+                expected = "heap=1 actual_stack_reused=1 owner_overlaps_replacement=0\n"
+                if Path("hot-fork-operation-storage.result").read_text() != expected:
+                    raise SystemExit("operation storage lifetime witness differs")
+                PYTHON
+                cat hot-fork-operation-storage.result
+              ''}
               # Compile the actual monitor refusal bodies with their configured
               # headers and real Error implementation; lower-layer plans are modeled.
               ${python3}/bin/python3 - <<'PYTHON' > child-file-refusal.result
@@ -1826,6 +2027,17 @@ in
               if len(api_commands) != 1:
                   raise SystemExit("expected exactly one configured system API compile command")
 
+              # Retain genuine native actions separately from extracted-body
+              # fixture commands, including the actual system CPU object.
+              cpu_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/system/cpus.c")
+              ]
+              if len(cpu_commands) != 1:
+                  raise SystemExit("expected exactly one configured system CPU compile command")
+              (source_root / "native-control.compile-commands.json").write_text(
+                  json.dumps(api_commands + cpu_commands, indent=2) + "\n")
+
               entry = api_commands[0]
               command = shlex.split(entry["command"])
               flags = []
@@ -1842,6 +2054,7 @@ in
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
+                  "device-load-console", "console-seal",
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context",
@@ -1854,6 +2067,8 @@ in
                   "accel-classification",
                   "fault-rule-presence",
                   "rr-sim-barriers",
+                  "rr-bound-ceiling",
+                  "icount-vmstate-version",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1862,11 +2077,71 @@ in
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
+              # Omitting only the loader's console transaction must reproduce
+              # the real pre-load refusal, rather than a compiler failure.
+              negative = subprocess.run([
+                  sys.executable,
+                  str(source_root / "tests/unit/test-crucible-device-load-console.py"),
+                  "--output-dir", str(source_root / "device-load-console-negative-proof"),
+                  "--negative-control",
+              ], cwd=entry["directory"], env=environment,
+                 capture_output=True, text=True)
+              (source_root / "device-load-console-negative.result").write_text(negative.stdout)
+              (source_root / "device-load-console-negative.stderr").write_text(negative.stderr)
+              expected = (
+                  "case=installed-device-load result=-16 section_calls=1 "
+                  "synchronize_calls=0 active=0 completed=0 pending=0 loaded=0\n"
+              )
+              if (negative.returncode != 1 or negative.stdout != expected or
+                      "SIGABRT" not in negative.stderr):
+                  raise SystemExit("device-state console causal negative did not reproduce pre-load refusal")
+              with (source_root / "control-continuation.result").open("w") as result:
+                  subprocess.run([
+                      sys.executable,
+                      "${../../tests/crucible/phase6-native-control-continuation.py}",
+                      "--qemu-source", str(source_root),
+                      "--output-dir", str(source_root / "control-continuation-proof"),
+                      "--case", "all",
+                  ], cwd=entry["directory"], env=environment,
+                     stdout=result, check=True)
+              # Keep the C fixture and extractor next to the existing driver.
+              with (source_root / "control-summary.result").open("w") as result:
+                  subprocess.run([
+                      sys.executable,
+                      "${../../tests/crucible/native}/control-delivery-summary/control-delivery-summary.py",
+                      "--qemu-source", str(source_root),
+                      "--output-dir", str(source_root / "control-summary-proof"),
+                  ], cwd=entry["directory"], env=environment,
+                     stdout=result, check=True)
               PYTHON
+              cat control-summary.result
+              for case in default invalid not-sim pre-cancel foreign fixed-cache \
+                width fork pipe readonly closed interrupted-write short-write; do
+                grep -Fxq "CONTROL_SUMMARY_PASS case=$case" control-summary.result
+              done
+              test "$(grep -c '^CONTROL_SUMMARY_PASS ' control-summary.result)" -eq 13
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
+                device-load-console.result console-seal.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result
+                aio-fork-custody.result stop-context.result control-continuation.result
+              grep -Fxq 'PASS device-state console transaction installed: 19 controls' \
+                device-load-console.result
+              grep -Fxq 'PASS device-state console transaction plugin-disabled: 3 controls' \
+                device-load-console.result
+              test "$(grep -c '^case=' device-load-console.result)" -eq 22
+              grep -Fxq 'PASS UART completed-operation seal: 19 isolated component controls' \
+                console-seal.result
+              test "$(grep -c '^PASS ' console-seal.result)" -eq 20
+              for case in reader-before-park reader-after-park reader-after-handoff \
+                idle-reader-before-park idle-reader-after-park \
+                sdk-reader-before-arm sdk-reader-arm-gap sdk-reader-after-futex \
+                two-epochs-after-return two-epochs-before-handoff; do
+                grep -Fxq "NATIVE_CONTROL_DELIVERY_PASS case=$case" control-continuation.result
+              done
+              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 10
+              grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
+                control-continuation.result
               cat tcg-fast-paths.result
               grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
               cat mutex-owner-cache.result
@@ -1885,6 +2160,12 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              grep -q '^PASS all-halted control claim settles its own IDLE/ACTIVE wake' rr-sim-barriers.result
+              cat rr-bound-ceiling.result
+              grep -Fxq 'PASS production bounded ceilings: 15 cases' rr-bound-ceiling.result
+              cat icount-vmstate-version.result
+              grep -Fxq 'PASS production timer/icount version gate: 4 cases' \
+                icount-vmstate-version.result
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.
@@ -1992,7 +2273,7 @@ in
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
-                timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap \
+                timeout -k 5 60 build/tests/qtest/qmp-cmd-test --tap --verbose \
                 -p /x86_64/qmp/crucible-adopt-launch-fdsets \
                 -p /x86_64/qmp/crucible-reject-replaced-launch-image \
                 -p /x86_64/qmp/crucible-reject-extra-launch-fdset \
@@ -2000,7 +2281,11 @@ in
                 -p /x86_64/qmp/crucible-reject-missing-overlay-mode \
                 -p /x86_64/qmp/crucible-reject-wrong-overlay-mode \
                 -p /x86_64/qmp/crucible-reject-mixed-overlay-images \
-                > launch-fdset-qtests.tap
+                > launch-fdset-qtests.tap || {
+                  launch_fdset_status=$?
+                  cat launch-fdset-qtests.tap >&2 || :
+                  exit "$launch_fdset_status"
+                }
               cat launch-fdset-qtests.tap
               test "$(grep -E -c '^ok [0-9]+ /x86_64/qmp/crucible-' \
                 launch-fdset-qtests.tap)" -eq 7
@@ -2169,6 +2454,27 @@ in
                   rr.index("static bool rr_crucible_sim_run_tcg_batch"):
                   rr.index("static void rr_wait_io_event")
               ]
+              # Revoked console admission retires prepared icount before its
+              # original retry. Keep that owner separate from the two existing
+              # due-timer and post-execution accounting paths.
+              revoked_console_start = run_tcg_batch.index(
+                  "if (console_dispatch &&\n"
+                  "            !qemu_plugin_crucible_console_candidate_enter"
+              )
+              revoked_console_end = run_tcg_batch.index(
+                  "        r = tcg_cpu_exec(cpu);", revoked_console_start
+              )
+              revoked_console_accounting = run_tcg_batch[
+                  revoked_console_start:revoked_console_end
+              ]
+              original_replay_accounting = (
+                  run_tcg_batch[:revoked_console_start]
+                  + run_tcg_batch[revoked_console_end:]
+              )
+              revoked_console_code = re.sub(
+                  r"/\*.*?\*/", "", revoked_console_accounting,
+                  flags=re.DOTALL
+              )
               rr_trace = Path("accel/tcg/trace-events").read_text()
               icount = Path("accel/tcg/tcg-accel-ops-icount.c").read_text()
               timer = Path("util/qemu-timer.c").read_text()
@@ -2372,8 +2678,31 @@ in
                   plugin.index("int qemu_plugin_advance_time_ticks"):
                   plugin.index("uint64_t qemu_plugin_icount_raw")
               ]
+              # A completion nested in RR guest execution, during synchronous
+              # device I/O, releases its own barrier before re-entering the
+              # waiters. Check that branch separately so the main-loop
+              # completion keeps its exact ordering contract.
+              time_advance_nested_marker = (
+                  "    if (rr_crucible_sim_guest_execution_nested()) {\n"
+              )
+              time_advance_nested_start = time_advance_complete.index(
+                  time_advance_nested_marker
+              )
+              time_advance_nested_end = time_advance_complete.index(
+                  "        return;\n    }\n", time_advance_nested_start
+              ) + len("        return;\n    }\n")
+              time_advance_nested_complete_code = re.sub(
+                  r"/\*.*?\*/", "",
+                  time_advance_complete[
+                      time_advance_nested_start:time_advance_nested_end
+                  ],
+                  flags=re.DOTALL,
+              )
               time_advance_complete_code = re.sub(
-                  r"/\*.*?\*/", "", time_advance_complete, flags=re.DOTALL
+                  r"/\*.*?\*/", "",
+                  time_advance_complete[:time_advance_nested_start] +
+                  time_advance_complete[time_advance_nested_end:],
+                  flags=re.DOTALL,
               )
               time_advance_settle_start = plugin.index(
                   "void qemu_plugin_time_advance_settle_at_rr_idle"
@@ -2620,9 +2949,32 @@ in
                    r"RR_TCG_EXEC_IDLE\);\s*"
                    r"qemu_plugin_time_advance_settle_at_rr_idle\(\);\s*"
                    r"continue;\s*\}\s*"
-                   r"if \(rr_crucible_sim_mode\(\) &&\s*"
-                   r"qemu_plugin_crucible_rr_control_boundary_pending\(\)"
-                   r".*?if \(qemu_plugin_crucible_vmstop_pending\(\)\)", 1),
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{\s*"
+                   r"rr_replay_mutex_unlock\(\);\s*"
+                   r"rr_crucible_sim_acknowledge_control_boundary\(\);\s*"
+                   r"continue;\s*\}\s*"
+                   r"if \(qemu_plugin_crucible_vmstop_pending\(\)\)", 1),
+                  # A request's own kick leaves a wake pending. Every claim
+                  # settles it at an all-halted seam, and the wait claims
+                  # before it fires any plugin idle callback.
+                  ("control claim settles its own wake only when all halted",
+                   rr,
+                   r"static bool rr_crucible_sim_settle_control_claim\(void\)\s*"
+                   r"\{\s*if \(!rr_crucible_sim_mode\(\) \|\|\s*"
+                   r"!qemu_plugin_crucible_rr_control_boundary_pending\(\)\) "
+                   r"\{\s*return false;\s*\}\s*"
+                   r"if \(qatomic_read\(&rr_tcg_exec_state\) != "
+                   r"RR_TCG_EXEC_IDLE &&\s*"
+                   r"rr_crucible_sim_all_vcpus_halted\(\)\) \{\s*"
+                   r"rr_crucible_sim_complete_wake_boundary\(\);\s*\}\s*"
+                   r"return qatomic_read\(&rr_tcg_exec_state\) == "
+                   r"RR_TCG_EXEC_IDLE;\s*\}", 1),
+                  ("idle wait claims control before idle callbacks",
+                   wait_io_event,
+                   r"rr_crucible_sim_drain_vcpu_work\(\);\s*/\*.*?\*/\s*"
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{\s*"
+                   r"return;\s*\}\s*"
+                   r"if \(rr_crucible_sim_sync_vcpu_halt_callbacks\(\) ==", 1),
                   ("pending time-advance batch uses level-triggered park",
                    run_tcg_batch,
                    r"if \(rr_crucible_sim_mode\(\) &&\s*"
@@ -2978,9 +3330,15 @@ in
                    r"&qemu_plugin_rr_control_schedule_token\)\);\s*"
                    r'qemu_plugin_trace_control_delivery\("request"\);\s*'
                    r"qemu_cpu_kick\(first_cpu\);", 1),
+                  # The new request and the coalesced re-delivery each notify.
                   ("request dispatch event notification count",
                    request_boundary,
-                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);", 1),
+                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);", 2),
+                  ("coalesced request re-delivers its wake", request_boundary,
+                   r'qemu_plugin_trace_rr_control_boundary_state\("coalesce"\);\s*'
+                   r"rr_crucible_sim_notify_dispatch_ceiling\(\);\s*"
+                   r"if \(first_cpu\) \{\s*qemu_cpu_kick\(first_cpu\);\s*\}\s*"
+                   r"return;", 1),
                   ("paused RR transfer after device notifier fanout",
                    wake_handler_code,
                    r"bool single_threaded_rr = drained && first_cpu &&\s*"
@@ -3215,6 +3573,18 @@ in
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);.*?"
                    r"notifier_list_notify\(&qemu_plugin_wake_notifiers", 0),
+                  ("nested time advance completion releases before waiters",
+                   time_advance_nested_complete_code,
+                   r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING,\s*"
+                   r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY\).*?"
+                   r"qatomic_store_release\("
+                   r"&qemu_plugin_time_advance_pending, 0\);.*?"
+                   r"notifier_list_notify\(&qemu_plugin_wake_notifiers,.*?"
+                   r"return;", 1),
+                  ("nested time advance completion publishes no RR idle wake",
+                   time_advance_nested_complete_code,
+                   r"rr_crucible_sim_publish_time_advance_wake|"
+                   r"rr_crucible_sim_signal_time_advance_wake", 0),
                   ("stale unconditional time advance generic boundary",
                    time_advance_complete_code,
                    r"qatomic_store_release\("
@@ -3665,8 +4035,12 @@ in
                   ("determinism idle complete phase", plugin,
                    r'rr_crucible_sim_trace_idle_advance\("complete", target\);',
                    1),
+                  ("determinism idle nested complete phase",
+                   time_advance_nested_complete_code,
+                   r'rr_crucible_sim_trace_idle_advance\("complete-nested", target\);',
+                   1),
                   ("determinism idle trace phase cardinality", plugin,
-                   r"rr_crucible_sim_trace_idle_advance\(", 2),
+                   r"rr_crucible_sim_trace_idle_advance\(", 3),
                   ("ack generation trace", acknowledge_boundary,
                    r"schedule_token = qemu_plugin_schedule_control_boundary\(\);"
                    r"\s*qatomic_store_release\("
@@ -3674,6 +4048,9 @@ in
                    r"request_generation\);\s*qatomic_store_release\("
                    r"&qemu_plugin_rr_control_schedule_token,\s*"
                    r"schedule_token\);\s*"
+                   r"if \(rr_crucible_sim_control_summary_enabled\(\)\) \{\s*"
+                   r'qemu_plugin_trace_control_delivery\("claim"\);\s*'
+                   r"\}\s*"
                    r'rr_crucible_sim_trace_control_boundary\(\s*"ack",\s*'
                    r"request_generation,\s*request_generation,\s*"
                    r"complete_generation,\s*schedule_token\);", 1),
@@ -3809,9 +4186,11 @@ in
                   ("stale alternate HLT park", idle_test,
                    r"allow_idle_park|return \"idle-futex\"", 0),
                   ("settled request escape", rr,
+                   r"if \(rr_crucible_sim_settle_control_claim\(\)\) \{", 3),
+                  ("stale IDLE-only control claim", rr,
                    r"rr_control_boundary_pending\(\)\s*&&\s*"
                    r"qatomic_read\(&rr_tcg_exec_state\) == RR_TCG_EXEC_IDLE",
-                   2),
+                   0),
                   ("terminal lifecycle service", rr,
                    r"static void rr_crucible_sim_service_force_shutdown"
                    r"\(void\)\s*\{[^}]*"
@@ -3948,8 +4327,44 @@ in
                   ("finite RR reuses its replay token for icount", rr,
                    r"icount_prepare_for_run_replay_locked"
                    r"\(cpu, \*cpu_budget\);", 1),
-                  ("finite RR retains its replay token after icount", rr,
+                  ("finite RR retains its replay token after icount",
+                   original_replay_accounting,
                    r"icount_process_data_replay_locked\(cpu\);", 2),
+                  ("finite RR retires an already-due prepared budget",
+                   run_tcg_batch,
+                   r"if \(rr_crucible_sim_mode\(\) &&\s*"
+                   r"\(cpu->icount_budget == 0 \|\|\s*"
+                   r"qemu_clock_deadline_ps_all\(\s*"
+                   r"QEMU_CLOCK_VIRTUAL, QEMU_TIMER_ATTR_ALL\) == 0\)\) \{\s*"
+                   r"if \(retain_replay\) \{\s*"
+                   r"icount_process_data_replay_locked\(cpu\);\s*"
+                   r"\} else \{\s*icount_process_data\(cpu\);\s*\}\s*"
+                   r"bql_lock\(\);\s*\*icount_retry = true;\s*"
+                   r"return true;\s*\}", 1),
+                  ("finite RR retires executed icount before clearing admission",
+                   run_tcg_batch,
+                   r"r = tcg_cpu_exec\(cpu\);\s*"
+                   r"if \(console_dispatch\) \{\s*"
+                   r"qemu_plugin_crucible_console_dispatch_leave\(cpu\);\s*\}\s*"
+                   r"if \(icount_enabled\(\)\) \{\s*"
+                   r"if \(retain_replay\) \{\s*"
+                   r"icount_process_data_replay_locked\(cpu\);\s*"
+                   r"\} else \{\s*icount_process_data\(cpu\);\s*\}\s*"
+                   r"\}\s*bql_lock\(\);\s*"
+                   r"qemu_plugin_crucible_console_candidate_clear\(&console_lease\);", 1),
+                  ("revoked console admission retires prepared icount",
+                   revoked_console_code,
+                   r"\Aif \(console_dispatch &&\s*"
+                   r"!qemu_plugin_crucible_console_candidate_enter\(\s*"
+                   r"&console_lease, &console_receipt\)\) \{\s*"
+                   r"if \(icount_enabled\(\)\) \{\s*"
+                   r"if \(retain_replay\) \{\s*"
+                   r"icount_process_data_replay_locked\(cpu\);\s*"
+                   r"\} else \{\s*icount_process_data\(cpu\);\s*\}\s*"
+                   r"\}\s*bql_lock\(\);\s*\*icount_retry = true;\s*"
+                   r"return true;\s*\}\s*\Z", 1),
+                  ("finite RR accounts all original and revoked replay owners",
+                   rr, r"icount_process_data_replay_locked\(cpu\);", 3),
                   ("completed quantum exits the active vCPU loop", rr,
                    r"rr_crucible_sim_run_tcg_batch\(\s*"
                    r"&cpu, &cpu_budget, &icount_retry,\s*"
@@ -4156,9 +4571,19 @@ in
                   ("hot fork restart rejects outstanding control", hot_fork,
                    r"if \(qemu_plugin_crucible_control_boundary_outstanding\(\)\) "
                    r"\{\s*return -EBUSY;\s*\}", 1),
-                  ("fixed request target", plugin,
-                   r"if \(!\*rr_target_bound[^}]+\*rr_target_generation = "
-                   r"rr_request_generation;[^}]+\*rr_target_bound = true;", 1),
+                  # The bridge keeps its bound target through a delivered
+                  # callback and re-binds only after an undelivered completion.
+                  ("request target re-binds only after undelivered completion",
+                   plugin,
+                   r"if \(rr_request_generation != rr_complete_generation &&\s*"
+                   r"\(!\*rr_target_bound \|\|\s*"
+                   r"\(rr_complete_generation >= \*rr_target_generation &&\s*"
+                   r"boundary_generation == observed_generation\)\)\) \{\s*"
+                   r"\*rr_target_generation = rr_request_generation;\s*"
+                   r"\*rr_target_bound = true;", 1),
+                  ("idle arm refuses an unclaimed RR request", plugin,
+                   r'qemu_plugin_trace_rr_control_boundary_state\("idle-arm"\);'
+                   r"[^}]*can_wait = false;\s*\}", 1),
                   ("stale two-argument clamp", rr,
                    r"crucible_sim_shmem_clamp_cpu_budget\(\s*current_icount,"
                    r"\s*\*?cpu_budget\)", 0),
@@ -4418,6 +4843,21 @@ in
               test "$(grep -F -x -c \
                 'virtio_net_scheduler_kind_sensitivity=true' \
                 aarch64-fingerprint-projection.txt)" -eq 1
+              for case in crucible-console/default-classes null hotswap; do
+                name=$(printf '%s' "$case" | tr / -)
+                build/tests/unit/test-char --tap -p "/char/$case" > "uart-$name.result"
+                cat "uart-$name.result"
+                grep -Fxq '1..1' "uart-$name.result"
+                grep -Eq '^ok 1 /char/' "uart-$name.result"
+                ! grep -Eq '^(not ok|ok .*# SKIP)' "uart-$name.result"
+              done
+              ${buildPython}/bin/python3 ${../../tests/crucible/qemu-uart-operation-controls.py} \
+                --qemu build/qemu-system-x86_64 --bios pc-bios \
+                --output uart-operation-proof > uart-operation.result
+              cat uart-operation.result
+              for case in native-thr native-loopback ordinary-label; do
+                grep -Fxq "PASS UART operation $case" uart-operation.result
+              done
               build/tests/unit/test-char --tap -p /char/socket/server/mainloop/unix
               build/tests/unit/test-char --tap -p /char/socket/server/wait-conn/unix
             ''
@@ -4428,6 +4868,7 @@ in
         {
           name = "install";
           script = ''
+            ${lib.optionalString clockAdapterUnitTestsOnly (clockUnitQualification.installScript + "exit 0\n")}
             ${lib.optionalString fullUpstreamTestSuiteOnly "exit 0"}
             make install${lib.optionalString isDarwinCross ''
 
@@ -4478,6 +4919,10 @@ in
             mkdir -p "$out/include/aos/crucible"
             install -m 644 include/aos/crucible/crucible_shmem_abi.h \
               "$out/${shmemHeaderInstallPath}"
+            ${lib.optionalString applyCruciblePatch ''
+              install -m 644 ${nativeConsoleHeaderInstallPath} \
+                "$out/${nativeConsoleHeaderInstallPath}"
+            ''}
 
             ${lib.optionalString enableLinuxUser ''
               # binfmt_misc's P flag inserts the original argv[0] after the
@@ -4502,10 +4947,20 @@ in
 
             mkdir -p "$out/share/aos/crucible"
             ${lib.optionalString runCrucibleChecks ''
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                install -m 644 native-console-plugin-exports.result \
+                  "$out/share/aos/crucible/native-console-plugin-exports.result"
+              ''}
               install -m 644 block-backend-tests.tap \
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \
                 "$out/share/aos/crucible/aio-hot-fork-tests.tap"
+              ${lib.optionalString stdenv.hostPlatform.isLinux ''
+                install -m 644 hot-fork-operation-storage.result \
+                  "$out/share/aos/crucible/hot-fork-operation-storage.result"
+                cp -R hot-fork-operation-storage-proof \
+                  "$out/share/aos/crucible/"
+              ''}
               install -m 644 child-file-refusal.result \
                 "$out/share/aos/crucible/child-file-refusal.result"
               install -m 644 child-file-refusal-proof/compile-command.json \
@@ -4514,17 +4969,38 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
+              install -m 644 native-control.compile-commands.json \
+                "$out/share/aos/crucible/native-control.compile-commands.json"
               for name in net-output-stop lifecycle-projection control-deferred \
+                device-load-console console-seal \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                control-continuation tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
-                fault-rule-presence rr-sim-barriers; do
+                fault-rule-presence rr-sim-barriers rr-bound-ceiling icount-vmstate-version \
+                control-summary; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
+              cp -R console-seal-proof \
+                "$out/share/aos/crucible/"
+              cp -R device-load-console-proof device-load-console-negative-proof \
+                "$out/share/aos/crucible/"
+              install -m 644 device-load-console-negative.result \
+                device-load-console-negative.stderr "$out/share/aos/crucible/"
+              mkdir -p "$out/share/aos/crucible/control-summary-proof"
+              for evidence in control-summary-proof/source-bindings.json \
+                control-summary-proof/control-delivery-summary-native.inc \
+                control-summary-proof/control-delivery-summary-cancel.inc \
+                control-summary-proof/*.stdout control-summary-proof/*.stderr; do
+                install -m 644 "$evidence" \
+                  "$out/share/aos/crucible/control-summary-proof/"
+              done
+              cp -R uart-operation-proof "$out/share/aos/crucible/uart-operation-proof"
+              cp uart-operation.result uart-crucible-console-default-classes.result \
+                uart-null.result uart-hotswap.result "$out/share/aos/crucible/"
               for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
@@ -4589,6 +5065,11 @@ in
             qemu_shmem_abi=${shmemAbi}
             qemu_shmem_header=${shmemHeaderInstallPath}
             qemu_shmem_header_hash=${shmemHeaderHash}
+            ${lib.optionalString applyCruciblePatch ''
+              qemu_native_console_header=${nativeConsoleHeaderInstallPath}
+              qemu_native_console_header_hash=${nativeConsoleHeaderHash}
+              qemu_native_console_header_license_option=MIT
+            ''}
             qemu_combined_work_license=GPL-2.0-only
             qemu_unmarked_source_default_license=GPL-2.0-or-later
             qemu_plugin_header_license=GPL-2.0-or-later
@@ -4699,6 +5180,7 @@ in
       passthru = {
         standaloneRelease = !applyCruciblePatch && !testOnlyNonDistributable;
         inherit testOnlyNonDistributable;
+        inherit clockAdapterUnitTestsOnly;
         releaseVia =
           if applyCruciblePatch && !testOnlyNonDistributable
           then "crucible"
@@ -4727,6 +5209,9 @@ in
           shmemGeneratedHeader
           shmemHeaderHash
           shmemHeaderInstallPath
+          nativeConsoleGeneratedHeader
+          nativeConsoleHeaderInstallPath
+          nativeConsoleHeaderHash
           patchBranchBundleHash
           atomicPatchCommit
           patchBranchMaterial

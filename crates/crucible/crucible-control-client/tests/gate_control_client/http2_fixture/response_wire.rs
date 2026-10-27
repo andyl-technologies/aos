@@ -187,7 +187,8 @@ pub(crate) fn streaming_error_response(error: StreamingApiError) -> axum::respon
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::CommandResponseMissing { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. }
+        | StreamingApiError::EventLogUnavailable { .. } => typed_rpc_status_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             crucible_control_api::RpcStatusCode::Internal,
             "internal",

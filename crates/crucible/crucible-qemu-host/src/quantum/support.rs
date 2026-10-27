@@ -56,6 +56,22 @@ pub(super) fn corrupt_inbound_indices(
     }
 }
 
+/// Returns the node's first instruction boundary at or after `delivery_icount`.
+///
+/// A running node moves its clock only by retirements, which advance it in
+/// steps of [`crucible_qemu_shmem::TICKS_PER_INSTRUCTION`] from its current
+/// coordinate. A frame delivered between two boundaries is taken at the later
+/// one (TIME-30), so that boundary, not the delivery tick, is where the node
+/// must stop to take it. The result depends only on the current coordinate and
+/// the delivery, never on how quanta were laid out before it. A delivery at or
+/// below the current coordinate is due at the current boundary.
+pub(super) fn delivery_boundary_icount(current_icount: u64, delivery_icount: u64) -> u64 {
+    let gap = delivery_icount.saturating_sub(current_icount);
+    let step = crucible_qemu_shmem::TICKS_PER_INSTRUCTION;
+    let instructions = gap.div_ceil(step);
+    current_icount.saturating_add(instructions.saturating_mul(step))
+}
+
 pub(super) fn authorize_qemu_delivery_ceiling(
     current_icount: u64,
     max_advance_icount: u64,
@@ -130,12 +146,20 @@ pub(super) fn qemu_scheduler_node(node: &NodeId, kind: SchedulingNodeKind) -> Sc
     }
 }
 
+/// Maps a completed quantum's final state to its scheduler outcome.
+///
+/// `settled` reports a settlement record for the published ceiling. A node
+/// settled through the requested horizon reached it even when its clock
+/// stopped at an earlier last retirement (RFC-0010 SCHED-12).
 pub(super) fn quantum_outcome(
     requested_horizon: Icount,
     published_ceiling: Icount,
     final_state: QemuNodeIdleState,
+    settled: bool,
 ) -> Result<AdvanceOutcome, QemuQuantumError> {
-    if final_state.current_icount.retired >= requested_horizon.retired {
+    if final_state.current_icount.retired >= requested_horizon.retired
+        || (settled && published_ceiling == requested_horizon)
+    {
         return Ok(AdvanceOutcome::ReachedHorizon);
     }
     if (published_ceiling.retired < requested_horizon.retired
@@ -155,6 +179,14 @@ pub(super) fn quantum_outcome(
 /// An error produced by the QEMU quantum shared-memory hot path.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuQuantumError {
+    /// Unactivated console custody could not retain this original transaction.
+    #[cfg(target_os = "linux")]
+    #[error("QEMU console publication custody is unavailable")]
+    ConsoleCustodyUnavailable,
+    /// Either shared publication is busy or changed during one coherent read.
+    #[error("QEMU node publication is temporarily unavailable")]
+    PublicationUnavailable,
+
     /// A borrowed SPSC ring slice was not a nonzero power-of-two capacity.
     #[error("QEMU quantum {ring} capacity {capacity} is not a nonzero power of two")]
     InvalidQueueCapacity {

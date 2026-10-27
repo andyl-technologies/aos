@@ -162,7 +162,7 @@ pub(super) fn repository_execution_fixture() -> (
         .expect("initial discovery attempt");
     let attempt = repository.load_attempt(attempt_id).expect("load attempt");
 
-    let publication = crate::evaluate_crucible_measurement_publication(
+    let publication = crate::crucible_measurement::test_measurement_publication(
         scenario_artifact.scenario(),
         configuration_artifact.configuration(),
         scenario.measurements(),
@@ -175,7 +175,8 @@ pub(super) fn repository_execution_fixture() -> (
         },
         crate::MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
-    .expect("evaluate fixture measurement evidence");
+    .expect("evaluate fixture measurement evidence")
+    .0;
     let (measurement_evidence, _, measurements) = publication.into_parts();
     let properties = PropertyVerdictSet::new(BTreeMap::new()).expect("properties");
     let coverage =
@@ -205,9 +206,13 @@ pub(super) fn repository_execution_fixture() -> (
     .expect("observation candidate");
     let store = CampaignExecutorStore::new(Arc::clone(&repository));
 
-    let result =
-        crate::PreparedSemanticAttemptResult::new(candidate, vec![measurement_evidence], None)
-            .expect("prepare fixture semantic result");
+    let result = crate::PreparedSemanticAttemptResult::new(
+        candidate,
+        vec![measurement_evidence],
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepare fixture semantic result");
 
     (repository, store, lineage, attempt_id, result, scenario)
 }

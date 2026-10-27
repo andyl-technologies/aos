@@ -5,10 +5,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible_engine::{
-    AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, HostAssertionEvaluator,
-    HostAssertionOutcomeKind, HostAssertionPredicate, LintedHostAssertionOracle, ObservedState,
-    OfflineAssertionChecker, Predicate, Properties, Property, RecordedAssertionLog,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, World,
+    AssertionDef, AssertionId, AssertionRunVerdict, HostAssertionEvaluator,
+    HostAssertionOutcomeKind, HostAssertionPredicate, LintedHostAssertionOracle, NamedLeaf,
+    NamedPredicateError, ObservedBatch, OfflineAssertionChecker, Predicate, Properties, Property,
+    RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime,
+    World,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,25 +19,45 @@ struct EvaluationCall {
     name: String,
 }
 
+/// Records each leaf answer with the point time and entry count it folded.
 #[derive(Debug, Default)]
 struct RecordingOracle {
     calls: std::cell::RefCell<Vec<EvaluationCall>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct FoldedPosition {
+    at: u64,
+    events: u64,
+}
+
 impl HostAssertionPredicate for RecordingOracle {
-    fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
-        match leaf {
-            ConditionLeaf::Named { name, nodes } => {
-                assert!(nodes.is_empty());
-                self.calls.borrow_mut().push(EvaluationCall {
-                    at: observed.at().ticks,
-                    events: observed.event_log_offset().events,
-                    name: name.to_owned(),
-                });
-                true
-            }
-            ConditionLeaf::GuestMarker { .. } => false,
-        }
+    type State = FoldedPosition;
+
+    fn initial(&self, leaf: NamedLeaf<'_>) -> FoldedPosition {
+        assert!(leaf.nodes().is_empty());
+        FoldedPosition::default()
+    }
+
+    fn step(
+        &self,
+        _leaf: NamedLeaf<'_>,
+        state: &FoldedPosition,
+        batch: &ObservedBatch<'_>,
+    ) -> Result<FoldedPosition, NamedPredicateError> {
+        Ok(FoldedPosition {
+            at: batch.at().ticks,
+            events: state.events + 1,
+        })
+    }
+
+    fn leaf_is_true(&self, leaf: NamedLeaf<'_>, state: &FoldedPosition) -> bool {
+        self.calls.borrow_mut().push(EvaluationCall {
+            at: state.at,
+            events: state.events,
+            name: leaf.name().to_owned(),
+        });
+        true
     }
 }
 

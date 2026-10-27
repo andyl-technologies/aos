@@ -309,7 +309,7 @@ pub(super) fn source_shape_failures(
             "submit_debugger_branch_request",
             "AttemptAdmissionRole::AdditionalCause",
             "ExplainCampaignAttemptRequest::new",
-            "collect_finite_statistical_evidence",
+            "collect_statistical_evidence_chunk",
             "assert_eq!(raw_visits.parent_visits(), 3)",
         ] {
             if !code.contains(required) {

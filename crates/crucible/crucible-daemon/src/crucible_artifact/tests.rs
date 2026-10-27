@@ -32,7 +32,7 @@ use crate::{
     CompletedFindingCandidate, CompletionOutcome, CrucibleMeasurementPublication,
     CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutorCapacity, LocalExecutorError,
     LocalExecutorSupervisor, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
-    MemoryAssignmentLedger, PreparedAttemptWorkResult, evaluate_crucible_measurement_publication,
+    MemoryAssignmentLedger, PreparedAttemptWorkResult,
     incorporate_and_acknowledge_finding_candidate, prepare_attempt_result,
     publish_prepared_attempt_result, reconcile_published_attempt_result,
     stage_prepared_attempt_result,
@@ -129,7 +129,7 @@ fn empty_measurement_publication(
     scenario: ScenarioDefId,
     configuration: ConfigurationId,
 ) -> CrucibleMeasurementPublication {
-    evaluate_crucible_measurement_publication(
+    crate::crucible_measurement::test_measurement_publication(
         scenario,
         configuration,
         &MeasurementDefinitions::empty(),
@@ -143,6 +143,7 @@ fn empty_measurement_publication(
         MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
     )
     .expect("empty measurement publication")
+    .0
 }
 
 fn observation_with_measurements(
@@ -162,7 +163,11 @@ fn observation_with_measurements(
             retained.properties(),
             retained.coverage(),
         ),
-        retained.discovered_choices().clone(),
+        candidate
+            .discovered_opportunities()
+            .iter()
+            .copied()
+            .collect(),
     )
     .expect("observation with replacement measurements");
     ObservationCandidate::new(
@@ -304,6 +309,69 @@ fn replay_evidence(
         Vec::new(),
     )
     .expect("typed replay evidence")
+}
+
+/// Journals `result` and proves the journal reads replay records only from
+/// its own copies.
+fn assert_journal_owns_replay_records(result: &PreparedSemanticAttemptResult) {
+    let namespace = tempfile::tempdir().expect("journal namespace");
+    let runtime =
+        crate::PreparedResultJournalNamespace::open(namespace.path()).expect("journal runtime");
+    let lineage = crucible_campaign::CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@{}",
+        crucible_store::content_store::ContentId::for_bytes(
+            crucible_store::content_store::ObjectKind::CampaignFact,
+            1,
+            b"replay-record-journal",
+        )
+        .encode()
+    ))
+    .expect("lineage ID");
+    let key =
+        crate::AttemptExecutionKey::new(lineage, result.observation().observation().attempt());
+    let execution = crucible_campaign::ExecutionId::from_bytes([0x5a; 16]).expect("execution");
+    let create = || {
+        crate::DirectoryPreparedResultJournal::create(
+            &runtime,
+            key,
+            execution,
+            crate::MAX_PREPARED_SEMANTIC_RESULT_BYTES,
+            result.clone(),
+        )
+    };
+
+    let (journal, disposition) = create().expect("create journal");
+    let records = journal.root().join("records");
+    let retained = result.referenced_replay_records();
+    assert_eq!(
+        disposition,
+        crate::PreparedResultJournalCreateDisposition::Created
+    );
+    assert!(!retained.is_empty());
+    assert_eq!(
+        std::fs::read_dir(&records)
+            .expect("journal records")
+            .count(),
+        retained.len()
+    );
+    drop(journal);
+
+    // Reopening decodes every record from the journal's own directory.
+    let (reopened, disposition) = create().expect("reopen journal");
+    assert_eq!(
+        disposition,
+        crate::PreparedResultJournalCreateDisposition::Existing
+    );
+    assert_eq!(reopened.result(), result);
+    drop(reopened);
+
+    let first = std::fs::read_dir(&records)
+        .expect("journal records")
+        .next()
+        .expect("one record file")
+        .expect("record entry");
+    std::fs::remove_file(first.path()).expect("remove one journal record");
+    assert!(create().is_err(), "a journal missing a record fails closed");
 }
 
 mod configuration;

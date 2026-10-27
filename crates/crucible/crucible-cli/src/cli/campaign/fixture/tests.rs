@@ -100,7 +100,7 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
             .len(),
         4
     );
-    assert_eq!(scenario.measurements().definitions().len(), 3);
+    assert_eq!(scenario.measurements().definitions().len(), 7);
     assert_eq!(scenario.plan().event_graph().events().len(), 7);
     assert_eq!(scenario.properties().assertions().len(), 5);
     assert_eq!(scenario.selectables().declarations().len(), 2);
@@ -260,6 +260,196 @@ fn worked_network_guest_catalog_matches_envoy_registration_after_artifact_round_
     );
 }
 
+/// Mirrors the semantic markers the Envoy guest images emit.
+const ENVOY_SEMANTIC_MARKERS: [(&str, &str); 7] = [
+    ("traffic-west", "network.converged"),
+    ("router-a", "fault.transport.primary-probed"),
+    ("router-a", "fault.transport.signaled"),
+    ("traffic-west", "recovery.measured"),
+    ("traffic-west", "network.failover.observed"),
+    ("router-a", "fault.followup.primary-probed"),
+    ("traffic-west", "campaign.complete"),
+];
+
+#[test]
+fn worked_network_measurements_declare_every_envoy_semantic_marker() {
+    let fixture = worked_network_fixture(None, None).expect("worked-network fixture");
+    let definitions = fixture.scenario.measurements().definitions();
+    let instance = MeasurementInstanceKey::parse(WORKED_NETWORK_MARKER_INSTANCE)
+        .expect("worked-network marker instance");
+
+    for (emitter, marker) in ENVOY_SEMANTIC_MARKERS {
+        let expected = BoundarySelector::GuestMarker {
+            marker: MarkerId::from_name(marker),
+            instance: Some(instance.clone()),
+        };
+        let declared = definitions.iter().any(|definition| {
+            let CohortPolicy::Any(cohort) = &definition.cohort else {
+                return false;
+            };
+            cohort.contains(&node(emitter))
+                && (definition.begin == expected || definition.end == expected)
+        });
+        assert!(
+            declared,
+            "{emitter} marker {marker} has no declared boundary"
+        );
+    }
+
+    let traffic = definitions
+        .iter()
+        .find(|definition| definition.id.as_str() == "traffic-window")
+        .expect("west traffic-window measurement");
+    let guest_metrics = traffic
+        .metrics
+        .iter()
+        .filter(|metric| matches!(metric.source, MetricSource::Guest))
+        .map(|metric| metric.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        guest_metrics,
+        [
+            "response_completion_inversions",
+            "traffic_loss_packets",
+            "traffic_success_packets",
+        ]
+    );
+}
+
+/// Guest scripts that emit the Envoy fixture's structured assertions.
+const ENVOY_GUEST_SCRIPTS: [(&str, &str); 2] = [
+    (
+        "init.sh",
+        include_str!("../../../../../../../tests/crucible/fixtures/envoy-network/init.sh"),
+    ),
+    (
+        "traffic.py",
+        include_str!("../../../../../../../tests/crucible/fixtures/envoy-network/traffic.py"),
+    ),
+];
+
+/// Splits shell or Python source into bare words and quoted-string contents.
+///
+/// Comments and punctuation are dropped, so `guest("sometimes", "id", "m")`
+/// and `crucible-guest sometimes id 'm'` both yield `guest`/`crucible-guest`
+/// followed by the kind, id, and message tokens.
+fn script_tokens(source: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut characters = source.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '#' => {
+                for skipped in characters.by_ref() {
+                    if skipped == '\n' {
+                        break;
+                    }
+                }
+            }
+            '\'' | '"' => {
+                let mut token = String::new();
+                while let Some(inner) = characters.next() {
+                    match inner {
+                        '\\' if character == '"' => token.extend(characters.next()),
+                        inner if inner == character => break,
+                        inner => token.push(inner),
+                    }
+                }
+                tokens.push(token);
+            }
+            character if character.is_alphanumeric() || "-_.".contains(character) => {
+                let mut token = String::from(character);
+                while let Some(&next) = characters.peek() {
+                    if !(next.is_alphanumeric() || "-_.".contains(next)) {
+                        break;
+                    }
+                    token.push(next);
+                    characters.next();
+                }
+                tokens.push(token);
+            }
+            _ => {}
+        }
+    }
+    tokens
+}
+
+/// Returns `(kind, id, message)` for every structured guest assertion a script emits.
+fn guest_assertion_emissions(source: &str) -> Vec<(String, String, String)> {
+    let tokens = script_tokens(source);
+    tokens
+        .windows(4)
+        .filter(|window| matches!(window[0].as_str(), "crucible-guest" | "guest"))
+        .filter(|window| {
+            matches!(
+                window[1].as_str(),
+                "always" | "sometimes" | "reachable" | "unreachable"
+            )
+        })
+        .map(|window| (window[1].clone(), window[2].clone(), window[3].clone()))
+        .collect()
+}
+
+fn guest_assertion_kind(assertion: &AssertionDef) -> Option<&'static str> {
+    match &assertion.property {
+        ::crucible_engine::Property::Always {
+            predicate: Predicate::GuestMarker { .. },
+        } => Some("always"),
+        ::crucible_engine::Property::Sometimes {
+            predicate: Predicate::GuestMarker { .. },
+        } => Some("sometimes"),
+        ::crucible_engine::Property::Reachable {
+            predicate: Predicate::GuestMarker { .. },
+            expectation: ::crucible_engine::ReachabilityExpectation::Reachable { .. },
+        } => Some("reachable"),
+        ::crucible_engine::Property::Reachable {
+            predicate: Predicate::GuestMarker { .. },
+            expectation: ::crucible_engine::ReachabilityExpectation::Unreachable,
+        } => Some("unreachable"),
+        _ => None,
+    }
+}
+
+/// The host judges a guest marker whose message differs from its declaration
+/// as a violation, so a drifted `sometimes` message turns every successful
+/// run into a finding.
+#[test]
+fn envoy_guest_assertion_emissions_match_their_scenario_declarations() {
+    let world = worked_network_world(None).expect("worked-network world");
+    let properties = worked_network_properties(&world).expect("worked-network properties");
+    let declared = properties
+        .assertions()
+        .iter()
+        .filter_map(|assertion| {
+            guest_assertion_kind(assertion)
+                .map(|kind| (assertion.id.name.clone(), (kind, assertion.message.clone())))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut emitted = BTreeSet::new();
+    for (script, source) in ENVOY_GUEST_SCRIPTS {
+        for (kind, id, message) in guest_assertion_emissions(source) {
+            let Some((declared_kind, declared_message)) = declared.get(&id) else {
+                panic!("{script} emits undeclared guest assertion {id}");
+            };
+            assert_eq!(
+                kind, *declared_kind,
+                "{script} emits {id} with the wrong kind"
+            );
+            assert_eq!(
+                message, *declared_message,
+                "{script} emits {id} with a message that differs from its declaration"
+            );
+            emitted.insert(id);
+        }
+    }
+
+    assert_eq!(
+        emitted,
+        declared.keys().cloned().collect::<BTreeSet<_>>(),
+        "every declared guest assertion has an emitter"
+    );
+}
+
 #[test]
 fn generated_network_fault_group_discovers_both_phases_and_projects_typed_paths() {
     let temporary = tempfile::tempdir().expect("fixture temporary directory");
@@ -353,9 +543,17 @@ fn generated_network_fault_group_discovers_both_phases_and_projects_typed_paths(
             .expect("outage activates without traffic")
             .is_empty()
     );
+    assert!(
+        !first_replay
+            .active_outages(topology, first_at.ticks + 29_000_000_000_000)
+            .expect("outage remains active for its selected duration")
+            .is_empty()
+    );
 
+    // The first 30_000_000 us outage ends 30 virtual seconds (in exact
+    // picosecond ticks) after it starts; the follow-up arrives one second later.
     let followup_at = VirtualTime {
-        ticks: 31_000_000_000,
+        ticks: 31_000_000_000_000,
     };
     let followup = NetworkFaultSelectable::next(
         &scenario,
@@ -486,7 +684,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
         assert_eq!(
             vm.cmdline,
             format!(
-                "root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
+                "root=/dev/vda rw init=/init console=ttyS0 quiet loglevel=4 noapic nolapic network.role={} network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2",
                 vm.id.name
             )
         );
@@ -620,4 +818,39 @@ fn worked_network_fixture_rejects_incomplete_boot_assets_before_creating_output(
         generate_worked_network_fixture(&output, Some(&missing), Some(&missing), None).is_err()
     );
     assert!(!output.exists());
+}
+
+#[test]
+fn worked_network_quiet_boot_contract_matches_driver_fixture() {
+    let temporary = tempfile::tempdir().expect("fixture temporary directory");
+    let kernel = temporary.path().join("kernel-placeholder");
+    let root_image = temporary.path().join("root-placeholder");
+    fs::write(&kernel, b"worked-network eligibility kernel fixture\n").expect("kernel fixture");
+    fs::write(&root_image, b"worked-network eligibility root fixture\n").expect("root fixture");
+    let output = temporary.path().join("quiet-envoy");
+    generate_worked_network_fixture(
+        &output,
+        Some(&kernel),
+        Some(&root_image),
+        Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+    .expect("current CLI author produces the quiet fixture");
+    let generated = ScenarioDefForm::from_compact_binary(
+        &fs::read(output.join("scenario.bin")).expect("generated scenario bytes"),
+    )
+    .expect("generated scenario");
+    let projection = ScenarioDefForm::from_components(
+        generated.world(),
+        &Plan::empty(),
+        &Properties::empty(),
+        generated.seed(),
+    )
+    .expect("eligibility projection")
+    .with_selectables(generated.selectables().clone())
+    .expect("complete catalog");
+    let retained = ScenarioDefForm::from_canonical_toml(include_str!(
+        "../../../../../crucible-daemon/src/qemu_campaign_driver/tests/fixtures/worked-network-quiet.toml"
+    )).expect("shared driver contract fixture");
+
+    assert_eq!(projection, retained);
 }

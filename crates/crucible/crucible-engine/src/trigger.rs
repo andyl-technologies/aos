@@ -39,26 +39,50 @@ use crate::scheduler::{
 /// event trigger.
 pub type Condition = Predicate;
 
+mod assertion_fold;
+#[cfg(test)]
+mod assertion_fold_tests;
 mod assertions;
 mod conditions;
+mod console_automaton;
+#[cfg(test)]
+mod continuing_prefix_tests;
 mod deadlines;
 mod evaluation;
 mod event_graph;
 mod evidence;
 mod guest_assertion_declarations;
 mod guest_assertion_observation;
+mod named_predicates;
+#[cfg(test)]
+mod native_console_tests;
 mod observability;
 mod observation_time;
+mod streaming_check;
+#[cfg(test)]
+mod streaming_check_tests;
 
+pub use assertion_fold::AssertionFoldFailure;
+use assertion_fold::{
+    AssertionFold, AssertionFoldWire, AssertionLeafResolver, FoldedLeafStates, property_predicates,
+};
 pub use assertions::*;
 pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;
 pub use conditions::*;
+pub use console_automaton::{
+    ConsoleAdvance, ConsoleAutomaton, ConsoleAutomatonState, ConsolePatternError,
+    MAX_CONSOLE_AUTOMATON_BYTES,
+};
 pub use evaluation::*;
 pub use event_graph::*;
 use evidence::*;
 use guest_assertion_declarations::*;
 use guest_assertion_observation::*;
+pub use named_predicates::{
+    MAX_NAMED_PREDICATE_STATE_BYTES, NamedLeaf, NamedPredicateError, ObservedBatch,
+};
 pub use observability::*;
+pub use streaming_check::{AssertionLogCheck, RecordedLogShape};
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -1,8 +1,13 @@
 //! Causal host RUN publication and held selectable continuations.
 
 use super::cap_boundary::resolve_cap_boundary;
+use super::custody_release::{
+    HeldCustodyRelease, carry_custody_release, next_custody_release, release_held_custody,
+};
 use super::dispatch_boundary::resolve_dispatch_boundary;
-use super::held_boundary::{HeldBoundaryRun, backend_run, hold_run_result};
+use super::held_boundary::{HeldBoundaryRun, hold_run_result};
+use super::held_catchup::{CatchupKind, execute_host_runs, held_peer_evidence, require_caught_up};
+use super::held_lineage::HeldCommitBefore;
 use super::held_stop::{CommittedHostStop, HeldHostStopKind};
 use super::host_run_validation::validate_held_network_lookahead;
 pub(super) use super::host_run_validation::validate_host_run_outcome;
@@ -31,25 +36,7 @@ pub(super) struct HeldHostContinuation {
     pub(super) lineage: HeldRunLineage,
 }
 
-fn execute_one_host_run<B: ConcurrentSimulationBackend>(
-    backend: &mut B,
-    run: &PreparedHostRun,
-) -> Result<ConcurrentBackendRunResult, SchedulerError> {
-    if backend.dispatch_contract() != run.dispatch_contract {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from("backend dispatch contract changed before physical RUN"),
-        });
-    }
-    let mut results = backend.execute_concurrent_runs(vec![backend_run(run)], 1)?;
-    if results.len() != 1 {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from("host worker continuation changed cardinality"),
-        });
-    }
-    Ok(results.remove(0))
-}
-
-fn refresh_held_host_run_boundary(
+pub(super) fn refresh_held_host_run_boundary(
     scheduler: &mut SingleScheduler,
     topology: &SchedulerLookaheadGraph,
 ) -> Result<(), SchedulerError> {
@@ -125,12 +112,11 @@ where
                 message: String::from("held union generation exhausted before RUN dispatch"),
             });
         }
-        let maximum_runs =
-            if self.pause_before_live_network_choice && !self.parallel_choice_free_boot {
-                1
-            } else {
-                usize::MAX
-            };
+        // Every node runs to its own graph horizon, also while a live choice
+        // may be offered. A choice found while publishing the set is offered
+        // at the deterministic cut described on `publish_held_host_continuation`;
+        // its held peers cannot be influenced by the choice before they stop.
+        let maximum_runs = usize::MAX;
         let maximum_consumers = self
             .loop_impl
             .borrow()
@@ -156,6 +142,9 @@ where
             }
         }
         let dispatch_contract = self.selected_dispatch_contract()?;
+        // This publisher holds every completed RUN and publishes in canonical
+        // key order, so the scheduler may plan nodes on independent clocks.
+        self.loop_impl.borrow_mut().held_run_publication = true;
         let mut prepared = self
             .loop_impl
             .borrow()
@@ -173,6 +162,7 @@ where
                 next.drive_concurrent_authoritative_quantum_limited(request, maximum_runs)?;
             return self.complete_host_control_only(next, outcome);
         }
+        self.host_worker_limit = max_host_workers;
         let mut runs = Vec::with_capacity(prepared.runs.len());
         for planned in &prepared.runs {
             runs.push(ConcurrentBackendRun {
@@ -293,6 +283,36 @@ where
         })
     }
 
+    /// Publishes held RUN evidence in canonical order, stopping at a choice cut.
+    ///
+    /// # Canonical order
+    ///
+    /// The RUNs of one set ran on different clocks to their own graph
+    /// horizons. Their evidence publishes in increasing settled-endpoint time,
+    /// ties broken by node identity. Before a held RUN publishes at time `t`,
+    /// every other live node reaches `t` through a fresh catch-up RUN bounded
+    /// by its own graph horizon; that horizon uses each held peer's proven
+    /// emission floor, so a node waiting on a held peer is never stuck behind
+    /// stale state. Outputs therefore reach EMIT, routing, and each link's RNG
+    /// stream in RFC-0010 Section 8.6 key order, whatever the host completion
+    /// order or worker count (PERF-5).
+    ///
+    /// # Choice cut
+    ///
+    /// When committing a RUN offers a live choice for a frame emitted by node
+    /// `A` at `e`, publication stops. The offered parent is the cut formed by
+    /// every node's published clock and the in-flight frames held in pending
+    /// events and link queues. Each still-held peer `n` settled strictly before
+    /// any delivery from `A` (checked against every direct edge by
+    /// `validate_held_network_lookahead`, and transitively by the graph
+    /// horizon), so no selection can change its evidence; it publishes after
+    /// the selection.
+    ///
+    /// The cut is a pure function of the event-log prefix: the RUN set and
+    /// every RUN target depend only on scheduler state, and the publication
+    /// order only on guest-determined endpoints. Replay reproduces it by
+    /// running the same policy from a settled boundary in the log, never from
+    /// inside a held set, which `final_boundary_refusal` refuses to capture.
     pub(super) fn publish_held_host_continuation(
         &mut self,
         mut staged_scheduler: SingleScheduler,
@@ -332,7 +352,21 @@ where
         let mut staged_preselection = None;
         let mut staged_frontier = self.committed_frontier;
         let mut published = Vec::with_capacity(held_limit);
+        // Custody releases publish ahead of the next RUN outcome, which
+        // carries them so every published outcome still names its RUN.
+        let mut custody_released: Option<QuantumOutcome> = None;
+        let mut custody_released_through: Option<VirtualTime> = None;
         while !held_runs.is_empty() || !boundary_runs.is_empty() {
+            super::held_lineage::prepare_canonical_extension(
+                &mut lineage,
+                &staged_scheduler,
+                &self.held_stop_controller,
+                self.held_union_generation,
+                &mut held_runs,
+                &mut boundary_runs,
+                &mut original_runs,
+            )
+            .map_err(|error| self.poison_continuation(error))?;
             if staged_scheduler.effective_topology != initial_topology {
                 return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -340,8 +374,13 @@ where
                     ),
                 }));
             }
+            let held_floors = held_peer_evidence(&staged_scheduler, &held_runs, &boundary_runs)
+                .map_err(|error| self.poison_continuation(error))?;
+            staged_scheduler.set_held_peer_evidence(held_floors);
             // Physical completion order and registration order are not PICK
             // order. Release equal-time evidence by canonical node identity.
+            // A completed RUN publishes at its settled endpoint, the scheduler
+            // time it adopts; an output stop settles exactly where it stopped.
             let next = held_runs
                 .iter()
                 .map(|(node, held)| {
@@ -349,7 +388,7 @@ where
                         .backend_network_output_time(
                             node,
                             Icount {
-                                retired: held.completed.step.reached.ticks,
+                                retired: held.completed.step.settled_through.ticks,
                             },
                         )
                         .map(|at| (at, node.clone()))
@@ -368,177 +407,100 @@ where
                 .map_err(|error| self.poison_continuation(error))?
                 .into_iter()
                 .min();
-            let Some((next_time, next_node)) = next else {
+            let Some((run_time, next_node)) = next else {
                 break;
             };
 
-            let mut omitted_run = None;
-            let mut omitted_nodes = staged_scheduler
-                .nodes
-                .iter()
-                .enumerate()
-                .map(|(index, runtime)| (runtime.id.node.clone(), index))
-                .collect::<Vec<_>>();
-            omitted_nodes.sort_by(|left, right| left.0.cmp(&right.0));
-            for (node, index) in omitted_nodes {
-                if original_runs.contains_key(&node) {
-                    continue;
-                }
-                let current = staged_scheduler
-                    .node_current_time(&staged_scheduler.nodes[index])
-                    .map_err(|error| self.poison_continuation(error))?;
-                if current.ticks >= next_time.ticks {
-                    continue;
-                }
-                refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
-                    .map_err(|error| self.poison_continuation(error))?;
-                let run = staged_scheduler
-                    .prepare_host_catchup_run_for_contract(
-                        index,
-                        SimInstant {
-                            ticks: next_time.ticks,
-                        },
-                        self.selected_dispatch_contract()
-                            .map_err(|error| self.poison_continuation(error))?,
-                    )
-                    .map_err(|error| self.poison_continuation(error))?;
-                if let Some(run) = run {
-                    omitted_run = Some((node, current, run));
-                    break;
-                }
-            }
-            if let Some((node, current, mut run)) = omitted_run {
-                run.dispatch_contract = self
-                    .selected_dispatch_contract()
-                    .map_err(|error| self.poison_continuation(error))?;
-                run.canonical_lineage = Some(lineage.clone());
-                validate_held_network_lookahead(
-                    &staged_scheduler,
-                    &run.plan.node,
-                    VirtualTime {
-                        ticks: current.ticks,
-                    },
+            // A frame leaving adapter custody publishes as its own cut at
+            // its release time, ahead of any RUN that settles later.
+            let custody_release = next_custody_release(
+                &staged_scheduler,
+                &staged_frozen_network_output_times,
+                &staged_pending_network_outputs,
+                run_time,
+                custody_released_through,
+            )
+            .map_err(|error| self.poison_continuation(error))?;
+            let next_time = custody_release.as_ref().map_or(run_time, |(at, _)| *at);
+
+            // Every unheld live node behind `next_time` catches up before the
+            // held RUN publishes there. The catch-up RUNs are independent:
+            // each is bounded by its own graph horizon over the held floors,
+            // so they run together as one host-concurrent batch.
+            let catchups = self
+                .plan_held_catchups(
+                    &mut staged_scheduler,
+                    next_time,
+                    &initial_topology,
+                    &original_runs,
                     &held_runs,
                     &boundary_runs,
                 )
                 .map_err(|error| self.poison_continuation(error))?;
-                let completed = execute_one_host_run(&mut self.backend, &run)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if held_runs.len() + boundary_runs.len() >= held_limit {
-                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "held host RUN evidence exceeded scheduler node count",
-                        ),
-                    }));
-                }
-                original_runs.insert(node.clone(), run.clone());
-                generations.insert(node.clone(), 0);
-                hold_run_result(run, completed, 0, &mut held_runs, &mut boundary_runs)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if let Some(held) = held_runs.get(&node)
-                    && !held.completed.network_outputs.is_empty()
-                {
-                    let at = staged_scheduler
-                        .backend_network_output_time(
-                            &node,
-                            Icount {
-                                retired: held.completed.step.reached.ticks,
-                            },
-                        )
+            if !catchups.is_empty() {
+                let mut planned = Vec::with_capacity(catchups.len());
+                for mut catchup in catchups {
+                    catchup.run.dispatch_contract = self
+                        .selected_dispatch_contract()
                         .map_err(|error| self.poison_continuation(error))?;
+                    catchup.run.canonical_lineage = Some(lineage.clone());
                     validate_held_network_lookahead(
                         &staged_scheduler,
-                        &held.run.plan.node,
-                        at,
+                        &catchup.run.plan.node,
+                        VirtualTime {
+                            ticks: catchup.current.ticks,
+                        },
                         &held_runs,
                         &boundary_runs,
                     )
                     .map_err(|error| self.poison_continuation(error))?;
-                }
-                continue;
-            }
-
-            let mut lagging = None;
-            for (node, original) in &original_runs {
-                if held_runs.contains_key(node) || boundary_runs.contains_key(node) {
-                    continue;
-                }
-                let runtime = &staged_scheduler.nodes[original.plan.index];
-                let current = staged_scheduler
-                    .node_current_time(runtime)
-                    .map_err(|error| self.poison_continuation(error))?;
-                let before = runtime.counter;
-                if current.ticks < next_time.ticks {
-                    refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
-                        .map_err(|error| self.poison_continuation(error))?;
-                    let run = if before.ticks < original.plan.target_counter {
-                        Some(
-                            staged_scheduler
-                                .prepare_host_run_continuation(original, before)
-                                .map_err(|error| self.poison_continuation(error))?,
-                        )
-                    } else {
-                        staged_scheduler
-                            .prepare_host_catchup_run_after(
-                                original,
-                                SimInstant {
-                                    ticks: next_time.ticks,
-                                },
-                            )
-                            .map_err(|error| self.poison_continuation(error))?
+                    let generation = match catchup.kind {
+                        CatchupKind::Omitted => 0,
+                        CatchupKind::Lagging => generations
+                            .get(&catchup.node)
+                            .copied()
+                            .and_then(|value| value.checked_add(1))
+                            .ok_or_else(|| {
+                                self.poison_continuation(SchedulerError::BoundaryViolation {
+                                    message: String::from(
+                                        "held RUN generation is absent or exhausted",
+                                    ),
+                                })
+                            })?,
                     };
-                    if let Some(run) = run {
-                        lagging = Some((node.clone(), run, current));
-                        break;
+                    planned.push((catchup.node, catchup.run, generation));
+                }
+
+                let completed = execute_host_runs(
+                    &mut self.backend,
+                    planned.iter().map(|(_, run, _)| run),
+                    self.host_worker_limit,
+                )
+                .map_err(|error| self.poison_continuation(error))?;
+                for ((node, run, generation), completed) in planned.into_iter().zip(completed) {
+                    if held_runs.len() + boundary_runs.len() >= held_limit {
+                        return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "held host RUN evidence exceeded scheduler node count",
+                            ),
+                        }));
                     }
-                }
-            }
-            if let Some((node, mut run, current)) = lagging {
-                run.dispatch_contract = self
-                    .selected_dispatch_contract()
+                    generations.insert(node.clone(), generation);
+                    original_runs.insert(node.clone(), run.clone());
+                    hold_run_result(
+                        run,
+                        completed,
+                        generation,
+                        &mut held_runs,
+                        &mut boundary_runs,
+                    )
                     .map_err(|error| self.poison_continuation(error))?;
-                run.canonical_lineage = Some(lineage.clone());
-                validate_held_network_lookahead(
-                    &staged_scheduler,
-                    &run.plan.node,
-                    VirtualTime {
-                        ticks: current.ticks,
-                    },
-                    &held_runs,
-                    &boundary_runs,
-                )
-                .map_err(|error| self.poison_continuation(error))?;
-                let generation = generations
-                    .get(&node)
-                    .copied()
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or_else(|| {
-                        self.poison_continuation(SchedulerError::BoundaryViolation {
-                            message: String::from("held RUN generation is absent or exhausted"),
-                        })
-                    })?;
-                let completed = execute_one_host_run(&mut self.backend, &run)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if held_runs.len() + boundary_runs.len() >= held_limit {
-                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "held host RUN evidence exceeded selected node count",
-                        ),
-                    }));
                 }
-                generations.insert(node.clone(), generation);
-                original_runs.insert(node.clone(), run.clone());
-                hold_run_result(
-                    run,
-                    completed,
-                    generation,
-                    &mut held_runs,
-                    &mut boundary_runs,
-                )
-                .map_err(|error| self.poison_continuation(error))?;
-                if let Some(held) = held_runs.get(&node)
-                    && !held.completed.network_outputs.is_empty()
-                {
+                // Each new output must still precede every peer's endpoint.
+                for held in held_runs.values() {
+                    if held.completed.network_outputs.is_empty() {
+                        continue;
+                    }
                     let at = staged_scheduler
                         .backend_network_output_time(
                             &held.completed.node,
@@ -556,6 +518,76 @@ where
                     )
                     .map_err(|error| self.poison_continuation(error))?;
                 }
+                continue;
+            }
+
+            // Publishing at `next_time` releases outputs in canonical time
+            // order only if no other node can still emit before it.
+            require_caught_up(&staged_scheduler, next_time, &held_runs, &boundary_runs)
+                .map_err(|error| self.poison_continuation(error))?;
+
+            if let Some((_, source)) = custody_release {
+                let before_release = HeldCommitBefore::capture(&staged_scheduler);
+                let retain_extension =
+                    !boundary_runs.is_empty() || lineage.context_is_current(&staged_scheduler);
+                if retain_extension {
+                    lineage
+                        .ensure_extension_room()
+                        .map_err(|error| self.poison_continuation(error))?;
+                }
+                let released = release_held_custody(
+                    HeldCustodyRelease {
+                        scheduler: &mut staged_scheduler,
+                        backend: &mut self.backend,
+                        network_output_interceptor: &mut staged_interceptor,
+                        pending_network_outputs: &mut staged_pending_network_outputs,
+                        frozen_network_output_times: &mut staged_frozen_network_output_times,
+                        pending_observations: &mut staged_pending_observations,
+                        preselection: &mut staged_preselection,
+                        pause_before_live_network_choice: self.pause_before_live_network_choice,
+                        frontier: staged_frontier,
+                    },
+                    next_time,
+                )
+                .map_err(|error| self.poison_continuation(error))?;
+                custody_released_through = Some(next_time);
+
+                // A release moves no node counter; the extension records only
+                // the new configuration and log offset.
+                if retain_extension {
+                    lineage
+                        .extend_commit_from(before_release, &staged_scheduler, &source)
+                        .map_err(|error| self.poison_continuation(error))?;
+                }
+                for held in held_runs.values_mut() {
+                    held.run.canonical_lineage = Some(lineage.clone());
+                }
+                for held in boundary_runs.values_mut() {
+                    held.run.canonical_lineage = Some(lineage.clone());
+                }
+                for run in original_runs.values_mut() {
+                    run.canonical_lineage = Some(lineage.clone());
+                }
+
+                let released = carry_custody_release(custody_released.take(), released);
+                if self.parallel_choice_free_boot
+                    && (staged_preselection.is_some()
+                        || !released.discovered_choices.is_empty()
+                        || released.decisions.iter().any(|decision| {
+                            matches!(decision, Decision::Selection(_) | Decision::Override(_))
+                        }))
+                {
+                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "choice-free parallel boot reached a selectable before the serial boundary",
+                        ),
+                    }));
+                }
+                if staged_preselection.is_some() {
+                    published.push(released);
+                    break;
+                }
+                custody_released = Some(released);
                 continue;
             }
 
@@ -584,7 +616,9 @@ where
                         ),
                     }));
                 }
-                let before_settlement = staged_scheduler.clone();
+                // Settlement mutates the only staged scheduler. The lineage
+                // compares just this projection of its prior state.
+                let before_settlement = HeldCommitBefore::capture(&staged_scheduler);
                 let result = match held_boundary.boundary {
                     super::held_boundary::HeldRunBoundary::Input(boundary) => {
                         resolve_input_boundary(
@@ -642,7 +676,7 @@ where
                     }
                 }
                 lineage
-                    .extend_commit(&before_settlement, &staged_scheduler, &next_node)
+                    .extend_commit_from(before_settlement, &staged_scheduler, &next_node)
                     .map_err(|error| self.poison_continuation(error))?;
                 held_boundary.run.canonical_lineage = Some(lineage.clone());
                 for held in held_runs.values_mut() {
@@ -689,20 +723,40 @@ where
                 }));
             }
             let reached = completed.step.reached.ticks;
+            let report = HostRunReport::from_step(&completed.step);
             let stop_kind = HeldHostStopKind::from_physical_stop(completed.step.physical_stop);
             let stop_node = run.plan.node.clone();
             let stop_index = run.plan.index;
             let release_at = staged_scheduler
                 .backend_network_output_time(&node, Icount { retired: reached })
                 .map_err(|error| self.poison_continuation(error))?;
+            // Every frame must lie outside the gap the node already attested
+            // empty; the RUN's own stop is checked when the commit moves it.
+            for output in &completed.network_outputs {
+                staged_scheduler
+                    .reject_output_inside_settled_gap(
+                        &output.source,
+                        output.sequence,
+                        output.emit_icount,
+                    )
+                    .map_err(|error| self.poison_continuation(error))?;
+            }
+            let trace = crate::scheduler::host_run_trace::HostRunTraceStart::capture(
+                &staged_scheduler,
+                stop_index,
+                &completed.step,
+                &completed.network_outputs,
+            );
             let staged_inputs = run
                 .staged_input_events
                 .iter()
                 .map(|event| event.key.clone())
                 .collect();
-            let before_commit = staged_scheduler.clone();
+            // The commit mutates the only staged scheduler. The lineage
+            // compares just this projection of its prior state.
+            let before_commit = HeldCommitBefore::capture(&staged_scheduler);
             let retain_extension =
-                !boundary_runs.is_empty() || lineage.context_is_current(&before_commit);
+                !boundary_runs.is_empty() || lineage.context_is_current(&staged_scheduler);
             if retain_extension {
                 lineage
                     .ensure_extension_room()
@@ -711,7 +765,7 @@ where
             let outcome = staged_scheduler
                 .commit_prepared_host_run(
                     run,
-                    reached,
+                    report,
                     &completed.step.applied_preemptions,
                     if published.is_empty() {
                         std::mem::take(&mut boundary_events)
@@ -725,6 +779,7 @@ where
                     },
                 )
                 .map_err(|error| self.poison_continuation(error))?;
+            trace.record(&staged_scheduler, &outcome.resolved_events);
             staged_frontier = outcome.frontier;
             let boundary = BackendBoundaryEvidence {
                 staged_inputs,
@@ -733,6 +788,8 @@ where
                 observations: completed.observations,
             };
             let release_at = release_at.max(outcome.frontier);
+            let _admission_path =
+                crate::scheduler::network_admission_trace::enter_path("run-commit");
             let completed = complete_backend_outcome_on(
                 BackendOutcomeAdmission {
                     loop_impl: &mut staged_scheduler,
@@ -750,9 +807,13 @@ where
             );
             match completed {
                 Ok(outcome) => {
+                    let outcome = match custody_released.take() {
+                        Some(released) => carry_custody_release(Some(released), outcome),
+                        None => outcome,
+                    };
                     if retain_extension {
                         lineage
-                            .extend_commit(&before_commit, &staged_scheduler, &node)
+                            .extend_commit_from(before_commit, &staged_scheduler, &node)
                             .map_err(|error| self.poison_continuation(error))?;
                     }
                     for held in held_runs.values_mut() {
@@ -805,6 +866,12 @@ where
             }
         }
 
+        if let Some(released) = custody_released {
+            published.push(released);
+        }
+
+        // Held evidence stays with the continuation, never with the scheduler.
+        staged_scheduler.set_held_peer_evidence(BTreeMap::new());
         let offer_configuration = staged_scheduler.configuration().clone();
         let offer_log_offset = staged_scheduler.event_log_offset();
         *self.loop_impl.borrow_mut() = staged_scheduler;
@@ -864,6 +931,7 @@ where
         let mut staged_pending_observations = self.pending_observations.clone();
         let mut staged_preselection = None;
         let frontier = only.frontier;
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("control-only");
         let completed = complete_backend_outcome_on(
             BackendOutcomeAdmission {
                 loop_impl: &mut staged_scheduler,
@@ -912,120 +980,6 @@ where
         max_host_workers: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
         self.drive_host_concurrent_quantum(request, max_host_workers)
-    }
-}
-
-impl<B, I> BackendQuantumLoop<SingleScheduler, B, I>
-where
-    B: ConcurrentSimulationBackend,
-    I: BackendNetworkOutputInterceptor<SingleScheduler, B> + Clone,
-{
-    /// Settles a live choice and publishes any already completed peer RUNs.
-    ///
-    /// Physical peer evidence stays private while a selectable is offered.
-    /// Settlement resumes its causal publication before another backend RUN
-    /// can be planned against the peer's old logical counter.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] if the offered prefix, peer identity, or
-    /// physical evidence changed, or a resumed admission fails.
-    pub fn settle_host_live_network_preselection(
-        &mut self,
-    ) -> Result<Vec<QuantumOutcome>, SchedulerError> {
-        let validation = (|| {
-            if let Some(state) = self.held_host_continuation.as_ref() {
-                if self.loop_impl.configuration() != &state.offer_configuration
-                    || self.loop_impl.event_log_offset() != state.offer_log_offset
-                    || self.loop_impl.effective_topology != state.topology
-                    || state.runs.len() > self.loop_impl.nodes.len()
-                {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "held physical RUNs differ from the offered choice prefix",
-                        ),
-                    });
-                }
-                for (node, held) in &state.runs {
-                    let Some(runtime) = self.loop_impl.nodes.get(held.run.plan.index) else {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "held choice peer `{}` lost its scheduler node",
-                                node.name
-                            ),
-                        });
-                    };
-                    if held.run.plan.node.node != *node
-                        || held.completed.node != *node
-                        || runtime.id != held.run.plan.node
-                        || runtime.counter != held.run.plan.before
-                        || state.generations.get(node) != Some(&held.generation)
-                    {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: format!(
-                                "held choice peer `{}` changed node, generation, or before counter",
-                                node.name,
-                            ),
-                        });
-                    }
-                    validate_host_run_outcome(&held.run, &held.completed)?;
-                }
-            }
-
-            Ok(())
-        })();
-        validation.map_err(|error| self.poison_continuation(error))?;
-        let before_settlement = self.loop_impl.clone();
-        let settlement_source = self
-            .preselection
-            .as_ref()
-            .map(|pending| pending.choice.output.source.clone());
-        if let Some(state) = self.held_host_continuation.as_ref() {
-            state
-                .lineage
-                .ensure_extension_room()
-                .map_err(|error| self.poison_continuation(error))?;
-        }
-        let continuation = self.held_host_continuation.take();
-        let settled = match self.settle_live_network_preselection() {
-            Ok(settled) => settled,
-            Err(error) => {
-                self.held_host_continuation = continuation;
-                return Err(self.poison_continuation(error));
-            }
-        };
-        let mut outcomes = vec![settled];
-        if let Some(mut state) = continuation {
-            let source = settlement_source.ok_or_else(|| {
-                self.poison_continuation(SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "canonical choice settlement lost its actual output source",
-                    ),
-                })
-            })?;
-            state
-                .lineage
-                .extend_commit(&before_settlement, &self.loop_impl, &source)
-                .map_err(|error| self.poison_continuation(error))?;
-            for held in state.runs.values_mut() {
-                held.run.canonical_lineage = Some(state.lineage.clone());
-            }
-            for held in state.boundary_runs.values_mut() {
-                held.run.canonical_lineage = Some(state.lineage.clone());
-            }
-            for run in state.original_runs.values_mut() {
-                run.canonical_lineage = Some(state.lineage.clone());
-            }
-            if state.source_stop.is_some() {
-                state.offer_configuration = self.loop_impl.configuration().clone();
-                state.offer_log_offset = self.loop_impl.event_log_offset();
-                self.held_host_continuation = Some(state);
-            } else {
-                let scheduler = self.loop_impl.clone();
-                outcomes.extend(self.publish_held_host_continuation(scheduler, state)?);
-            }
-        }
-        Ok(outcomes)
     }
 }
 

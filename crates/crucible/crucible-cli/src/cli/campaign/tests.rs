@@ -667,6 +667,9 @@ impl CampaignService for GraphPageService {
             CampaignFindingObjectKind::MinimizedReproduction => {
                 unreachable!("fixture finding has no minimized reproduction")
             }
+            CampaignFindingObjectKind::ReproductionPayloadSegment { .. } => {
+                unreachable!("fixture reproduction has no payload segments")
+            }
         };
         Ok(GetCampaignFindingObjectResponse::new(
             request,
@@ -3575,8 +3578,8 @@ fn graph_page_service() -> (GraphPageService, CampaignSnapshotId, CampaignSnapsh
                 .expect("finding configuration artifact ID"),
             hash("finding-fingerprint"),
         ),
-        1,
-        b"reproduce-timeout".to_vec(),
+        crucible_campaign::ReproductionPayload::new(1, b"reproduce-timeout".to_vec(), Vec::new())
+            .expect("reproduction payload"),
     )
     .expect("finding reproduction");
     let finding_candidate = FindingCandidateBundleId::parse(&fixture_record_id(

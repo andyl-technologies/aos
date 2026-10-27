@@ -132,23 +132,19 @@ impl ProductionVmLifecycleLoop {
 
     /// Normalizes only signal-fault frontiers first observed by this quantum.
     ///
-    /// The scheduler retains older frontiers for checkpoint and replay
-    /// authentication. Re-emitting that history as a later discovery would
-    /// manufacture a branch point after execution had already passed it, so
-    /// callers supply the frontier count captured before the quantum began.
+    /// The scheduler retains the frontiers at its current boundary for
+    /// checkpoint and replay authentication. Re-emitting them as a later
+    /// discovery would manufacture a branch point after execution had already
+    /// passed it, so callers supply the frontier sequence captured before the
+    /// quantum began.
     pub(super) fn signal_fault_campaign_discoveries_at_current_boundary_since(
         &self,
-        first: usize,
+        first: u64,
     ) -> Result<Vec<crucible_engine::campaign::ChoiceDiscovery>, SchedulerError> {
         if !self.promote_signal_fault_campaign_choices {
             return Ok(Vec::new());
         }
-        let frontiers = self.inner.loop_impl().search_frontiers();
-        let current = frontiers
-            .get(first..)
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("signal-fault frontier history shrank during one quantum"),
-            })?;
+        let current = self.inner.loop_impl().search_frontiers_since(first)?;
         if current.len() > crucible_engine::MAX_SIGNAL_FAULT_CAMPAIGN_BRANCHES {
             return Err(SchedulerError::ResourceLimit {
                 field: "signal-fault campaign discoveries",
@@ -239,7 +235,7 @@ impl ProductionVmLifecycleLoop {
 
     pub(super) fn append_live_signal_fault_campaign_discoveries(
         &self,
-        first: usize,
+        first: u64,
         outcome: &mut QuantumOutcome,
     ) -> Result<(), SchedulerError> {
         outcome

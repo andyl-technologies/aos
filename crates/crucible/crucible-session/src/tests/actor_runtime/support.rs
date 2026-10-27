@@ -845,7 +845,9 @@ pub(in crate::tests) fn trigger_fired_payload(
         crucible_engine::test_support::condition_prefix_at_quantum_boundary_for_test(sequence),
         NoLeaves,
     );
-    let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut graph_state)
+        .expect("console matchers are declared");
     let Some(firing) = firings
         .iter()
         .find(|firing| firing.event() == &event)
@@ -884,7 +886,9 @@ pub(in crate::tests) fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPa
         NoLeaves,
     )
     .with_timer_fires(timer_fires);
-    let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut graph_state)
+        .expect("console matchers are declared");
     let Some(firing) = firings
         .iter()
         .find(|firing| condition_summary_is_timer_fire(firing.condition_summary()))

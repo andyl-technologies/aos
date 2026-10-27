@@ -871,11 +871,35 @@ impl Canonical for CampaignServiceFailure {
     }
 }
 
+/// Closed, path-free store cause retained only for operational diagnostics.
+///
+/// These categories never enter campaign response bytes or semantic state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CampaignServiceFailureCategory {
+    /// An immutable object required by the operation was absent.
+    Missing,
+    /// The storage backend could not make the operation available.
+    Unavailable,
+    /// A storage I/O operation failed.
+    Io,
+    /// An authenticated object stream failed during I/O.
+    StreamIo,
+}
+
 /// Maps implementation-specific failures into the stable service vocabulary.
 pub trait CampaignServiceFailureSource {
     /// Returns the failure safe to expose across a campaign-service boundary.
     #[must_use]
     fn campaign_service_failure(&self) -> CampaignServiceFailure;
+
+    /// Returns an invocation-owned diagnostic cause without exposing private data.
+    ///
+    /// The default provides no classification. Implementations derive this only
+    /// from the original error, never from a shared last-error cache.
+    #[must_use]
+    fn campaign_service_failure_category(&self) -> Option<CampaignServiceFailureCategory> {
+        None
+    }
 }
 
 impl CampaignServiceFailureSource for CampaignServiceFailure {

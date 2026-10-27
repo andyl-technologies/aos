@@ -13,7 +13,7 @@ use crucible_daemon::finding_production_replay::{
     FindingProductionReplaySelectedSide, FindingProductionReplayTerminalOutcome,
 };
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
 use serde::Serialize;
 
@@ -62,11 +62,7 @@ pub(super) fn replay_exact_finding(
             .map_err(|error| {
                 backend_error(format!("finding model reproduction is invalid: {error}"))
             })?;
-    let closure =
-        GuardedCampaignReplayClosure::from_canonical_bytes(capture.campaign_replay_closure())
-            .map_err(|error| {
-                backend_error(format!("finding replay closure is invalid: {error}"))
-            })?;
+    let closure = capture.campaign_replay_closure().clone();
     closure
         .validate_for_schedule(model.scenario_form(), model.schedule())
         .map_err(|error| backend_error(format!("finding replay choices are invalid: {error}")))?;
@@ -98,16 +94,10 @@ pub(super) fn replay_exact_finding(
             Arc::clone(&lifecycle_objects),
         )?;
         if let Some(trace) = side.resolved_effect_trace() {
-            let trace = crucible_engine::ResolvedEffectTrace::from_canonical_bytes(
-                trace,
-                model
-                    .scenario_form()
-                    .plan()
-                    .fault_signals()
-                    .resource_limits(),
-            )
-            .map_err(|error| backend_error(format!("finding effect trace is invalid: {error}")))?;
-            lifecycle = lifecycle.with_fault_replay(trace);
+            // The capture authenticated every trace segment and admitted the
+            // manifest under this model's limits when it was decoded; the
+            // clone shares its segment handles rather than copying segments.
+            lifecycle = lifecycle.with_fault_replay(trace.clone());
         }
         if side.completed_quanta() == 0 || side.frontier().ticks == 0 {
             return Err(backend_error(
@@ -287,15 +277,39 @@ fn compare_side(
     if outcome != retained.outcome()
         || evidence.quanta() != retained.completed_quanta()
         || evidence.frontier() != retained.frontier()
-        || evidence.event_log_entries() != retained.event_log()
+        || !evidence_event_log_matches(evidence, retained.event_log())
         || evidence.terminal_fingerprints() != Some(retained.terminal_fingerprints())
-        || evidence.resolved_effect_trace() != retained.resolved_effect_trace()
+        || !same_effect_trace(
+            evidence.resolved_effect_trace(),
+            retained.resolved_effect_trace(),
+        )
     {
         return Err(backend_error(
             "fresh finding QEMU evidence differs from retained capture",
         ));
     }
     Ok(())
+}
+
+/// Compares the segmented execution evidence with a retained event log.
+///
+/// Both logs are read in lockstep, one segment at a time on each side, so
+/// neither is held whole. An unreadable segment is a mismatch, so the
+/// comparison fails closed.
+fn evidence_event_log_matches(
+    evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    retained: &crucible_daemon::FindingProductionReplayEventLog,
+) -> bool {
+    if evidence.event_log_len() != retained.entry_count() {
+        return false;
+    }
+    let mut expected = retained.entries();
+    evidence
+        .try_for_each_event_log_entry(|entry| match expected.next() {
+            Some(Ok(retained)) if retained == *entry => Ok(()),
+            _ => Err(()),
+        })
+        .is_ok()
 }
 
 impl CampaignFindingBundleRole {
@@ -306,5 +320,21 @@ impl CampaignFindingBundleRole {
             Self::VerificationOriginal => "verification-original",
             Self::VerificationSelected => "verification-selected",
         }
+    }
+}
+
+/// Compares a fresh segmented trace with a retained one.
+///
+/// Manifests name their segments by content identity, and the retained
+/// capture authenticated every segment against its manifest, so equal
+/// manifests prove equal traces without reading a segment.
+fn same_effect_trace(
+    fresh: Option<&crucible_session::engine::ResolvedEffectTrace>,
+    retained: Option<&crucible_session::engine::ResolvedEffectTrace>,
+) -> bool {
+    match (fresh, retained) {
+        (None, None) => true,
+        (Some(fresh), Some(retained)) => retained.manifest() == fresh.manifest(),
+        _ => false,
     }
 }

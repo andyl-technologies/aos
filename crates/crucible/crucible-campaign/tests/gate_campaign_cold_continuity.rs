@@ -164,22 +164,19 @@ fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume()
         [],
         Some(&mut resolver),
     )?;
-    assert!(plan.omitted().is_empty());
+    assert_eq!(plan.manifest().omitted_count(), 0);
     assert_eq!(plan.manifest().checkpoint_selections().len(), 1);
     assert_eq!(
         plan.manifest().checkpoint_selections()[0].checkpoint(),
         checkpoint
     );
-    assert!(
-        plan.selected()
-            .iter()
-            .any(|entry| entry.id() == checkpoint.content_id())
-    );
-    assert!(
-        plan.selected()
-            .iter()
-            .any(|entry| entry.id() == checkpoint_leaf)
-    );
+    let mut selected = Vec::new();
+    plan.visit_selected(|entry| {
+        selected.push(entry.id());
+        Ok::<(), CampaignRepositoryError>(())
+    })?;
+    assert!(selected.contains(&checkpoint.content_id()));
+    assert!(selected.contains(&checkpoint_leaf));
     source.stage_campaign_archive_metadata(&plan)?;
 
     let destination = CampaignRepository::new(
@@ -540,8 +537,12 @@ fn publish_observed_branch(
         child,
         child_content,
         fingerprint,
-        1,
-        b"portable continuity reproduction".to_vec(),
+        crucible_campaign::ReproductionPayload::new(
+            1,
+            b"portable continuity reproduction".to_vec(),
+            Vec::new(),
+        )
+        .expect("reproduction payload"),
     )?;
     let signature = FindingSignature::new(
         FindingKind::Divergence,
@@ -554,7 +555,7 @@ fn publish_observed_branch(
     let replayed_state = hash("retained-finding-replayed-state");
     let minimization = FindingMinimizationEvidence::new(
         reproduction,
-        3,
+        4,
         b"campaign continuity minimization policy".to_vec(),
         Vec::new(),
         replayed_state,
@@ -565,8 +566,12 @@ fn publish_observed_branch(
         child,
         child_content,
         fingerprint,
-        1,
-        b"portable continuity reproduction".to_vec(),
+        crucible_campaign::ReproductionPayload::new(
+            1,
+            b"portable continuity reproduction".to_vec(),
+            Vec::new(),
+        )
+        .expect("reproduction payload"),
         minimization.clone(),
     )?;
     let signature_minimization = FindingSignatureMinimizationEvidence::new(

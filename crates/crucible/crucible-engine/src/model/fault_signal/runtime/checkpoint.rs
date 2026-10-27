@@ -46,7 +46,7 @@ impl FaultRuntimeCheckpoint {
     ) -> Result<Self, FaultRuntimeError> {
         let limits = plan.resource_limits();
         checkpoint_codec::admit_input(bytes, limits)?;
-        let scratch_bytes = trace_codec::checkpoint_preflight(bytes, limits)?;
+        let scratch_bytes = trace_codec::scratch_bytes(bytes)?;
         let scratch_requested = u64::try_from(scratch_bytes)
             .map_err(|_| FaultRuntimeError::CountOverflow("fat_checkpoint_bytes"))?;
         let mut scratch = Vec::new();
@@ -165,23 +165,7 @@ impl FaultRuntimeCheckpoint {
         if let Some(replay) = &self.replay {
             replay.validate(self.resource_limits)?;
         }
-        let recorded_work_items = u64::try_from(self.recorded_work_items.len())
-            .map_err(|_| FaultRuntimeError::CountOverflow("thin_replay_events"))?;
-        self.resource_limits
-            .reserve("thin_replay_events", 0, recorded_work_items)
-            .map_err(FaultRuntimeError::ResourceLimit)?;
-        let mut recorded_effects = 0_u64;
-        for item in &self.recorded_work_items {
-            item.validate()?;
-            let additional = u64::try_from(item.records.len())
-                .map_err(|_| FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
-            recorded_effects = recorded_effects
-                .checked_add(additional)
-                .ok_or(FaultRuntimeError::CountOverflow("resolved_effect_records"))?;
-            self.resource_limits
-                .reserve("resolved_effect_records", 0, recorded_effects)
-                .map_err(FaultRuntimeError::ResourceLimit)?;
-        }
+        self.recorded.validate(self.resource_limits)?;
         Ok(())
     }
 }

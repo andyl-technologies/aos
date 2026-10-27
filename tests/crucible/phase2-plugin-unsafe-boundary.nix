@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuPluginUnsafeBoundary",
   taskIds ? ["T-PLUG-21"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = import ./_rust-module-source.nix {
@@ -277,53 +276,22 @@ in
   if failures != []
   then throw "crucible phase2 plugin unsafe-boundary check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-unsafe-boundary";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sqlite
         pkgs.grep
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-unsafe-boundary";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
             grep -RnlE 'unsafe[[:space:]]*(\{|fn|extern|impl|trait)' \
               crates/crucible/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
@@ -345,19 +313,33 @@ in
                 crates/crucible/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/endpoint_identity.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/installed_console.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/clock_domain_trace.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/console_output.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/devices/tests.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/test_support.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests/device_wait_observations.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests/native_block_wait.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests/network_custody.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests/registration_stubs.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/translation.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/tests/support.rs|\
                 crates/crucible/crucible-qemu-plugin/src/setup.rs|\
@@ -413,7 +395,12 @@ in
                 crates/crucible/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
                 crates/crucible/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/installed_console.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/clock_domain_trace.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/tests/native_block_wait.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/tests/support.rs)
                   ;;
                 *)
@@ -442,9 +429,12 @@ in
                 crates/crucible/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
                 crates/crucible/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/installed_console.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/setup.rs)
                   ;;
@@ -459,6 +449,7 @@ in
             while IFS= read -r file; do
               case "$file" in
                 crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
                 crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
                 crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
@@ -488,13 +479,8 @@ in
               esac
             done < "$TMPDIR/plugin-guest-write-files"
 
-            target_dir="$TMPDIR/crucible-plugin-unsafe-boundary-target"
             for filter in abi setup whitebox_ network_tx network_rx block_ ninep_ coverage_; do
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
+              crucible-cargo test \
                 -p crucible-qemu-plugin \
                 "$filter" \
                 -- --test-threads=1

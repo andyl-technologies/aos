@@ -7,12 +7,13 @@ use crucible_campaign::{
 };
 use crucible_control_api as campaign_output_api;
 use crucible_daemon::qemu_campaign_lifecycle::{
-    GuardedCampaignExploration, GuardedCampaignExplorationCompletion,
-    GuardedCampaignExplorationStrategy, GuardedCampaignFindingOracle,
-    GuardedCampaignFindingOracleError, GuardedCampaignFindingOracleEvaluation,
-    GuardedCampaignFindingOracleSource, GuardedCampaignTimeoutEvidence,
+    GuardedCampaignBranchAcceptance, GuardedCampaignExploration,
+    GuardedCampaignExplorationCompletion, GuardedCampaignExplorationStrategy,
+    GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
+    GuardedCampaignFindingOracleEvaluation, GuardedCampaignFindingOracleSource,
+    GuardedCampaignRunSink, GuardedCampaignRunSinkError, GuardedCampaignTimeoutEvidence,
     GuardedDefaultCampaignObservation, GuardedDefaultCampaignRun, GuardedDefaultCampaignRunRequest,
-    run_guarded_default_campaign,
+    run_guarded_default_campaign_with_sink,
 };
 
 enum QemuSearchSupplementalOracleSource {
@@ -319,7 +320,7 @@ fn run_local_qemu_search_scenario(
     .with_world_artifacts(lifecycle_artifacts.clone())
     .with_signal_artifacts(lifecycle_artifacts);
     let deployment = load_guarded_campaign_deployment(plan.campaign_deployment.as_deref())?;
-    let verify_determinism_findings = deployment.verify_determinism_findings;
+    let attempt_policy = deployment.attempt_policy;
     if deployment.resources.maximum_execution_quanta() < LIVE_EXPLORATION_QUANTUM_LIMIT {
         return Err(backend_error(format!(
             "campaign deployment admits {} execution quanta, below the search requirement of {}",
@@ -360,14 +361,18 @@ fn run_local_qemu_search_scenario(
         deployment.host,
         deployment.resources,
     )
-    .with_exploration(exploration)
-    .with_watch_frames();
-    request = apply_guarded_campaign_determinism_policy(request, verify_determinism_findings);
+    .with_exploration(exploration);
+    request = attempt_policy.apply(request);
     if let Some(oracle) = QemuSearchSupplementalOracle::from_plan(plan)? {
         request = request.with_supplemental_finding_oracle(Box::new(oracle));
     }
-    let campaign = run_guarded_default_campaign(request)
-        .map_err(|error| campaign_search_error("execute shared campaign search", error))?;
+    let mut progress = QemuSearchProgress::new(plan);
+    let campaign = run_guarded_default_campaign_with_sink(request, &mut progress);
+    if let Some(failure) = progress.failure.take() {
+        return Err(failure);
+    }
+    let campaign =
+        campaign.map_err(|error| campaign_search_error("execute shared campaign search", error))?;
 
     campaign_search_outcome(
         thin_plan,
@@ -375,9 +380,76 @@ fn run_local_qemu_search_scenario(
         ergonomics_plan,
         plan,
         backend,
-        &campaign,
+        (&campaign, progress),
         mutation,
     )
+}
+
+/// Search state folded from a campaign's streamed observations and branches.
+///
+/// It keeps the explored configuration identities and branch acceptances,
+/// both bounded by the exploration's state budget, and the deduplicated
+/// findings; the observations themselves are dropped after each call.
+struct QemuSearchProgress<'a> {
+    plan: &'a SearchDriverPlan,
+    root: Option<crucible_engine::ContentHash>,
+    explored: BTreeSet<crucible_engine::ContentHash>,
+    findings: Vec<QemuSearchFinding>,
+    branches: Vec<GuardedCampaignBranchAcceptance>,
+    failure: Option<CliError>,
+}
+
+impl<'a> QemuSearchProgress<'a> {
+    fn new(plan: &'a SearchDriverPlan) -> Self {
+        Self {
+            plan,
+            root: None,
+            explored: BTreeSet::new(),
+            findings: Vec::new(),
+            branches: Vec::new(),
+            failure: None,
+        }
+    }
+
+    fn fold_observation(
+        &mut self,
+        observation: &GuardedDefaultCampaignObservation,
+    ) -> Result<(), CliError> {
+        let configuration = observation.configuration().id();
+        self.root.get_or_insert(configuration);
+        self.explored.insert(configuration);
+        if let Some(finding) = campaign_search_finding(self.plan, observation)? {
+            let duplicate = self.findings.iter().any(|existing| {
+                existing.failure.configuration == finding.failure.configuration
+                    && existing.failure.fingerprint == finding.failure.fingerprint
+            });
+            if !duplicate {
+                self.findings.push(finding);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl GuardedCampaignRunSink for QemuSearchProgress<'_> {
+    fn on_observation(
+        &mut self,
+        observation: &GuardedDefaultCampaignObservation,
+    ) -> Result<(), GuardedCampaignRunSinkError> {
+        self.fold_observation(observation).map_err(|error| {
+            let message = error.to_string();
+            self.failure = Some(error);
+            GuardedCampaignRunSinkError::new(message)
+        })
+    }
+
+    fn on_branch_acceptance(
+        &mut self,
+        acceptance: GuardedCampaignBranchAcceptance,
+    ) -> Result<(), GuardedCampaignRunSinkError> {
+        self.branches.push(acceptance);
+        Ok(())
+    }
 }
 
 fn campaign_search_outcome(
@@ -386,29 +458,18 @@ fn campaign_search_outcome(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
     backend: &ResolvedLocalBackend,
-    campaign: &GuardedDefaultCampaignRun,
+    (campaign, progress): (&GuardedDefaultCampaignRun, QemuSearchProgress<'_>),
     mutation: Option<&crucible_engine::MaterializedSearchPlan>,
 ) -> Result<QemuSearchExecution, CliError> {
-    let root = campaign
-        .observations()
-        .first()
-        .ok_or_else(|| backend_error("campaign search returned no accepted observations"))?
-        .configuration()
-        .id();
-    let mut explored = BTreeSet::new();
-    let mut findings = Vec::new();
-    for observation in campaign.observations() {
-        explored.insert(observation.configuration().id());
-        if let Some(finding) = campaign_search_finding(plan, observation)? {
-            let duplicate = findings.iter().any(|existing: &QemuSearchFinding| {
-                existing.failure.configuration == finding.failure.configuration
-                    && existing.failure.fingerprint == finding.failure.fingerprint
-            });
-            if !duplicate {
-                findings.push(finding);
-            }
-        }
-    }
+    let QemuSearchProgress {
+        root,
+        explored,
+        findings,
+        branches,
+        ..
+    } = progress;
+    let root =
+        root.ok_or_else(|| backend_error("campaign search returned no accepted observations"))?;
     let reproductions = findings
         .iter()
         .map(|finding| {
@@ -427,7 +488,7 @@ fn campaign_search_outcome(
         campaign.exploration_completion() == Some(GuardedCampaignExplorationCompletion::Exhausted);
     let report = LocalDoubleSearchReport {
         root,
-        expansions: campaign.branch_acceptances().len(),
+        expansions: branches.len(),
         explored: explored.len(),
         failures: findings.len(),
         property_findings: findings
@@ -493,12 +554,12 @@ fn campaign_search_outcome(
             "campaign={} final_snapshot={} observations={} branch_requests={} completion={:?} backend=live",
             campaign.campaign().as_str(),
             campaign.final_snapshot(),
-            campaign.observations().len(),
-            campaign.branch_acceptances().len(),
+            campaign.observation_count(),
+            branches.len(),
             campaign.exploration_completion(),
         ),
     });
-    for (sequence, branch) in campaign.branch_acceptances().iter().enumerate() {
+    for (sequence, branch) in branches.iter().enumerate() {
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
             virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -517,8 +578,8 @@ fn campaign_search_outcome(
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "search-campaign");
     Ok(QemuSearchExecution {
         outcome,
-        materialized_states: campaign.observations().len() as u64,
-        expansions: campaign.branch_acceptances().len() as u64,
+        materialized_states: campaign.observation_count() as u64,
+        expansions: branches.len() as u64,
         findings: evidence,
         reproduction_artifacts: reproductions,
     })
@@ -748,10 +809,8 @@ fn campaign_search_finding(
         configuration,
     )
     .map_err(|error| backend_error(format!("capture campaign search finding: {error}")))?;
-    let event_frames = accepted_event_frames(accepted);
-    let coverage = crucible_engine::EventLogCoverageFeedback::from_event_log(
-        accepted.evidence().event_log_entries(),
-    );
+    let (event_frames, coverage) = accepted_event_frames(accepted.evidence())
+        .map_err(|error| backend_error(format!("read campaign search event evidence: {error}")))?;
     let evidence = if let Some(timeout) = timeout {
         let timeout = crucible_engine::FailureTimeoutRecord::new(
             crucible_engine::FailureTimeoutBudgetKind::ExecutionQuanta,
@@ -805,7 +864,8 @@ fn campaign_search_finding(
         resolved_effect_trace: accepted
             .evidence()
             .resolved_effect_trace()
-            .map(ToOwned::to_owned),
+            .map(crate::resolved_effect_trace_bundle)
+            .transpose()?,
         replay_closure: accepted.replay_closure().clone(),
     }))
 }
@@ -940,22 +1000,35 @@ fn timeout_failure_material(
     )
 }
 
-fn accepted_event_frames(accepted: &GuardedDefaultCampaignObservation) -> Vec<Vec<u8>> {
-    accepted
-        .evidence()
-        .event_log_entries()
-        .iter()
-        .map(|entry| {
-            canonical_streaming_event_frame_bytes(&campaign_output_api::StreamingEventFrame {
-                generation: 0,
-                cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
-                next_cursor: campaign_output_api::EventLogCursor::new(
-                    entry.sequence().saturating_add(1),
-                ),
-                event: campaign_output_api::open_set_event_envelope_from_entry(entry),
-            })
+/// Streams the accepted attempt's log once into its event frames and coverage.
+fn accepted_event_frames(
+    evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+) -> Result<
+    (Vec<Vec<u8>>, crucible_engine::EventLogCoverageFeedback),
+    crucible_daemon::AttemptEventLogError,
+> {
+    let mut frames = Vec::new();
+    let mut coverage = crucible_engine::EventLogCoverageFold::new();
+    evidence
+        .try_for_each_event_log_entry(|entry| {
+            frames.push(canonical_streaming_event_frame_bytes(
+                &campaign_output_api::StreamingEventFrame {
+                    generation: 0,
+                    cursor: campaign_output_api::EventLogCursor::new(entry.sequence()),
+                    next_cursor: campaign_output_api::EventLogCursor::new(
+                        entry.sequence().saturating_add(1),
+                    ),
+                    event: campaign_output_api::open_set_event_envelope_from_entry(entry),
+                },
+            ));
+            coverage.observe(entry);
+            Ok::<(), std::convert::Infallible>(())
         })
-        .collect()
+        .map_err(|error| match error {
+            crucible_daemon::AttemptEventLogVisitError::Log(error) => error,
+            crucible_daemon::AttemptEventLogVisitError::Visit(never) => match never {},
+        })?;
+    Ok((frames, coverage.finish()))
 }
 
 fn accepted_stop_label(stop: &StopOutcome) -> String {

@@ -11,8 +11,10 @@ use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 mod beam;
 mod branch;
 mod candidate_generation;
+mod corpus_mutation;
 
-pub(super) use beam::BeamProjectionCacheEntry;
+#[cfg(test)]
+pub(super) use beam::BeamPageWork;
 pub(super) use candidate_generation::*;
 
 const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
@@ -27,22 +29,53 @@ struct FiniteExpansionInputs {
     completed_visits: u64,
 }
 
-struct BranchCreditedObservation {
-    observation: ObservationId,
-    edge: crate::BranchEdgeId,
-    coverage: crate::CoverageProjectionId,
-}
-
-struct BranchEdgeVisitEvidence {
+/// Per-edge completed visits and priors streamed from one credit index.
+struct BranchCreditFold {
     statistics: crate::BranchEdgeVisitStatistics,
     prior_weights: BTreeMap<crate::BranchEdgeId, u64>,
-    observations: Vec<BranchCreditedObservation>,
+    guidance: BranchGuidanceTerms,
 }
 
+/// Per-edge guidance terms streamed alongside completed visits.
 #[derive(Default)]
-struct BranchCoverageGuidance {
+struct BranchGuidanceTerms {
     novelty_events: BTreeMap<crate::BranchEdgeId, u64>,
     rarity_weights: BTreeMap<crate::BranchEdgeId, u64>,
+    finding_events: BranchFindingEvents,
+    objective_reward_micros: BTreeMap<crate::BranchEdgeId, i64>,
+}
+
+/// Policy inputs shared by every branch point of one projection batch.
+struct BranchGuidanceBasis<'a> {
+    policy: &'a crate::CampaignPolicy,
+    policy_id: crate::CampaignPolicyId,
+    finding_occurrences: BranchFindingOccurrences,
+}
+
+// Credit folds reread records shared across credits and branch points; a miss
+// re-derives the same value, so a fixed capacity bounds memory without
+// changing any projection.
+const BRANCH_PROJECTION_CACHE_ENTRIES: usize = 4_096;
+
+/// Bounded memo of records shared across one batch's credit folds.
+struct BranchCreditFoldCaches {
+    priors: FifoCache<AttemptId, AttemptProposalPrior>,
+    requests: FifoCache<BranchRequestId, Arc<BranchRequest>>,
+    coverage_terms: FifoCache<crate::CoverageProjectionId, (u64, u64)>,
+    frequencies: FifoCache<ContentId, u64>,
+    rewards: FifoCache<ObservationId, i64>,
+}
+
+impl BranchCreditFoldCaches {
+    fn new() -> Self {
+        Self {
+            priors: FifoCache::new(BRANCH_PROJECTION_CACHE_ENTRIES),
+            requests: FifoCache::new(BRANCH_PROJECTION_CACHE_ENTRIES),
+            coverage_terms: FifoCache::new(BRANCH_PROJECTION_CACHE_ENTRIES),
+            frequencies: FifoCache::new(BRANCH_PROJECTION_CACHE_ENTRIES),
+            rewards: FifoCache::new(BRANCH_PROJECTION_CACHE_ENTRIES),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -62,15 +95,6 @@ pub(super) struct PlannerCandidateProjectionCache {
     prior_normalization_visits: usize,
 }
 
-#[derive(Default)]
-struct BranchEdgeProjectionWork {
-    total_credits: u64,
-    evidence_bytes: usize,
-    prior_cache: BTreeMap<AttemptId, AttemptProposalPrior>,
-    prior_request_cache: BTreeMap<BranchRequestId, Arc<BranchRequest>>,
-    charged_prior_records: BTreeSet<ContentId>,
-}
-
 fn execution_basis_is_guidance_eligible(
     policy: &crate::CampaignPolicy,
     cause: BranchRequestCause,
@@ -85,8 +109,7 @@ fn execution_basis_is_guidance_eligible(
 }
 
 type BranchFindingEvents = BTreeMap<crate::BranchEdgeId, BTreeMap<crate::FindingKind, u64>>;
-type BranchPointFindingEvents = BTreeMap<crate::BranchPointId, BranchFindingEvents>;
-type BranchObjectiveRewards = BTreeMap<crate::BranchPointId, BTreeMap<crate::BranchEdgeId, i64>>;
+type BranchFindingOccurrences = BTreeMap<ObservationId, BTreeMap<crate::FindingKind, u64>>;
 
 struct MixtureComponentState {
     values: Vec<ChoiceValue>,
@@ -1205,10 +1228,7 @@ impl CampaignRepository {
                 return Err(integrity("corpus-mutation-proposal-history-mismatch"));
             }
         }
-        Ok(self
-            .corpus_mutation_candidates(request, domain, view, None)?
-            .into_iter()
-            .find(|candidate| !proposed.contains(candidate)))
+        self.first_unproposed_corpus_mutation(request, domain, view, None, &proposed)
     }
 
     fn proposed_values_before(
@@ -1243,112 +1263,6 @@ impl CampaignRepository {
             }
         }
         Ok(proposed)
-    }
-
-    fn corpus_mutation_candidates(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        view: CandidateViewRoots,
-        additional_selection: Option<SelectionId>,
-    ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
-        let generator = request
-            .source()
-            .generator()
-            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-        let spec = self.read_generator(generator.content_id())?;
-        let (
-            CandidateGeneratorAlgorithm::MutateNearCorpus { maximum_distance },
-            crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
-            ChoiceDomain::Integer(integer),
-        ) = (spec.algorithm(), spec.implementation_version(), domain)
-        else {
-            return Err(integrity("corpus-mutation-generator-basis-mismatch"));
-        };
-        if *maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
-            || request.budget().maximum_proposals() > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS
-        {
-            return Err(integrity("corpus-mutation-generator-owner-limit"));
-        }
-
-        let index = self.merkle.get(
-            view.observations,
-            branch_credit_index_key(request.branch_point()),
-        )?;
-
-        let mut input_bytes = 0_usize;
-        let mut selections = Vec::new();
-        if let Some(index) = index {
-            let entry_count = self.merkle.inspect_shallow(index)?.entry_count();
-            if entry_count > crate::CORPUS_MUTATION_GENERATOR_MAX_CREDITS {
-                return Err(integrity("corpus-mutation-generator-credit-limit"));
-            }
-            let limit = usize::try_from(entry_count)
-                .map_err(|_| integrity("corpus-mutation-generator-credit-limit"))?;
-            let page = self.merkle.scan(index, None, limit)?;
-            if page.next_after().is_some() || page.entries().len() != limit {
-                return Err(integrity("corpus-mutation-credit-index-scan-mismatch"));
-            }
-            for (key, content) in page.entries() {
-                let credit = self.read_expansion_credit(*content)?;
-                input_bytes =
-                    charge_corpus_mutation_input(input_bytes, credit.canonical_bytes().len())?;
-                if credit.id().as_hash() != *key || credit.branch_point() != request.branch_point()
-                {
-                    return Err(integrity("corpus-mutation-credit-index-mismatch"));
-                }
-                let observation = self.decode_observation(credit.observation().content_id())?;
-                input_bytes =
-                    charge_corpus_mutation_input(input_bytes, observation.canonical_bytes().len())?;
-                if self.merkle.get(
-                    view.corpus,
-                    map_key_hash("corpus.configuration", observation.child().as_hash()),
-                )? != Some(observation.child_content().content_id())
-                {
-                    return Err(integrity("corpus-mutation-observation-is-not-retained"));
-                }
-                let attempt = self.read_attempt(observation.attempt().content_id())?;
-                input_bytes =
-                    charge_corpus_mutation_input(input_bytes, attempt.canonical_bytes().len())?;
-                let AttemptStart::Branch { selection, .. } = attempt.start() else {
-                    continue;
-                };
-                selections.push(selection);
-            }
-        }
-        if let Some(selection) = additional_selection {
-            if selections.len() >= crate::CORPUS_MUTATION_GENERATOR_MAX_CREDITS as usize {
-                return Err(integrity("corpus-mutation-generator-credit-limit"));
-            }
-            selections.push(selection);
-        }
-
-        let resolved = self.resolve_selections(&selections)?;
-        let mut anchors = BTreeSet::new();
-        for resolved in resolved {
-            let selection = resolved.selection();
-            let crate::SelectionOrigin::CampaignBranch { branch_point, .. } = selection.origin()
-            else {
-                return Err(integrity("corpus-mutation-selection-origin-mismatch"));
-            };
-            if branch_point != request.branch_point() {
-                continue;
-            }
-            if selection.opportunity() != request.opportunity()
-                || selection.domain() != request.domain()
-            {
-                return Err(integrity("corpus-mutation-selection-basis-mismatch"));
-            }
-            let ChoiceValue::Integer(value) = selection.value() else {
-                return Err(integrity("corpus-mutation-selection-is-not-integer"));
-            };
-            anchors.insert(*value);
-        }
-
-        let maximum_candidates = usize::try_from(request.budget().maximum_proposals())
-            .map_err(|_| integrity("corpus-mutation-generator-proposal-limit"))?;
-        corpus_mutation_integer_candidates(integer, &anchors, *maximum_distance, maximum_candidates)
-            .map(|values| values.into_iter().map(ChoiceValue::Integer).collect())
     }
 
     fn weighted_categorical_candidates(

@@ -15,16 +15,16 @@ pub enum ExactCheckpointSemanticObjectRole<'a> {
     Schedule,
     /// Canonical scheduler continuation.
     Scheduler,
-    /// Ordered scheduler event-log segment.
-    EventLogSegment {
-        /// Position in the ordered event log.
+    /// Sorted signal-plan artifact.
+    SignalArtifact {
+        /// Position in the sorted signal-artifact catalog.
         index: usize,
         /// Authenticated content identity.
         identity: ContentHash,
     },
-    /// Sorted signal-plan artifact.
-    SignalArtifact {
-        /// Position in the sorted signal-artifact catalog.
+    /// Sealed resolved-effect trace segment referenced by the fault continuation.
+    FaultTraceSegment {
+        /// Position in the sorted trace-segment catalog.
         index: usize,
         /// Authenticated content identity.
         identity: ContentHash,
@@ -123,15 +123,15 @@ pub(super) fn visit_authenticated_semantic_objects(
             ExactCheckpointSemanticObjectRole::Scheduler,
             closure.scheduler,
         )?;
-        for (index, identity) in closure.event_log_segments.iter().copied().enumerate() {
-            deliver(
-                ExactCheckpointSemanticObjectRole::EventLogSegment { index, identity },
-                identity,
-            )?;
-        }
         for (index, identity) in closure.signal_artifacts.iter().copied().enumerate() {
             deliver(
                 ExactCheckpointSemanticObjectRole::SignalArtifact { index, identity },
+                identity,
+            )?;
+        }
+        for (index, identity) in closure.fault_trace_segments.iter().copied().enumerate() {
+            deliver(
+                ExactCheckpointSemanticObjectRole::FaultTraceSegment { index, identity },
                 identity,
             )?;
         }
@@ -230,8 +230,8 @@ fn read_unique_semantic_objects(
         closure.lifecycle_state,
         closure.fault_checkpoint,
     ]);
-    identities.extend(closure.event_log_segments.iter().copied());
     identities.extend(closure.signal_artifacts.iter().copied());
+    identities.extend(closure.fault_trace_segments.iter().copied());
     identities.extend(targets.iter().flatten().map(|target| target.snapshot));
     identities.extend(
         closure
@@ -242,23 +242,29 @@ fn read_unique_semantic_objects(
     identities.sort_unstable();
     identities.dedup();
 
+    // Event-log segments (RFC-0020 CMEAS-28) and block overlay chunks
+    // (CMEAS-33) are named by reference: their lengths count against the
+    // closure quota, but they are read one at a time, and authenticated, only
+    // by a consumer of the log or a block-device restore.
+    let mut segments = closure.event_log_segments.clone();
+    segments.extend(closure.block_overlay_chunks.iter().copied());
+    segments.sort_unstable();
+    segments.dedup();
+    segments.retain(|segment| identities.binary_search(segment).is_err());
+
     let mut consumed = 0_u64;
+    for identity in identities.iter().chain(&segments) {
+        consumed = consumed
+            .checked_add(inventory_length(repository, *identity)?)
+            .filter(|total| *total <= byte_limit)
+            .ok_or_else(|| io::Error::other("semantic object aggregate exceeds its byte limit"))?;
+    }
+
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(identities.len())
         .map_err(|_| io::Error::other("allocate semantic object catalog"))?;
     for identity in identities {
-        let length = repository
-            .objects
-            .binary_search_by_key(&identity, |object| object.identity)
-            .ok()
-            .and_then(|index| repository.objects.get(index))
-            .ok_or_else(|| io::Error::other("semantic object is absent from repository inventory"))?
-            .length;
-        consumed = consumed
-            .checked_add(length)
-            .filter(|total| *total <= byte_limit)
-            .ok_or_else(|| io::Error::other("semantic object aggregate exceeds its byte limit"))?;
         let bytes = read_authenticated_object(repository, identity, boundary, open)?;
         objects.push(AuthenticatedSemanticObject { identity, bytes });
     }
@@ -266,13 +272,26 @@ fn read_unique_semantic_objects(
     Ok(objects)
 }
 
+fn inventory_length(
+    repository: &ExactCheckpointRepositoryBinding,
+    identity: ContentHash,
+) -> io::Result<u64> {
+    repository
+        .objects
+        .binary_search_by_key(&identity, |object| object.identity)
+        .ok()
+        .and_then(|index| repository.objects.get(index))
+        .map(|object| object.length)
+        .ok_or_else(|| io::Error::other("semantic object is absent from repository inventory"))
+}
+
 fn closure_object_reference_count(
     closure: &ExactCheckpointClosureRecord,
     targets: &[Option<super::ExactCheckpointTargetRecord>],
 ) -> Result<usize, ExactCheckpointExecutionSourceError> {
     6_usize
-        .checked_add(closure.event_log_segments.len())
-        .and_then(|count| count.checked_add(closure.signal_artifacts.len()))
+        .checked_add(closure.signal_artifacts.len())
+        .and_then(|count| count.checked_add(closure.fault_trace_segments.len()))
         .and_then(|count| count.checked_add(targets.len()))
         .and_then(|count| count.checked_add(closure.failed_host_io.len()))
         .ok_or_else(|| io::Error::other("semantic object reference count overflow").into())

@@ -73,6 +73,16 @@ const PACK_INDEX_INTERRUPTION_TEST_NAME: &str =
     "content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries";
 #[cfg(feature = "destructive-recovery-faults")]
 const PACK_INDEX_INTERRUPTION_CHILD_EXIT_CODE: i32 = 91;
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_JOURNAL_TAIL_TRIGGER: &str = "crucible.destructive-recovery.pack-index-journal-tail";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_JOURNAL_TAIL_TEST_NAME: &str =
+    "content_store::tests::packed::pack_journal_tail_interruption_discards_the_uncommitted_put";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_COMPACTION_TRIGGER: &str = "crucible.destructive-recovery.pack-index-compaction";
+#[cfg(feature = "destructive-recovery-faults")]
+const PACK_COMPACTION_TEST_NAME: &str =
+    "content_store::tests::packed::pack_compaction_interruption_keeps_the_previous_root";
 
 // Cross-instance directory fences can include filesystem sync work after the
 // lock is released. Leave enough headroom for highly parallel test runners.

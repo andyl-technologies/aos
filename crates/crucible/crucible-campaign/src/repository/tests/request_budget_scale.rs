@@ -246,15 +246,15 @@ fn invocation_head_anchors_do_not_trust_a_new_missing_dependency() {
             &BlobHandle::from_bytes(CanonicalFrontierPlanner::dependency_lock_bytes().to_vec()),
         )
         .expect("dependency");
-    // A conservative cached bound must fall back to the exact union near the
-    // limit, not reject a small valid invocation or discard the global bound.
+    // A large conservative checkpoint count must not reject a small valid
+    // invocation; only the invocation's own anchored closure is authenticated.
     repository
         .validated_heads
         .lock()
         .expect("head cache")
         .get_mut(&head.snapshot_id().content_id())
         .expect("validated head")
-        .closure_objects = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        .closure_objects = usize::MAX / 2;
     repository
         .prepare_planner_invocation(
             "missing-basis",

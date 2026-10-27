@@ -8,9 +8,17 @@
   e2eDeterminism ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  # The campaign-mode guest runs the same prebuilt suite as the host gate.
+  vmRuntime = testGate.mkCrucibleVmRuntime {
+    src = crucibleSrc;
+    subset = testGate.mkCrucibleTestSubset {
+      pname = "crucible-fleet-equivalence-tests";
+      requests = ["crucible-engine"];
+      targets = ["test:gate_fleet_equivalence"];
+    };
+  };
 
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -356,9 +364,8 @@ in
         timeout = 10800;
         memoryMiB = 8192;
         varSizeMiB = 16384;
-        runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs;
-        runtimeClosures = [crucibleSrc cargoDeps e2eDeterminism] ++ dependencies;
-        runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
+        runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.sed];
+        runtimeClosures = vmRuntime.closures ++ [e2eDeterminism] ++ dependencies;
         runtimeScript = ''
           set -eu
 
@@ -366,30 +373,19 @@ in
           test "$(grep -Fxc PASS "$e2e_result")" -eq 1
           test "$(grep -Fxc 'gate=gate:e2e-determinism' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'campaign_mode=${campaignComposition.mode}' "$e2e_result")" -eq 1
-          test "$(grep -Fxc 'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' "$e2e_result")" -eq 1
+          test "$(grep -Fxc 'campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'native_qemu_execution=true' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'artifact_replay=true' "$e2e_result")" -eq 1
 
-          cp -R ${crucibleSrc} "$TMPDIR/source"
-          chmod -R u+w "$TMPDIR/source"
-          cd "$TMPDIR/source/crates"
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          listed=$(cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
+          ${vmRuntime.script}
+          cd crates
+          listed=$(crucible-cargo test \
             -p crucible-engine \
             --test gate_fleet_equivalence \
             -- --list --format terse)
           test "$(printf '%s\n' "$listed" | grep -c ': test$')" -eq 4
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
+          crucible-cargo test \
             -p crucible-engine \
             --test gate_fleet_equivalence \
             -- --test-threads=1
@@ -420,9 +416,8 @@ in
         '';
       }
   else
-    pkgs.mkDerivation {
+    testGate.mkCrucibleTestGate {
       pname = "crucible-phase7-fleet-equivalence";
-      version = "0";
       src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
@@ -432,57 +427,22 @@ in
           pkgs.sqlite
           pkgs.coreutils
           pkgs.grep
-          pkgs.rust
           pkgs.sed
         ]
         ++ dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-fleet-equivalence";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            listed=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
+            listed=$(crucible-cargo test \
               -p crucible-engine \
               --test gate_fleet_equivalence \
               -- --list --format terse)
             test "$(printf '%s\n' "$listed" | grep -c ': test$')" -eq 4
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-phase7-fleet-equivalence-target" \
+            crucible-cargo test \
               -p crucible-engine \
               --test gate_fleet_equivalence \
               -- --test-threads=1

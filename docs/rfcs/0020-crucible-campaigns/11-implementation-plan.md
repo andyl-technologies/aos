@@ -1,10 +1,30 @@
 # 11 — Implementation plan and merge gates
 
-This RFC was initially published for review without implementation. Its
-implementation now continues in the same draft pull request so requirements,
-gates, and code evolve together. Checked tasks have executable evidence in the
-tree; incomplete production gates remain unchecked. No partial phase becomes
-the default campaign path until its listed gates pass.
+This RFC was initially published for review without implementation. Incremental
+implementation merged in [PR #194](https://github.com/andyl-technologies/aos/pull/194).
+Remaining implementation and qualification continue in follow-up work, with
+requirements, gates, and code reviewed together. Checked tasks have executable
+evidence in the tree; incomplete production gates remain unchecked. No partial
+phase becomes the default campaign path until its listed gates pass.
+
+## Continuation after PR #194
+
+The merged implementation and its bounded pre-merge qualification results
+establish the starting point below. This map does not close unchecked tasks or
+replace the [automated release contract](14-automated-release-validation.md).
+The task list and requirement traceability remain authoritative for completion.
+
+| Area | Established evidence | Remaining work |
+| --- | --- | --- |
+| Core package and execution | Packaged boot, CLI, two-node HTTP, native checkpoint, Rust aggregate, license boundary, and source co-retention passed. | Complete T-CAM-9.1's campaign-disabled/enabled gate coverage and the release profiles. |
+| Guest choices and checkpoint lifecycle | The complete public packaged lifecycle passed on signed source `678cb854`; selected-state promotion remains unqualified. | Qualify packaged checkpoint/restart choices, storage recovery, and promotion/restore under T-CAM-2.8, T-CAM-5.8, and T-CAM-9.3. |
+| Native hot fork | The VMState-only fixture passed three children, two retained-source restorations, and zero thread/descriptor leaks. | Complete the supported-product inventory, exact/thin equivalence, scaling, deep-template, pressure, and multi-node matrices in Phases 6 and 7. This fixture does not qualify the full product profile. |
+| Product and measurement integration | The two-node HTTP fixture completed through the packaged public campaign surface. | T-CAM-3.6's known-finding integration and T-CAM-8.6's five-VM Envoy failover/recovery remain unqualified. |
+| Performance | Focused regression checks cover assertion-prefix and sparse-marker evaluation. | T-CAM-9.2 still requires the measured reference baseline, million-admission evidence, and complete scaling gate. |
+| Release acceptance | Gate implementations and evidence validators are present. | Complete the remaining portability, boundary, operational, and same-host determinism evidence in Phase 9 and §14 before defaults or release acceptance change. |
+
+Complete remaining cutovers through the shared campaign owners and remove
+obsolete routes as each replacement lands.
 
 ## 11.1 Sequencing principles
 
@@ -96,10 +116,11 @@ and derivation retry after the target advances. Reopening the same immutable
 store reconstructs both histories and their distinct lifecycle states.
 
 The complete gate runs the campaign crate suite and the required exact model
-measurement and raw replay evidence tests. It can be qualified independently:
+measurement and raw replay evidence tests. It can be qualified independently
+from the repository root in `nix develop` or its direnv environment:
 
-```text
-bash ./aos-dev --release build check \
+```sh
+bash tools/dev/aos-dev --release build check \
   crucible.phase1.gates.campaignModel.isolatedGate --no-out-link
 ```
 
@@ -218,7 +239,8 @@ stable runtime opportunity, stops discovery without replying, applies exact
 defaults for deterministic continuation, and consumes authenticated campaign
 selections at the matching thin-replay boundary. Checkpoint capture includes
 the guarded choice replay closure; the production exact-checkpoint store writes
-that closure as a content-addressed child and validates it on load.
+that closure's root and frames as content-addressed children, authenticates the
+root and frame identities on load, and leaves frame reads to replay validation.
 
 The process-neutral `CRUCSCP4` catalog-plan codec freezes the sealed
 descriptor body, including exact expectations, limits, registered identifiers,
@@ -339,10 +361,10 @@ Primary crates: `crucible-engine`, `crucible-guest`, `crucible-qemu-plugin`,
   pre-failure, last-successful-measurement, post-failure, and additional exact
   checkpoint roles. The daemon authenticates at most 4,096 exact candidates
   and deterministically selects nearest event boundaries with content-address
-  tie-breaking. Crucible minimization is bounded by 4,096 candidates and
-  128 MiB of conservative candidate-copy work; its seed/bounds, dense candidate
-  history, observed fingerprints, accepted result, and final replay state are
-  retained in verifier-backed reproduction schema v2. The repository preflights
+  tie-breaking. Crucible minimization is bounded by 4,096 compact candidate
+  descriptors, each materialized only for its replay; its seed/bound, dense
+  candidate history, observed fingerprints, accepted result, and final replay
+  state are retained in verifier-backed reproduction schema v3. The repository preflights
   original/artifact bases before writes, atomically clusters occurrences and
   role sets, and revalidates the complete contract on import/restart. Paged
   proof-authenticated finding and finding-object queries are implemented. The
@@ -354,6 +376,23 @@ Primary crates: `crucible-engine`, `crucible-guest`, `crucible-qemu-plugin`,
   guest/model raw-evidence replay, and an objective driven only by the verified
   retained publication. The task remains open for the packaged known-finding
   integration gate.
+- [ ] **T-CAM-3.7** Replace the condition prefix's complete histories with the
+  bounded fold of §15.4: declaration-catalog folds, a tail held until every
+  consumer advances, deadline evaluation from the interval snapshot, and
+  scheduler checkpoints carrying fold state and chain position instead of
+  retained entries. Scheduler continuations already carry sealed-segment
+  references and the open tail instead of entries (T-CAM-4.16); restore still
+  refolds the complete condition prefix from those segments.
+- [ ] **T-CAM-3.8** Convert named host predicates to pure accumulators with
+  bounded canonical state owned and checkpointed by the assertion evaluator.
+- [ ] **T-CAM-3.9** Compile console patterns at validation into bounded
+  deterministic byte automata with every-match-end semantics, reject
+  constructs a byte automaton cannot decide causally, and checkpoint one
+  automaton state per declared node and pattern.
+- [ ] **T-CAM-3.10** Publish measurement replay evidence v3 as a manifest of
+  ordered segment leaves, verify and rederive measurements in one forward pass
+  that folds samples into per-metric aggregates (measurement evaluation v3),
+  and stream the seal-time assertion check and reproduction trace hash.
 
 **Gates:** `gate:campaign-model`, `gate:campaign-replay`, guest protocol
 extensions under `gate:abi-conformance`.
@@ -781,14 +820,15 @@ Primary crates: `crucible-engine`, `crucible-store`, `crucible-control-api`, `cr
   executable finite children by exact weighted virtual finish time, suppresses
   duplicate values while advancing their provenance, and enforces 512-value,
   8,192-work-unit, and 64-level bounds. Implementation-version 10
-  `mutate_near_corpus` derives exact
-  retained completed integer selections at the request's branch point, emits
-  canonical lower-then-upper legal-step neighbors, and uses the immutable
-  request's exact previously proposed value set as its portable continuation so
-  corpus growth cannot reinterpret prior proposals. It enforces 4,096-credit,
-  4,096-distance, 4,096-proposal, 65,536-work-unit, 128-MiB canonical credit-
-  body, and existing 4,096-ID/128-MiB selection-resolution bounds during local
-  acceptance, import, and restart. It waits for another completed credit when
+  `mutate_near_corpus` streams exact
+  retained completed integer selections at the request's branch point from the
+  value-ordered direct-selection index, emits canonical lower-then-upper
+  legal-step neighbors, and uses the immutable request's exact previously
+  proposed value set as its portable continuation so corpus growth cannot
+  reinterpret prior proposals. It stops at the first unproposed candidate,
+  enforces 4,096-distance, 4,096-proposal, per-page 128-MiB canonical
+  observation and attempt bodies, and per-page 4,096-ID/128-MiB
+  selection-resolution bounds during local acceptance, import, and restart. It waits for another completed credit when
   the current retained corpus has no unproposed mutation and closes only at its
   proposal budget. Implementation-version 16 `progressive_integer` uses the
   exact stratified prefix, checked visit thresholds, 4,096-strata/proposal
@@ -1334,14 +1374,20 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   the same candidate sequence, preserve the target signature, and retain the
   selected schedule length, start, end, basis, seed, candidate bounds, and every
   replay outcome in the current minimization policy and transcript.
-- [ ] **T-CAM-4.8** Automate the packaged local campaign lifecycle through lazy
+- [x] **T-CAM-4.8** Automate the packaged local campaign lifecycle through lazy
   widening, additive finite branching, edge deduplication, live status,
   explanation, bounded pressure, pause/restart/resume, steering, and graceful
   stop using only public interfaces.
-  Existing coverage proves exact selection of the bounded
-  interesting window, immutable-prefix confinement, deterministic rerun, and
-  signature-preserving shrink. The task remains open for the complete packaged
-  integration gate.
+  `gate:campaign-packaged-lifecycle` passed on signed source `678cb854` through
+  the packaged public CLI and real guest choices. It selected FAST and SAFE
+  branches, verified finite cardinality two and two deduplicated edges, observed
+  live status and request explanations, and exercised proposal/attempt limits
+  of three/one through terminal success. Pause and service restart preserved
+  the exact paused snapshot before resume; imported-policy steering and graceful
+  stop produced completed status and its report. The exact test passed in
+  1,027.11 seconds with the original 3,600-second outer and 600-second selectable
+  and branch observation guards. This qualification does not close checkpoint
+  promotion, storage recovery, or other campaign gates.
 - [x] **T-CAM-4.9** Implement the authoritative language-neutral
   `CampaignService`, pure `PlannerEngine`, and local `ExecutorService` schemas;
   provide direct and loopback-RPC adapters, golden vectors, fake components,
@@ -1636,6 +1682,117 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   authenticated membership and result-locator indexes; promote only after ref
   CAS, retain full fail-closed validation for imported or restarted heads, and
   exercise 10,000 mixed request/control mutations plus deep exact replay.
+  Complete validation is one inductive walk that authenticates each
+  transition's closure delta, so its resident state does not grow with
+  ancestry length.
+- [ ] **T-CAM-4.11** Retain attempt logs as sealed, chained segments in
+  quota-accounted attempt storage with an open tail, remove the whole-log entry
+  and byte bounds, enforce the operational `maximum_event_log_bytes` limit,
+  publish segments as trace leaves, and resume from chain positions.
+  Executor and observer logs seal into per-attempt directories, and
+  prepared-result journals own copies of the segments their results
+  reference. Checkpoint- and fork-offset seals and chain-position resume
+  remain open; scheduler continuations reference the scheduler log's sealed
+  segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
+  size only, checkpoints carry trace positions, and exact closures retain the
+  referenced trace segments (CCOMP-31).
+- [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
+  objective and observation-stop verification, remote resume, hot-fork
+  materialization, and the campaign trace protocol to segment-by-segment
+  readers. Finding replay captures reference side-log and side-trace
+  segments as manifest leaves under a per-finding run-length allowance, with
+  no whole-trace bound, and CLI midpoint and exact-bundle checks stream them. Campaign replay closures are framed
+  version 2 objects: exact checkpoints keep the root and frames as separate
+  children loaded lazily, captures keep them as leaves, and the resume request
+  carries each frame as its own element. The remaining readers remain open.
+- [ ] **T-CAM-4.13** Make replay-target matching, network-fault discovery,
+  guest-marker observation, console matching, scheduler staging, schedule
+  identity, stop checks, imported I/O inventory, and fault accounting
+  proportional to each quantum's appended work, and prove flat memory and
+  per-quantum time over a long-horizon attempt with a deep selected branch.
+  The production fault runtime charges each referenced event once against
+  cumulative counters and a history chain digest, retains only the events
+  that block-recovery and 9p-visibility consumers' reported subscriptions,
+  active persistent recovery actions, or the newest emitted tick can still
+  select, and checkpoints that window in production fault-runtime version 8
+  (CMEAS-26). The issued QEMU action ledger still grows with the run until
+  the plugin reports rule retirement.
+- [ ] **T-CAM-4.14** Retain reproduction schedules as sealed schedule
+  segments under a manifest, reference them from campaign reproduction
+  records, prepared-result journals, and the finding and occurrence object
+  services, and authenticate each segment before decoding (CCOMP-32).
+  Executor-side schedule residency backed by stored segments remains open.
+- [ ] **T-CAM-4.15** Reference replayed attempt logs from failure-triage
+  replay evidence by manifest, name their segments as owned children of the
+  campaign triage record, serve them through the occurrence-object service,
+  retain them with prepared results, and authenticate and stream them in
+  every decoder and CLI findings ledger (CMEAS-27). CLI live search and fuzz
+  paths and the CLI report projection still hold resident logs.
+- [ ] **T-CAM-4.16** Seal the single scheduler's event log into
+  attempt-format segments, carry segment references and the open tail in
+  single-scheduler continuation version 9, retain the referenced segments as
+  exact-closure objects charged by referenced length, and stream them in
+  restore, hot-fork admission, replay proofs, guarded replay planning, and
+  finding checkpoint authentication (CCOMP-33, CMEAS-28). The live log and its
+  condition prefix still hold complete histories in memory until T-CAM-3.7.
+- [x] **T-CAM-4.17** Stream the guarded campaign owner's accepted
+  observations, exploration branch acceptances, and watch frames to a caller
+  sink while each attempt's segments are live, keep only counts, the terminal
+  observation, and the resume source observation in the result, port the CLI
+  run, replay, resume, search, and fuzz consumers to sinks, and make the
+  funded choice budget the run's only choice bound (CMEAS-29).
+- [x] **T-CAM-4.18** Decode a selected continuation's intermediate origins one
+  at a time against the terminal origin, retain each matching origin as a
+  prefix length rebuilt over shared decision storage, release its transient
+  decode charge, and port thin replay, continuation validation, and finding
+  replay to rebuild origins on demand (CCOMP-34).
+- [x] **T-CAM-4.20** Retain only the scheduler's search frontiers at its
+  current boundary, count the retired ones so per-quantum discovery names its
+  frontiers by sequence, compare a frontier's time and parent before
+  normalizing it during branch authentication, and name each retained parent
+  by prefix length and identity in single-scheduler continuation version 10
+  (CCOMP-36).
+- [x] **T-CAM-4.21** Fold live fuzz attempt logs into distinct coverage
+  sets, store admitted corpus entries' artifacts, closures, and coverage sets
+  at admission under corpus schema 2, keep a fixed resident handle per entry,
+  read payloads back only for the chosen parent, and sample guidance from
+  retained fingerprints (CMEAS-31).
+- [x] **T-CAM-4.22** Maintain a saturating global coverage-identity frequency
+  index in the coverage root at each canonical observation, and fold branch
+  visits, priors, coverage novelty and rarity, finding occurrences, and
+  objective rewards in one streamed pass over each branch point's credit
+  index with `max(1, Q / f)` rarity, so branch guidance never scans the
+  observation root or buffers credited observations (CCOMP-37).
+- [x] **T-CAM-4.24** Keep block overlay pages in an unnamed, quota-accounted
+  run-directory page store shared by hot forks, name 4 MiB content-addressed
+  overlay chunks with page bitmaps in block snapshot version 7, list the
+  chunk objects in production exact closure version 11, and copy,
+  authenticate, and restore them one chunk at a time (CMEAS-33, CCOMP-39).
+  The base image itself remains resident.
+- [x] **T-CAM-4.28** Seal a live session's subscriber hub and debug history
+  into the quantum loop's segment store with a bounded resident tail and
+  per-segment class counts, replay subscribers one segment at a time, extend
+  the breakpoint condition prefix by each appended batch, keep debug
+  coordinates only where they change, and collect the complete log only for
+  debugger commands that need it (CCOMP-42). The condition prefix still
+  retains its history until T-CAM-3.7, and the debugger's time-travel engine
+  API still takes a complete log and per-event coordinate map.
+- [x] **T-CAM-4.29** Parse the `ResumeSession` body as it streams in. Check
+  each closure frame and observation payload against its declared size
+  before decoding its hex, and charge the model fields to one shared
+  allowance. Decode each payload straight into its field and hash the
+  observation identity incrementally. Reject read-only mode before reading
+  the body, and bound every other unary control body per route (CMEAS-36).
+  The decoded closure and observation evidence keep their resume limits
+  until staged transport and cursor-driven consumers replace them.
+- [x] **T-CAM-4.30** Stream each node's QEMU snapshot envelope one nested
+  owner at a time into a staged, hashed object in the checkpoint object
+  directory. Stage failed-node host-I/O continuations the same way. Publish
+  each staged file by authenticated link, and check snapshot canonicality
+  against a streamed re-encoding instead of a second envelope copy
+  (CMEAS-37). Envelope bytes and identities are unchanged. Block page sets
+  and the 9p tree stay inline until they become content-addressed page
+  objects.
 
 **Gates:** `gate:branch-point-model`, `gate:lazy-frontier`,
 `gate:attempt-idempotence`, `gate:campaign-replay`,
@@ -1685,7 +1842,11 @@ Primary crates: `crucible-store` and `crucible-control-server`/`crucible-daemon`
 - [x] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
   policies, durability receipts, pins, sensitive-export reporting, resumable
   missing-object transfer, and offline maintenance transfer. Do not implement
-  demand paging or worker fanout.
+  demand paging or worker fanout. Archive planning and inspection stream their
+  closure, reachability, child, and page sets through private scratch storage
+  ([CSTORE-30]). Transfer journal records page the retained inventory in
+  canonical 4,096-entry pages behind a header written last, and GC streams
+  them page by page ([CSTORE-31]).
 
 The admitted graph checkpoint currently provides bounded acyclic validation,
 exact kind routing, logical verification, ordered tiers and promotion,
@@ -1873,8 +2034,10 @@ revalidates every generation before apply. The packaged executor rebuilds a
 production closures. It receives
 later paused roots through bounded backpressure and, after the authoritative
 promotion CAS, replaces each raw source with its replay-validated promoted root
-without waiting for restart. It reprojects up to 65,536 current exact pins on a
-fixed cadence outside the supervisor actor. A missing current-fact selection
+without waiting for restart. It reprojects every current exact pin on a fixed
+cadence outside the supervisor actor, reading the pin projection in
+snapshot-bound pages of 4,096 entries and selecting each page before reading
+the next. A missing current-fact selection
 fails GC closed. Adjacent read-only porcelain
 reports the exact admitted graph and streams one requested content ID through
 deferred EOF authentication without borrowing ref or delete authority. It also
@@ -2079,6 +2242,30 @@ holds a four-template ceiling across 10,000 pressure admissions, verifies exact
 coldest-source demotion and authenticated fallback roots, and keeps the retained
 set bounded.
 
+T-CAM-6.7 deep template promotion has started with thin-path root retention
+(§05.12): a thin attempt's world at a published next-choice boundary becomes a
+depth-0 root admitted after its durable observation, so a later branch from
+that boundary forks instead of replaying from genesis. The packaged executor
+disables root retention with a diagnostic when `maximum_templates` plus the
+worker count exceeds the host project-ID count.
+
+Guest-choice boundaries are never retained, so a branch from one would replay
+from genesis. Two further reuse paths close that gap (§05.12). A branch whose
+own selection is a network fault branch at its parent stops its thin replay at
+the parent's joined park and keeps that world as an anchor root, admitted only
+with room for one child; the branch then runs as the anchor's hot child. A
+branch whose parent has no root forks from the deepest published root on its
+path and replays the bounded, replay-only suffix inside the child; a suffix
+divergence invalidates the root and the retried attempt runs thin. Native
+acceptance compares an anchored network branch and an ancestor child with thin
+replay on a two-VM network fault world. The Envoy flight requires the first
+disruption, the follow-up disruption, and the completion attempt to run hot:
+both disruptions from anchor roots at their parks, and the completion from the
+follow-up anchor through ancestor suffix replay. Promotion of hot children at
+their own boundaries, the deep-promotion stress over anchor and stop roots with
+ancestor checkouts, a depth bound for chains, and eviction of roots that are
+never reused remain open.
+
 The supported profile is deterministic TCG with one round-robin vCPU per node,
 the aggregate fingerprint plugin protocol, raw read-only roots, branch-private
 writable overlays, deterministic network links, and first-class block and 9p
@@ -2261,7 +2448,9 @@ Primary crates: `crucible-cli`, `crucible-control-api`, `crucible-control-client
   and exposes the parent step as the next page. CLI `campaign rankings` follows
   at most 64 such pages under a 128 MiB aggregate response-byte budget and
   applies the same deterministic comparator across all candidates, stopping at
-  a policy/engine/artifact/view boundary. Exact branch-point and source filters
+  a policy/engine/artifact/view boundary. Reaching the byte budget stops the
+  chain with that step as `next_step` instead of failing the query, and
+  `--top` keeps only a bounded best-first selection in memory. Exact branch-point and source filters
   run after proof validation, and an at-most-65,536 top-result cap runs after
   global best-first ordering; the versioned machine report retains the filter
   basis and pre-truncation match count. `--policy-groups` now continues across
@@ -2332,8 +2521,8 @@ Primary crates: `crucible-cli`, `crucible-control-api`, `crucible-control-client
   `run` path, including `--watch`, now executes through the authenticated
   scenario-default campaign owner. Watch records name the exact campaign and
   snapshot and pair that head with the scheduler evidence captured at the same
-  incorporation boundary; the CLI retains them under the owner's fixed bound
-  until its synchronous backend result is rendered. Campaign-produced replay
+  incorporation boundary; the owner streams them to the CLI's sink, which
+  retains them until its synchronous backend result is rendered. Campaign-produced replay
   uses the same owner, and unsupported decision kinds are rejected before
   execution. `campaign triage` enumerates one exact snapshot through
   `CampaignService`, authenticates each retained finding's membership,
@@ -2543,13 +2732,13 @@ traceability records:
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..32` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..48`, `LAZY-54` | 4 | lazy frontier, attempt idempotence, campaign replay |
-| `CCOMP-1..24` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
+| `CCOMP-1..30` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
 | `CSTORE-1..28` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
-| `CMEAS-1..14` | 3, 8 | campaign model, replay, ABI conformance |
+| `CMEAS-1..22` | 3, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
-| `CPERF-1..9` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CPERF-1..10` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
 
 The executable traceability check required by T-CAM-0.4 must require one row per
 requirement ID, name at least one implementing task and test for each, reject

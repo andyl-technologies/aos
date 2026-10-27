@@ -6,6 +6,7 @@
 
 use std::error::Error;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -16,7 +17,7 @@ use crucible_control_client::{ControlClient, RpcControlClient, RpcEndpoint};
 
 #[test]
 fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let output = Command::new(crucible_executable())
         .args([
             "--daemon",
             "http://127.0.0.1:1",
@@ -36,7 +37,7 @@ fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Bo
 
 #[tokio::test(flavor = "current_thread")]
 async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
-    let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
+    let child = Command::new(crucible_executable())
         .args([
             "serve",
             "--listen",
@@ -168,4 +169,16 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<ExitStatus, Box
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Returns the `crucible` executable under test.
+///
+/// Cargo records the executable path at compile time. A prebuilt test binary
+/// that runs outside its Cargo target directory receives the relocated path
+/// through the same variable at run time, following the cargo-nextest
+/// archive convention.
+fn crucible_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_crucible")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_crucible")))
 }

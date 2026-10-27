@@ -20,14 +20,15 @@ const GUARDED_RUN_QEMU_PROFILE: &str = "deterministic-tcg-v1";
 const CAMPAIGN_DEPLOYMENT_ENV: &str = "CRUCIBLE_CAMPAIGN_DEPLOYMENT";
 const DEFAULT_CAMPAIGN_DEPLOYMENT_PATH: &str = "/etc/crucible/packaged-executor.toml";
 
-/// Keeps packaged campaign RUNs bounded without reducing the terminal ceiling.
+/// Keeps packaged campaign RUNs bounded by a fixed scheduler rendezvous.
 pub(super) fn production_rendezvous_interval(
     requested: Option<u64>,
     packaged: bool,
 ) -> Option<u64> {
     // Conditions, checkpoint requests, and resource checks run at modeled
-    // boundaries. Without rendezvous, an isolated VM can consume the complete
-    // forty-billion-instruction CLI run allowance before returning to them.
+    // boundaries. Packaged attempts have no lifecycle virtual-time ceiling, so
+    // without rendezvous an isolated VM could run indefinitely before
+    // returning to them.
     requested.or_else(|| packaged.then_some(DEFAULT_PACKAGED_RUN_INTERVAL_ICOUNT))
 }
 
@@ -61,6 +62,16 @@ struct PackagedExecutorDeployment {
     guest_selectable_boundary_diagnostics: Option<GuestSelectableBoundaryDiagnosticsDeployment>,
     #[serde(default)]
     verify_determinism_findings: bool,
+    attempt_storage: Option<AttemptStorageDeployment>,
+}
+
+/// Optional operational storage bounds for one attempt.
+///
+/// These bounds never enter production or campaign identity.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttemptStorageDeployment {
+    maximum_event_log_bytes: u64,
 }
 
 /// Required fixed bounds for coordinator and executor service work.
@@ -109,12 +120,38 @@ struct GuestSelectableBoundaryDiagnosticsDeployment {
 pub(crate) struct GuardedCampaignRunDeployment {
     pub(crate) host: crucible_daemon::LinuxQemuAttemptHostConfig,
     pub(crate) resources: crucible_campaign::AttemptResourceLimits,
+    pub(crate) attempt_policy: GuardedCampaignAttemptPolicy,
+}
+
+/// Deployment policy applied to every attempt of a guarded campaign run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GuardedCampaignAttemptPolicy {
+    /// Whether ordinary attempts receive paired determinism replay.
     pub(crate) verify_determinism_findings: bool,
+    /// Operational bound on one attempt's encoded event log.
+    pub(crate) maximum_event_log_bytes: u64,
+}
+
+impl GuardedCampaignAttemptPolicy {
+    /// Applies this policy to one guarded campaign request.
+    #[must_use]
+    pub(crate) fn apply(
+        self,
+        request: crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest,
+    ) -> crucible_daemon::qemu_campaign_lifecycle::GuardedDefaultCampaignRunRequest {
+        let request = request.with_maximum_event_log_bytes(self.maximum_event_log_bytes);
+        if self.verify_determinism_findings {
+            request.with_determinism_finding_verification()
+        } else {
+            request
+        }
+    }
 }
 
 /// Prepared packaged executor and its authenticated coordinator tuning.
 pub(super) struct PreparedCliPackagedExecutor {
     pub(super) executor: crucible_daemon::AttachedPackagedQemuExecutor,
+    pub(super) diagnostic_maximum_events: Option<usize>,
     operations: PackagedExecutorOperations,
 }
 
@@ -249,8 +286,30 @@ pub(crate) fn load_campaign_run_deployment(
     Ok(GuardedCampaignRunDeployment {
         host,
         resources,
-        verify_determinism_findings: deployment.verify_determinism_findings,
+        attempt_policy: GuardedCampaignAttemptPolicy {
+            verify_determinism_findings: deployment.verify_determinism_findings,
+            maximum_event_log_bytes: deployment_maximum_event_log_bytes(&deployment),
+        },
     })
+}
+
+/// Removes the interactive CLI horizon from packaged campaign lifecycles.
+///
+/// Campaign policies own the modeled horizon: an attempt's stop frontier
+/// carries the policy's virtual-time deadline and ends it with a modeled
+/// policy timeout. Attempts whose policy declares no deadline are bounded by
+/// the deployment's execution-quantum allowance, the event-log bound, and any
+/// host watchdog. A lifecycle ceiling below the policy deadline would instead
+/// stall every node at the ceiling until the quantum allowance ran out.
+fn packaged_campaign_lifecycle(
+    lifecycle: &crucible_daemon::ProductionVmLifecycleConfig,
+) -> Result<crucible_daemon::ProductionVmLifecycleConfig, CliError> {
+    if lifecycle.rendezvous_interval_ticks().is_none() {
+        return Err(serve_error(
+            "packaged campaign execution requires a scheduler rendezvous interval",
+        ));
+    }
+    Ok(lifecycle.clone().without_run_ceiling())
 }
 
 pub(super) fn prepare_cli_packaged_executor(
@@ -265,6 +324,7 @@ pub(super) fn prepare_cli_packaged_executor(
     let operations = deployment_operations(&deployment)?;
     let host = deployment_host(&deployment)?;
     let capacity = deployment_capacity(&deployment)?;
+    let lifecycle = &packaged_campaign_lifecycle(lifecycle)?;
     let user_id = rustix::process::geteuid().as_raw();
     let group_id = rustix::process::getegid().as_raw();
     let endpoint = crucible_daemon::ExecutorLoopbackEndpointConfig::new(
@@ -283,6 +343,7 @@ pub(super) fn prepare_cli_packaged_executor(
     let hot_fork = deployment_hot_fork_policy(&deployment, lifecycle)?;
     let guest_selectable_diagnostics =
         deployment_guest_selectable_boundary_diagnostics(&deployment)?;
+    let maximum_event_log_bytes = deployment_maximum_event_log_bytes(&deployment);
     let mut config = crucible_daemon::PackagedQemuExecutorConfig::new(
         campaigns,
         endpoint,
@@ -308,6 +369,9 @@ pub(super) fn prepare_cli_packaged_executor(
     if deployment.verify_determinism_findings {
         config = config.with_determinism_finding_verification();
     }
+    let config = config
+        .with_maximum_event_log_bytes(maximum_event_log_bytes)
+        .map_err(|error| serve_error(format!("campaign executor configuration error: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {
@@ -320,6 +384,8 @@ pub(super) fn prepare_cli_packaged_executor(
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))?;
     Ok(PreparedCliPackagedExecutor {
         executor,
+        diagnostic_maximum_events: guest_selectable_diagnostics
+            .map(|diagnostics| diagnostics.maximum_events()),
         operations,
     })
 }
@@ -491,6 +557,11 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
     }
     deployment_guest_selectable_boundary_diagnostics(&deployment)?;
     deployment_operations(&deployment)?;
+    if deployment_maximum_event_log_bytes(&deployment) == 0 {
+        return Err(serve_error(
+            "campaign packaged-executor event-log byte ceiling is zero",
+        ));
+    }
     let finish_timeout = Duration::from_millis(deployment.finish_timeout_ms);
     if finish_timeout.is_zero() || finish_timeout > Duration::from_secs(60 * 60) {
         return Err(serve_error(
@@ -499,6 +570,14 @@ fn load_validated_deployment(path: &Path) -> Result<PackagedExecutorDeployment, 
     }
 
     Ok(deployment)
+}
+
+/// Returns the attempt event-log bound, defaulting when the table is absent.
+fn deployment_maximum_event_log_bytes(deployment: &PackagedExecutorDeployment) -> u64 {
+    deployment.attempt_storage.as_ref().map_or(
+        crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES,
+        |storage| storage.maximum_event_log_bytes,
+    )
 }
 
 fn deployment_host(
@@ -784,7 +863,8 @@ qemu_profile = "deterministic-tcg-v1"
                  qemu_build_id=qemu-build-v1\n\
                  shmem_abi_version={abi_version}\n\
                  shmem_abi={abi}\n\
-                 shmem_generated_header_hash=sha256:header\n"
+                 shmem_generated_header_hash=sha256:header\n\
+                 stopped_restore_ack_notification_version=1\n"
             ),
         )
         .expect("write plugin marker");
@@ -818,7 +898,7 @@ qemu_profile = "deterministic-tcg-v1"
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
         assert_eq!(guarded.resources.maximum_vcpus(), 4);
         assert_eq!(guarded.resources.maximum_disk_bytes(), 2_147_483_648);
-        assert!(!guarded.verify_determinism_findings);
+        assert!(!guarded.attempt_policy.verify_determinism_findings);
 
         assert!(
             toml::from_str::<PackagedExecutorDeployment>(&authored_without_operations()).is_err()
@@ -915,7 +995,38 @@ qemu_profile = "deterministic-tcg-v1"
 
         let guarded = load_campaign_run_deployment(&path).expect("load guarded run deployment");
 
-        assert!(guarded.verify_determinism_findings);
+        assert!(guarded.attempt_policy.verify_determinism_findings);
+    }
+
+    #[test]
+    fn attempt_event_log_bound_defaults_and_rejects_zero() {
+        let directory = tempfile::tempdir().expect("deployment directory");
+        let path = directory.path().join("executor.toml");
+        let write = |deployment: String| {
+            fs::write(&path, deployment).expect("write deployment");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("secure deployment");
+        };
+
+        write(authored());
+        let guarded = load_campaign_run_deployment(&path).expect("default event-log bound");
+        assert_eq!(
+            guarded.attempt_policy.maximum_event_log_bytes,
+            crucible_daemon::DEFAULT_MAXIMUM_EVENT_LOG_BYTES
+        );
+
+        write(format!(
+            "{}\n[attempt_storage]\nmaximum_event_log_bytes = 1048576\n",
+            authored()
+        ));
+        let guarded = load_campaign_run_deployment(&path).expect("explicit event-log bound");
+        assert_eq!(guarded.attempt_policy.maximum_event_log_bytes, 1_048_576);
+
+        write(format!(
+            "{}\n[attempt_storage]\nmaximum_event_log_bytes = 0\n",
+            authored()
+        ));
+        assert!(load_validated_deployment(&path).is_err());
     }
 
     #[test]

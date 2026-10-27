@@ -280,6 +280,14 @@ const ACCELERATOR: ProjectionRow = virtio_row!(
     1,
     "virtio-crucible-accelerator"
 );
+const CONSOLE: ProjectionRow = row!(
+    "crucible/console",
+    0,
+    "crucible/console",
+    1,
+    DEVICE,
+    "console"
+);
 const FAULT: ProjectionRow = versioned_row!(
     "crucible-fault",
     0,
@@ -391,6 +399,12 @@ fn expected_manifest_for_shape(
     if shape.debug_guest_activation_endpoint {
         rows.push(DEBUG_CONSOLE);
     }
+    // The plugin registers the native console after device realization and
+    // before the machine-done fault registration. Nested VMState fields do
+    // not add separately registered projection rows.
+    if shape.console_capture {
+        rows.push(CONSOLE);
+    }
     rows.push(FAULT);
     rows.push(match shape.architecture {
         FaultCapabilityScope::X86_64 => Q35_ACPI,
@@ -501,11 +515,110 @@ mod tests {
         })
         .ok_or("missing Envoy manifest")?;
 
-        assert_eq!(manifest.sections, 44);
+        assert_eq!(manifest.sections, 45);
         assert_eq!(
             manifest.digest,
-            "00c14a5774c6c27963aa8eb655d370c854454b9e0010ecbd8974db5f0a34fba1"
+            "731c6157cfbb13cca54d1de70733b485a99504b1624a851be4ec711e56405070"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_console_projection_is_conditional_and_precedes_fault() -> Result<(), &'static str> {
+        for architecture in [FaultCapabilityScope::X86_64, FaultCapabilityScope::Aarch64] {
+            let uncaptured = expected_manifest_for_shape(base_shape(architecture))
+                .ok_or("missing uncaptured manifest")?;
+            assert!(
+                uncaptured
+                    .rows
+                    .iter()
+                    .all(|row| row.id != "crucible/console")
+            );
+
+            let captured = expected_manifest_for_shape(ProjectionManifestShape {
+                console_capture: true,
+                ..base_shape(architecture)
+            })
+            .ok_or("missing captured manifest")?;
+            let console_index = captured
+                .rows
+                .iter()
+                .position(|row| row.id == "crucible/console")
+                .ok_or("missing native console projection")?;
+            assert_eq!(
+                captured.rows[console_index],
+                QmpFingerprintProjectionManifestRow {
+                    id: "crucible/console".to_owned(),
+                    instance: 0,
+                    vmsd_name: "crucible/console".to_owned(),
+                    vmsd_version: 1,
+                    domain: DEVICE,
+                    projection_schema: "crucible.qemu.console.v1".to_owned(),
+                    projection_version: 1,
+                }
+            );
+            assert_eq!(captured.rows[console_index + 1].id, "crucible-fault");
+            assert_eq!(
+                captured
+                    .rows
+                    .iter()
+                    .filter(|row| row.id == "crucible/console")
+                    .count(),
+                1
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn captured_uart_manifest_matches_native_console_registry() -> Result<(), &'static str> {
+        let manifest = expected_manifest_for_shape(ProjectionManifestShape {
+            console_capture: true,
+            ..base_shape(FaultCapabilityScope::X86_64)
+        })
+        .ok_or("missing captured UART manifest")?;
+
+        assert_eq!(manifest.sections, 42);
+        assert_eq!(
+            manifest.digest,
+            "955bfa74c61c9b2936831c03ac12be089876d067e120fa5a7ac416acb509c066"
+        );
+        assert_eq!(manifest.rows[38].id, "crucible/console");
+        Ok(())
+    }
+
+    #[test]
+    fn native_console_projection_drift_is_detected() -> Result<(), &'static str> {
+        let expected = expected_manifest_for_shape(ProjectionManifestShape {
+            console_capture: true,
+            ..base_shape(FaultCapabilityScope::X86_64)
+        })
+        .ok_or("missing captured manifest")?;
+        let console_index = expected
+            .rows
+            .iter()
+            .position(|row| row.id == "crucible/console")
+            .ok_or("missing native console projection")?;
+
+        for mutation in 0..4 {
+            let mut rows = expected.rows.clone();
+            match mutation {
+                0 => {
+                    rows.remove(console_index);
+                }
+                1 => rows.swap(console_index, console_index + 1),
+                2 => rows.insert(console_index, rows[console_index].clone()),
+                _ => rows[console_index].projection_version += 1,
+            }
+            let observed = QmpFingerprintProjectionManifest::from_rows(rows);
+            assert_ne!(observed, expected);
+            let difference_index = console_index + usize::from(mutation == 2);
+            assert!(
+                expected
+                    .first_difference(&observed)
+                    .contains(&format!("row {difference_index}:"))
+            );
+        }
         Ok(())
     }
 
@@ -588,10 +701,10 @@ mod tests {
         })
         .ok_or("missing combined q35 manifest")?;
 
-        assert_eq!(manifest.sections, 48);
+        assert_eq!(manifest.sections, 49);
         assert_eq!(
             manifest.digest,
-            "3666338bd7d614539114f9c9e9b8a3220ac75093523ce65709b298ba6a927034"
+            "c66d6f73a458745205f51a620f36bbddae3d4731e3e3780480064577101c60c8"
         );
         Ok(())
     }
@@ -611,10 +724,10 @@ mod tests {
         })
         .ok_or("missing production q35 manifest")?;
 
-        assert_eq!(manifest.sections, 51);
+        assert_eq!(manifest.sections, 52);
         assert_eq!(
             manifest.digest,
-            "5410ca98de5664cf9920c64f9c72040e16348f7878608197b0881e0e232dbec4"
+            "021af19c55320f5ae826e0ec614dbc49f47ca2f2acd858d97bae1ce8811fae6f"
         );
         Ok(())
     }
@@ -634,10 +747,10 @@ mod tests {
         })
         .ok_or("missing combined AArch64 manifest")?;
 
-        assert_eq!(manifest.sections, 26);
+        assert_eq!(manifest.sections, 27);
         assert_eq!(
             manifest.digest,
-            "0645d338114ec5305f6dc68acb452339f6fe39ba14e7c6f41c1032eb2259c2bc"
+            "bf732a2e579d33f540b5dedee235ac3303be80febee826c9a22d4308872d9b45"
         );
         Ok(())
     }
@@ -830,7 +943,7 @@ mod tests {
         );
         assert_projection_row(
             &envoy,
-            41,
+            42,
             "crucible-fault",
             0,
             1,
@@ -848,7 +961,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            48,
+            49,
             "crucible-fault",
             0,
             1,

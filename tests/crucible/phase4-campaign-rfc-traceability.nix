@@ -5,8 +5,7 @@
   automatedTargets ? {},
   deferredTargetNames ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   automatedTargetNames = builtins.attrNames automatedTargets;
   automatedTargetValues = builtins.attrValues automatedTargets;
   invalidTargets = builtins.filter (target: !(lib.isDerivation target)) automatedTargetValues;
@@ -14,47 +13,21 @@ in
   if invalidTargets != []
   then throw "every RFC-0020 automated gate target must evaluate to a derivation"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-campaign-rfc-traceability";
-      version = "0";
-      src = crucibleSrc;
 
-      buildDeps = [pkgs.coreutils pkgs.rust];
+      buildDeps = [pkgs.coreutils];
       ATTR_PATH = attrPath;
       AUTOMATED_TARGETS = builtins.concatStringsSep "," automatedTargetNames;
       DEFERRED_AUTOMATED_TARGETS = builtins.concatStringsSep "," deferredTargetNames;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          '';
-        }
-        {
           name = "run-campaign-rfc-traceability";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
-            cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/campaign-rfc-traceability-target" \
+            crucible-cargo test \
               -p crucible-test-support --test campaign_gate_traceability -- --test-threads=1
           '';
         }

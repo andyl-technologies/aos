@@ -28,8 +28,8 @@ use crucible_campaign::{
 #[cfg(target_os = "linux")]
 use crucible_engine::NodeId;
 use crucible_engine::{
-    Configuration, Decision, DeliveryOrderDecision, EventLogTime, FailureTriageReplayEvidence,
-    Icount, Schedule, SchedulerEventLogEntry, VirtualTime,
+    Configuration, Decision, DeliveryOrderDecision, EventLogTime, Icount, Schedule,
+    SchedulerEventLogEntry, VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible_qemu_host::{
@@ -47,15 +47,12 @@ use crate::{
     ExecutionCheckpointRequest, PreparedSemanticAttemptResult,
 };
 
-fn replay_capture_limits() -> crate::FindingProductionReplayCaptureLimits {
-    crate::FindingProductionReplayCaptureLimits {
-        max_events_per_side: 16,
-        max_event_bytes_per_side: 16 * 1024,
-        max_lifecycle_objects: 0,
-        max_lifecycle_bytes: 0,
-        max_guest_asset_bytes: 0,
-        max_encoded_bytes: 16 * 1024,
-    }
+/// Reads a captured side's complete log back, for assertions.
+fn side_entries(side: &crate::FindingProductionReplayExecutionSide) -> Vec<SchedulerEventLogEntry> {
+    side.event_log()
+        .entries()
+        .collect::<Result<_, _>>()
+        .expect("captured side log reads back")
 }
 
 #[test]
@@ -70,8 +67,9 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
-        vec![native.clone()],
-    );
+        std::slice::from_ref(&native),
+    )
+    .expect("replay capture snapshot");
     let record = FailureTimeoutRecord::new(
         FailureTimeoutBudgetKind::VirtualTime,
         Some(frontier.ticks),
@@ -105,13 +103,12 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
         &snapshot,
         Some(&record),
         Some(&policy),
-        replay_capture_limits(),
     )
     .expect("authenticated timeout capture");
     assert!(matches!(
         captured,
         crate::FindingProductionReplayCaptureOutcome::Complete(side)
-            if side.event_log() == complete_log
+            if side_entries(&side) == complete_log
     ));
 
     for forged in [
@@ -131,7 +128,6 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
                 &snapshot,
                 Some(&record),
                 Some(&policy),
-                replay_capture_limits(),
             ),
             Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
         ));
@@ -143,7 +139,6 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
             &snapshot,
             Some(&record),
             Some(&policy),
-            replay_capture_limits(),
         ),
         Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
     ));
@@ -157,8 +152,9 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
     let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
         1,
         frontier,
-        vec![native.clone()],
-    );
+        std::slice::from_ref(&native),
+    )
+    .expect("replay capture snapshot");
     let passed = crate::FindingProductionReplayTerminalOutcome::Passed;
 
     assert!(matches!(
@@ -168,10 +164,9 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
             &snapshot,
             None,
             None,
-            replay_capture_limits(),
-        ),
+            ),
         Ok(crate::FindingProductionReplayCaptureOutcome::Complete(side))
-            if side.event_log() == [native]
+            if side_entries(&side) == [native]
     ));
     let changed_native =
         SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "virtual-time");
@@ -182,7 +177,6 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
             &snapshot,
             None,
             None,
-            replay_capture_limits(),
         ),
         Err(crate::FindingProductionReplayCaptureError::InvalidEventLog)
     ));
@@ -267,7 +261,7 @@ impl PrivateFindingReplayRunner for ReplayRunner {
         .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
         Ok(AutomaticFindingReplayOutcome::observed(
             evidence,
-            result.measurement_replay_evidence().to_vec(),
+            result_bundles(&result)?,
         ))
     }
 }
@@ -300,7 +294,12 @@ impl CrucibleExecutionRunner for ReplayRunner {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.observed.lock().expect("replay observations").push((
             input.path().clone(),
-            input.start().configuration().schedule.decisions().len(),
+            input
+                .start()
+                .configuration()
+                .schedule
+                .decision_history()
+                .len(),
         ));
         let result = failed_result(input, &self.property);
         Ok(CrucibleExecutionOutcome::new(
@@ -466,17 +465,16 @@ impl PrivateFindingReplayRunner for DivergenceReplayRunner {
             divergence_replay_logs()
         };
         let coverage = crucible_engine::coverage_fingerprint_from_event_log(&expected);
-        let triage = FailureTriageReplayEvidence::new_paired_divergence(
+        let triage = crucible_engine::test_support::paired_divergence_evidence_for_test(
             finding.clone(),
-            expected,
-            reproduced,
+            &expected,
+            &reproduced,
             coverage,
-            Vec::new(),
         )
         .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
         Ok(AutomaticFindingReplayOutcome::observed_with_triage(
             evidence,
-            result.measurement_replay_evidence().to_vec(),
+            result_bundles(&result)?,
             triage,
         ))
     }
@@ -490,6 +488,10 @@ fn replay_continuation_controls(
             "private replay has no descendant continuation basis",
         ))
     })?;
+    let origins = origins
+        .iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))?;
     Ok(origins
         .iter()
         .filter_map(|origin| origin.attempt().continuation_input())
@@ -881,7 +883,27 @@ fn failed_result_for_schedule_with_stop(
         observation,
     )
     .expect("candidate");
-    PreparedSemanticAttemptResult::new(candidate, Vec::new(), None).expect("prepared result")
+    PreparedSemanticAttemptResult::new(
+        candidate,
+        Vec::new(),
+        crate::MemorySegmentStore::default(),
+        None,
+    )
+    .expect("prepared result")
+}
+
+/// Pairs each replay leaf of `result` with the segments it references.
+fn result_bundles(
+    result: &PreparedSemanticAttemptResult,
+) -> Result<Vec<crate::CrucibleMeasurementEvidenceBundle>, AttemptWorkerFailure<io::Error>> {
+    result
+        .measurement_replay_evidence()
+        .iter()
+        .map(|leaf| {
+            crate::CrucibleMeasurementEvidenceBundle::collect(leaf.clone(), result.log_segments())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AttemptWorkerFailure::Terminal(io::Error::other(error)))
 }
 
 fn input_fixture() -> (

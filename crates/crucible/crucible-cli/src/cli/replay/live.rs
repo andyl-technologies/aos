@@ -183,11 +183,10 @@ pub(super) fn replay_live_qemu_evidence(
     }
     let resolved_effect_trace = resolved_effect_trace_bytes
         .map(|bytes| {
-            crucible_engine::ResolvedEffectTrace::from_canonical_bytes(
+            crate::decode_resolved_effect_trace_bundle(
                 bytes,
                 scenario.plan().fault_signals().resource_limits(),
             )
-            .map_err(|error| artifact_error(format!("decode resolved-effect trace: {error}")))
         })
         .transpose()?;
     match (
@@ -463,9 +462,9 @@ fn validate_live_qemu_terminal(
             .map(|configuration| &configuration.schedule);
         let first_different_decision = actual_schedule.and_then(|actual| {
             expected_schedule
-                .decisions()
+                .decision_history()
                 .iter()
-                .zip(actual.decisions())
+                .zip(actual.decision_history())
                 .position(|(expected, actual)| expected != actual)
                 .or_else(|| {
                     (expected_schedule.len() != actual.len())
@@ -473,10 +472,12 @@ fn validate_live_qemu_terminal(
                 })
         });
         let expected_decision = first_different_decision
-            .and_then(|index| expected_schedule.decisions().get(index))
+            .and_then(|index| expected_schedule.decision_history().get(index))
             .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         let actual_decision = first_different_decision
-            .and_then(|index| actual_schedule.and_then(|schedule| schedule.decisions().get(index)))
+            .and_then(|index| {
+                actual_schedule.and_then(|schedule| schedule.decision_history().get(index))
+            })
             .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         return Err(CliError::ReplayCheck(format!(
             "live QEMU terminal tuple diverged: expected status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={}, got status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={} first_different_decision={} expected_decision={} actual_decision={}",

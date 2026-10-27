@@ -30,6 +30,34 @@ impl SignalArtifactProvider for NoArtifacts {
     }
 }
 
+/// Reads every work item of `trace`, one segment at a time.
+pub(super) fn trace_items(trace: &ResolvedEffectTrace) -> Vec<ResolvedReplayWorkItem> {
+    trace
+        .items()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_else(|error| panic!("trace items: {error}"))
+}
+
+/// Records `items` as a fresh trace under default limits.
+pub(super) fn trace_of(
+    mode: FaultReplayMode,
+    items: impl IntoIterator<Item = ResolvedReplayWorkItem>,
+) -> ResolvedEffectTrace {
+    ResolvedEffectTrace::from_items(mode, items, FaultResourceLimits::default())
+        .unwrap_or_else(|error| panic!("trace fixture: {error}"))
+}
+
+/// Returns the first work item `runtime` recorded.
+pub(super) fn first_recorded(runtime: &FaultExecutionRuntime<'_>) -> ResolvedReplayWorkItem {
+    let trace = runtime
+        .recorded_trace(FaultReplayMode::LockedEffect)
+        .unwrap_or_else(|error| panic!("recorded trace: {error}"));
+    trace_items(&trace)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("recording must produce one work item"))
+}
+
 pub(super) fn object_id(value: &str) -> FaultObjectId {
     FaultObjectId::parse(value)
         .unwrap_or_else(|error| panic!("test object ID must be valid: {error}"))

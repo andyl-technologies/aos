@@ -111,6 +111,7 @@ pub(crate) fn run_finding_bundle_branch(
     let state = private.path().join("state");
     secure_directory(&state)?;
     transfer_archive_objects(
+        &bundle.archive,
         &args.input.join("archive/objects"),
         &state.join("objects"),
         &inspection,
@@ -128,7 +129,10 @@ pub(crate) fn run_finding_bundle_branch(
         planner_key,
         debugger_key.clone(),
     )
-    .map_err(branch_error)?;
+    .map_err(branch_error)?
+    // Archive inspection spills beside the private branch state, which lives
+    // on the same storage as the requested output.
+    .with_scratch_directory(private.path());
     let imported_inspection = imported
         .inspect_campaign_archive(bundle.archive_id)
         .map_err(branch_error)?;
@@ -152,11 +156,18 @@ pub(crate) fn run_finding_bundle_branch(
     let reproduction = imported
         .load_reproduction_artifact(retained_finding.reproduction())
         .map_err(branch_error)?;
-    let model = crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-        .map_err(|error| backend_error(format!("finding reproduction is invalid: {error}")))?;
+    let model = crucible_daemon::decode_crucible_reproduction(
+        &reproduction,
+        &crucible_daemon::RepositoryReproductionSegments::new(
+            &imported,
+            retained_finding.reproduction(),
+        ),
+        "finding reproduction",
+    )
+    .map_err(|error| backend_error(format!("finding reproduction is invalid: {error}")))?;
     let original = model
         .schedule()
-        .decisions()
+        .decision_history()
         .iter()
         .find_map(|decision| match decision {
             crucible_engine::Decision::Selection(selection) => Some(selection.selection()),
@@ -506,6 +517,7 @@ fn secure_directory(path: &Path) -> Result<(), CliError> {
 }
 
 fn transfer_archive_objects(
+    archive: &CampaignRepository,
     source: &Path,
     destination: &Path,
     inspection: &CampaignArchiveInspection,
@@ -513,18 +525,41 @@ fn transfer_archive_objects(
     secure_directory(destination)?;
     let source = DirectoryBlobBackend::new("finding-bundle-branch-source", source);
     let destination = DirectoryBlobBackend::new("finding-bundle-branch-private", destination);
-    for id in inspection.retained_objects() {
-        let blob = source.read(*id, None).map_err(branch_error)?;
-        let receipt = destination
-            .put_if_absent(*id, &blob)
-            .map_err(branch_error)?;
-        if receipt.id != *id || !receipt.is_durable() {
-            return Err(backend_error(
-                "private archive object lacks a durable placement",
-            ));
-        }
+    archive
+        .visit_campaign_archive_retained_objects(inspection, |id| {
+            let blob = source.read(id, None).map_err(branch_error)?;
+            let receipt = destination.put_if_absent(id, &blob).map_err(branch_error)?;
+            if receipt.id != id || !receipt.is_durable() {
+                return Err(
+                    backend_error("private archive object lacks a durable placement").into(),
+                );
+            }
+            Ok(())
+        })
+        .map_err(|error| match error {
+            ArchiveCopyError::Campaign(error) => branch_error(error),
+            ArchiveCopyError::Copy(error) => error,
+        })
+}
+
+/// Failure while copying an archive's retained objects into private state.
+enum ArchiveCopyError {
+    /// The archive inventory could not be replayed or authenticated.
+    Campaign(CampaignRepositoryError),
+    /// One object could not be copied durably.
+    Copy(CliError),
+}
+
+impl From<CampaignRepositoryError> for ArchiveCopyError {
+    fn from(error: CampaignRepositoryError) -> Self {
+        Self::Campaign(error)
     }
-    Ok(())
+}
+
+impl From<CliError> for ArchiveCopyError {
+    fn from(error: CliError) -> Self {
+        Self::Copy(error)
+    }
 }
 
 fn write_private_authority(

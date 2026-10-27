@@ -314,7 +314,7 @@ fn objective_endpoint_mean_basis(
     )
 }
 
-fn integer_candidate_offset(
+pub(in crate::repository::projection) fn integer_candidate_offset(
     domain: &IntegerDomain,
     value: IntegerValue,
 ) -> Result<u128, CampaignRepositoryError> {

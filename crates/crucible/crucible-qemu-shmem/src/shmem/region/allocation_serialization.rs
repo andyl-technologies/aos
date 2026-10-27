@@ -13,7 +13,9 @@ impl RegionAllocation {
     /// # Errors
     ///
     /// Returns [`RegionSerializationError`] when the region size or a computed
-    /// segment offset cannot be represented on this host.
+    /// segment offset cannot be represented on this host, or a node cannot
+    /// provide one coherent completed snapshot. A dead request publisher is
+    /// never recovered by serializing its claim as an unowned zero word.
     pub fn setup_region_bytes(&self) -> Result<Vec<u8>, RegionSerializationError> {
         let region_len = usize::try_from(self.layout.region_size).map_err(|_error| {
             RegionSerializationError::RegionSizeTooLarge {
@@ -31,7 +33,10 @@ impl RegionAllocation {
                 NODE_SLOT_SIZE,
                 region_len,
             )?;
-            write_node_slot_bytes(&mut bytes[base..base + NODE_SLOT_SIZE], slot.snapshot());
+            let snapshot = slot
+                .try_snapshot()
+                .ok_or(RegionSerializationError::NodeSlotPublicationBusy { index })?;
+            write_node_slot_bytes(&mut bytes[base..base + NODE_SLOT_SIZE], snapshot);
         }
         for (index, ring_header) in self.ring_headers.iter().enumerate() {
             let base = checked_segment_offset(

@@ -1,54 +1,121 @@
 //! Authenticated choice records needed to replay a selected campaign schedule.
 //!
-//! The bounded canonical binary layout is:
+//! A replay closure lists one entry per covered selection decision, in
+//! schedule order, naming the selection by identity digest and its domain,
+//! declaration, and opportunity by record ordinal. Each distinct record is
+//! stored once, so a domain shared by many selections costs one copy. The
+//! selection itself is never stored: the schedule carries it, and the entry
+//! digest binds the two. The encoding is a small root plus frames of at most
+//! 64 MiB each; the `format` module shows the layout.
+//!
+//! Frames stay where they are. A closure built by this process holds them in
+//! memory, a checkpoint loader hands over reopenable store handles, and
+//! validation walks the schedule reading one frame at a time. A checkpoint
+//! may cover only the selections its execution discovered; the rest resolve
+//! from the campaign repository one at a time through
+//! [`GuardedCampaignReplayChoices`].
 //!
 //! ```text
-//! magic:          8 bytes, "CCRC\0\0\0\x01"
-//! selection_count: u32 little-endian
-//! selections:     selection_count repetitions of:
-//!   domain:       u32 little-endian byte length, canonical ChoiceDomain bytes
-//!   declaration:  u32 little-endian byte length, canonical SelectableDeclaration bytes
-//!   opportunity:  u32 little-endian byte length, canonical ChoiceOpportunity bytes
-//!   selection:    u32 little-endian byte length, canonical Selection bytes
+//! module    owns
+//! format    root, frame, and bundle encodings
+//! builder   the canonical encoder, also used to prove decoded closures canonical
+//! reader    lazy frame reads and bounded record caches
+//! walk      canonical-form proof and provenance checks during a walk
+//! choices   replay choices for a schedule and their in-order cursor
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
-
+mod builder;
+mod choices;
+mod format;
+mod reader;
 #[cfg(test)]
-use crucible_campaign::ChoiceValue;
+mod tests;
+mod walk;
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use crucible_campaign::{
-    CampaignCodecError, CampaignExecutorStore, CampaignHash, CampaignRepository,
-    CampaignRepositoryError, ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
-    ResolvedSelection, SelectableDeclaration, Selection, SelectionId, SelectionOrigin,
+    CampaignCodecError, CampaignExecutorStore, CampaignRepository, CampaignRepositoryError,
+    ChoiceDiscovery, ChoiceDomain, ChoiceOpportunity, ChoiceSource, ResolvedSelection,
+    SelectableDeclaration, Selection, SelectionId,
 };
+#[cfg(test)]
+use crucible_campaign::{ChoiceValue, SelectionOrigin};
 use crucible_engine::{Configuration, Decision, ScenarioDefForm, Schedule};
+use crucible_store::content_store::{BlobHandle, ContentId, StoreError};
 use thiserror::Error;
 
-const REPLAY_CLOSURE_MAGIC: &[u8; 8] = b"CCRC\0\0\0\x01";
-const MAX_REPLAY_CLOSURE_SELECTIONS: usize = 65_536;
-const MAX_REPLAY_CLOSURE_BYTES: usize = 128 * 1024 * 1024;
+use builder::{ClosureBuilder, FrameRetention};
+use format::{ClosureRoot, Entry, RecordKind, decode_bundle, encode_bundle, invalid};
+pub(crate) use format::{
+    MAX_REPLAY_CLOSURE_FRAME_BYTES, MAX_REPLAY_CLOSURE_FRAMES, MAX_REPLAY_CLOSURE_ROOT_BYTES,
+    REPLAY_CLOSURE_OBJECT_KIND, REPLAY_CLOSURE_OBJECT_SCHEMA_VERSION, closure_object_id,
+};
+use reader::{ClosureFrameSource, FrameReader};
+use walk::{CanonicalWalk, FreshRecords, Provenance};
 
-/// A bounded canonical set of records needed to authenticate schedule selections.
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) use choices::GuardedCampaignReplayChoices;
+
+/// A canonical set of records that authenticates schedule selections.
+///
+/// Clones share the root and frames. Two closures are equal when their roots
+/// are, because a root names every frame by digest.
+#[derive(Clone)]
 pub struct GuardedCampaignReplayClosure {
-    selections: Vec<GuardedCampaignReplaySelection>,
+    root: Arc<ClosureRoot>,
+    frames: Arc<[ClosureFrameSource]>,
 }
 
+impl PartialEq for GuardedCampaignReplayClosure {
+    fn eq(&self, other: &Self) -> bool {
+        self.root.bytes == other.root.bytes
+    }
+}
+
+impl Eq for GuardedCampaignReplayClosure {}
+
+impl std::fmt::Debug for GuardedCampaignReplayClosure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuardedCampaignReplayClosure")
+            .field("entries", &self.root.entry_count)
+            .field("records", &self.root.record_count)
+            .field("frames", &self.root.frames.len())
+            .finish()
+    }
+}
+
+/// The records that authenticate one schedule selection decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GuardedCampaignReplaySelection {
-    domain: ChoiceDomain,
-    declaration: SelectableDeclaration,
+    domain: Arc<ChoiceDomain>,
+    declaration: Arc<SelectableDeclaration>,
     opportunity: ChoiceOpportunity,
     selection: Selection,
 }
 
+/// Which schedule selections a closure must hold records for.
+#[derive(Clone, Copy)]
+enum Coverage<'a> {
+    /// Every selection.
+    Complete,
+    /// Any subsequence of selections; the rest are not checked.
+    Owned,
+    /// Any subsequence; the rest resolve from this store and are checked.
+    Repository(&'a CampaignExecutorStore),
+}
+
 impl GuardedCampaignReplayClosure {
     /// Canonical schema version carried by the remote resume envelope.
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
-    pub(crate) fn empty() -> Self {
+    /// Returns the closure that covers no selection.
+    #[must_use]
+    pub fn empty() -> Self {
         Self {
-            selections: Vec::new(),
+            root: Arc::new(ClosureRoot::empty()),
+            frames: Arc::from(Vec::new()),
         }
     }
 
@@ -62,9 +129,8 @@ impl GuardedCampaignReplayClosure {
         schedule: &Schedule,
         discoveries: &BTreeMap<crucible_campaign::ChoiceOpportunityId, ChoiceDiscovery>,
     ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        let mut records = Vec::new();
-        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
-        for decision in schedule.decisions() {
+        let mut builder = ClosureBuilder::new(FrameRetention::Retain);
+        for decision in schedule.decision_history().iter() {
             let Decision::Selection(decision) = decision else {
                 continue;
             };
@@ -72,21 +138,24 @@ impl GuardedCampaignReplayClosure {
             let Some(discovery) = discoveries.get(&selection.opportunity()) else {
                 continue;
             };
-            let record = GuardedCampaignReplaySelection {
-                domain: discovery.domain().clone(),
-                declaration: discovery.declaration().clone(),
-                opportunity: discovery.opportunity().clone(),
-                selection,
-            };
-            charge_selection_record(&mut encoded_bytes, &record)?;
-            records.push(record);
+            push_selection(
+                &mut builder,
+                &selection,
+                discovery.domain(),
+                discovery.declaration(),
+                discovery.opportunity(),
+            )?;
         }
-        let closure = Self::new(records)?;
-        closure.validate_for_schedule_with_coverage(scenario, schedule, false)?;
+
+        let closure = Self::from_builder(builder)?;
+        closure.walk(scenario, schedule, Coverage::Owned, |_, _| Ok(()))?;
         Ok(closure)
     }
 
     /// Completes a raw-root choice closure from already published records.
+    ///
+    /// Selections this closure does not hold are resolved and authenticated
+    /// one at a time; none are copied into the result.
     ///
     /// # Errors
     ///
@@ -97,79 +166,78 @@ impl GuardedCampaignReplayClosure {
         store: &CampaignExecutorStore,
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
-    ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        self.validate_for_schedule_with_coverage(scenario, schedule, false)?;
-        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
-        for record in &self.selections {
-            charge_selection_record(&mut encoded_bytes, record)?;
-        }
-        let mut records = self.selections.clone();
-        let owned = records
-            .iter()
-            .map(|record| record.selection.id())
-            .collect::<Result<BTreeSet<_>, _>>()?;
-        for selection in schedule_selection_ids(schedule)? {
-            if owned.contains(&selection) {
-                continue;
-            }
-            let resolved = store.resolve_selection(selection)?;
-            charge_resolved_selection(&mut encoded_bytes, &resolved)?;
-            records.push(GuardedCampaignReplaySelection::from_resolved(&resolved));
-        }
-        let complete = Self::new(records)?;
-        complete.validate_for_schedule(scenario, schedule)?;
-        Ok(complete)
+    ) -> Result<GuardedCampaignReplayChoices, GuardedCampaignReplayClosureError> {
+        self.walk(scenario, schedule, Coverage::Repository(store), |_, _| {
+            Ok(())
+        })?;
+        Ok(GuardedCampaignReplayChoices {
+            owned: self.clone(),
+            store: Some(store.clone()),
+        })
+    }
+
+    /// Validates complete coverage and returns the closure as replay choices.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::validate_for_schedule`].
+    pub(crate) fn into_validated_choices(
+        self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+    ) -> Result<GuardedCampaignReplayChoices, GuardedCampaignReplayClosureError> {
+        self.validate_for_schedule(scenario, schedule)?;
+        Ok(GuardedCampaignReplayChoices {
+            owned: self,
+            store: None,
+        })
     }
 
     /// Returns the authenticated choice record for one schedule decision.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if a recorded selection cannot be decoded or is absent
-    /// from this closure.
+    /// This walks the schedule from its start; replay loops use
+    /// [`GuardedCampaignReplayChoices::cursor`] instead.
+    #[cfg(test)]
     pub(crate) fn selection_for_decision(
         &self,
         index: usize,
         schedule: &Schedule,
-    ) -> Result<Option<&GuardedCampaignReplaySelection>, GuardedCampaignReplayClosureError> {
-        let Some(decision) = schedule.decisions().get(index) else {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay decision index is outside the schedule",
-            });
+    ) -> Result<Option<GuardedCampaignReplaySelection>, GuardedCampaignReplayClosureError> {
+        let choices = GuardedCampaignReplayChoices {
+            owned: self.clone(),
+            store: None,
         };
-        let Decision::Selection(decision) = decision else {
-            return Ok(None);
-        };
-        let selection = decision.selection()?;
-        self.selections
-            .iter()
-            .find(|record| record.selection == selection)
-            .map(Some)
-            .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure is missing a schedule selection",
-            })
+        choices.cursor(schedule).selection_for_decision(index)
     }
 
+    /// Copies every schedule selection's records out of a repository.
+    ///
+    /// Repository-less carriers, such as a guarded run's result after its
+    /// private repository is released, need the records themselves.
     pub(crate) fn collect(
         store: &CampaignExecutorStore,
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
     ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        let selection_ids = schedule_selection_ids(schedule)?;
-        let mut records = Vec::new();
-        records
-            .try_reserve(selection_ids.len())
-            .map_err(GuardedCampaignReplayClosureError::Allocation)?;
-        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
+        let mut builder = ClosureBuilder::new(FrameRetention::Retain);
         // A single selection can reference a 32 MiB domain. Singleton loads
-        // keep the repository's independent 128 MiB resolution cap meaningful.
-        for selection in selection_ids {
-            let resolved = store.resolve_selection(selection)?;
-            charge_resolved_selection(&mut encoded_bytes, &resolved)?;
-            records.push(GuardedCampaignReplaySelection::from_resolved(&resolved));
+        // keep the repository's independent resolution bound meaningful.
+        for decision in schedule.decision_history().iter() {
+            let Decision::Selection(decision) = decision else {
+                continue;
+            };
+            let selection = decision.selection()?;
+            let resolved = store.resolve_selection(selection.id()?)?;
+            push_selection(
+                &mut builder,
+                &selection,
+                resolved.domain(),
+                resolved.declaration(),
+                resolved.opportunity(),
+            )?;
         }
 
-        let closure = Self::new(records)?;
+        let closure = Self::from_builder(builder)?;
         closure.validate_for_schedule(scenario, schedule)?;
         Ok(closure)
     }
@@ -179,98 +247,118 @@ impl GuardedCampaignReplayClosure {
         schedule: &Schedule,
         selections: &[ResolvedSelection],
     ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
-        for resolved in selections {
-            charge_resolved_selection(&mut encoded_bytes, resolved)?;
-        }
-        let records = selections
+        let resolved = selections
             .iter()
-            .map(GuardedCampaignReplaySelection::from_resolved)
-            .collect();
-        let closure = Self::new(records)?;
+            .map(|resolved| Ok((resolved.selection().id()?, resolved)))
+            .collect::<Result<BTreeMap<SelectionId, &ResolvedSelection>, CampaignCodecError>>()?;
+
+        let mut builder = ClosureBuilder::new(FrameRetention::Retain);
+        for decision in schedule.decision_history().iter() {
+            let Decision::Selection(decision) = decision else {
+                continue;
+            };
+            let selection = decision.selection()?;
+            let record = resolved
+                .get(&selection.id()?)
+                .ok_or_else(|| invalid("replay closure is missing a schedule selection"))?;
+            push_selection(
+                &mut builder,
+                &selection,
+                record.domain(),
+                record.declaration(),
+                record.opportunity(),
+            )?;
+        }
+
+        let closure = Self::from_builder(builder)?;
         closure.validate_for_schedule(scenario, schedule)?;
         Ok(closure)
     }
 
-    fn new(
-        records: Vec<GuardedCampaignReplaySelection>,
-    ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        if records.len() > MAX_REPLAY_CLOSURE_SELECTIONS {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "selection count exceeds the replay-closure bound",
-            });
-        }
-
-        let mut by_selection = BTreeMap::new();
-        let mut encoded_bytes = REPLAY_CLOSURE_MAGIC.len() + std::mem::size_of::<u32>();
-        for record in records {
-            record.validate_references()?;
-            charge_selection_record(&mut encoded_bytes, &record)?;
-            let selection = record.selection.id()?;
-            if by_selection.insert(selection, record).is_some() {
-                return Err(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "replay closure contains a duplicate selection",
-                });
-            }
-        }
-        Ok(Self {
-            selections: by_selection.into_values().collect(),
-        })
-    }
-
+    /// Rebuilds this closure with the first selection's boolean branch flipped.
     #[cfg(test)]
     pub(super) fn with_alternate_boolean_branch_selection(
         &self,
+        schedule: &Schedule,
     ) -> Result<Self, GuardedCampaignReplayClosureError> {
-        let mut records = self.selections.clone();
-        let record = records
-            .first_mut()
-            .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                reason: "test replay closure has no selection",
-            })?;
+        let record = self
+            .selection_for_decision(0, schedule)?
+            .ok_or_else(|| invalid("test replay closure has no selection"))?;
         let ChoiceValue::Boolean(selected) = record.selection.value() else {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "test replay closure selection is not boolean",
-            });
+            return Err(invalid("test replay closure selection is not boolean"));
         };
         let SelectionOrigin::CampaignBranch { branch_point, .. } = record.selection.origin() else {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "test replay closure selection is not a campaign branch",
-            });
+            return Err(invalid(
+                "test replay closure selection is not a campaign branch",
+            ));
         };
-        record.selection = Selection::new_campaign_branch(
+        let alternate = Selection::new_campaign_branch(
             &record.opportunity,
             &record.domain,
             ChoiceValue::Boolean(!selected),
             branch_point,
         )?;
-        Self::new(records)
+
+        let mut builder = ClosureBuilder::new(FrameRetention::Retain);
+        push_selection(
+            &mut builder,
+            &alternate,
+            &record.domain,
+            &record.declaration,
+            &record.opportunity,
+        )?;
+        Self::from_builder(builder)
     }
 
-    /// Encodes the closure in canonical selection-identity order.
+    /// Builds a structurally well-formed closure over opaque record bytes.
+    ///
+    /// Every entry shares one domain and one declaration and introduces its
+    /// own opportunity. The records do not decode, so only storage and
+    /// format paths accept the result.
+    #[cfg(test)]
+    pub(crate) fn synthetic_for_test(
+        entries: u64,
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let mut builder = ClosureBuilder::new(FrameRetention::Retain);
+        for index in 0..entries {
+            let mut opportunity_id = [3_u8; 32];
+            opportunity_id[..8].copy_from_slice(&index.to_le_bytes());
+            let mut selection = [4_u8; 32];
+            selection[..8].copy_from_slice(&index.to_le_bytes());
+
+            let domain = builder.record(RecordKind::Domain, [1; 32], || b"domain".to_vec())?;
+            let declaration =
+                builder.record(RecordKind::Declaration, [2; 32], || b"declaration".to_vec())?;
+            let opportunity = builder.record(RecordKind::Opportunity, opportunity_id, || {
+                index.to_le_bytes().to_vec()
+            })?;
+            builder.entry(Entry {
+                selection,
+                domain,
+                declaration,
+                opportunity,
+            })?;
+        }
+        Self::from_builder(builder)
+    }
+
+    /// Encodes the closure as one canonical bundle buffer.
+    ///
+    /// Bundles serve carriers that hold one buffer, such as a savepoint
+    /// file; stores and service messages keep the root and frames separate.
     ///
     /// # Errors
     ///
-    /// Returns [`GuardedCampaignReplayClosureError`] when a record or the
-    /// aggregate encoded closure exceeds its fixed bound.
+    /// Returns [`GuardedCampaignReplayClosureError`] when a stored frame
+    /// cannot be read or authenticated, or the buffer cannot be allocated.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, GuardedCampaignReplayClosureError> {
-        let count = u32::try_from(self.selections.len()).map_err(|_| {
-            GuardedCampaignReplayClosureError::Invalid {
-                reason: "selection count cannot be represented",
-            }
-        })?;
-        let mut bytes = Vec::from(REPLAY_CLOSURE_MAGIC.as_slice());
-        append_bytes(&mut bytes, &count.to_le_bytes())?;
-        for record in &self.selections {
-            append_record(&mut bytes, &record.domain.canonical_bytes())?;
-            append_record(&mut bytes, &record.declaration.canonical_bytes())?;
-            append_record(&mut bytes, &record.opportunity.canonical_bytes())?;
-            append_record(&mut bytes, &record.selection.canonical_bytes())?;
-        }
-        Ok(bytes)
+        let frames = (0..self.frames.len())
+            .map(|index| self.frame_bytes(index))
+            .collect::<Result<Vec<_>, _>>()?;
+        encode_bundle(&self.root.bytes, &frames)
     }
 
-    /// Decodes and authenticates one canonical replay closure.
+    /// Decodes and authenticates one canonical bundle.
     ///
     /// The decoded records remain unusable until
     /// [`Self::validate_for_schedule`] proves exact coverage for a scenario and
@@ -281,39 +369,99 @@ impl GuardedCampaignReplayClosure {
     /// Returns [`GuardedCampaignReplayClosureError`] for a malformed,
     /// noncanonical, duplicate, oversized, or internally inconsistent closure.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, GuardedCampaignReplayClosureError> {
-        if bytes.len() > MAX_REPLAY_CLOSURE_BYTES {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure exceeds its encoded byte bound",
-            });
-        }
-        let mut decoder = ReplayClosureDecoder::new(bytes)?;
-        let count = decoder.read_u32()? as usize;
-        if count > MAX_REPLAY_CLOSURE_SELECTIONS {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "selection count exceeds the replay-closure bound",
-            });
-        }
-        let mut records = Vec::new();
-        records
-            .try_reserve(count)
-            .map_err(GuardedCampaignReplayClosureError::Allocation)?;
-        for _ in 0..count {
-            records.push(GuardedCampaignReplaySelection {
-                domain: ChoiceDomain::from_canonical_bytes(decoder.read_record()?)?,
-                declaration: SelectableDeclaration::from_canonical_bytes(decoder.read_record()?)?,
-                opportunity: ChoiceOpportunity::from_canonical_bytes(decoder.read_record()?)?,
-                selection: Selection::from_canonical_bytes(decoder.read_record()?)?,
-            });
-        }
-        decoder.finish()?;
+        let (root, frames) = decode_bundle(bytes)?;
+        Self::from_frame_parts(root, frames)
+    }
 
-        let closure = Self::new(records)?;
-        if closure.to_canonical_bytes()?.as_slice() != bytes {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure is not canonically ordered",
-            });
+    /// Returns the root followed by every frame, each a separate object.
+    ///
+    /// No object exceeds the 64 MiB component-message bound, so a service
+    /// message can carry each one as its own element.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignReplayClosureError`] when a stored frame
+    /// cannot be read or authenticated.
+    pub fn to_frame_objects(&self) -> Result<Vec<Vec<u8>>, GuardedCampaignReplayClosureError> {
+        let mut objects = Vec::with_capacity(self.frames.len() + 1);
+        objects.push(self.root.bytes.to_vec());
+        for index in 0..self.frames.len() {
+            objects.push(self.frame_bytes(index)?.to_vec());
         }
-        Ok(closure)
+        Ok(objects)
+    }
+
+    /// Decodes and authenticates a root followed by its frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::from_canonical_bytes`], or an error when
+    /// `objects` is empty.
+    pub fn from_frame_objects<T: AsRef<[u8]>>(
+        objects: &[T],
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let (root, frames) = objects
+            .split_first()
+            .ok_or_else(|| invalid("replay closure has no root object"))?;
+        if root.as_ref().len() > MAX_REPLAY_CLOSURE_ROOT_BYTES {
+            return Err(invalid("replay closure root exceeds its byte bound"));
+        }
+        let frames = frames
+            .iter()
+            .map(|frame| Arc::from(frame.as_ref()))
+            .collect();
+        Self::from_frame_parts(Arc::from(root.as_ref()), frames)
+    }
+
+    /// Opens a closure whose frames stay behind reopenable store handles.
+    ///
+    /// Only the root and frame lengths are checked here. Each frame is read
+    /// and authenticated against its root digest when a walk reaches it, and
+    /// canonical form is proven by the first validating walk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuardedCampaignReplayClosureError`] for a malformed root or
+    /// a frame count or length that differs from it.
+    pub(crate) fn from_stored(
+        root: Vec<u8>,
+        frames: Vec<BlobHandle>,
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let root = ClosureRoot::decode(root.into())?;
+        if frames.len() != root.frames.len() {
+            return Err(invalid("stored replay closure frame count differs"));
+        }
+        for (handle, summary) in frames.iter().zip(&root.frames) {
+            if handle.logical_length() != u64::from(summary.length) {
+                return Err(invalid("stored replay closure frame length differs"));
+            }
+        }
+
+        Ok(Self {
+            root: Arc::new(root),
+            frames: frames.into_iter().map(ClosureFrameSource::Stored).collect(),
+        })
+    }
+
+    /// Returns whether two closures share one root and frame list.
+    #[cfg(test)]
+    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.root, &other.root) && Arc::ptr_eq(&self.frames, &other.frames)
+    }
+
+    /// Returns the encoded root.
+    pub(crate) fn root_bytes(&self) -> &[u8] {
+        &self.root.bytes
+    }
+
+    /// Returns the content identity of the encoded root.
+    pub(crate) fn root_id(&self) -> ContentId {
+        closure_object_id(&self.root.bytes)
+    }
+
+    /// Returns each frame's content identity, in frame order.
+    pub(crate) fn frame_ids(&self) -> impl ExactSizeIterator<Item = ContentId> + '_ {
+        self.root.frames.iter().map(|frame| frame.id())
     }
 
     /// Validates exact record coverage and provenance for a selected schedule.
@@ -321,106 +469,15 @@ impl GuardedCampaignReplayClosure {
     /// # Errors
     ///
     /// Returns [`GuardedCampaignReplayClosureError`] when any schedule
-    /// selection is missing, any closure selection is unused, or exact
-    /// scenario, domain, default, model, or branch provenance differs.
+    /// selection is missing, any closure selection is unused, the closure is
+    /// not canonical, or exact scenario, domain, default, model, or branch
+    /// provenance differs.
     pub fn validate_for_schedule(
         &self,
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
     ) -> Result<(), GuardedCampaignReplayClosureError> {
-        self.validate_for_schedule_with_coverage(scenario, schedule, true)
-    }
-
-    fn validate_for_schedule_with_coverage(
-        &self,
-        scenario: &ScenarioDefForm,
-        schedule: &Schedule,
-        require_complete: bool,
-    ) -> Result<(), GuardedCampaignReplayClosureError> {
-        let scenario_id = crucible_campaign::ScenarioDefId::from_hash(CampaignHash::from_bytes(
-            scenario.id().bytes,
-        ));
-        let records = self
-            .selections
-            .iter()
-            .map(|record| Ok((record.selection.id()?, record)))
-            .collect::<Result<BTreeMap<_, _>, GuardedCampaignReplayClosureError>>()?;
-        let mut used = BTreeSet::new();
-
-        for (index, decision) in schedule.decisions().iter().enumerate() {
-            let Decision::Selection(decision) = decision else {
-                continue;
-            };
-            let selection = decision.selection()?;
-            let selection_id = selection.id()?;
-            let Some(record) = records.get(&selection_id) else {
-                if require_complete {
-                    return Err(GuardedCampaignReplayClosureError::Invalid {
-                        reason: "replay closure is missing a schedule selection",
-                    });
-                }
-                continue;
-            };
-            if record.selection != selection || record.opportunity.scenario() != scenario_id {
-                return Err(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "replay selection record differs from its schedule or scenario",
-                });
-            }
-            record.validate_references()?;
-            // Model-sampled app-random choices use the white-box doorbell rather
-            // than the guest selectable catalog; their provenance is checked below.
-            if matches!(record.opportunity.source(), ChoiceSource::Guest { .. })
-                && !matches!(selection.origin(), SelectionOrigin::ModelSample(_))
-                && scenario
-                    .selectables()
-                    .declaration(record.declaration.name())
-                    != Some(&record.declaration)
-            {
-                return Err(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "guest replay choice is not declared by its scenario",
-                });
-            }
-            match selection.origin() {
-                SelectionOrigin::Default | SelectionOrigin::LockedReplay => {
-                    selection.validate_replay(&record.opportunity, &record.domain)?;
-                }
-                SelectionOrigin::CampaignBranch { .. } => {
-                    let prefix = schedule.prefix(index)?;
-                    let parent = Configuration {
-                        def: scenario.scenario_def(),
-                        schedule: prefix,
-                    };
-                    let parent = crucible_campaign::ConfigurationId::from_hash(
-                        CampaignHash::from_bytes(parent.id().bytes),
-                    );
-                    selection.validate_branch_replay(
-                        &record.opportunity,
-                        &record.domain,
-                        record.opportunity.branch_point_id(parent),
-                    )?;
-                }
-                SelectionOrigin::ModelSample(_) => {
-                    crucible_engine::validate_app_random_model_selection(
-                        &selection,
-                        &record.declaration,
-                        &record.opportunity,
-                        &record.domain,
-                    )
-                    .map_err(|_| {
-                        GuardedCampaignReplayClosureError::Invalid {
-                            reason: "replay closure has unverified model-sample provenance",
-                        }
-                    })?;
-                }
-            }
-            used.insert(selection_id);
-        }
-        if used.len() != records.len() {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure contains a selection absent from the schedule",
-            });
-        }
-        Ok(())
+        self.walk(scenario, schedule, Coverage::Complete, |_, _| Ok(()))
     }
 
     pub(super) fn publish(
@@ -429,23 +486,143 @@ impl GuardedCampaignReplayClosure {
         scenario: &ScenarioDefForm,
         schedule: &Schedule,
     ) -> Result<(), GuardedCampaignReplayClosureError> {
-        self.validate_for_schedule(scenario, schedule)?;
-        for record in &self.selections {
-            let domain = repository.publish_choice_domain(&record.domain)?;
-            let declaration = repository.publish_selectable(&record.declaration)?;
-            let opportunity = repository.publish_choice_opportunity(&record.opportunity)?;
-            let selection = repository.publish_selection(&record.selection)?;
-            if domain != record.selection.domain()
-                || declaration != record.opportunity.declaration()
-                || opportunity != record.selection.opportunity()
-                || selection != record.selection.id()?
-            {
-                return Err(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "published replay closure identity changed",
-                });
+        self.walk(scenario, schedule, Coverage::Complete, |record, fresh| {
+            // Each record is published when first referenced; later entries
+            // name the same immutable object.
+            let mut unchanged = true;
+            if fresh.domain {
+                unchanged &=
+                    repository.publish_choice_domain(&record.domain)? == record.selection.domain();
+            }
+            if fresh.declaration {
+                unchanged &= repository.publish_selectable(&record.declaration)?
+                    == record.opportunity.declaration();
+            }
+            if fresh.opportunity {
+                unchanged &= repository.publish_choice_opportunity(&record.opportunity)?
+                    == record.selection.opportunity();
+            }
+            unchanged &=
+                repository.publish_selection(&record.selection)? == record.selection.id()?;
+            if !unchanged {
+                return Err(invalid("published replay closure identity changed"));
+            }
+            Ok(())
+        })
+    }
+
+    fn from_builder(builder: ClosureBuilder) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let (root, frames) = builder.finish()?;
+        Ok(Self {
+            root: Arc::new(root),
+            frames: frames.into_iter().map(ClosureFrameSource::Memory).collect(),
+        })
+    }
+
+    /// Authenticates in-memory frames against a root, then proves the whole
+    /// closure structurally canonical.
+    fn from_frame_parts(
+        root: Arc<[u8]>,
+        frames: Vec<Arc<[u8]>>,
+    ) -> Result<Self, GuardedCampaignReplayClosureError> {
+        let root = ClosureRoot::decode(root)?;
+        if frames.len() != root.frames.len() {
+            return Err(invalid("replay closure frame count differs from its root"));
+        }
+        for (frame, summary) in frames.iter().zip(&root.frames) {
+            if frame.len() != summary.length as usize || closure_object_id(frame) != summary.id() {
+                return Err(invalid("replay closure frame differs from its root digest"));
             }
         }
-        Ok(())
+
+        let closure = Self {
+            root: Arc::new(root),
+            frames: frames.into_iter().map(ClosureFrameSource::Memory).collect(),
+        };
+        closure.validate_structure()?;
+        Ok(closure)
+    }
+
+    /// Proves record references and frame packing canonical without a schedule.
+    fn validate_structure(&self) -> Result<(), GuardedCampaignReplayClosureError> {
+        let mut reader = FrameReader::new(self);
+        let mut canonical = CanonicalWalk::new();
+        for ordinal in 0..self.root.entry_count {
+            let entry = reader.entry(ordinal)?;
+            let records = canonical.resolve(&mut reader, entry)?;
+            records
+                .opportunity
+                .validate_references(&records.declaration, &records.domain)?;
+        }
+        canonical.finish(&self.root)
+    }
+
+    /// Walks the schedule with this closure's entries in lockstep.
+    ///
+    /// Every covered selection is authenticated against its records and
+    /// scenario provenance, then passed to `visit` with the records first
+    /// referenced by its entry. The walk re-encodes the entries it consumes
+    /// and requires the result to equal this closure's root.
+    fn walk(
+        &self,
+        scenario: &ScenarioDefForm,
+        schedule: &Schedule,
+        coverage: Coverage<'_>,
+        mut visit: impl FnMut(
+            &GuardedCampaignReplaySelection,
+            FreshRecords,
+        ) -> Result<(), GuardedCampaignReplayClosureError>,
+    ) -> Result<(), GuardedCampaignReplayClosureError> {
+        let provenance = Provenance::new(scenario, schedule);
+        let mut reader = FrameReader::new(self);
+        let mut canonical = CanonicalWalk::new();
+        let mut next_entry = 0_u64;
+
+        for (index, decision) in schedule.decision_history().iter().enumerate() {
+            let Decision::Selection(decision) = decision else {
+                continue;
+            };
+            let selection = decision.selection()?;
+            let digest = selection_digest(&selection)?;
+            let entry = match next_entry < self.root.entry_count {
+                true => Some(reader.entry(next_entry)?).filter(|entry| entry.selection == digest),
+                false => None,
+            };
+
+            let Some(entry) = entry else {
+                match coverage {
+                    Coverage::Complete => {
+                        return Err(invalid("replay closure is missing a schedule selection"));
+                    }
+                    Coverage::Owned => {}
+                    Coverage::Repository(store) => {
+                        let resolved = store.resolve_selection(selection.id()?)?;
+                        let record = GuardedCampaignReplaySelection::from_resolved(&resolved);
+                        if record.selection != selection {
+                            return Err(invalid("resolved replay selection differs"));
+                        }
+                        record.validate_references()?;
+                        provenance.validate(index, &record)?;
+                    }
+                }
+                continue;
+            };
+
+            next_entry += 1;
+            let records = canonical.resolve(&mut reader, entry)?;
+            let fresh = records.fresh;
+            let record = records.with_selection(selection);
+            record.validate_references()?;
+            provenance.validate(index, &record)?;
+            visit(&record, fresh)?;
+        }
+
+        if next_entry != self.root.entry_count {
+            return Err(invalid(
+                "replay closure contains a selection absent from the schedule",
+            ));
+        }
+        canonical.finish(&self.root)
     }
 }
 
@@ -479,55 +656,62 @@ pub fn validate_remote_resume_replay_closure(
         return Err(GuardedCampaignReplayClosureError::ResumeSourceMismatch);
     }
 
-    let closure = GuardedCampaignReplayClosure::from_canonical_bytes(envelope.payload())?;
+    let closure = GuardedCampaignReplayClosure::from_frame_objects(envelope.frames())?;
     closure.validate_for_schedule(scenario, &configuration.schedule)
 }
 
-fn charge_resolved_selection(
-    encoded_bytes: &mut usize,
-    resolved: &ResolvedSelection,
-) -> Result<(), GuardedCampaignReplayClosureError> {
-    charge_canonical_record(encoded_bytes, resolved.domain().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.declaration().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.opportunity().canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, resolved.selection().canonical_bytes())?;
-    Ok(())
+/// Returns whether a schedule holds any selection decision.
+pub(super) fn schedule_has_selection(schedule: &Schedule) -> bool {
+    schedule
+        .decision_history()
+        .iter()
+        .any(|decision| matches!(decision, Decision::Selection(_)))
 }
 
-fn charge_selection_record(
-    encoded_bytes: &mut usize,
-    record: &GuardedCampaignReplaySelection,
-) -> Result<(), GuardedCampaignReplayClosureError> {
-    charge_canonical_record(encoded_bytes, record.domain.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.declaration.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.opportunity.canonical_bytes())?;
-    charge_canonical_record(encoded_bytes, record.selection.canonical_bytes())?;
-    Ok(())
+fn selection_digest(selection: &Selection) -> Result<[u8; 32], GuardedCampaignReplayClosureError> {
+    Ok(selection.id()?.content_id().digest())
 }
 
-fn charge_canonical_record(
-    encoded_bytes: &mut usize,
-    record: Vec<u8>,
+/// Appends one selection's entry and any records it introduces.
+fn push_selection(
+    builder: &mut ClosureBuilder,
+    selection: &Selection,
+    domain: &ChoiceDomain,
+    declaration: &SelectableDeclaration,
+    opportunity: &ChoiceOpportunity,
 ) -> Result<(), GuardedCampaignReplayClosureError> {
-    *encoded_bytes = encoded_bytes
-        .checked_add(std::mem::size_of::<u32>())
-        .and_then(|bytes| bytes.checked_add(record.len()))
-        .ok_or(GuardedCampaignReplayClosureError::Invalid {
-            reason: "replay closure encoded size overflowed",
-        })?;
-    if *encoded_bytes > MAX_REPLAY_CLOSURE_BYTES {
-        return Err(GuardedCampaignReplayClosureError::Invalid {
-            reason: "replay closure exceeds its encoded byte bound",
-        });
-    }
-    Ok(())
+    // Records are keyed by the identities the selection and opportunity
+    // name, so a re-referenced record is neither encoded nor hashed again.
+    // A record that does not match its claimed identity fails the walk
+    // that validates every constructed closure.
+    let domain = builder.record(
+        RecordKind::Domain,
+        selection.domain().content_id().digest(),
+        || domain.canonical_bytes(),
+    )?;
+    let declaration = builder.record(
+        RecordKind::Declaration,
+        opportunity.declaration().content_id().digest(),
+        || declaration.canonical_bytes(),
+    )?;
+    let opportunity = builder.record(
+        RecordKind::Opportunity,
+        selection.opportunity().content_id().digest(),
+        || opportunity.canonical_bytes(),
+    )?;
+    builder.entry(Entry {
+        selection: selection_digest(selection)?,
+        domain,
+        declaration,
+        opportunity,
+    })
 }
 
 impl GuardedCampaignReplaySelection {
     fn from_resolved(resolved: &ResolvedSelection) -> Self {
         Self {
-            domain: resolved.domain().clone(),
-            declaration: resolved.declaration().clone(),
+            domain: Arc::new(resolved.domain().clone()),
+            declaration: Arc::new(resolved.declaration().clone()),
             opportunity: resolved.opportunity().clone(),
             selection: resolved.selection().clone(),
         }
@@ -541,11 +725,11 @@ impl GuardedCampaignReplaySelection {
         &self.opportunity
     }
 
-    pub(crate) const fn declaration(&self) -> &SelectableDeclaration {
+    pub(crate) fn declaration(&self) -> &SelectableDeclaration {
         &self.declaration
     }
 
-    pub(crate) const fn domain(&self) -> &ChoiceDomain {
+    pub(crate) fn domain(&self) -> &ChoiceDomain {
         &self.domain
     }
 
@@ -588,6 +772,9 @@ pub enum GuardedCampaignReplayClosureError {
     /// Publishing or resolving a closure record failed.
     #[error("campaign replay closure repository operation failed: {0}")]
     Repository(#[from] CampaignRepositoryError),
+    /// Reading a stored closure frame failed.
+    #[error("campaign replay closure frame could not be read: {0}")]
+    Store(#[source] StoreError),
     /// Reserving bounded closure storage failed.
     #[error("campaign replay closure allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
@@ -597,137 +784,4 @@ pub enum GuardedCampaignReplayClosureError {
         /// Stable failure reason.
         reason: &'static str,
     },
-}
-
-pub(super) fn schedule_selection_ids(
-    schedule: &Schedule,
-) -> Result<Vec<SelectionId>, GuardedCampaignReplayClosureError> {
-    let mut ids = BTreeSet::new();
-    for decision in schedule.decisions() {
-        if let Decision::Selection(decision) = decision {
-            ids.insert(decision.selection()?.id()?);
-            if ids.len() > MAX_REPLAY_CLOSURE_SELECTIONS {
-                return Err(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "selection count exceeds the replay-closure bound",
-                });
-            }
-        }
-    }
-    Ok(ids.into_iter().collect())
-}
-
-fn append_record(
-    output: &mut Vec<u8>,
-    record: &[u8],
-) -> Result<(), GuardedCampaignReplayClosureError> {
-    let length =
-        u32::try_from(record.len()).map_err(|_| GuardedCampaignReplayClosureError::Invalid {
-            reason: "replay closure record length cannot be represented",
-        })?;
-    append_bytes(output, &length.to_le_bytes())?;
-    append_bytes(output, record)
-}
-
-fn append_bytes(
-    output: &mut Vec<u8>,
-    bytes: &[u8],
-) -> Result<(), GuardedCampaignReplayClosureError> {
-    let next = output.len().checked_add(bytes.len()).ok_or(
-        GuardedCampaignReplayClosureError::Invalid {
-            reason: "replay closure encoded size overflowed",
-        },
-    )?;
-    if next > MAX_REPLAY_CLOSURE_BYTES {
-        return Err(GuardedCampaignReplayClosureError::Invalid {
-            reason: "replay closure exceeds its encoded byte bound",
-        });
-    }
-    output
-        .try_reserve(bytes.len())
-        .map_err(GuardedCampaignReplayClosureError::Allocation)?;
-    output.extend_from_slice(bytes);
-    Ok(())
-}
-
-struct ReplayClosureDecoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
-
-impl<'a> ReplayClosureDecoder<'a> {
-    fn new(bytes: &'a [u8]) -> Result<Self, GuardedCampaignReplayClosureError> {
-        if bytes.get(..REPLAY_CLOSURE_MAGIC.len()) != Some(REPLAY_CLOSURE_MAGIC) {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure has an invalid header",
-            });
-        }
-        Ok(Self {
-            bytes,
-            cursor: REPLAY_CLOSURE_MAGIC.len(),
-        })
-    }
-
-    fn read_u32(&mut self) -> Result<u32, GuardedCampaignReplayClosureError> {
-        let end = self
-            .cursor
-            .checked_add(4)
-            .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure offset overflowed",
-            })?;
-        let value =
-            self.bytes
-                .get(self.cursor..end)
-                .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "replay closure is truncated",
-                })?;
-        self.cursor = end;
-        Ok(u32::from_le_bytes(value.try_into().map_err(|_| {
-            GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure integer is truncated",
-            }
-        })?))
-    }
-
-    fn read_record(&mut self) -> Result<&'a [u8], GuardedCampaignReplayClosureError> {
-        let length = self.read_u32()? as usize;
-        let end =
-            self.cursor
-                .checked_add(length)
-                .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "replay closure record offset overflowed",
-                })?;
-        let record =
-            self.bytes
-                .get(self.cursor..end)
-                .ok_or(GuardedCampaignReplayClosureError::Invalid {
-                    reason: "replay closure record is truncated",
-                })?;
-        self.cursor = end;
-        Ok(record)
-    }
-
-    fn finish(self) -> Result<(), GuardedCampaignReplayClosureError> {
-        if self.cursor != self.bytes.len() {
-            return Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure has trailing bytes",
-            });
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn collection_charge_includes_record_framing_before_retention() {
-        let mut encoded_bytes = MAX_REPLAY_CLOSURE_BYTES - std::mem::size_of::<u32>();
-        assert!(matches!(
-            charge_canonical_record(&mut encoded_bytes, vec![0]),
-            Err(GuardedCampaignReplayClosureError::Invalid {
-                reason: "replay closure exceeds its encoded byte bound"
-            })
-        ));
-    }
 }

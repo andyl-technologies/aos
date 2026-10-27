@@ -2,16 +2,18 @@
 
 use super::*;
 use crucible_campaign::{
-    CampaignTraceKind, GetCampaignTraceChunkRequest, MAX_CAMPAIGN_TRACE_BYTES,
-    MAX_CAMPAIGN_TRACE_CHUNK_BYTES,
+    CampaignTraceKind, GetCampaignTraceChunkRequest, MAX_CAMPAIGN_TRACE_CHUNK_BYTES,
 };
-use crucible_daemon::CrucibleMeasurementReplayEvidence;
 use crucible_daemon::campaign_store_composition::{ContentId, ObjectKind};
+use crucible_daemon::{
+    AttemptLogSegmentSource, CrucibleMeasurementError, CrucibleMeasurementReplayEvidence,
+};
 use crucible_session::engine::{
-    EffectSpecification, FaultCoordinate, FaultDirection, FaultOperation, FaultResourceLimits,
-    GuestMeasurementEvent, GuestMeasurementValue, GuestSemanticMarkerDetail,
-    NetworkEffectSpecification, ObservableEventPayload, ResolvedEffectTrace, ResolvedFaultTarget,
-    SchedulerEventLogEntry, SchedulerEventLogPayload,
+    EffectSpecification, FaultCoordinate, FaultDirection, FaultOperation, GuestMeasurementEvent,
+    GuestMeasurementValue, GuestSemanticMarkerDetail, NetworkEffectSpecification,
+    ObservableEventPayload, ResolvedEffectTraceManifest, ResolvedFaultTarget,
+    ResolvedReplayWorkItem, SchedulerEventLogEntry, SchedulerEventLogPayload,
+    decode_resolved_effect_trace_segment,
 };
 use serde::Serialize;
 
@@ -50,7 +52,91 @@ where
                 "authenticated attempt event log is invalid: {error}"
             ))
         })?;
-    let (trace_id, trace) = if observation.resolved_effect_trace().is_some() {
+    // Segments are fetched one at a time and authenticated against the
+    // leaf's manifest before their entries are projected.
+    let segments = DownloadedSegments {
+        client,
+        principal,
+        campaign,
+        snapshot,
+        attempt,
+        observation,
+    };
+    let mut projection = EventLogProjection::default();
+    events
+        .try_for_each_entry(&segments, |entry| {
+            projection.observe(entry);
+            Ok::<_, CrucibleMeasurementError>(())
+        })
+        .map_err(|error| {
+            backend_error(format!(
+                "authenticated attempt event log is invalid: {error}"
+            ))
+        })?;
+    let trace_id = if observation.resolved_effect_trace().is_some() {
+        let id = project_resolved_effect_trace(
+            client,
+            principal,
+            campaign,
+            snapshot,
+            attempt,
+            observation,
+            &mut projection,
+        )?;
+        Some(id.to_string())
+    } else {
+        None
+    };
+
+    Ok(projection.finish(trace_id, event_id.to_string()))
+}
+
+/// Streams an attempt's segmented resolved-effect trace into `projection`.
+///
+/// The manifest must reference exactly the segments the observation lists.
+/// Each segment is downloaded, authenticated against its manifest reference,
+/// projected, and dropped before the next one is read.
+fn project_resolved_effect_trace<S>(
+    client: &CampaignClient<S>,
+    principal: &CampaignPrincipal,
+    campaign: &CampaignName,
+    snapshot: CampaignSnapshotId,
+    attempt: AttemptId,
+    observation: &Observation,
+    projection: &mut EventLogProjection,
+) -> Result<ContentId, CliError>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    let invalid = |error: &dyn std::fmt::Display| {
+        backend_error(format!(
+            "authenticated attempt effect trace is invalid: {error}"
+        ))
+    };
+    let listed = observation
+        .resolved_effect_trace()
+        .ok_or_else(|| backend_error("attempt observation has no resolved-effect trace"))?;
+
+    let (manifest_id, manifest_bytes) = download_attempt_trace(
+        client,
+        principal,
+        campaign,
+        snapshot,
+        attempt,
+        observation,
+        CampaignTraceKind::ResolvedEffect,
+    )?;
+    let manifest = ResolvedEffectTraceManifest::from_canonical_bytes(&manifest_bytes)
+        .map_err(|error| invalid(&error))?;
+    if !manifest.segment_ids().eq(listed.segments().iter().copied()) {
+        return Err(backend_error(
+            "attempt effect trace manifest differs from the observation's segments",
+        ));
+    }
+
+    let mut work_item_index = 0_usize;
+    for segment in manifest.segments() {
         let (id, bytes) = download_attempt_trace(
             client,
             principal,
@@ -58,28 +144,54 @@ where
             snapshot,
             attempt,
             observation,
-            CampaignTraceKind::ResolvedEffect,
+            CampaignTraceKind::ResolvedEffectSegment(segment.id),
         )?;
-        let trace = ResolvedEffectTrace::from_canonical_bytes(
-            &bytes,
-            FaultResourceLimits::compiled_maximum(),
-        )
-        .map_err(|error| {
-            backend_error(format!(
-                "authenticated attempt effect trace is invalid: {error}"
-            ))
-        })?;
-        (Some(id.to_string()), Some(trace))
-    } else {
-        (None, None)
-    };
+        if id != segment.id {
+            return Err(backend_error("attempt trace returned another segment"));
+        }
+        let items = decode_resolved_effect_trace_segment(segment, &bytes)
+            .map_err(|error| invalid(&error))?;
+        for item in &items {
+            projection.observe_work_item(work_item_index, item);
+            work_item_index += 1;
+        }
+    }
+    Ok(manifest_id)
+}
 
-    Ok(project_attempt_effect_evidence(
-        trace_id,
-        trace.as_ref(),
-        event_id.to_string(),
-        events.entries(),
-    ))
+/// Reads one attempt's event-log segments through the campaign service.
+struct DownloadedSegments<'request, S> {
+    client: &'request CampaignClient<S>,
+    principal: &'request CampaignPrincipal,
+    campaign: &'request CampaignName,
+    snapshot: CampaignSnapshotId,
+    attempt: AttemptId,
+    observation: &'request Observation,
+}
+
+impl<S> AttemptLogSegmentSource for DownloadedSegments<'_, S>
+where
+    S: CampaignService,
+    S::Error: CampaignServiceFailureSource,
+{
+    fn segment(&self, id: ContentId) -> std::io::Result<Vec<u8>> {
+        let (trace, bytes) = download_attempt_trace(
+            self.client,
+            self.principal,
+            self.campaign,
+            self.snapshot,
+            self.attempt,
+            self.observation,
+            CampaignTraceKind::MeasurementEventLogSegment(id),
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if trace != id {
+            return Err(std::io::Error::other(
+                "attempt trace returned another segment",
+            ));
+        }
+        Ok(bytes)
+    }
 }
 
 /// Public metadata and safe typed projections from authenticated trace leaves.
@@ -165,50 +277,43 @@ pub(super) struct CampaignUnsignedMetricSample {
     value: u64,
 }
 
-/// Projects only bounded typed fields from the canonical replay and event leaves.
-pub(super) fn project_attempt_effect_evidence(
+/// Projects only bounded typed fields from an in-memory event log and trace.
+#[cfg(test)]
+fn project_attempt_effect_evidence(
     trace_id: Option<String>,
-    trace: Option<&ResolvedEffectTrace>,
+    work_items: &[ResolvedReplayWorkItem],
     measurement_event_log: String,
     events: &[SchedulerEventLogEntry],
 ) -> CampaignAttemptEffectEvidence {
-    let mut network_effect_count = 0;
-    let mut network_effects = Vec::new();
-    if let Some(trace) = trace {
-        for (work_item_index, work_item) in trace.work_items.iter().enumerate() {
-            for (record_index, record) in work_item.records.iter().enumerate() {
-                let EffectSpecification::Network(specification) = record.request.specification()
-                else {
-                    continue;
-                };
-                network_effect_count += 1;
-                if network_effects.len() >= MAX_PROJECTED_ITEMS {
-                    continue;
-                }
-                network_effects.push(CampaignNetworkEffect {
-                    work_item_index,
-                    record_index,
-                    binding: record.binding.to_string(),
-                    effect: record.effect.to_string(),
-                    kind: network_effect_kind(specification),
-                    target: record.target.clone(),
-                    operation: record.operation,
-                    direction: record.direction,
-                    coordinate: record.coordinate,
-                    evidence_digest: record.evidence_digest.to_hex(),
-                    parameters: network_parameters(specification),
-                });
-            }
-        }
-    }
-
-    let mut semantic_marker_count = 0;
-    let mut semantic_markers = Vec::new();
-    let mut route_event_count = 0;
-    let mut route_events = Vec::new();
-    let mut metric_sample_count = 0;
-    let mut metric_samples = Vec::new();
+    let mut projection = EventLogProjection::default();
     for entry in events {
+        projection.observe(entry);
+    }
+    for (index, item) in work_items.iter().enumerate() {
+        projection.observe_work_item(index, item);
+    }
+    projection.finish(trace_id, measurement_event_log)
+}
+
+/// Bounded public projections accumulated one entry or work item at a time.
+///
+/// Counts cover every entry and record; retained items stop at the public
+/// limit. The event log and the resolved-effect trace can therefore both be
+/// streamed segment by segment.
+#[derive(Default)]
+pub(super) struct EventLogProjection {
+    network_effect_count: usize,
+    network_effects: Vec<CampaignNetworkEffect>,
+    semantic_marker_count: usize,
+    semantic_markers: Vec<CampaignSemanticMarker>,
+    route_event_count: usize,
+    route_events: Vec<CampaignRouteEvent>,
+    metric_sample_count: usize,
+    metric_samples: Vec<CampaignUnsignedMetricSample>,
+}
+
+impl EventLogProjection {
+    pub(super) fn observe(&mut self, entry: &SchedulerEventLogEntry) {
         match entry.payload() {
             SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
                 node,
@@ -217,9 +322,9 @@ pub(super) fn project_attempt_effect_evidence(
                 details,
                 ..
             }) => {
-                semantic_marker_count += 1;
-                if semantic_markers.len() < MAX_PROJECTED_ITEMS {
-                    semantic_markers.push(CampaignSemanticMarker {
+                self.semantic_marker_count += 1;
+                if self.semantic_markers.len() < MAX_PROJECTED_ITEMS {
+                    self.semantic_markers.push(CampaignSemanticMarker {
                         sequence: entry.sequence(),
                         entry: entry.content_hash().to_hex(),
                         node: node.name.clone(),
@@ -230,9 +335,9 @@ pub(super) fn project_attempt_effect_evidence(
                 if marker == "network.failover.observed"
                     && let Some((path, route_sequence)) = route_details(details)
                 {
-                    route_event_count += 1;
-                    if route_events.len() < MAX_PROJECTED_ITEMS {
-                        route_events.push(CampaignRouteEvent {
+                    self.route_event_count += 1;
+                    if self.route_events.len() < MAX_PROJECTED_ITEMS {
+                        self.route_events.push(CampaignRouteEvent {
                             event_sequence: entry.sequence(),
                             entry: entry.content_hash().to_hex(),
                             node: node.name.clone(),
@@ -255,9 +360,9 @@ pub(super) fn project_attempt_effect_evidence(
                     },
                 ..
             }) => {
-                metric_sample_count += 1;
-                if metric_samples.len() < MAX_PROJECTED_ITEMS {
-                    metric_samples.push(CampaignUnsignedMetricSample {
+                self.metric_sample_count += 1;
+                if self.metric_samples.len() < MAX_PROJECTED_ITEMS {
+                    self.metric_samples.push(CampaignUnsignedMetricSample {
                         event_sequence: entry.sequence(),
                         entry: entry.content_hash().to_hex(),
                         node: node.name.clone(),
@@ -273,22 +378,58 @@ pub(super) fn project_attempt_effect_evidence(
         }
     }
 
-    CampaignAttemptEffectEvidence {
-        schema: "crucible.cli.campaign-attempt-effect-evidence.v2",
-        resolved_effect_trace: trace_id,
-        measurement_event_log,
-        network_effect_count,
-        network_effects_truncated: network_effect_count > network_effects.len(),
-        network_effects,
-        semantic_marker_count,
-        semantic_markers_truncated: semantic_marker_count > semantic_markers.len(),
-        semantic_markers,
-        route_event_count,
-        route_events_truncated: route_event_count > route_events.len(),
-        route_events,
-        metric_sample_count,
-        metric_samples_truncated: metric_sample_count > metric_samples.len(),
-        metric_samples,
+    /// Projects the applied network records of one resolved-effect work item.
+    pub(super) fn observe_work_item(
+        &mut self,
+        work_item_index: usize,
+        work_item: &ResolvedReplayWorkItem,
+    ) {
+        for (record_index, record) in work_item.records.iter().enumerate() {
+            let EffectSpecification::Network(specification) = record.request.specification() else {
+                continue;
+            };
+            self.network_effect_count += 1;
+            if self.network_effects.len() >= MAX_PROJECTED_ITEMS {
+                continue;
+            }
+            self.network_effects.push(CampaignNetworkEffect {
+                work_item_index,
+                record_index,
+                binding: record.binding.to_string(),
+                effect: record.effect.to_string(),
+                kind: network_effect_kind(specification),
+                target: record.target.clone(),
+                operation: record.operation,
+                direction: record.direction,
+                coordinate: record.coordinate,
+                evidence_digest: record.evidence_digest.to_hex(),
+                parameters: network_parameters(specification),
+            });
+        }
+    }
+
+    pub(super) fn finish(
+        self,
+        trace_id: Option<String>,
+        measurement_event_log: String,
+    ) -> CampaignAttemptEffectEvidence {
+        CampaignAttemptEffectEvidence {
+            schema: "crucible.cli.campaign-attempt-effect-evidence.v2",
+            resolved_effect_trace: trace_id,
+            measurement_event_log,
+            network_effect_count: self.network_effect_count,
+            network_effects_truncated: self.network_effect_count > self.network_effects.len(),
+            network_effects: self.network_effects,
+            semantic_marker_count: self.semantic_marker_count,
+            semantic_markers_truncated: self.semantic_marker_count > self.semantic_markers.len(),
+            semantic_markers: self.semantic_markers,
+            route_event_count: self.route_event_count,
+            route_events_truncated: self.route_event_count > self.route_events.len(),
+            route_events: self.route_events,
+            metric_sample_count: self.metric_sample_count,
+            metric_samples_truncated: self.metric_sample_count > self.metric_samples.len(),
+            metric_samples: self.metric_samples,
+        }
     }
 }
 
@@ -392,7 +533,7 @@ where
                 "attempt trace observation changed during read",
             ));
         }
-        if response.total_bytes() > MAX_CAMPAIGN_TRACE_BYTES
+        if response.total_bytes() > kind.max_leaf_bytes()
             || expected_leaf.is_some_and(|leaf| leaf != response.trace())
             || expected_length.is_some_and(|length| length != response.total_bytes())
         {
@@ -425,19 +566,11 @@ fn verify_complete_trace_content_id(trace: ContentId, bytes: &[u8]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crucible_engine::{
-        GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, NodeId,
-    };
-    use ::crucible_engine::model::FaultReplayMode;
+    use ::crucible_engine::{GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, NodeId};
 
     #[test]
     fn projects_authenticated_marker_identity_without_guest_details()
     -> Result<(), serde_json::Error> {
-        let trace = ResolvedEffectTrace {
-            mode: FaultReplayMode::LockedEffect,
-            work_items: Vec::new(),
-            cursor: 0,
-        };
         let marker = SchedulerEventLogEntry::guest_semantic_marker_observation(
             0,
             Icount { retired: 7 },
@@ -454,7 +587,7 @@ mod tests {
 
         let projected = project_attempt_effect_evidence(
             Some(String::from("trace-id")),
-            Some(&trace),
+            &[],
             String::from("event-id"),
             &[marker],
         );
@@ -521,7 +654,7 @@ mod tests {
 
         let projected = project_attempt_effect_evidence(
             None,
-            None,
+            &[],
             String::from("event-id"),
             &[success, route, loss],
         );
@@ -581,7 +714,7 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
 
         let projected =
-            project_attempt_effect_evidence(None, None, String::from("event-id"), &events);
+            project_attempt_effect_evidence(None, &[], String::from("event-id"), &events);
 
         assert_eq!(projected.metric_sample_count, MAX_PROJECTED_ITEMS + 1);
         assert_eq!(projected.metric_samples.len(), MAX_PROJECTED_ITEMS);

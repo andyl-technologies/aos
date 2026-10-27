@@ -291,10 +291,11 @@ GetCampaignFindingObjectRequestV1 = version | principal | campaign | snapshot |
 GetCampaignFindingObjectResponseV1 = version | request_digest |
                                      CampaignSnapshotV3 | FindingV4 |
                                      FindingObjectV1 | MerkleLookupProofV1
-FindingObjectV1 = 0 ObservationV14 |
-                  1 latest ObservationV14 |
-                  2 ReproductionArtifactV2 |
-                  3 minimized ReproductionArtifactV2
+FindingObjectV1 = 0 ObservationV16 |
+                  1 latest ObservationV16 |
+                  2 ReproductionArtifactV3 |
+                  3 minimized ReproductionArtifactV3 |
+                  4 ReproductionPayloadSegment(bool minimized, u32 index)
 
 ExplainCampaignAttemptRequestV1 = version | principal | campaign | snapshot |
                                   AttemptId
@@ -303,7 +304,7 @@ ExplainCampaignAttemptResponseV2 = version | request_digest |
                                    AttemptAdmissionV3 | BranchPathV2 |
                                    optional SelectionV2 | optional ProposalV2 |
                                    optional PlannerStepV4 |
-                                   optional ObservationV14 |
+                                   optional ObservationV16 |
                                    MerkleLookupProofV1 attempt_proof |
                                    MerkleLookupProofV1 admission_proof |
                                    optional MerkleLookupProofV1 proposal_proof |
@@ -708,7 +709,10 @@ component-message limit.
 `GetCampaignFindingObject` is the separately authorized dependency-body
 capability used by finding explanations. The request names one exact finding
 ID and one closed object kind: representative observation, latest occurrence,
-original reproduction, or minimized reproduction. The response carries the
+original reproduction, minimized reproduction, or the payload segment at one
+index of either reproduction. A segment response carries the segment's bytes,
+which a reader authenticates against the record's content ID and length
+before use. The response carries the
 complete anchoring snapshot and finding, an exact minimal lookup proof from
 `roots.findings`, and only the requested typed child. A checked reader MUST
 reconstruct the snapshot and finding IDs, derive the signature-index key using
@@ -724,7 +728,7 @@ exact attempt in the current authenticated snapshot. Two minimal accounting
 lookup proofs bind the complete `AttemptV9` body and its unique execution-basis
 `AttemptAdmissionV3`; a third proof binds the execution-basis `ProposalV2` in
 the exploration root for branch attempts, and an observations-root proof binds
-either the canonical `ObservationV14` or authenticated absence. The response
+either the canonical `ObservationV16` or authenticated absence. The response
 also carries the exact content-addressed `BranchPathV2` and, for a branch,
 `SelectionV2`. A checked reader reconstructs every typed ID, requires the
 attempt path and optional observation path to agree, requires the admission to
@@ -856,7 +860,7 @@ variant uses schema v10; noncurrent branch-request bodies and envelopes are reje
 
 Stop-condition tags 5 and 6 encode a nonzero absolute scheduler-quantum
 coordinate and a flat nonzero virtual-time-or-scheduler-quantum pair. They use
-`AttemptV9`, `BranchRequestV10`, `ObservationV14`, version-15
+`AttemptV9`, `BranchRequestV10`, `ObservationV16`, version-15
 `DiscoveryRequested`, and `SubmitCampaignDiscoveryRequestV4`. Every enclosing
 decoder requires that exact current schema. The scheduler coordinate
 comes from `SingleSchedulerCheckpointV2.quanta`; discovery-only calls that make
@@ -893,12 +897,17 @@ retained request, and recomputes every PUCT score from its by-value policy and
 owner-built guidance. Each response carries one bounded step/request page and
 returns the step's optional parent; the CLI follows at most 64 pages, charges at
 most 128 MiB of aggregate canonical response bytes, and applies the packaged
-planner's score/edge/position order across all returned candidates. Traversal
+planner's score/edge/position order across all returned candidates. A page
+that would exceed the byte budget ends the chain like the page bound: the
+report stops before that page and names its step as `next_step` (the first
+page is always admitted so that continuation makes progress). Traversal
 stops before a parent whose policy, engine, policy artifact, or planning view
 differs, because scores from another interpretation basis are not comparable.
 Exact branch-point and branch-request filters run only after proof and retained-
 request validation. An optional top-result cap is in `1..=65_536` and truncates
-only after global best-first ordering; the version-2 CLI report retains the
+only after global best-first ordering; the client selects those results with a
+bounded best-first fold that holds at most the cap per comparable basis and
+equals a stable sort followed by truncation; the version-2 CLI report retains the
 exact filter basis and pre-truncation matching count. With `--policy-groups`,
 the client does not stop at the first incompatible parent. It authenticates
 pages up to the same 64-page and 128-MiB limits, partitions them into
@@ -1390,9 +1399,10 @@ weight or implicit weight one, and fairness reserved. Guidance schema v2 always
 includes `objective_reward_micros`; any other schema is rejected rather than
 assigned an implicit neutral reward.
 
-The owner computes one batch per page. Aggregate credited observations and
-credit/path bodies retain the RFC 03 65,536-record/128-MiB limits; the canonical
-observation and finding roots are each scanned at most once; unique decoded
+The owner computes one batch per page. Each served branch point's credit
+index is streamed once into per-edge accumulators, coverage frequencies come
+from the RFC 03 coverage-identity frequency index, and the finding root is
+scanned at most once; the observation root is never scanned. Unique decoded
 choice-domain bodies are capped at 128 MiB; and distinct prospective raw
 weights charge at most 1,000,000 completed-edge normalization visits. Guidance
 schema v2 ranks higher exact total
@@ -1458,6 +1468,19 @@ and request-digest ordering. Each page reads its bounded window and one
 lookahead; current-head authentication supplies trusted roots for reused
 invocation dependencies. Basis objects require closure authentication, and the global closure bound is
 preserved. Roots lacking the scan index fail closed.
+
+Beam membership is projected per served page from snapshot indexes; no owner
+retains campaign-wide decoded observations. For each `Ready` page position the
+owner reads the earliest canonical discovering observation from the
+observation-root choice-source index (RFC 01), then enumerates that
+observation's cohort: the producing request's dense proposal ordinals, their
+proposal admissions, and `observations.attempt` for a request barrier, or the
+single attempt for a standalone barrier. One walk yields both modeled members
+and closure counts, and the walk fails closed when an attempt's execution basis
+differs from its proposal admission. A settled cohort decodes only its own
+members' observations, coverage projections, and evaluations. Request preflight
+and owner validation recompute the same page, so a candidate is identical in
+every page that contains its position.
 
 Bounded model-resolved finite masses and modeled generated sources are retained
 in the sole current branch-request schema v10. Their model and generator IDs are
@@ -2130,8 +2153,9 @@ capture and exact-checkpoint children and binds the full prepared payload. For
 a Complete v6 finding it authenticates the bounded full candidate inventory,
 copies only selected checkpoint closures into the campaign CAS, and publishes
 the semantic candidate and observation while that same guard still protects
-the unselected inventory. It then fsyncs the payload and digest into a hidden
-prepared-result journal. A short actor CAS changes `running` to
+the unselected inventory. It then fsyncs every referenced attempt-log
+segment, the payload, and its digest into a hidden prepared-result journal, so
+recovery never depends on the attempt's own segment directory. A short actor CAS changes `running` to
 `publishing(observation_id, candidate_id, exact_roots,
 prepared_result_digest)`, and the journal is promoted into its visible recovery
 namespace before the guard is released. Later publication outside the actor is
@@ -2144,7 +2168,7 @@ without materializing history.
 After restart, a complete publishing observation is reauthenticated and
 promoted without guest execution. If its closure is incomplete, a fresh daemon
 may recover publication under a new execution identity, but the committed
-observation ID remains fixed. Readers and writers use version 2.
+observation ID remains fixed. Readers and writers use journal-state version 3.
 
 The local Crucible execution adapter owns nested payload schemas. Scenario
 scenario payload version 3 is the strict `ScenarioDefForm` compact-binary V7
@@ -2178,7 +2202,8 @@ language-neutral guest opportunity coordinates from RFC 02. A `NextChoice`
 attempt retains the complete declaration/domain/opportunity discovery without
 replying. Other discovery execution records and returns the declared default.
 Those executor-produced selections are published with the observation candidate
-and bound as schema-v12 observation children. Candidate validation
+and bound through the observation's produced-selection map, keyed by the
+selected opportunity. Candidate validation
 requires each selection to resolve against one exact opportunity discovered by
 the same attempt, rejects repeated opportunity selection, and enforces the
 existing aggregate choice-record byte bound before publication. This makes the
@@ -2190,17 +2215,40 @@ replay also re-derives the edge from the exact current parent before publishing
 the reply. No request sequence, reply address, repository callback, or native
 QEMU value enters the semantic identity or selection engine.
 
-Before selection resolution, the adapter linearly preflights a maximum of
-4,096 selection decisions and 256 MiB of conservative aggregate prefix-byte
-work for campaign-branch provenance. Prefix-byte work is encoded schedule bytes
-multiplied by campaign-branch selection count, bounding repeated cloning and
-hashing of variable-sized decisions. The adapter returns immediately after that
-scan when no selections exist. Repository resolution and prefix authentication
-begin only after both bounds pass, preventing canonical maximum-sized schedules
-from turning persistent schedule-prefix construction into quadratic work. The
-repository resolves the accepted IDs as one batch with a 128 MiB aggregate
-unique-canonical-record-body limit; identical selections and shared
-opportunity/declaration/domain dependencies are decoded once and reused.
+Before selection resolution, the adapter decodes the selection decisions in
+one linear scan and returns immediately when none exist. It applies no
+selection-count or prefix-byte bound: campaign-branch provenance authenticates
+each parent as an identified prefix of the decoded configuration (RFC 02), so
+no prefix is copied, and the replay plan's branches share the target
+configuration's storage. A selected-origin restore charges that configuration
+once per resident holder and each branch only for its own struct and copied
+branch decisions. The repository then streams the accepted IDs through one
+selection resolver in schedule order (RFC 02); shared declaration and domain
+dependencies are decoded once while they fit its bounded cache. A
+selected-origin restore bounds the resolver's resident decoded records by its
+memory reservation.
+
+A selected continuation replays every origin attempt from its base, and each
+origin's reached configuration is a prefix of its successor's. Decoding keeps
+only the terminal origin's configuration and replay plan. It decodes every
+intermediate origin in turn under the restore's memory reservation and
+compares it with the terminal's restriction: its configuration is the
+terminal's prefix of the same length over shared decision storage, and its
+replay plan holds the terminal plan's branches inside that prefix. A matching
+origin keeps only its attempt, source stop, and length, and its decode charge
+is released, so the reservation is charged the largest single intermediate
+decode rather than the sum. An origin that is not such a restriction stays
+decoded and charged. Thin replay, continuation validation, and finding replay
+then rebuild one origin at a time. Thin replay time still grows with chain
+depth, so a long campaign should resume from an exact checkpoint at its last
+origin.
+
+- **[CCOMP-34]** Decoding a selected continuation's origin ancestry MUST keep
+  resident decoded configuration state independent of the number of origins
+  whose reached configurations are prefixes of the terminal origin's, charging
+  the restore's memory reservation the terminal origin and the largest single
+  intermediate decode, and every origin rebuilt from the terminal MUST equal
+  its independently decoded form.
 
 A mutable compare-and-swap error may be commit-indeterminate because rename
 precedes directory fsync. The supervisor reloads the exact state, and a
@@ -2252,9 +2300,15 @@ newly-discovered choice records, and observation bundle plus every
 already-published dependency. Each discovery carries its exact
 `SelectableDeclarationV1`, `ChoiceDomainV1`, and `ChoiceOpportunityV1`; the
 repository requires their content-derived IDs and copied semantic contract to
-agree before publication. One candidate carries at most 65,530 discoveries and
-at most 128 MiB of unique canonical declaration, domain, and opportunity
-bodies. Shared records are charged once. An invalid bundle writes nothing.
+agree before publication. One candidate carries at most 128 MiB of unique
+canonical declaration, domain, opportunity, and produced-selection bodies;
+shared records are charged once. This is the operational bound on one
+attempt's resident choice material. No count bound applies: the observation
+commits to the discoveries and selections through two paged maps (RFC 01), and
+the candidate holds both in canonical key order so the repository rebuilds the
+committed roots with one streaming pass each. An invalid bundle writes no
+bundle member; a root mismatch found while rebuilding leaves only unreachable
+map nodes.
 After the durable publishing root exists, the repository publishes those
 immutable content-addressed records without advancing a campaign ref. Only the
 coordinator may subsequently incorporate the authenticated observation through
@@ -2842,6 +2896,12 @@ entry binds the node-local draw ordinal, canonical stream, full seeded raw draw,
 selected value, and exact `SelectionId`; before any launch the lifecycle
 requires the aggregate plan entries and scheduler selection set to contain the
 same exact selection identities and rejects foreign or white-box-disabled nodes.
+Each node's plan holds at most 4,096 entries, so the scheduler selection set is
+bounded by that count per VM. A launch carries only the entries at or after its
+node-local draw offset: a genesis replay carries the whole plan, while an exact
+resume or retained hot-fork source restored at the target carries none. The
+bound therefore limits the substitutions of one genesis replay, not the depth
+of a resumed campaign.
 The plugin serves a substitution only
 after the live ordinal, stream, and draw agree and the selected value fits the
 live width. The scheduler independently keys the decoded selection by the exact
@@ -2875,7 +2935,10 @@ runner-owned checkpoint capability rather than constructing an observation.
 An unsafe boundary continues under the sticky request until capture becomes
 safe or the attempt reaches a terminal verdict. It stops on the first exact
 requested choice, named guest marker, virtual-time deadline, modeled event-count
-boundary, or scenario terminal verdict. A terminal verdict takes precedence
+boundary, or scenario terminal verdict. A named boundary is reached by either a
+plain guest marker or a guest semantic marker with that name, as in event-graph
+evaluation; a semantic marker counts only from a World node whose white-box
+policy is enabled. A terminal verdict takes precedence
 over a coincident checkpoint request, and no modeled stop is accepted while a
 network output remains globally uncommitted.
 
@@ -2890,18 +2953,28 @@ content-addressed objects for bounded GC; the campaign assignment root is not
 published until no-write authentication completes and the exact expected root
 is durably staged.
 
-The driver retains at most 1,000,000 dense scheduler entries, at most 64 MiB of
-their aggregate canonical identity material, and admits at most 1,000,000
-property-by-event evaluation visits. It deduplicates at most 65,530
+The driver retains the attempt event log as sealed segments plus an open tail
+under the storage limit of
+[`15-segmented-event-log.md`](15-segmented-event-log.md); no whole-log entry or
+byte bound applies. Assertion evaluation is the bounded fold of that chapter.
+It deduplicates
 self-contained discovered-choice bundles by exact opportunity identity, shares
 equal declaration/domain values by content identity, and enforces the candidate
 format's 128 MiB aggregate unique-record bound while discoveries arrive. After
 runner-owned shutdown, it appends the final dense event suffix under the same
-bounds before any semantic result is built. The complete retained log is checked by the offline
-assertion evaluator under the scenario's white-box and final-quiescence policy;
+limit before any semantic result is built. The complete log is checked, segment
+by segment, by the offline assertion evaluator under the scenario's white-box and final-quiescence policy;
 `Violated` and `NeverReachedFail` become failed campaign properties,
 `Passed`/`Satisfied` become passed properties, and other non-failing terminal
-states remain inconclusive. Any failed property takes the observation stop;
+states remain inconclusive. A stop from which the run can continue (a requested
+choice, named boundary, event count, virtual-time boundary, replay boundary, or
+observation other than an exhausted quantum budget) is graded as a continuing
+prefix: an unsatisfied `sometimes`, an unreached `reachable`, an armed
+`eventually` whose deadline lies ahead, and an `after-quiescence` predicate
+report `Undecided` and project as inconclusive, while a violation the prefix
+itself decides still fails. Terminal verdicts and exhausted time or quantum
+budgets end the run and finalize every obligation. Any failed property takes
+the observation stop;
 otherwise the exact requested or terminal stop is retained. Each unique basic
 block or named coverage point becomes the campaign coverage identity carrying
 the bytes of

@@ -1,4 +1,4 @@
-//! CPERF-9 campaign mutation scaling and restart conformance.
+//! CPERF-9 campaign mutation scaling, CPERF-11 cold validation, and restart conformance.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- conformance fixtures fail at the violated invariant.
@@ -162,6 +162,60 @@ impl MutableRefBackend for ConflictOnceRefBackend {
         }
         self.inner.compare_exchange(name, expected, next)
     }
+}
+
+#[test]
+fn cold_validation_resident_state_is_flat_in_ancestry_for_the_cperf11_contract() {
+    const SHORT: u64 = 64;
+    const LONG: u64 = 1_024;
+
+    let mut peaks = Vec::new();
+    for mutations in [SHORT, LONG] {
+        let (repository, reads, refs, lineage, policy) = fixture();
+        let name = format!("flat-cold-{mutations}");
+        let mut snapshot = repository
+            .create(&name, &lineage, &policy, &BTreeMap::new())
+            .expect("create campaign")
+            .snapshot_id();
+        for ordinal in 0..mutations {
+            let action = if ordinal % 2 == 0 {
+                CampaignControlAction::Resume
+            } else {
+                CampaignControlAction::Pause(ActiveAttemptPolicy::Drain)
+            };
+            let request = ControlRequest {
+                command: CampaignCommandId::from_hash(CampaignHash::derive(
+                    "gate.campaign-flat-cold",
+                    &ordinal.to_be_bytes(),
+                )),
+                expected_snapshot: snapshot,
+                action,
+            };
+            snapshot = repository
+                .apply_control(&name, &request)
+                .expect("apply control")
+                .new_snapshot;
+        }
+
+        let cold = CampaignRepository::new(reads, refs);
+        peaks.push(
+            cold.cold_validation_peak_resident(&name)
+                .expect("complete cold validation"),
+        );
+    }
+
+    // A sixteenfold longer ancestry may deepen its tries by a nibble, but the
+    // largest single transition walk must not grow with the snapshot count.
+    let (short, long) = (peaks[0], peaks[1]);
+    eprintln!("cperf11-cold-peak-resident: short={short} long={long}");
+    assert!(
+        long <= short + 128,
+        "cold walk state grew from {short} to {long}"
+    );
+    assert!(
+        long < LONG as usize,
+        "{long} resident entries for {LONG} snapshots"
+    );
 }
 
 #[test]

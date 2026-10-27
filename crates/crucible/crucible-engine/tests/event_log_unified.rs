@@ -127,7 +127,9 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
         initial,
         |_leaf: crucible_engine::ConditionLeaf<'_>| false,
     );
-    let firings = initial_pass.evaluate_event_graph(&graph, &mut EventGraphState::new());
+    let firings = initial_pass
+        .evaluate_event_graph(&graph, &mut EventGraphState::new())
+        .expect("console matchers are declared");
     assert_eq!(firings.len(), 1);
     let firing = crucible_engine::test_support::condition_payload_entry_for_test(
         1,
@@ -210,12 +212,30 @@ fn incremental_append_preserves_observations_and_cross_batch_timer_cancellation(
         let mut fresh = ConditionEvaluationPass::from_log_prefix(rebuilt, oracle);
         let condition = Condition::timer(timer.clone());
         let expected = matches!(index, 1 | 3);
-        assert_eq!(cached.evaluate_assertion_condition(&condition), expected);
-        assert_eq!(fresh.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(
+            cached
+                .evaluate_assertion_condition(&condition)
+                .expect("console matchers are declared"),
+            expected
+        );
+        assert_eq!(
+            fresh
+                .evaluate_assertion_condition(&condition)
+                .expect("console matchers are declared"),
+            expected
+        );
         let elapsed = log.condition_prefix().point().at().ticks - 3;
         let after = Condition::after(SimDuration { ticks: elapsed }, event.clone());
-        assert!(cached.evaluate_assertion_condition(&after));
-        assert!(fresh.evaluate_assertion_condition(&after));
+        assert!(
+            cached
+                .evaluate_assertion_condition(&after)
+                .expect("console matchers are declared")
+        );
+        assert!(
+            fresh
+                .evaluate_assertion_condition(&after)
+                .expect("console matchers are declared")
+        );
     }
     assert_eq!(log.offset().events, 10);
     assert_eq!(log.condition_prefix().event_log_offset(), log.offset());

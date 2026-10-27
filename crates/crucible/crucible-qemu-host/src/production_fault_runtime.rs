@@ -13,12 +13,12 @@ use crucible_engine::model::{
     BindingActionKind, BindingEvaluation, BindingSearchChoice, ContentHash, EffectSpecification,
     FaultAdapterManifests, FaultCoordinate, FaultExecutionError, FaultObservation,
     FaultObservationKind, FaultOpportunity, FaultReplayMode, FaultResourceLimitError,
-    FaultResourceLimits, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink,
-    HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy, NodeEffectSpecification,
-    NodeHangScope, NodeLifecycleTransition, NodeStatePolicy, NodeWatchdogPolicy,
-    OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction, ResolvedEffectTrace,
-    ResolvedFaultTarget, SearchChoiceId, SearchOverride, SignalArtifactProvider,
-    SignalBoundarySnapshot,
+    FaultResourceLimits, FaultRuntimeCheckpoint, FaultSignalPlan, FaultTraceStorage,
+    HostFaultActionSink, HostFaultActionState, HostFaultAdapterManifests, NodeBootPolicy,
+    NodeEffectSpecification, NodeHangScope, NodeLifecycleTransition, NodeStatePolicy,
+    NodeWatchdogPolicy, OwnedFaultExecutionRuntime, ReferencedSignalEvent, ResolvedBindingAction,
+    ResolvedEffectTrace, ResolvedFaultTarget, SearchChoiceId, SearchOverride,
+    SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible_engine::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_qemu_shmem::{
@@ -72,8 +72,8 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_active_rule_ids: QemuActionSet,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
     network_state: Option<ProductionNetworkStateCheckpoint>,
-    /// Referenced event occurrences retained for device recovery subscriptions.
-    emitted_events: Vec<ReferencedSignalEvent>,
+    /// Referenced-event history charges, chain digest, and live window.
+    referenced_events: ReferencedEventWindow,
     /// Drained QEMU occurrences awaiting a successfully committed boundary.
     pending_qemu_observations: Vec<FaultObservation>,
     /// Raw drained QEMU events retained until validation succeeds atomically.
@@ -115,6 +115,15 @@ impl ProductionNetworkStateCheckpoint {
     #[must_use]
     pub const fn id(&self) -> ContentHash {
         self.identity
+    }
+
+    /// Returns the encoded host network adapter state without consuming it.
+    ///
+    /// Exact checkpoint capture reads it to find the trace segments the
+    /// adapter's campaign effect log references.
+    #[must_use]
+    pub fn adapter_state(&self) -> &[u8] {
+        &self.adapter_state
     }
 
     /// Consumes the checkpoint into scheduler, pending-frame, and adapter state.
@@ -168,7 +177,7 @@ impl ProductionFaultRuntimeCheckpoint {
                 .qemu_active_rule_ids
                 .try_clone_with(|identity| Ok(*identity), allocation_error)?,
             network_state: self.network_state.clone(),
-            emitted_events: self.emitted_events.clone(),
+            referenced_events: self.referenced_events.clone(),
             pending_qemu_observations: self.pending_qemu_observations.clone(),
             pending_qemu_events: self.pending_qemu_events.try_clone_with(
                 |node| Ok(node.clone()),
@@ -189,6 +198,15 @@ impl ProductionFaultRuntimeCheckpoint {
     #[must_use]
     pub const fn network_state(&self) -> Option<&ProductionNetworkStateCheckpoint> {
         self.network_state.as_ref()
+    }
+
+    /// Returns the signal runtime continuation, absent for an inert plan.
+    ///
+    /// Its recorded trace position names the sealed trace segments an exact
+    /// checkpoint closure must retain beside it.
+    #[must_use]
+    pub const fn runtime_checkpoint(&self) -> Option<&FaultRuntimeCheckpoint> {
+        self.runtime.as_ref()
     }
 
     /// Returns the captured execution fingerprint for one QEMU node.
@@ -268,7 +286,7 @@ impl ProductionFaultRuntimeCheckpoint {
             &self.qemu_action_commits,
             &self.qemu_active_rule_ids,
             self.network_state.as_ref(),
-            &self.emitted_events,
+            &self.referenced_events,
             &self.pending_qemu_observations,
             &self.pending_qemu_events,
         )?;
@@ -329,6 +347,14 @@ pub enum ProductionFaultRuntimeError {
     /// A process-neutral checkpoint duplicate could not reserve ledger storage.
     #[error("cannot reserve bounded production fault-checkpoint clone storage")]
     CheckpointCloneAllocation,
+    /// A device consumer's view of the referenced-event window is inconsistent.
+    #[error("referenced-event consumer {consumer} {reason}")]
+    ReferencedEventWindow {
+        /// Hexadecimal identity of the consumer.
+        consumer: String,
+        /// Inconsistency that failed closed.
+        reason: &'static str,
+    },
 }
 
 /// One fully authenticated node lifecycle decision awaiting host application.
@@ -430,7 +456,7 @@ pub struct ProductionFaultRuntime {
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
     restored_network_state: Option<ProductionNetworkStateCheckpoint>,
-    emitted_events: Vec<ReferencedSignalEvent>,
+    referenced_events: ReferencedEventWindow,
     qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
     qemu_action_commits: QemuActionMap<CommittedQemuActionEvidence>,
     qemu_active_rule_ids: QemuActionSet,
@@ -468,6 +494,13 @@ pub(crate) use evaluation::map_fault_event_drain_error;
 use evaluation::runtime_collection_reservation;
 #[path = "production_fault_runtime/evidence.rs"]
 mod evidence;
+mod referenced_events;
+use referenced_events::{ChargedReferencedEvents, ReferencedEventUsage};
+pub use referenced_events::{
+    ReferencedEventConsumer, ReferencedEventCoordinate, ReferencedEventEvidence,
+    ReferencedEventSubscription, ReferencedEventWindow, RetainedReferencedEvent,
+    retained_recovery_subscriptions,
+};
 
 use checkpoint_identity::*;
 pub(crate) use evidence::*;

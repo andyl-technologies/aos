@@ -96,7 +96,7 @@ fn block_harness_exposes_device_visible_state() {
         "write must copy up exactly one page"
     );
     assert!(
-        overlay.dirty_pages().contains(&4096),
+        overlay.dirty_pages().any(|page| page == 4096),
         "the written page must be dirty ([IO-7])"
     );
     assert_eq!(h.device().length(), 12_288, "get-length is the base size");

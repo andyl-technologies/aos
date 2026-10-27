@@ -868,3 +868,67 @@ fn active_generation_prevents_aggregate_release_without_losing_lease_authority()
     assert_eq!(counters.finishes.load(Ordering::SeqCst), 0);
     assert_eq!(counters.quarantines.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn detached_guard_ignores_later_attempt_cancellation() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let mut guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("composed resource guard");
+
+    guard
+        .detach_execution_cancellation()
+        .expect("an uncanceled guard should detach");
+    cancellation.cancel_for_test();
+
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 0);
+    assert!(!guard.cancellation().same_incarnation(&cancellation));
+    guard
+        .check_operational_boundary()
+        .expect("the retained world should stay admitted");
+    guard.finish().expect("finish composed guard");
+    assert_eq!(counters.quarantines.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn cancellation_before_detach_keeps_the_attempt_binding() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let cancellation = ExecutionCancellation::default();
+    let mut guard = factory
+        .begin(resources, cancellation.clone(), None)
+        .expect("composed resource guard");
+    cancellation.cancel_for_test();
+
+    let detached = guard.detach_execution_cancellation();
+
+    assert!(matches!(
+        detached,
+        Err(QemuVmRealizationError::Canceled { .. })
+    ));
+    assert!(guard.cancellation().same_incarnation(&cancellation));
+    assert_eq!(counters.signals.load(Ordering::SeqCst), 1);
+    guard.finish().expect("finish composed guard");
+}
+
+#[test]
+fn terminal_guard_refuses_to_detach() {
+    let resources = resources(2);
+    let counters = Arc::new(HostCounters::default());
+    let mut factory = factory(resources, Arc::clone(&counters));
+    let mut guard = factory
+        .begin(resources, ExecutionCancellation::default(), None)
+        .expect("composed resource guard");
+    guard.finish().expect("finish composed guard");
+
+    let detached = guard.detach_execution_cancellation();
+
+    assert!(matches!(
+        detached,
+        Err(QemuVmRealizationError::Executor { .. })
+    ));
+}

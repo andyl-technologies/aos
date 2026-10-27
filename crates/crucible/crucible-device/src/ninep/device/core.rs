@@ -61,8 +61,8 @@ impl NinepDevice {
 
     /// Returns whether a visibility update identity already owns a version.
     #[must_use]
-    pub fn contains_visibility_update(&self, update_id: &[u8; 32]) -> bool {
-        self.visibility.contains_update(update_id)
+    pub fn contains_visibility_update(&self, key: &NinepVisibilityUpdateKey) -> bool {
+        self.visibility.contains_update(key)
     }
 
     /// Returns the maximum fid growth one request can commit.
@@ -83,19 +83,6 @@ impl NinepDevice {
         u64::from(candidate.is_some_and(|fid| {
             !self.server.fids().contains_key(&fid) && !self.virtual_fids.contains_key(&fid)
         }))
-    }
-
-    /// Returns the retained-session growth one request can commit.
-    ///
-    /// A version negotiation advances the session epoch. The old session only
-    /// remains separately owned when it already has visibility state; otherwise
-    /// the counted current-session placeholder moves to the new epoch at net
-    /// zero growth.
-    #[must_use]
-    pub fn potential_session_growth(&self, frame: &[u8]) -> u64 {
-        let begins_session = Message::decode(frame)
-            .is_ok_and(|message| matches!(message.body, TMessage::Version { .. }));
-        u64::from(begins_session && self.visibility.contains_session(self.session_epoch))
     }
 
     /// Builds a 9p device over `tree` with the given core and latency model.
@@ -173,41 +160,59 @@ impl NinepDevice {
 
     /// Commits one object update to the visibility continuation.
     ///
+    /// `prior_emissions` are the emissions of an event-released update's
+    /// event that the visibility state already consumed; see
+    /// [`NinepVisibilityState::commit`].
+    ///
     /// # Errors
     ///
-    /// Returns [`DeviceError`] for invalid content, conflicting identity, or a
-    /// bounded-state overflow.
+    /// Returns [`DeviceError`] for invalid content, conflicting identity, more
+    /// prior emissions than were consumed, or a bounded-state overflow.
     pub fn commit_visibility_update(
         &mut self,
-        update_id: [u8; 32],
+        key: NinepVisibilityUpdateKey,
         object: NinepObjectVersion,
         policy: NinepVisibilityPolicy,
         release: NinepVisibilityRelease,
         data_lag_nanos: u64,
+        prior_emissions: &[NinepEventEmission],
     ) -> Result<u64, DeviceError> {
         self.visibility.commit(
-            update_id,
+            key,
             object,
             policy,
             release,
             self.session_epoch,
             data_lag_nanos,
+            prior_emissions,
         )
     }
 
-    /// Advances the visible frontier from exact tick and event evidence.
-    /// Event map values use the same tick coordinate as `now_tick`.
+    /// Latches visibility updates from the retained signal emissions appended
+    /// since the last call; see [`NinepVisibilityState::observe_events_through`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when `consumed_through` precedes the cursor or
+    /// cannot hold `emissions`.
+    pub fn observe_visibility_events(
+        &mut self,
+        emissions: &[NinepEventEmission],
+        consumed_through: u64,
+    ) -> Result<(), DeviceError> {
+        self.visibility
+            .observe_events_through(emissions, consumed_through)
+    }
+
+    /// Advances the visible frontier at an exact simulation tick from fixed
+    /// release deadlines and latched event emissions.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
-    pub fn advance_visibility(
-        &mut self,
-        now_tick: u64,
-        observed_events: &BTreeMap<[u8; 32], u64>,
-    ) -> Result<(u64, u64), DeviceError> {
+    pub fn advance_visibility(&mut self, now_tick: u64) -> Result<(u64, u64), DeviceError> {
         self.visibility
-            .advance_visibility(self.session_epoch, now_tick, observed_events)
+            .advance_visibility(self.session_epoch, now_tick)
     }
 
     /// Returns the committed-versus-visible continuation.
@@ -249,7 +254,7 @@ impl NinepDevice {
             .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut server`
         // simultaneously, so serve through a detached server view.
-        Self::process_pending(
+        let result = Self::process_pending(
             &mut self.core,
             &mut self.server,
             &self.latency,
@@ -258,7 +263,8 @@ impl NinepDevice {
             &self.visibility,
             &mut self.virtual_fids,
             &mut self.session_epoch,
-        )
+        );
+        self.retire_ended_sessions(result)
     }
 
     /// Drains raw 9p request frames from a shared-memory inbox ring.
@@ -288,8 +294,10 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core
-            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot)
+        let result = self
+            .core
+            .process_shmem_inbox(&mut node, inbox, inbox_entries, producer_slot);
+        self.retire_ended_sessions(result)
     }
 
     /// Dequeues and computes at most one shared-memory 9p request.
@@ -313,8 +321,10 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core
-            .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot)
+        let result =
+            self.core
+                .process_one_shmem_request(&mut node, inbox, inbox_entries, producer_slot);
+        self.retire_ended_sessions(result)
     }
 
     /// Computes and schedules one already-decoded request without touching a
@@ -337,7 +347,19 @@ impl NinepDevice {
             virtual_fids: &mut self.virtual_fids,
             session_epoch: &mut self.session_epoch,
         };
-        self.core.compute_request(&mut node, request)
+        let result = self.core.compute_request(&mut node, request);
+        self.retire_ended_sessions(result)
+    }
+
+    /// Retires visibility frontiers of a session that a version negotiation
+    /// ended, then passes `result` through.
+    ///
+    /// Request computation borrows the visibility state immutably, so the
+    /// retirement runs once the compute step has released it. Only the current
+    /// epoch is ever queried, which keeps at most one session retained.
+    fn retire_ended_sessions<T>(&mut self, result: T) -> T {
+        self.visibility.retire_sessions_except(self.session_epoch);
+        result
     }
 
     /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
@@ -406,6 +428,48 @@ impl NinepDevice {
     ) -> Result<crate::SelectedDeliveryOutcome, crate::ShmemDeliveryFailure> {
         self.core
             .deliver_selected_to_shmem(at, selected, expected_payload, outbox, outbox_entries)
+    }
+
+    /// Publishes due 9p replies on the original reserved mapped transport ring.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a foreign producer before effects and preserves the exact
+    /// publication count for all original delivery failures.
+    pub fn advance_to_mapped_ring_with_commit_status(
+        &mut self,
+        limit: u64,
+        ring: crucible_qemu_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, crate::ShmemDeliveryFailure> {
+        let expected = crucible_qemu_shmem::SLOT_9P_IO as u32;
+        if ring.descriptor.src_slot != expected {
+            return Err(crate::ShmemDeliveryFailure {
+                published: 0,
+                source: DeviceError::ShmemResponseSource {
+                    expected,
+                    actual: ring.descriptor.src_slot,
+                },
+            });
+        }
+
+        self.core
+            .advance_to_mapped_ring_with_commit_status(limit, ring, consumer_slot)
+    }
+
+    /// Publishes due 9p replies on the original reserved mapped transport ring.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a foreign producer and retains the original delivery error.
+    pub fn advance_to_mapped_ring(
+        &mut self,
+        limit: u64,
+        ring: crucible_qemu_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.advance_to_mapped_ring_with_commit_status(limit, ring, consumer_slot)
+            .map_err(|failure| failure.source)
     }
 
     /// Pops the next delivered response, returning its raw 9p reply frame.
@@ -495,6 +559,13 @@ impl NinepDevice {
     /// Returns any [`DeviceError`] [`IoCore::restore`] raises.
     pub fn restore(snapshot: &NinepSnapshot, tree: FsTree) -> Result<Self, DeviceError> {
         snapshot.visibility.validate()?;
+        if snapshot.visibility.session_count() > 0
+            && !snapshot.visibility.contains_session(snapshot.session_epoch)
+        {
+            return Err(DeviceError::InvalidNinepFaultDirective {
+                reason: "9p checkpoint retains a session other than the current epoch",
+            });
+        }
         for (identity, directive) in &snapshot.directives {
             if identity != &directive.identity {
                 return Err(DeviceError::InvalidNinepFaultDirective {

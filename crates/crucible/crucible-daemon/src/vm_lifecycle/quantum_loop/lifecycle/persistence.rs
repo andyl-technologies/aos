@@ -1,15 +1,27 @@
 //! Bounded lifecycle ownership-state encoding and atomic publication.
 //!
 //! One file owns the process manifest and lifecycle journal together so a
-//! rename cannot publish half of an ownership transition:
+//! rename cannot publish half of an ownership transition. Completed exits are
+//! append-only history kept in [`exit_log`]; run state records only the
+//! committed log prefix, so its size is bounded by node count:
 //!
 //! ```text
-//! {"version":2,"runtime_event_records":0,"runtime_event_log_bytes":0,"manifest":{...},"journal":{...}}
+//! {"version":3,"runtime_event_records":0,"runtime_event_log_bytes":0,"manifest":{...},
+//!  "journal":{"version":1,"transaction":0,"phase":"idle","nodes":[],
+//!             "exit_log":{"version":1,"records":0,"bytes":0,"chain_sha256":"<64 hex>"}}}
 //! ```
+//!
+//! A lifecycle persist appends pending exits to the log and syncs it before
+//! renaming the run state that counts them, which keeps the two files one
+//! atomic commit.
 
 use super::*;
 use crucible_engine::model::FaultResourceLimitError;
+mod exit_log;
 mod recovery;
+pub(in crate::vm_lifecycle) use exit_log::{
+    PRODUCTION_LIFECYCLE_EXIT_LOG_FILE, truncate_lifecycle_exit_log_tail,
+};
 #[cfg(test)]
 pub(in crate::vm_lifecycle) use recovery::validate_recovered_lifecycle_journal;
 pub(in crate::vm_lifecycle) use recovery::{
@@ -17,7 +29,7 @@ pub(in crate::vm_lifecycle) use recovery::{
 };
 
 pub(in crate::vm_lifecycle) const HARD_RUN_STATE_JSON_BYTES: u64 = 67_108_864;
-const PRODUCTION_RUN_STATE_VERSION: u32 = 2;
+const PRODUCTION_RUN_STATE_VERSION: u32 = 3;
 pub(in crate::vm_lifecycle) const PRODUCTION_RUN_STATE_FILE: &str = "run-state.json";
 
 #[derive(serde::Serialize)]
@@ -67,12 +79,6 @@ fn validate_borrowed_run_state_strings(
             && borrowed_json_string_is_canonical(&node.transition)
             && borrowed_json_string_is_canonical(&node.action_sha256)
             && borrowed_json_string_is_canonical(&node.evidence_sha256)
-    }) && journal.completed_exits.iter().all(|exit| {
-        borrowed_json_string_is_canonical(&exit.node)
-            && borrowed_process_identity_is_canonical(&exit.process)
-            && borrowed_json_string_is_canonical(&exit.transition)
-            && borrowed_json_string_is_canonical(&exit.action_sha256)
-            && borrowed_json_string_is_canonical(&exit.evidence_sha256)
     });
     if manifest_strings_are_canonical && journal_strings_are_canonical {
         Ok(())
@@ -92,6 +98,14 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     runtime_event_log_bytes: u64,
 ) -> Result<usize, DurableRunStateError> {
     validate_borrowed_run_state_strings(manifest, journal).map_err(DurableRunStateError::from)?;
+    // Standalone publication carries no exits to append; only the lifecycle
+    // loop owns the two-file exit commit.
+    if !journal.pending_exits.is_empty() {
+        return Err(DurableRunStateError::Invalid {
+            message: String::from("standalone run-state publication has unappended exits"),
+        });
+    }
+    journal.exit_log.validate()?;
     for count in [
         manifest.processes.len(),
         manifest.staged_processes.len(),
@@ -101,20 +115,18 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
             .reserve("nodes", 0, u64::try_from(count).unwrap_or(u64::MAX))
             .map_err(recovery::map_limit)?;
     }
-    let lifecycle_records = journal
-        .nodes
-        .len()
-        .checked_add(journal.completed_exits.len())
-        .ok_or_else(|| DurableRunStateError::Invalid {
+    let lifecycle_records =
+        lifecycle_record_count(journal).ok_or_else(|| DurableRunStateError::Invalid {
             message: String::from("durable lifecycle record count overflow"),
         })?;
     limits
-        .reserve(
-            "event_records",
-            runtime_event_records,
-            u64::try_from(lifecycle_records).unwrap_or(u64::MAX),
-        )
+        .reserve("event_records", runtime_event_records, lifecycle_records)
         .map_err(recovery::map_limit)?;
+    let retained_log_bytes = runtime_event_log_bytes
+        .checked_add(journal.exit_log.bytes)
+        .ok_or_else(|| DurableRunStateError::Invalid {
+            message: String::from("durable lifecycle event-log byte count overflow"),
+        })?;
     let state = ProductionRunStateRef {
         version: PRODUCTION_RUN_STATE_VERSION,
         runtime_event_records,
@@ -131,7 +143,7 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     limits
         .reserve(
             "event_log_bytes",
-            runtime_event_log_bytes,
+            retained_log_bytes,
             u64::try_from(counter.length).unwrap_or(u64::MAX),
         )
         .map_err(recovery::map_limit)?;
@@ -139,7 +151,7 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
     encoding.try_reserve_exact(counter.length).map_err(|_| {
         DurableRunStateError::ResourceLimit {
             field: "event_log_bytes",
-            current: runtime_event_log_bytes,
+            current: retained_log_bytes,
             requested: u64::try_from(counter.length).unwrap_or(u64::MAX),
             configured: limits.event_log_bytes,
             hard: FaultResourceLimits::compiled_maximum().event_log_bytes,
@@ -175,6 +187,18 @@ pub(in crate::vm_lifecycle) fn persist_run_state_atomic(
             message: format!("flush durable state directory: {error}"),
         })?;
     Ok(encoding.capacity())
+}
+
+/// Counts every lifecycle record the run owns: live journal nodes, committed
+/// exits in the log, and exits not yet appended.
+pub(super) fn lifecycle_record_count(journal: &ProductionLifecycleJournal) -> Option<u64> {
+    let live = journal
+        .nodes
+        .len()
+        .checked_add(journal.pending_exits.len())?;
+    u64::try_from(live)
+        .ok()?
+        .checked_add(journal.exit_log.records)
 }
 
 pub(in crate::vm_lifecycle) fn map_journal_limit(
@@ -240,6 +264,7 @@ pub(in crate::vm_lifecycle) fn map_journal_limit(
 pub(in crate::vm_lifecycle) struct LifecycleStatePersistence {
     path: PathBuf,
     next: PathBuf,
+    exit_log: PathBuf,
     encoding: Vec<u8>,
     runtime_event_records: u64,
     runtime_event_log_bytes: u64,
@@ -262,6 +287,7 @@ impl LifecycleStatePersistence {
         Ok(Self {
             path,
             next: run_directory.join("run-state.next"),
+            exit_log: run_directory.join(PRODUCTION_LIFECYCLE_EXIT_LOG_FILE),
             encoding,
             runtime_event_records: 0,
             runtime_event_log_bytes: 0,
@@ -393,19 +419,14 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<usize, SchedulerError> {
         validate_borrowed_run_state_strings(&self.run_manifest, &self.lifecycle_journal)
             .map_err(|message| SchedulerError::BoundaryViolation { message })?;
-        let lifecycle_records = self
-            .lifecycle_journal
-            .nodes
-            .len()
-            .checked_add(self.lifecycle_journal.completed_exits.len())
+        let lifecycle_records = lifecycle_record_count(&self.lifecycle_journal)
             .ok_or_else(|| lifecycle_resource_error("event_records", usize::MAX, 1, limits))?;
         limits
-            .reserve(
-                "event_records",
-                runtime_event_records,
-                u64::try_from(lifecycle_records).unwrap_or(u64::MAX),
-            )
+            .reserve("event_records", runtime_event_records, lifecycle_records)
             .map_err(|error| map_journal_limit(error, limits))?;
+        let retained_log_bytes = runtime_event_log_bytes
+            .checked_add(self.lifecycle_journal.exit_log.bytes)
+            .ok_or_else(|| lifecycle_resource_error("event_log_bytes", usize::MAX, 1, limits))?;
         let mut counter = CountingJournalWriter::default();
         let state = ProductionRunStateRef {
             version: PRODUCTION_RUN_STATE_VERSION,
@@ -442,8 +463,19 @@ impl ProductionVmLifecycleLoop {
                             escaped_node.checked_add(escaped_path)?.checked_add(512)?;
                         total.checked_add(identity_growth.checked_mul(2)?)
                     });
-            let numeric_growth = (20_usize.saturating_sub(decimal_digits(runtime_event_records)))
-                .checked_add(20_usize.saturating_sub(decimal_digits(runtime_event_log_bytes)));
+            // Runtime counters and the exit-log reference's record count and
+            // byte length may each grow to twenty decimal digits.
+            let exit_log = &self.lifecycle_journal.exit_log;
+            let numeric_growth = [
+                runtime_event_records,
+                runtime_event_log_bytes,
+                exit_log.records,
+                exit_log.bytes,
+            ]
+            .into_iter()
+            .try_fold(0_usize, |total, value| {
+                total.checked_add(20_usize.saturating_sub(decimal_digits(value)))
+            });
             (publication_growth, numeric_growth)
         } else {
             (Some(0), Some(0))
@@ -455,7 +487,7 @@ impl ProductionVmLifecycleLoop {
         limits
             .reserve(
                 "event_log_bytes",
-                runtime_event_log_bytes,
+                retained_log_bytes,
                 u64::try_from(required).unwrap_or(u64::MAX),
             )
             .map_err(|error| map_journal_limit(error, limits))?;
@@ -478,11 +510,84 @@ impl ProductionVmLifecycleLoop {
         Ok(required)
     }
 
+    /// Publishes the lifecycle state, first appending any pending exits.
+    ///
+    /// Exits are staged in memory, admitted together with the run state that
+    /// records them, appended and synced, and only then counted by a renamed
+    /// run state. A failure before the rename restores the committed log
+    /// reference and the pending exits, so a retry truncates the unreferenced
+    /// tail and appends the same bytes again.
     pub(in crate::vm_lifecycle) fn persist_lifecycle_state(
         &mut self,
     ) -> Result<(), SchedulerError> {
         let limits = self.source.plan().fault_signals().resource_limits();
-        self.refresh_lifecycle_state_resource_usage(limits)?;
+        if self.lifecycle_journal.pending_exits.is_empty() {
+            self.refresh_lifecycle_state_resource_usage(limits)?;
+            return self
+                .publish_lifecycle_state(limits)
+                .map_err(|failure| failure.error);
+        }
+
+        let mut pending = std::mem::take(&mut self.lifecycle_journal.pending_exits);
+        let committed = self.lifecycle_journal.exit_log.clone();
+        let staged = match exit_log::stage_lifecycle_exits(&committed, &pending) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.lifecycle_journal.pending_exits = pending;
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("stage completed lifecycle exits: {error}"),
+                });
+            }
+        };
+        self.lifecycle_journal.exit_log = staged.next.clone();
+
+        let published = self
+            .refresh_lifecycle_state_resource_usage(limits)
+            .and_then(|()| {
+                exit_log::append_lifecycle_exits(
+                    &self.lifecycle_persistence.exit_log,
+                    &committed,
+                    &staged,
+                )
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("append completed lifecycle exits: {error}"),
+                })
+            })
+            .map_err(|error| LifecyclePublishFailure {
+                renamed: false,
+                error,
+            })
+            .and_then(|()| self.publish_lifecycle_state(limits));
+        match published {
+            Ok(()) => {
+                pending.clear();
+                self.lifecycle_journal.pending_exits = pending;
+                Ok(())
+            }
+            // The renamed run state may already be durable and reference the
+            // appended prefix, which must therefore never be truncated again.
+            Err(failure) if failure.renamed => {
+                pending.clear();
+                self.lifecycle_journal.pending_exits = pending;
+                Err(failure.error)
+            }
+            Err(failure) => {
+                self.lifecycle_journal.exit_log = committed;
+                self.lifecycle_journal.pending_exits = pending;
+                Err(failure.error)
+            }
+        }
+    }
+
+    /// Encodes, syncs, and renames the run state into place.
+    fn publish_lifecycle_state(
+        &mut self,
+        limits: FaultResourceLimits,
+    ) -> Result<(), LifecyclePublishFailure> {
+        let unrenamed = |error| LifecyclePublishFailure {
+            renamed: false,
+            error,
+        };
         self.lifecycle_persistence.encoding.clear();
         let state = ProductionRunStateRef {
             version: PRODUCTION_RUN_STATE_VERSION,
@@ -498,45 +603,58 @@ impl ProductionVmLifecycleLoop {
             &state,
         )
         .map_err(|_| {
-            lifecycle_resource_error(
+            unrenamed(lifecycle_resource_error(
                 "event_log_bytes",
                 self.lifecycle_persistence.encoding.capacity(),
                 1,
                 limits,
-            )
+            ))
         })?;
         let mut file = File::create(&self.lifecycle_persistence.next).map_err(|error| {
-            SchedulerError::BoundaryViolation {
+            unrenamed(SchedulerError::BoundaryViolation {
                 message: format!(
                     "create lifecycle transaction journal {}: {error}",
                     self.lifecycle_persistence.next.display()
                 ),
-            }
+            })
         })?;
         file.write_all(&self.lifecycle_persistence.encoding)
             .and_then(|()| file.sync_all())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "flush lifecycle transaction journal {}: {error}",
-                    self.lifecycle_persistence.next.display()
-                ),
+            .map_err(|error| {
+                unrenamed(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "flush lifecycle transaction journal {}: {error}",
+                        self.lifecycle_persistence.next.display()
+                    ),
+                })
             })?;
         fs::rename(
             &self.lifecycle_persistence.next,
             &self.lifecycle_persistence.path,
         )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!(
-                "commit lifecycle transaction journal {}: {error}",
-                self.lifecycle_persistence.path.display()
-            ),
+        .map_err(|error| {
+            unrenamed(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "commit lifecycle transaction journal {}: {error}",
+                    self.lifecycle_persistence.path.display()
+                ),
+            })
         })?;
         File::open(self._run_directory.path())
             .and_then(|directory| directory.sync_all())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("flush lifecycle journal directory: {error}"),
+            .map_err(|error| LifecyclePublishFailure {
+                renamed: true,
+                error: SchedulerError::BoundaryViolation {
+                    message: format!("flush lifecycle journal directory: {error}"),
+                },
             })
     }
+}
+
+/// A failed run-state publication and whether its rename had already happened.
+struct LifecyclePublishFailure {
+    renamed: bool,
+    error: SchedulerError,
 }
 
 #[cfg(test)]

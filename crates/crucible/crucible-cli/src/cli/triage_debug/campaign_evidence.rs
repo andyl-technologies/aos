@@ -1,60 +1,60 @@
 //! Authenticated campaign Finding import, export, and triage projection.
+//!
+//! Campaign findings evidence is content-addressed: capture writes every
+//! checked service exchange into an evidence store, a per-finding record and
+//! occurrence chunks index those exchanges, and a small ledger manifest names
+//! the records. Loading authenticates the ledger as a fold and keeps only the
+//! clustering input; minimization and reports fetch a selected member's
+//! replays by its ledger location.
 
 use super::*;
 
 #[path = "campaign_evidence/ledger.rs"]
 mod ledger;
+#[path = "campaign_evidence/record.rs"]
+mod record;
+#[path = "campaign_evidence/reproduction.rs"]
+mod reproduction;
 #[path = "campaign_evidence/service.rs"]
 mod service;
+#[path = "campaign_evidence/store.rs"]
+mod store;
+#[path = "campaign_evidence/triage_segments.rs"]
+mod triage_segments;
 
-pub(crate) use ledger::campaign_findings_ledger_bytes;
-pub(crate) use ledger::parse_campaign_findings_ledger_bytes;
+pub(crate) use ledger::{
+    CampaignTriageEvidence, campaign_findings_ledger_bytes, load_campaign_findings_ledger,
+    load_campaign_findings_ledger_bytes, write_campaign_findings_ledger,
+};
+pub(crate) use reproduction::fetch_campaign_reproduction;
 #[cfg(test)]
 pub(crate) use service::capture_campaign_triage_finding;
-pub(crate) use service::capture_campaign_triage_finding_from_service;
+pub(crate) use service::{
+    CampaignFindingCaptureScope, capture_campaign_triage_finding_from_service,
+    find_campaign_finding_membership,
+};
+pub(crate) use store::sync_evidence_store;
 
 pub(super) fn build_campaign_triage_minimization(
     plan: &TriageInvocationPlan,
     clustering: &crucible_engine::FailureClusteringResult,
     findings: &LoadedTriageFindings,
 ) -> Result<crucible_engine::FailureSignaturePreservingMinimizationResult, CliError> {
-    let mut campaign_by_artifact = BTreeMap::new();
-    for item in &findings.campaign_evidence {
-        campaign_by_artifact
-            .entry(item.report.finding.artifact.id())
-            .or_insert(item);
-        for occurrence in campaign_occurrences(item) {
-            if occurrence.triage_evidence.is_some() {
-                campaign_by_artifact
-                    .entry(crucible_engine::ContentHash::from_bytes(
-                        campaign_occurrence_reproduction(occurrence)?.payload(),
-                    ))
-                    .or_insert(item);
-            }
-        }
-    }
     let mut runs = Vec::new();
     for cluster in &clustering.clusters {
         let selected_members = selected_triage_members(plan.minimize, cluster.members.as_slice())?;
         for member in selected_members {
-            let item = campaign_by_artifact
-                .get(&member.reproduction_artifact)
-                .copied()
+            let evidence = findings
+                .evidence
+                .member(member.reproduction_artifact)?
                 .ok_or_else(|| {
                     artifact_error("campaign finding is missing for a selected triage member")
                 })?;
-            let occurrence = campaign_occurrence_for_artifact(item, member.reproduction_artifact)?
-                .ok_or_else(|| {
-                    artifact_error(
-                        "campaign finding has no retained candidate occurrence for a selected triage member",
-                    )
-                })?;
-            let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-                .ok_or_else(|| {
-                    artifact_error(
-                        "campaign finding candidate predates native triage replay evidence",
-                    )
-                })?;
+            let replays = evidence.replays.as_ref().ok_or_else(|| {
+                artifact_error(
+                    "campaign finding has no retained candidate occurrence for a selected triage member",
+                )
+            })?;
             let target_signature_key = member
                 .signature
                 .signature_key(plan.policy)
@@ -115,7 +115,7 @@ pub(super) fn build_campaign_triage_minimization(
                 minimization: crucible_model::MinimizationRun {
                     seed: minimized.artifact.seed(),
                     interesting_window: None,
-                    target_fingerprint: item.report.finding.finding_fingerprint,
+                    target_fingerprint: evidence.finding.report.finding.finding_fingerprint,
                     original,
                     minimized,
                     // Campaign evidence retains the exact two-pass replay
@@ -141,6 +141,7 @@ fn campaign_signature_policy_error(source: &str) -> CliError {
     ))
 }
 
+/// Four decoded native replays of one occurrence, in role order.
 struct CampaignOccurrenceNativeTriageReplays {
     minimization_original: crucible_engine::FailureTriageReplayEvidence,
     minimization_selected: crucible_engine::FailureTriageReplayEvidence,
@@ -148,76 +149,80 @@ struct CampaignOccurrenceNativeTriageReplays {
     verification_selected: crucible_engine::FailureTriageReplayEvidence,
 }
 
-fn campaign_occurrences(
-    item: &CampaignTriageFindingEvidence,
-) -> impl Iterator<Item = &CampaignFindingOccurrenceProof> {
-    item.occurrence_proofs.iter()
+/// Gathers the native replays an occurrence authentication yields per role.
+#[derive(Default)]
+struct CampaignOccurrenceReplayCollector {
+    roles: [Option<crucible_engine::FailureTriageReplayEvidence>; 4],
 }
 
-fn campaign_occurrence_for_artifact(
-    item: &CampaignTriageFindingEvidence,
-    artifact: crucible_engine::ContentHash,
-) -> Result<Option<&CampaignFindingOccurrenceProof>, CliError> {
-    for occurrence in campaign_occurrences(item) {
-        let reproduction = campaign_occurrence_reproduction(occurrence)?;
-        if crucible_engine::ContentHash::from_bytes(reproduction.payload()) == artifact
-            && occurrence.triage_evidence.is_some()
-        {
-            return Ok(Some(occurrence));
+impl CampaignOccurrenceReplayCollector {
+    fn insert(
+        &mut self,
+        role: crucible_campaign::CampaignFindingTriageReplayRole,
+        replay: crucible_engine::FailureTriageReplayEvidence,
+    ) -> Result<(), CliError> {
+        let slot = match role {
+            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal => 0,
+            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected => 1,
+            crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal => 2,
+            crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected => 3,
+        };
+        if self.roles[slot].replace(replay).is_some() {
+            return Err(artifact_error(
+                "campaign occurrence repeats a triage replay role",
+            ));
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<CampaignOccurrenceNativeTriageReplays, CliError> {
+        match self.roles {
+            [
+                Some(minimization_original),
+                Some(minimization_selected),
+                Some(verification_original),
+                Some(verification_selected),
+            ] => Ok(CampaignOccurrenceNativeTriageReplays {
+                minimization_original,
+                minimization_selected,
+                verification_original,
+                verification_selected,
+            }),
+            _ => Err(artifact_error(
+                "campaign candidate predates native triage replay evidence",
+            )),
         }
     }
-    Ok(None)
 }
 
-fn campaign_occurrence_bundle(
-    occurrence: &CampaignFindingOccurrenceProof,
-) -> Result<&crucible_campaign::FindingCandidateBundle, CliError> {
-    occurrence
-        .page
-        .response
-        .entries()
-        .first()
-        .map(crucible_campaign::CampaignFindingOccurrence::bundle)
-        .ok_or_else(|| artifact_error("campaign occurrence page has no candidate bundle"))
-}
-
-fn campaign_occurrence_reproduction(
-    occurrence: &CampaignFindingOccurrenceProof,
-) -> Result<&crucible_campaign::ReproductionArtifact, CliError> {
-    match occurrence.reproduction.response.object() {
-        crucible_campaign::CampaignFindingOccurrenceObject::Reproduction(reproduction) => {
-            Ok(reproduction)
+/// Returns the evidence identity a bundle names for one replay role.
+fn triage_role_evidence(
+    evidence: &crucible_campaign::FindingTriageEvidenceSet,
+    role: crucible_campaign::CampaignFindingTriageReplayRole,
+) -> crucible_campaign::FindingTriageReplayEvidenceId {
+    match role {
+        crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal => {
+            evidence.minimization_original()
         }
-        _ => Err(artifact_error(
-            "campaign occurrence reproduction proof has another object kind",
-        )),
+        crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected => {
+            evidence.minimization_selected()
+        }
+        crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal => {
+            evidence.verification_original()
+        }
+        crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected => {
+            evidence.verification_selected()
+        }
     }
 }
 
-fn campaign_occurrence_minimized_reproduction(
-    occurrence: &CampaignFindingOccurrenceProof,
-) -> Result<&crucible_campaign::ReproductionArtifact, CliError> {
-    match occurrence.minimized_reproduction.response.object() {
-        crucible_campaign::CampaignFindingOccurrenceObject::MinimizedReproduction(reproduction) => {
-            Ok(reproduction)
-        }
-        _ => Err(artifact_error(
-            "campaign occurrence minimized proof has another object kind",
-        )),
-    }
-}
-
+/// Replays a reproduction's decoded Crucible artifact into a finding framed
+/// by `template`, checking it against the campaign record's identities.
 fn campaign_model_finding_reproduction(
     template: &crucible_engine::FindingReproductionArtifact,
     reproduction: &crucible_campaign::ReproductionArtifact,
+    artifact: crucible_engine::ReproductionArtifact,
 ) -> Result<crucible_engine::FindingReproductionArtifact, CliError> {
-    let artifact =
-        crucible_engine::ReproductionArtifact::from_compact_binary(reproduction.payload())
-            .map_err(|error| {
-                artifact_error(format!(
-                    "campaign minimized reproduction payload is invalid: {error}"
-                ))
-            })?;
     let replay = artifact.replay().map_err(|error| {
         artifact_error(format!(
             "campaign minimized reproduction does not replay: {error}"
@@ -250,72 +255,23 @@ fn campaign_model_finding_reproduction(
     Ok(finding)
 }
 
-fn campaign_occurrence_native_triage_replays(
-    occurrence: &CampaignFindingOccurrenceProof,
-    template: &TriageFindingEvidence,
-) -> Result<Option<CampaignOccurrenceNativeTriageReplays>, CliError> {
-    let Some(triage) = &occurrence.triage_evidence else {
-        return Ok(None);
-    };
-    let bundle_triage = campaign_occurrence_bundle(occurrence)?
-        .triage_evidence()
-        .ok_or_else(|| artifact_error("campaign occurrence bundle has no triage evidence set"))?;
-    let original_reproduction = campaign_occurrence_reproduction(occurrence)?;
-    let selected_reproduction = campaign_occurrence_minimized_reproduction(occurrence)?;
-    let original_finding =
-        campaign_model_finding_reproduction(&template.finding, original_reproduction)?;
-    let selected_finding =
-        campaign_model_finding_reproduction(&template.finding, selected_reproduction)?;
-
-    Ok(Some(CampaignOccurrenceNativeTriageReplays {
-        minimization_original: decode_campaign_occurrence_triage_replay(
-            &triage.minimization_original,
-            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationOriginal,
-            bundle_triage.minimization_original(),
-            original_reproduction,
-            original_finding.clone(),
-        )?,
-        minimization_selected: decode_campaign_occurrence_triage_replay(
-            &triage.minimization_selected,
-            crucible_campaign::CampaignFindingTriageReplayRole::MinimizationSelected,
-            bundle_triage.minimization_selected(),
-            selected_reproduction,
-            selected_finding.clone(),
-        )?,
-        verification_original: decode_campaign_occurrence_triage_replay(
-            &triage.verification_original,
-            crucible_campaign::CampaignFindingTriageReplayRole::VerificationOriginal,
-            bundle_triage.verification_original(),
-            original_reproduction,
-            original_finding,
-        )?,
-        verification_selected: decode_campaign_occurrence_triage_replay(
-            &triage.verification_selected,
-            crucible_campaign::CampaignFindingTriageReplayRole::VerificationSelected,
-            bundle_triage.verification_selected(),
-            selected_reproduction,
-            selected_finding,
-        )?,
-    }))
-}
-
-fn decode_campaign_occurrence_triage_replay(
-    proof: &CampaignFindingTriageReplayProof,
-    expected_role: crucible_campaign::CampaignFindingTriageReplayRole,
-    expected_evidence: crucible_campaign::FindingTriageReplayEvidenceId,
+/// Decodes one authenticated replay record into its native evidence.
+///
+/// The record's role and evidence identity are already bound by
+/// authentication, and `log_segments` holds the authenticated segments the
+/// record names; this checks its reproduction and signature bindings.
+pub(crate) fn decode_campaign_triage_replay_record(
+    record: &crucible_campaign::FindingTriageReplayEvidence,
     reproduction: &crucible_campaign::ReproductionArtifact,
     finding: crucible_engine::FindingReproductionArtifact,
+    log_segments: crucible_engine::FailureTriageReplaySegments,
 ) -> Result<crucible_engine::FailureTriageReplayEvidence, CliError> {
-    let record = reassemble_campaign_triage_replay_proof(proof)?;
     let reproduction_id = reproduction.id().map_err(|error| {
         artifact_error(format!(
             "campaign occurrence triage reproduction ID is invalid: {error}"
         ))
     })?;
-    if proof.segments.iter().any(|segment| {
-        segment.request.role() != expected_role || segment.request.evidence() != expected_evidence
-    }) || record.id().ok() != Some(expected_evidence)
-        || record.reproduction() != reproduction_id
+    if record.reproduction() != reproduction_id
         || record.payload_schema() != crucible_engine::FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
     {
         return Err(artifact_error(
@@ -325,13 +281,32 @@ fn decode_campaign_occurrence_triage_replay(
     let replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
         finding,
         record.payload(),
+        log_segments,
     )
     .map_err(|error| {
         artifact_error(format!(
             "campaign occurrence triage payload is invalid: {error}"
         ))
     })?;
-    validate_campaign_native_signature_binding(&record, reproduction, &replay)?;
+
+    // The record's trace leaves must name exactly the payload's segments, in
+    // order, so a record cannot pin unrelated objects or omit a log segment.
+    let referenced = replay.referenced_segments();
+    let names_payload_segments = record.log_segments().len() == referenced.len()
+        && record
+            .log_segments()
+            .iter()
+            .zip(&referenced)
+            .all(|(named, segment)| {
+                named.content() == segment.id && named.bytes() == segment.encoded_bytes
+            });
+    if !names_payload_segments {
+        return Err(artifact_error(
+            "campaign occurrence triage record names other log segments than its payload",
+        ));
+    }
+
+    validate_campaign_native_signature_binding(record, reproduction, &replay)?;
     Ok(replay)
 }
 
@@ -456,41 +431,49 @@ fn validate_campaign_native_signature_binding(
     Ok(())
 }
 
+/// Projects native replay evidence into the CLI's report evidence.
+///
+/// The CLI report and minimization paths still work over a resident log, so
+/// the replay's segmented log is read back here; campaign replays carry no
+/// CLI recording frames.
 fn triage_finding_evidence_from_replay(
     replay: &crucible_engine::FailureTriageReplayEvidence,
-) -> TriageFindingEvidence {
-    TriageFindingEvidence {
+) -> Result<TriageFindingEvidence, CliError> {
+    let mut causal_entries = Vec::new();
+    replay
+        .recorded_event_log()
+        .try_for_each_entry(|entry| {
+            causal_entries.push(entry.clone());
+            Ok(())
+        })
+        .map_err(|error| {
+            artifact_error(format!("campaign triage replay log is unreadable: {error}"))
+        })?;
+    Ok(TriageFindingEvidence {
         finding: replay.finding().clone(),
-        causal_entries: replay.causal_entries().to_vec(),
+        causal_entries,
         recorded_event_log: replay.recorded_event_log().clone(),
         failure: replay.failure().clone(),
         discovery_signature: replay.signature().clone(),
-        recorded_event_frames: replay.recorded_event_frames().to_vec(),
-    }
+        recorded_event_frames: Vec::new(),
+    })
 }
 
 pub(super) fn campaign_triage_report_evidence_for_run(
     run: &crucible_engine::FailureSignaturePreservingMinimizationRun,
-    evidence: &[CampaignTriageFindingEvidence],
+    evidence: &CampaignTriageEvidence,
 ) -> Result<TriageFindingEvidence, CliError> {
-    for item in evidence {
-        let Some(occurrence) = campaign_occurrence_for_artifact(item, run.representative_artifact)?
-        else {
-            continue;
-        };
-        let replays = campaign_occurrence_native_triage_replays(occurrence, &item.report)?
-            .ok_or_else(|| {
-                artifact_error("campaign candidate predates native triage report evidence")
-            })?;
-        let selected = triage_finding_evidence_from_replay(&replays.minimization_selected);
-        if selected.finding.artifact.id() != run.minimized_artifact() {
-            return Err(artifact_error(
-                "campaign selected replay disagrees with its minimized triage result",
-            ));
-        }
-        return Ok(selected);
+    let replays = evidence
+        .member(run.representative_artifact)?
+        .and_then(|member| member.replays)
+        .ok_or_else(|| {
+            artifact_error("campaign minimized triage result has no authenticated replay evidence")
+        })?;
+    let selected = triage_finding_evidence_from_replay(&replays.minimization_selected)?;
+    if selected.finding.artifact.id() != run.minimized_artifact() {
+        return Err(artifact_error(
+            "campaign selected replay disagrees with its minimized triage result",
+        ));
     }
-    Err(artifact_error(
-        "campaign minimized triage result has no authenticated replay evidence",
-    ))
+    Ok(selected)
 }

@@ -5,12 +5,12 @@ independently encoded campaign formats and the Crucible/QEMU process boundary.
 This inventory compares declarations and encode/decode paths in `crates/` with
 the Crucible QEMU patch. A registry row names a logical format;
 its on-wire magic may use a shorter or older spelling. For example,
-`crucible.execution.schedule` is encoded with `crucible.schedule.v4\0`, and
+`crucible.execution.schedule` is encoded with `crucible.schedule.v6\0`, and
 `crucible.qemu.vm-snapshot` uses `crucible.qemu-vm-snapshot.v4\0`.
 
 | Source family | Formats assigned in the registry |
 | --- | --- |
-| `crucible-campaign` object, choice, exploration, observation, finding, archive, authority, planner, execution, and service modules | Content records and independently versioned component requests and responses. The request-attempts page pair is version 2. |
+| `crucible-campaign` object, choice, exploration, observation, finding, archive, authority, planner, execution, and service modules | Content records and independently versioned component requests and responses. The request-attempts page pair is version 2. Portable statistical evidence is a version-2 manifest with version-1 chunks; the earlier unversioned bundle is retired. The version-1 coverage-identity frequency record holds one saturating count and is shared by every coverage identity with that count. |
 | `crucible-store` content envelope, content-store, and `cas::campaign_codec` modules | Envelope, mutable refs, graph configuration, physical objects, inventory, quota, key, pack, transfer, corpus, coverage, findings, manifest, and frontier records. The pre-RFC campaign CAS records are still current and have their own rows. |
 | `crucible-daemon` campaign, planner, executor, checkpoint, and loopback modules | Component frames, operational journals, campaign state identity, exact checkpoint records, and replay evidence. The campaign loopback frame is version 21. |
 | `crucible-cli` campaign, store-repair, and verify-serve modules | Input schemas, durable deployment configuration, bundle exports, and versioned machine-readable reports. The store-repair placement report uses `crucible.cli.store-repair.v1`. The general campaign-object report uses the `crucible.cli.campaign-object.v1` tag; its choice-object variant uses the `v2` tag. |
@@ -23,30 +23,34 @@ The untagged-writer review found these independently versioned contracts:
 
 | Format | Source evidence | Registry entry |
 | --- | --- | --- |
-| Durable production lifecycle state | `crucible_daemon::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 2`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Durable production lifecycle state | `crucible_daemon::vm_lifecycle::quantum_loop::lifecycle::persistence` writes `run-state.json` with `PRODUCTION_RUN_STATE_VERSION = 3`; `recovery` checks that version before decoding. | `crucible.production-run-state` |
+| Production lifecycle exit log | `crucible_daemon::vm_lifecycle::quantum_loop::lifecycle::persistence::exit_log` appends committed exits to `lifecycle-exits.jsonl`; run state records `PRODUCTION_LIFECYCLE_EXIT_LOG_VERSION = 1`, the committed prefix, and its chain, and recovery verifies that version before streaming the prefix. | `crucible.production-lifecycle-exit-log` |
 | Production run ownership lock | `crucible_daemon::vm_lifecycle` writes and rereads `active-run.lock` across process lifetimes. Its record requires version 1, and the reader rejects unversioned or unsupported records. | `crucible.production-run-lock` |
-| Production network adapter continuation | `crucible_daemon::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 11` and validates that version on restore. | `crucible.production-network-adapter-checkpoint` |
+| Production network adapter continuation | `crucible_daemon::vm_lifecycle::network_faults` serializes opaque JSON `adapter_state` with `NETWORK_ADAPTER_CHECKPOINT_VERSION = 13` and validates that version on restore. The campaign effect log inside it is a resolved-effect trace position, never sealed records. | `crucible.production-network-adapter-checkpoint` |
 | Pending network output | `crucible_engine::backend::io::network_checkpoint` independently encodes and decodes canonical CBOR for each routed frame, with `BACKEND_NETWORK_OUTPUT_VERSION = 2`. | `crucible.execution.backend-network-output` |
-| Scheduler event-log segment | `crucible_engine::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 4`; the exact checkpoint store retains and authenticates segment bytes for resume. | `crucible.execution.event-log-segment` |
-| Scheduler-owned nested continuations | `crucible_engine::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v1`; `crucible_engine::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v2`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
+| Scheduler event-log segment | `crucible_engine::scheduler` writes a binary segment with `EVENT_LOG_SEGMENT_BINARY_VERSION = 7` for each append; version 7 records each random draw with its draw address, and earlier versions are refused; its hash chains into the log's offset, and restore recomputes the latest one from the continuation's tail. The log also seals its entries into `crucible.attempt.event-log-segment` objects, which exact checkpoints retain and authenticate for resume. | `crucible.execution.event-log-segment` |
+| Single-scheduler continuation | `crucible_engine::scheduler::checkpoint` encodes and checks `crucible.single-scheduler-continuation.v10`, retaining the original ready-point map alongside the current backend-counter map. It keeps only the search frontiers at the current admission boundary plus the count of retired ones, and names each frontier parent by its prefix length of the continuation schedule and its configuration identity instead of a schedule copy. Its event log names sealed attempt-format segments by content hash and carries only the open tail. Each imported I/O queue ledger retains only unpublished deliveries and published deliveries at or after the node's stopped tick; a continuation that retains an older published delivery is refused. | `crucible.execution.single-scheduler-continuation` |
+| Scheduler-owned nested continuations | `crucible_engine::device_subnode::checkpoint` encodes and checks `crucible.device-scheduling-subnode.v3`; `crucible_engine::scheduler::runtime_state::network_checkpoint` independently encodes and checks `crucible.scheduler-network.v2`. Both are decoded from the registered single-scheduler continuation. | `crucible.execution.device-scheduling-subnode`, `crucible.execution.scheduler-network` |
 | Event-graph continuation | `crucible_engine::trigger::event_graph` encodes and checks `crucible.event-graph-state.v2`; production checkpoint restore reads it as a separate object. | `crucible.execution.event-graph-state` |
 | Scenario selectable component and fault-signal plan | `crucible_engine::model::scenario_selectables` uses an independent binary magic and version 1; `crucible_engine::model::fault_signal::wire` decodes separately versioned JSON plan bytes at version 2. | `crucible.execution.scenario-selectable-component`, `crucible.execution.fault-signal-plan` |
 | Signal evaluator artifacts | `crucible_engine::model::fault_signal::{sampler,spatial,trace}` independently encode and decode the inverse-CDF table and spatial artifact at version 1, and the trace manifest and chunk at version 2. | `crucible.execution.signal-*` rows |
 | Fault adapter continuation | `crucible_engine::model::fault_signal::adapter_runtime` independently encodes and decodes opaque JSON checkpoint bytes, with `ADAPTER_CHECKPOINT_VERSION = 2`. | `crucible.execution.fault-adapter-checkpoint` |
-| Fault runtime and resolved trace | `crucible_engine::model::fault_signal::runtime` validates semantic checkpoint version 6 on CBOR restore and independently checks the version-3 magic of the standalone resolved-effect trace. | `crucible.execution.fault-runtime-checkpoint`, `crucible.execution.resolved-effect-trace` |
-| Native failure-triage replay evidence | `crucible_engine::model::failure::replay_evidence` checks its version-3 binary magic; the daemon independently checks payload schema 3 inside the campaign triage record before decoding. | `crucible.execution.failure-triage-replay-evidence` |
-| QEMU fuzz corpus index and descriptor | `crucible_cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json` and immutable descriptor objects, each with `CORPUS_SCHEMA = 1`. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor` |
+| Fault runtime and resolved trace | `crucible_engine::model::fault_signal::runtime` validates semantic checkpoint version 7 on CBOR restore; the checkpoint carries a resolved-effect trace position. The trace itself is a version-4 manifest (`crucible.resolved-effect-trace.v4`) naming Trace schema 1 segments, each decoded independently, and carriers without a segment store use the version-1 bundle. | `crucible.execution.fault-runtime-checkpoint`, `crucible.execution.resolved-effect-trace`, `crucible.execution.resolved-effect-trace-segment`, `crucible.execution.resolved-effect-trace-bundle` |
+| Native failure-triage replay evidence | `crucible_engine::model::failure::replay_evidence` checks its version-4 binary magic and decodes only with a source holding every attempt-log segment its manifests reference; the daemon and CLI independently check payload schema 4 inside the campaign triage record, and that the record names exactly the payload's segments, before decoding. | `crucible.execution.failure-triage-replay-evidence` |
+| QEMU fuzz corpus index, descriptor, and coverage set | `crucible_cli::cli::run_save::qemu_live::fuzz::corpus` separately reads and writes `live-fuzz-corpus.json`, immutable fixed-size descriptor objects, and immutable coverage sets, each with `CORPUS_SCHEMA = 2`. A coverage set lists each distinct basic block or named marker once in canonical fingerprint order; the descriptor no longer copies coverage identities, which are recomputed from the set. Schema 1 corpora are refused. | `crucible.cli.live-fuzz-corpus-index`, `crucible.cli.live-fuzz-corpus-descriptor`, `crucible.cli.live-fuzz-corpus-coverage-set` |
 | Guest campaign runtime configuration | `modules/services/crucible-campaign.nix` emits `/etc/crucible/campaign-runtime.env` with `aos.crucible.campaign-runtime.v1`; the phase 1 and phase 9 license gates consume this file and its configuration identity. | `aos.crucible.campaign-runtime` |
 | Control-plane RPC | `crucible_control_api::rpc_abi` encodes the `crucible.rpc/<message-name>` wire vocabulary at `RPC_PROTOCOL_MAJOR = 8`; the client wire model uses that encoder. | `crucible.api.rpc` |
-| Crucible-owned QEMU migration sections | The QEMU patch declares 29 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. The CMOS `mc146818rtc/crucible-clock` subsection is version 5 to preserve its exact picosecond phase. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
-| Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 13`; `crucible_qemu_host::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-29 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
+| Crucible-owned QEMU migration sections | The QEMU patch declares 29 production `VMStateDescription` sections or subsections with distinct `.name` and `.version_id` values. The integrated device-continuation change adds `serial/crucible-timing`, `virtio-blk/crucible-backend-wce`, and `virtio/crucible-start-on-kick`, each at version 1. Native console custody adds the `crucible-console` section and its `crucible-console-canonical`, `crucible-console-origin`, and `crucible-console-prefix` subsections, each at version 1. The CMOS `mc146818rtc/crucible-clock` subsection is version 5 to preserve its exact picosecond phase. QEMU's migration loader matches these versions inside the opaque VMState artifact. | `crucible.qemu.vmstate.*` rows |
+| Hot-fork template resource stage | The patched QEMU template reporter emits `CrucibleHotForkTemplateResourceStageState.schema-version = 14`; `crucible_qemu_host::qmp::hot_fork::template::parse` independently checks that nested version while decoding the version-30 template response. | `crucible.qemu.hot-fork.template-resource-stage` |
 | Guest debug transcript | `crucible_cli::cli::triage_debug::debug_terminal` writes a standalone `CRGT` version-1 recording when `--record-transcript` is selected. Its record bodies use the separately registered guest-introspection frame codec. | `crucible.cli.guest-transcript` |
 | CLI reproduction and live-QEMU replay artifacts | `crucible_cli::cli::artifact` encodes and strictly decodes the outer version-4 reproduction artifact; its `live_qemu` component separately encodes and decodes a version-5 replay contract. | `crucible.reproduction-artifact`, `crucible.live-qemu-replay-contract` |
+| Campaign replay closure | `crucible-daemon::qemu_campaign_lifecycle::campaign_run::replay_closure::format` encodes and strictly decodes the version-2 `CCRC` root, its `CCRF` entry and record frames of at most 64 MiB, and the `CCRB` one-buffer bundle. Exact-checkpoint roots store the root and each frame as separate observation children; finding captures store them as trace leaves; the resume request carries each as its own wire element. | `crucible.executor.checkpoint-choice-closure`, `crucible.executor.checkpoint-choice-frame`, `crucible.executor.replay-closure-bundle` |
 | CLI savepoint and lifecycle bundle | `planning::invocations::savepoint` parses exported version-6 handles; `artifact_capture` encodes and decodes `CLAB` version-1 lifecycle object bundles. | `crucible.savepoint-handle`, `crucible.lifecycle-artifact-bundle` |
 | Authored search inputs | `planning::invocations` checks the versioned scenario-family, schedule-named-truths, and retained-evidence TOML schemas after independent parses. | `crucible.scenario-family`, `crucible.search-schedule-named-truths`, `crucible.search-retained-evidence` |
 | Authored campaign schedule | `crucible_cli::cli::campaign::schedule` strictly parses version-2 TOML and rejects the prior retired-count coordinate; preemptions use exact `at_tick`. | `crucible.cli.campaign-schedule-authoring` |
-| Portable finding bundle | `campaign::finding_bundle` writes and parses its version-2 manifest; its separately stored version-4 findings ledger is read by the campaign triage path, which now checks both schema and ledger kind. | `crucible.campaign.finding-bundle`, `crucible.failure-triage.findings-ledger` |
+| Portable finding bundle and campaign findings evidence | `campaign::finding_bundle` writes and parses its version-3 manifest, which names the ledger by content address. The version-5 findings ledger is a manifest of per-finding version-2 evidence records; each record names version-3 occurrence chunks, version-1 reproduction segment lists, and version-1 triage log segment lists, and all of them, with every canonical service exchange, live in a content-addressed evidence store (the bundle's `evidence/` directory or the triage store). `triage_debug::campaign_evidence` writes these formats, strictly parses each with its schema line and ledger kind, and rejects version-4 ledgers and version-2 bundles. The reproduction ledger kind keeps its inline fields under the version-5 header. | `crucible.campaign.finding-bundle`, `crucible.failure-triage.findings-ledger`, `crucible.failure-triage.finding-evidence`, `crucible.failure-triage.finding-occurrences`, `crucible.failure-triage.reproduction-segments`, `crucible.failure-triage.triage-log-segments` |
 | Failure-cluster reports | `crucible_engine::model::failure::reporting` emits a version-1 `cluster-report` JSON object for each report and a separate version-1 `cluster-report-set` JSON object for the collection; `crucible_cli::cli::triage_debug::ledger_format` writes the rendered report to `triage-report.json` or `triage-report.jsonl`. | `crucible.failure-triage.cluster-report`, `crucible.failure-triage.cluster-report-set` |
+| Segmented reproduction schedules | `crucible_engine::model::schedule_segments` encodes and strictly decodes the version-1 schedule segment and manifest and the version-5 schedule transport; `crucible_engine::model::family::instances` writes the version-10 reproduction transport and the version-1 stored form (scenario plus manifest) that campaign reproduction record version 3 embeds beside its segment children. | `crucible.execution.schedule`, `crucible.execution.schedule-manifest`, `crucible.execution.schedule-segment`, `crucible.execution.reproduction-artifact`, `crucible.execution.reproduction-artifact-manifest`, `crucible.campaign.reproduction-artifact` |
 | DAG-store checkpoint material | `crucible_engine::model::store_artifacts` writes scenario definition, checkpoint node, schedule delta, and CoW delta reference bytes with separate `crucible.dag-store.*.vN` headers. The temporal graph persists these bytes by content hash. | Four `crucible.dag-store.*` rows |
 | External formal trace | `crucible_engine::trigger::evidence` writes a standalone `format=crucible.external-formal-trace.v1` export. | `crucible.external-formal-trace` |
 | Signal evaluator checkpoint | `crucible_engine::model::fault_signal::evaluator` encodes and strictly decodes `CREVAL02` version 2 inside the fault-runtime checkpoint. Its own version check makes it an independent format. | `crucible.execution.signal-evaluator-checkpoint` |
@@ -70,12 +74,12 @@ rows. They do not create an additional wire or durable schema:
   have no standalone decoder or registry row. The HPET VMState subsections
   remain separate, registered migration formats.
 - `crucible.model.measurement-definitions.v2` and
-  `crucible.model.measurement-evaluation.v2` are `ContentHash` domains over
+  `crucible.model.measurement-evaluation.v3` are `ContentHash` domains over
   canonical JSON bodies. Neither string is a decoded schema discriminator.
   The `crucible.execution.measurement-definitions` and
   `crucible.execution.measurement-evaluation` registry rows remain version 1;
   their containing scenario or observation codec owns byte compatibility.
-- `crucible.scheduler.event-log.entry.v5` and
+- `crucible.scheduler.event-log.entry.v6` and
   `crucible.session.fork-handle.v1` identify hash material, not separately
   decoded records. `crucible.model.world-fault-topology.v1` is a hash domain
   for JSON carried by the versioned world record. Device snapshot codecs in
@@ -89,12 +93,16 @@ rows. They do not create an additional wire or durable schema:
 - Standard 9P, virtio, QMP, and QEMU migration versions are owned by their
   upstream protocols. The registry owns Crucible-added QEMU migration
   sections; fields within each section share its version.
-- The lifecycle manifest and journal are fields of `run-state.json`, and the
+- The lifecycle manifest and journal are fields of `run-state.json`; the
+  journal's completed exits live in the separately versioned exit log. The
   campaign runtime identity is a hash of the emitted configuration. Neither
   is a separately decoded format.
-- `crucible.scheduler.event-log.segment-text.v5` is a text projection generated
+- `crucible.scheduler.event-log.segment-text.v6` is a text projection generated
   from a decoded binary event-log segment; it is not independently stored or
   decoded for resume.
+- `event_kind_catalog.version=8` identifies the engine's canonical event-kind
+  catalog material, including `native_console_byte`. The catalog is derived
+  from `crucible::event_catalog`; it has no independent record decoder.
 - `crucible_store::cas::campaign_codec` also emits
   `crucible.campaign-replay-input.v1` as replay-hash input; it is never stored
   as a standalone record. Its provenance and lineage material likewise feeds
@@ -113,7 +121,8 @@ paths were reviewed as a bounded source family, excluding test fixtures:
 | --- | --- |
 | `vm_lifecycle.rs` run-lock encode/write/decode | Independent durable ownership record, now registered as `crucible.production-run-lock`. |
 | `vm_lifecycle/quantum_loop/lifecycle/persistence{,/recovery}.rs` JSON measurement, write, and decode | One `run-state.json` record, registered as `crucible.production-run-state`; the counting writer and staged write do not create additional formats. |
-| `vm_lifecycle/network_faults.rs` adapter-state encode/decode | Nested opaque checkpoint body independently decoded at version 11, registered as `crucible.production-network-adapter-checkpoint`. |
+| `vm_lifecycle/quantum_loop/lifecycle/persistence/exit_log.rs` line encode, append, and streaming decode | The append-only completed-exit log, registered as `crucible.production-lifecycle-exit-log`. |
+| `vm_lifecycle/network_faults.rs` adapter-state encode/decode | Nested opaque checkpoint body independently decoded at version 13, registered as `crucible.production-network-adapter-checkpoint`. |
 | `vm_lifecycle/network_faults{,/boundary,/evidence}.rs` remaining JSON encodes | Digest and evidence material only: observation lists, campaign records, control events, mapping outputs, and queue state feed hashes or the containing adapter checkpoint. They are not separately decoded records. |
 | `vm_lifecycle/checkpoint_store/{storage,sparse}.rs` and `storage/{file_io,copy}.rs` writes | Authenticated copies or sparse reconstruction of existing checkpoint artifacts and content-addressed bytes. Their formats are owned by the corresponding checkpoint and QEMU VM-state registry rows; copying does not introduce a new decoder. |
 | `debug_gateway.rs` frame write and `debug_relay.rs` stream write | The former writes `crucible.debug-gateway.frame` encoded by `crucible-qemu-protocol`; the latter forwards opaque debugger stream bytes without a Crucible schema. |
@@ -150,7 +159,14 @@ write their corresponding registered records. `crucible_measurement::evidence`
 encodes the registered measurement replay evidence. `campaign_policy` reads
 the registered local-policy TOML. `anchored_fs` and transfer journal I/O are
 generic persistence helpers for those records; `campaign_finding_handoff`
-writes authenticated guest-asset bytes without a new wrapper schema.
+writes authenticated guest-asset bytes without a new wrapper schema. The
+guarded campaign run's `finding_export` appends its final-snapshot proof
+exchanges to the registered `crucible.daemon.finding-export-transcript`, a
+private frame file under the run-state root that is removed with the run
+result and rejected on read unless its header, frames, and trailer match.
+`campaign_gc::spill` writes fixed-width sorted-run records for GC planning
+and apply into an owner-only scratch directory that is removed with the
+operation; they never leave the process and are not a published schema.
 
 The Nix-generated Crucible guest-input review covered
 `modules/services/crucible-campaign.nix`, the packaged-executor TOML emitted
@@ -202,7 +218,8 @@ serialization paths were reviewed as a bounded source family:
 | --- | --- |
 | `crucible_qemu_host::checkpoint::{host_io_codec,node_codec}`, `realization::snapshot_codec`, `production_fault_runtime::checkpoint_codec`, and `supervision::accelerator_io_servicer` | Independently decoded host continuations and snapshot envelopes with existing QEMU registry rows. Nested device, ring, network-output, scheduler, and fault-runtime blobs use their separately registered codecs. The bounded CBOR helper only writes the caller's format. |
 | `crucible_qemu_host::qmp`, `fault_action_sink::node_payload::encoding`, `mapped_quantum`, and `supervision::device_host_work` | QMP uses its standard envelope and registered Crucible command payloads; node-fault JSON carries the registered `crucible.shmem.node-fault-policy-json` magic inside a registered node-fault payload. The remaining encoders write registered shared-memory control or data messages. |
-| `crucible_qemu_host::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `console_observation`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Console bytes and checkpoint materialization are opaque pass-through data. Cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
+| `crucible_qemu_host::launch::entropy`, `qmp::vmstate_control`, `shutdown`, `linux_cgroup`, and `spawn::materialization` | The fw_cfg entropy file is a fixed raw seed; the debug activation token and QMP quit are fixed control bytes. Checkpoint materialization carries opaque artifacts, and cgroup writes use the kernel interface. None has an independent Crucible decoder or version. |
+| `crucible_qemu_host::native_console_owner::continuation` | The independently decoded `crucible.native-console-continuation.v1` envelope retains accepted byte origins and their original logical RUN or boot projections. It carries no issued native authorization, process identity or runnable credit. Restored physical custody is admitted separately. | `crucible.qemu.native-console-continuation`, version 1. |
 | `crucible_test_support::reproduction` | Its canonical tab-separated reproduction artifact is version 4 and shares the existing `crucible.reproduction-artifact` row with the CLI codec. The fresh-lineage baseline event is independently stored and strictly parsed by `crucible-store`, where its version-1 row already exists. Campaign provenance material and fresh-lineage identity material only feed hashes. |
 | `crucible_test_support::{e2e,adversarial,replay_oracle,fingerprint}` | The `crucible.e2e.*`, `crucible.adversarial.*`, replay-oracle sampling, and fingerprint-definition tags delimit mock evidence or hash algorithms; no separate durable or wire decoder consumes them. |
 
@@ -212,7 +229,7 @@ The remaining CLI stream-writer review traced `replay::emit_canonical_trace`,
 `campaign::finding_bundle::branch::write_private_file`. The first renders
 JSON/JSONL/table views of canonical log entries without a separate schema
 version. The triage writer persists the newly registered cluster-report JSON
-formats and the existing findings-ledger format. The generic campaign writers
+formats and the findings-ledger formats. The generic campaign writers
 persist their callers' registered scenario, schedule, lineage, policy,
 import-manifest, branch-report, and component-authority records; the daemon
 already checks the authority file's version-one `CRUCCA01` magic and length.

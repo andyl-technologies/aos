@@ -39,6 +39,7 @@ in
           require_serial_line envoy_known_finding_measured_objective=true
           require_serial_line envoy_known_finding_rank_filtered=true
           require_serial_line envoy_known_finding_fresh_packaged_replay=true
+          require_serial_line envoy_known_finding_source_owner_absent=true
           require_serial_line public_product_finding_debug_authenticated=true
           require_serial_line envoy_product_branch_steering_authenticated=true
           require_serial_line envoy_product_retention_and_cleanup_authenticated=true
@@ -55,6 +56,7 @@ in
           measured_objective_authenticated=true
           failed_candidate_filtered=true
           fresh_packaged_replay_authenticated=true
+          source_owner_absent=true
           product_finding_debug_authenticated=true
           product_branch_steering_authenticated=true
           product_retention_and_cleanup_authenticated=true

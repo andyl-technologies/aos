@@ -18,7 +18,7 @@
   varSizeMiB ? 4096,
 }: let
   toplevel = system.config.system.build.toplevel;
-  expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+  expectedConfigurationIdentity = system.config.aos.crucibleCampaign._runtimeIdentity;
   runtimeTools = [pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.tar];
   runtimePath = lib.makeBinPath (runtimeInputs ++ runtimeTools);
   environmentExports = lib.concatStringsSep "\n" (
@@ -136,6 +136,14 @@ in
       pname = "crucible-phase9-campaign-mode-${name}-${mode}";
       version = "0";
       src = null;
+      passthru.campaignModeReceipt = {
+        schemaVersion = 1;
+        executor = fleet;
+        inherit mode;
+        configurationIdentity = expectedConfigurationIdentity;
+        inherit toplevel;
+        gate = gateName;
+      };
       buildDeps = [fleet pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.gawk pkgs.grep pkgs.tar];
       phases = [
         {

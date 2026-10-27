@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase3.schedulerResolveRng",
   taskIds ? ["T-SCHED-17"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   executionRuntime =
     import ./_rust-module-source.nix {
       inherit lib;
@@ -63,47 +62,23 @@ in
   if failures != []
   then throw "crucible phase3 signal resolution RNG check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase3-signal-resolution-rng";
-      version = "0";
-      src = crucibleSrc;
-      runtimeDeps = [pkgs.sqlite];
-
-      buildDeps = [pkgs.sqlite pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          '';
-        }
         {
           name = "run-signal-resolution-rng";
           script = ''
             cd crates
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+            crucible-cargo test \
               -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::recorded_effects_execute_in_every_network_replay_mode \
               -- --exact --test-threads=1
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+            crucible-cargo test \
               -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::recomputed_replay_rejects_a_derivation_continuation_mismatch \
               -- --exact --test-threads=1
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-signal-resolution-target" \
+            crucible-cargo test \
               -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::failed_replay_installation_leaves_the_owned_continuation_unchanged \
               -- --exact --test-threads=1

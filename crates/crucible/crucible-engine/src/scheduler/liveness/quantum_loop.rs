@@ -113,6 +113,10 @@ impl QuantumLoop for SingleScheduler {
         self.drive_authoritative_quantum(request)
     }
 
+    fn sealed_event_log_store(&self) -> Option<Arc<dyn DagStore>> {
+        Some(self.event_log_segment_store())
+    }
+
     fn backend_step_ceiling(
         &self,
         outcome: &QuantumOutcome,
@@ -273,7 +277,7 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
-        let original_len = self.configuration.schedule.decisions().len();
+        let original_len = self.configuration.schedule.decision_history().len();
         let mut recorder = DecisionRecorder::from_seed_and_positions(
             self.configuration.clone(),
             self.decision_seed,
@@ -315,7 +319,12 @@ impl QuantumLoop for SingleScheduler {
             discovered_choices.push(discovery);
         }
         let configuration = recorder.into_configuration();
-        let recorded = configuration.schedule.decisions()[original_len..].to_vec();
+        let recorded = configuration
+            .schedule
+            .decision_history()
+            .iter_from(original_len)
+            .cloned()
+            .collect::<Vec<_>>();
         let advanced_streams = recorded
             .iter()
             .filter_map(|decision| match decision {
@@ -463,9 +472,8 @@ impl SingleScheduler {
                     &right.payload,
                 ))
         });
-        let admission_boundary = self
-            .frontier
-            .max(self.event_log.condition_prefix().point().at());
+        let admission_boundary =
+            self.traced_network_admission_boundary(&outputs, emission_times)?;
         let mut recorded = Vec::new();
         let mut discovered_choices = Vec::new();
         for (output_index, output) in outputs.iter().enumerate() {
@@ -574,7 +582,7 @@ impl SingleScheduler {
                     projected.remove(0);
                 }
                 if selected_here.is_none() && !branch_choices.is_empty() {
-                    self.search_frontiers.push(SearchRuntimeFrontier {
+                    self.record_search_frontier(SearchRuntimeFrontier {
                         configuration: branch_configuration,
                         at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(branch_choices),
@@ -722,18 +730,19 @@ impl SingleScheduler {
                     runtime_key.0.name
                 ),
             })?;
-        // The link direction and logical RNG position identify one causal
-        // emission. Do not include the live guest's raw TX icount: QEMU may
+        // The link direction and the producer's frame sequence identify one
+        // causal emission and key its draws ([SCHED-50]). The shared stream
+        // cursor is left out: it counts both directions' draws, so it would
+        // tie the opportunity to how the two producers' frames interleaved.
+        // Do not include the live guest's raw TX icount either: QEMU may
         // report a slightly different instruction count for the same hostless
-        // probe across fresh process launches, while the scheduler-owned stream
-        // ordinal and frame correlation remain the canonical replay identity.
+        // probe across fresh process launches.
         let point = SchedulingPoint {
             key: format!(
-                "live-world-network/{}/{}/{}/{}",
+                "live-world-network/{}/{}/{}",
                 runtime_key.0.name,
                 network_direction_label(direction),
-                frame.frame_id,
-                rng_position
+                frame.frame_id
             ),
         };
         let preview = {

@@ -5,7 +5,10 @@ use crate::StatisticalProposalEvidence;
 use crate::repository::projection::{smc_weighted_categorical_draw, weighted_categorical_draw};
 use std::sync::Arc;
 
+mod evidence;
 mod smc;
+
+use evidence::{CollectedEvidence, assert_chunked_evidence_protocol};
 
 fn statistical_execution_with_proposal(
     execution: &crate::StatisticalExecutionEvidence,
@@ -64,19 +67,6 @@ fn statistical_execution_with_request_opportunity(
         execution.observation().clone(),
         execution.child().clone(),
         execution.discovered_opportunities().to_vec(),
-    )
-}
-
-fn finite_evidence_with_draws(
-    evidence: &crate::FiniteStatisticalEvidence,
-    draws: Vec<crate::StatisticalDrawEvidence>,
-) -> crate::FiniteStatisticalEvidence {
-    crate::FiniteStatisticalEvidence::new(
-        evidence.snapshot().clone(),
-        *evidence.planning_view(),
-        evidence.policy().clone(),
-        evidence.lineage().clone(),
-        draws,
     )
 }
 
@@ -435,7 +425,7 @@ fn publish_observation_for_attempt_with(
             properties,
             coverage,
         ),
-        discovered_choices,
+        stored_choice_set(repository, discovered_choices),
     )
     .expect("statistical observation");
     let result = repository
@@ -846,22 +836,28 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
     let report = repository
         .project_statistical_estimate(campaign, leaf_observed.new_snapshot)
         .expect("project statistical report");
-    let evidence = repository
-        .collect_finite_statistical_evidence(campaign, leaf_observed.new_snapshot)
-        .expect("collect finite statistical evidence");
+    let evidence = CollectedEvidence::collect(&repository, campaign, leaf_observed.new_snapshot);
     assert_eq!(
-        crate::verify_finite_statistical_evidence(&evidence)
-            .expect("verify finite statistical evidence"),
-        report
-    );
-    assert_eq!(
-        crate::FiniteStatisticalEvidence::from_canonical_bytes(&evidence.canonical_bytes())
-            .expect("round-trip finite statistical evidence"),
         evidence
+            .verify()
+            .expect("verify finite statistical evidence"),
+        crate::StatisticalEvidenceReport::Finite(report.clone())
     );
-    let root_lookups = evidence
-        .required_root_lookups()
-        .expect("derive finite evidence root lookups");
+    assert_eq!(
+        crate::StatisticalEvidenceManifest::from_canonical_bytes(
+            &evidence.manifest.canonical_bytes()
+        )
+        .expect("round-trip finite evidence manifest"),
+        evidence.manifest
+    );
+    assert_eq!(
+        crate::StatisticalEvidenceChunk::from_canonical_bytes(
+            &evidence.chunks[0].canonical_bytes()
+        )
+        .expect("round-trip finite evidence chunk"),
+        evidence.chunks[0]
+    );
+    let root_lookups = evidence.root_lookups();
     assert!(!root_lookups.is_empty());
     assert_statistical_evidence_root_lookups(
         repository.as_ref(),
@@ -869,7 +865,8 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
         &root_lookups,
     );
 
-    let first_execution = evidence.draws()[0].execution();
+    let draws = evidence.draws();
+    let first_execution = draws[0].execution();
     let proposal = first_execution.proposal();
     let probability = proposal
         .statistical_evidence()
@@ -896,16 +893,18 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
         corrupted_probability,
     )
     .expect("structurally valid corrupted proposal");
-    let mut corrupted_draws = evidence.draws().to_vec();
+    let mut corrupted_draws = draws.clone();
     corrupted_draws[0] = crate::StatisticalDrawEvidence::new(
         corrupted_draws[0].coordinate(),
         statistical_execution_with_proposal(first_execution, corrupted_proposal),
     );
     assert!(matches!(
-        crate::verify_finite_statistical_evidence(&finite_evidence_with_draws(
-            &evidence,
-            corrupted_draws,
-        )),
+        evidence.verify_items(
+            corrupted_draws
+                .into_iter()
+                .map(crate::StatisticalEvidenceItem::Draw)
+                .collect()
+        ),
         Err(CampaignCodecError::InvalidValue {
             reason: "proposal disagrees with its request, source, domain, or budget"
         })
@@ -927,19 +926,21 @@ fn two_edge_statistical_flight_reports_the_full_unequal_probability_product() {
             observation.properties(),
             observation.coverage(),
         ),
-        observation.discovered_choices().clone(),
+        discovered_choice_ids(&repository, observation),
     )
     .expect("structurally valid corrupted observation");
-    let mut corrupted_draws = evidence.draws().to_vec();
+    let mut corrupted_draws = draws.clone();
     corrupted_draws[0] = crate::StatisticalDrawEvidence::new(
         corrupted_draws[0].coordinate(),
         statistical_execution_with_observation(first_execution, corrupted_observation),
     );
     assert!(matches!(
-        crate::verify_finite_statistical_evidence(&finite_evidence_with_draws(
-            &evidence,
-            corrupted_draws,
-        )),
+        evidence.verify_items(
+            corrupted_draws
+                .into_iter()
+                .map(crate::StatisticalEvidenceItem::Draw)
+                .collect()
+        ),
         Err(CampaignCodecError::InvalidValue {
             reason: "statistical observation is inconsistent"
         })
@@ -1403,6 +1404,12 @@ fn duplicate_draws_reuse_one_observation_without_losing_sampling_multiplicity() 
     assert_eq!(
         report.diagnostics().effective_sample_size(),
         crate::StatisticalRational::new(2, 1).expect("two draw multiplicity")
+    );
+    assert_chunked_evidence_protocol(
+        repository.as_ref(),
+        campaign,
+        report_head.snapshot_id(),
+        &report,
     );
 
     let AttemptAdmissionRole::ExecutionBasis {

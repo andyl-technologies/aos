@@ -4,9 +4,10 @@ use super::*;
 use crucible_campaign::CampaignCodecError;
 use crucible_engine::model::{
     FaultContractError, FaultDirection, FaultOperation, FaultReplayMode, FaultRuntimeError, Icount,
-    OpportunityPayload, Plan, Properties, ReadyPoint, ResolvedEffectTrace, ResolvedReplayWorkItem,
-    ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId, SignalProgramError,
-    WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNode,
+    OpportunityPayload, Plan, Properties, ReadyPoint, ResolvedEffectRecord, ResolvedEffectTrace,
+    ResolvedReplayWorkItem, ScenarioSelectableLimits, ScenarioSelectables, Seed, SignalId,
+    SignalProgramError, WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef,
+    WorldFaultTopology, WorldNode,
 };
 use crucible_engine::{
     Configuration, Decision, EngineError, NetworkFaultCampaignBranch,
@@ -30,6 +31,8 @@ enum CampaignChoiceTestError {
     Runtime(#[from] FaultRuntimeError),
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
+    #[error(transparent)]
+    ProductionRuntime(#[from] crucible_qemu_host::ProductionFaultRuntimeError),
     #[error("{0}")]
     Missing(&'static str),
 }
@@ -286,11 +289,15 @@ fn selected_link_down_is_a_typed_bounded_availability_outage() -> Result<(), Cam
         NetworkAvailabilityState::Down,
         FaultDirection::AToB
     ));
+    // The selected 1_000 us outage starts at tick 10_000 and ends at this
+    // exclusive exact tick.
+    let outage_end = 10_000 + 1_000 * 1_000 * crucible_engine::model::SIM_TICKS_PER_NS;
     assert_eq!(
         replay.active_outages(&topology, 11_000)?,
-        vec![(frame("segment-primary")?.target().clone(), 1_010_000)]
+        vec![(frame("segment-primary")?.target().clone(), outage_end)]
     );
-    assert!(replay.active_outages(&topology, 1_010_000)?.is_empty());
+    assert_eq!(replay.active_outages(&topology, outage_end - 1)?.len(), 1);
+    assert!(replay.active_outages(&topology, outage_end)?.is_empty());
     Ok(())
 }
 
@@ -329,38 +336,157 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
         derivation_fingerprint: signal_fingerprint,
         records: Vec::new(),
     };
-    let signal = ResolvedEffectTrace {
-        mode: FaultReplayMode::RecomputedCause,
-        work_items: vec![signal_item.clone()],
-        cursor: 0,
-    };
-    let combined = trace_with_campaign_network_records(
-        Some(signal),
-        std::slice::from_ref(&campaign),
-        FaultResourceLimits::default(),
+    let limits = FaultResourceLimits::default();
+    let segments: Arc<dyn crucible_engine::segment_store::SegmentSink> =
+        Arc::new(crucible_engine::segment_store::SharedSegmentStore::new());
+    let signal = ResolvedEffectTrace::from_items(
         FaultReplayMode::RecomputedCause,
-    )?
-    .ok_or(CampaignChoiceTestError::Missing(
-        "missing combined effect trace",
-    ))?;
-    assert_eq!(combined.work_items.len(), 2);
-    assert_eq!(
-        combined.work_items[0].derivation_fingerprint,
-        signal_fingerprint
-    );
-    assert_eq!(
-        combined.work_items[1].derivation_fingerprint,
-        action.mapped_digest
-    );
-    assert_eq!(combined.work_items[1].records, vec![campaign.clone()]);
-
-    let decoded = ResolvedEffectTrace::from_canonical_bytes(
-        &combined.canonical_bytes()?,
-        FaultResourceLimits::default(),
+        [signal_item.clone()],
+        limits,
     )?;
+    let mut log = super::super::CampaignRecordLog::new(Arc::clone(&segments), limits);
+    log.push(campaign.clone())?;
+    let combined =
+        trace_with_campaign_network_records(Some(signal), &log, FaultReplayMode::RecomputedCause)?
+            .ok_or(CampaignChoiceTestError::Missing(
+                "missing combined effect trace",
+            ))?;
+    let items = combined.items().collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].derivation_fingerprint, signal_fingerprint);
+    assert_eq!(items[1].derivation_fingerprint, action.mapped_digest);
+    assert_eq!(items[1].records, vec![campaign.clone()]);
+
+    let bundle = combined.to_bundle_bytes(usize::MAX)?;
+    let decoded = ResolvedEffectTrace::from_bundle_bytes(&bundle, usize::MAX)?;
     assert_eq!(decoded, combined);
-    let (signal_replay, campaign_replay) = split_campaign_network_trace(decoded, true)?;
-    assert_eq!(signal_replay.work_items, vec![signal_item]);
-    assert_eq!(campaign_replay, vec![campaign]);
+    let (signal_replay, campaign_replay) =
+        split_campaign_network_trace(decoded, true, &segments, limits)?;
+    assert_eq!(
+        signal_replay.items().collect::<Result<Vec<_>, _>>()?,
+        vec![signal_item]
+    );
+    let campaign_records = campaign_replay
+        .items()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flat_map(|item| item.records)
+        .collect::<Vec<_>>();
+    assert_eq!(campaign_records, vec![campaign]);
+    Ok(())
+}
+
+/// Builds an adapter whose launch selected `plan`, as an attempt world does.
+fn adapter_selecting(
+    plan: &NetworkFaultCampaignReplayPlan,
+) -> Result<ProductionFaultNetworkInterceptor, CampaignChoiceTestError> {
+    let nodes = QemuNodeSet::new();
+    let runtime = ProductionFaultRuntime::new(
+        crucible_engine::model::FaultSignalPlan::empty(),
+        None,
+        SignalBoundarySnapshot::default(),
+        plan.target().def.id(),
+        super::super::fault_implementation::test_host_manifests(),
+        &nodes,
+    )?;
+    let mut adapter = ProductionFaultNetworkInterceptor::new(runtime, topology()?, Vec::new());
+    adapter.install_campaign_replay(Some(plan.clone()), None)?;
+    Ok(adapter)
+}
+
+#[test]
+fn a_source_rebind_drops_only_branches_ahead_of_its_boundary() -> Result<(), CampaignChoiceTestError>
+{
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let parent = branches[0].parent().clone();
+
+    // Parked at the branch parent, the selection is still ahead: the resume
+    // plan names nothing, and a child may extend it at the frontier again.
+    let mut adapter = adapter_selecting(&selected)?;
+    let original = adapter.rebind_campaign_replay(None, &parent)?;
+    assert_eq!(original, Some(selected.clone()));
+    assert_eq!(adapter.campaign_replay_identity(), None);
+    assert!(
+        validate_campaign_replay_restore(
+            adapter.campaign_replay_identity(),
+            Some(&selected),
+            Some(branches[0].at()),
+        )
+        .is_ok()
+    );
+
+    // Restoring the returned plan undoes the rebind exactly.
+    adapter.restore_campaign_replay(original);
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_source_rebind_cannot_drop_a_branch_the_world_committed() -> Result<(), CampaignChoiceTestError>
+{
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let committed_boundary = branches[0].selected().clone();
+
+    let mut adapter = adapter_selecting(&selected)?;
+    let refusal = adapter
+        .rebind_campaign_replay(None, &committed_boundary)
+        .err()
+        .map(|error| error.to_string());
+    assert!(
+        refusal
+            .as_ref()
+            .is_some_and(|refusal| refusal.contains("kept=[] committed=[")
+                && refusal.contains(&format!("child={}", branches[0].selected().id().to_hex()))),
+        "a committed branch must stay in the resume plan, and the refusal names it: {refusal:?}"
+    );
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity()),
+        "a refused rebind leaves the selection unchanged"
+    );
+
+    // Keeping exactly the committed branch is the resume plan at that boundary.
+    adapter.rebind_campaign_replay(Some(selected.clone()), &committed_boundary)?;
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_source_rebind_cannot_keep_a_branch_still_ahead_or_drop_a_released_marker()
+-> Result<(), CampaignChoiceTestError> {
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let parent = branches[0].parent().clone();
+
+    let mut adapter = adapter_selecting(&selected)?;
+    assert!(
+        adapter
+            .rebind_campaign_replay(Some(selected.clone()), &parent)
+            .is_err(),
+        "a resume plan names only branches the source has crossed"
+    );
+
+    adapter.record_campaign_marker_release(
+        &NodeId {
+            name: String::from("router-a"),
+        },
+        "fault.transport.ready",
+        Icount { retired: 10 },
+        Icount { retired: 11 },
+        Icount { retired: 11 },
+        branches[0].selected().id(),
+    )?;
+    assert!(
+        adapter.rebind_campaign_replay(None, &parent).is_err(),
+        "a released marker proves the world crossed its branch"
+    );
     Ok(())
 }

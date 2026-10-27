@@ -454,10 +454,11 @@ fn non_genuine_delivery_decision(label: &str, ticks: u64, sequence: u64) -> Deci
 }
 
 fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name(stream),
+        0,
         value,
-    })
+    ))
 }
 
 fn event_key(label: &str, virtual_time: u64, sequence: u64) -> EventKey {

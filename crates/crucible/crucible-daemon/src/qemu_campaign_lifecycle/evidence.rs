@@ -27,9 +27,9 @@ use thiserror::Error;
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedAttemptCheckpoint, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner,
+    MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptContinuation, QemuFinalBoundaryDrain,
+    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,
+    QemuRetainedSourcePreparation,
 };
 use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 
@@ -48,6 +48,10 @@ pub struct QemuObservedFreshAttemptLifecycle<L> {
     fingerprint_nodes: Vec<NodeId>,
     staged_terminal_fingerprints: Option<Vec<FingerprintSample>>,
     selected_preselection_event_count: Option<usize>,
+    /// Entries a nonempty retention drain appended before shutdown.
+    drained_final_events: Vec<SchedulerEventLogEntry>,
+    /// Whether an empty retention drain already completed the evidence.
+    evidence_completed: bool,
     evidence: QemuAttemptExecutionEvidence,
 }
 
@@ -64,8 +68,40 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
             fingerprint_nodes,
             staged_terminal_fingerprints: None,
             selected_preselection_event_count: None,
+            drained_final_events: Vec::new(),
+            evidence_completed: false,
             evidence,
         }
+    }
+
+    /// Separates the wrapped lifecycle from its observation state.
+    ///
+    /// [`QemuObservedFreshAttemptLifecycle::rebind`] restores the same state
+    /// around a lifecycle returned by a declined source preparation.
+    pub(crate) fn into_observation_parts(self) -> (L, QemuObservedFreshAttemptLifecycle<()>) {
+        let Self {
+            lifecycle,
+            initial_fingerprints_recorded,
+            post_first_quantum_fingerprints_recorded,
+            fingerprint_nodes,
+            staged_terminal_fingerprints,
+            selected_preselection_event_count,
+            drained_final_events,
+            evidence_completed,
+            evidence,
+        } = self;
+        let observation = QemuObservedFreshAttemptLifecycle {
+            lifecycle: (),
+            initial_fingerprints_recorded,
+            post_first_quantum_fingerprints_recorded,
+            fingerprint_nodes,
+            staged_terminal_fingerprints,
+            selected_preselection_event_count,
+            drained_final_events,
+            evidence_completed,
+            evidence,
+        };
+        (lifecycle, observation)
     }
 
     pub(crate) fn lifecycle(&self) -> &L {
@@ -78,6 +114,34 @@ impl<L> QemuObservedFreshAttemptLifecycle<L> {
 
     pub(crate) fn into_recovery_parts(self) -> (L, Vec<NodeId>, QemuAttemptExecutionEvidence) {
         (self.lifecycle, self.fingerprint_nodes, self.evidence)
+    }
+}
+
+impl QemuObservedFreshAttemptLifecycle<()> {
+    /// Restores observation state around a lifecycle.
+    pub(crate) fn rebind<L>(self, lifecycle: L) -> QemuObservedFreshAttemptLifecycle<L> {
+        let Self {
+            lifecycle: (),
+            initial_fingerprints_recorded,
+            post_first_quantum_fingerprints_recorded,
+            fingerprint_nodes,
+            staged_terminal_fingerprints,
+            selected_preselection_event_count,
+            drained_final_events,
+            evidence_completed,
+            evidence,
+        } = self;
+        QemuObservedFreshAttemptLifecycle {
+            lifecycle,
+            initial_fingerprints_recorded,
+            post_first_quantum_fingerprints_recorded,
+            fingerprint_nodes,
+            staged_terminal_fingerprints,
+            selected_preselection_event_count,
+            drained_final_events,
+            evidence_completed,
+            evidence,
+        }
     }
 }
 
@@ -195,6 +259,13 @@ where
         self.lifecycle.exact_checkpoint_ready()
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::qemu_campaign_lifecycle::QemuExactCheckpointRefusal>, SchedulerError>
+    {
+        self.lifecycle.exact_checkpoint_refusal()
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -210,6 +281,45 @@ where
     ) -> Result<(), SchedulerError> {
         self.lifecycle
             .release_parked_campaign_marker(node, marker, selected)
+    }
+
+    fn park_held_campaign_markers(
+        &mut self,
+        markers: &[&str],
+        outcome: &mut QuantumOutcome,
+    ) -> Result<usize, SchedulerError> {
+        let recorded = outcome.event_log_entries.len();
+        let parks = self
+            .lifecycle
+            .park_held_campaign_markers(markers, outcome)?;
+
+        // Each park publishes its peers' outcomes into `outcome`, after the
+        // quantum it extends was recorded. Their entries continue the same
+        // exact evidence prefix.
+        let published = outcome
+            .event_log_entries
+            .get(recorded..)
+            .unwrap_or_default();
+        self.evidence.record_appended_entries(published)?;
+        Ok(parks)
+    }
+
+    fn join_campaign_parks_to_frontier(&mut self) -> Result<Option<VirtualTime>, SchedulerError> {
+        self.lifecycle.join_campaign_parks_to_frontier()
+    }
+
+    fn append_network_fault_campaign_branch(
+        &mut self,
+        branch: &crucible_engine::NetworkFaultCampaignBranch,
+    ) -> Result<(Configuration, Vec<SchedulerEventLogEntry>), SchedulerError> {
+        let (configuration, entries) = self
+            .lifecycle
+            .append_network_fault_campaign_branch(branch)?;
+
+        // The branch selection and its trigger settlement are scheduler
+        // entries recorded outside any driven quantum.
+        self.evidence.record_appended_entries(&entries)?;
+        Ok((configuration, entries))
     }
 
     fn campaign_marker_release_committed(
@@ -239,6 +349,14 @@ where
         self.lifecycle.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,
@@ -255,6 +373,23 @@ where
         // has been recorded. They belong to the same exact evidence prefix.
         self.evidence.record_appended_entries(&entries)?;
         Ok(entries)
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        let outcome = self
+            .lifecycle
+            .publish_released_host_outcomes(configuration)?;
+        if let Some(outcome) = &outcome {
+            self.evidence.record(
+                self.lifecycle.completed_quanta(),
+                outcome.frontier,
+                &outcome.event_log_entries,
+            )?;
+        }
+        Ok(outcome)
     }
 
     fn capture_attempt_checkpoint(
@@ -296,16 +431,60 @@ where
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         self.lifecycle.resolved_effect_trace()
+    }
+
+    fn drain_final_events_for_retention(
+        &mut self,
+    ) -> Result<QemuFinalBoundaryDrain, SchedulerError> {
+        if self.evidence_completed || !self.drained_final_events.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("final boundary was already drained for retention"),
+            });
+        }
+        let resolved_effect_trace = self.lifecycle.resolved_effect_trace();
+        let drained = self.lifecycle.drain_final_events_for_retention()?;
+        match &drained {
+            // A retained world is never shut down by this attempt, so the
+            // evidence completes here with the proven-empty final suffix.
+            QemuFinalBoundaryDrain::Retainable => {
+                let terminal_fingerprints = self.staged_terminal_fingerprints.take();
+                self.evidence
+                    .complete(&[], resolved_effect_trace?, terminal_fingerprints)?;
+                self.evidence_completed = true;
+            }
+            QemuFinalBoundaryDrain::Drained(entries) => {
+                self.drained_final_events.clone_from(entries);
+            }
+            QemuFinalBoundaryDrain::Ineligible(_) => {}
+        }
+        Ok(drained)
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         let resolved_effect_trace = self.lifecycle.resolved_effect_trace();
         let final_events = self.lifecycle.shutdown()?;
+        if self.evidence_completed {
+            // The retention drain completed the evidence; the caller checks
+            // that shutdown found no further entries.
+            return Ok(final_events);
+        }
         let terminal_fingerprints = self.staged_terminal_fingerprints.take();
-        self.evidence
-            .complete(&final_events, resolved_effect_trace?, terminal_fingerprints)?;
+        if self.drained_final_events.is_empty() {
+            self.evidence
+                .complete(&final_events, resolved_effect_trace?, terminal_fingerprints)?;
+        } else {
+            let mut complete_suffix = std::mem::take(&mut self.drained_final_events);
+            complete_suffix.extend(final_events.iter().cloned());
+            self.evidence.complete(
+                &complete_suffix,
+                resolved_effect_trace?,
+                terminal_fingerprints,
+            )?;
+        }
         Ok(final_events)
     }
 }
@@ -377,6 +556,9 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
 
     /// Resets the worker evidence and derives the canonical VM-node sample set.
     ///
+    /// The recorded event log is bounded by the attempt's operational
+    /// `maximum_event_log_bytes`.
+    ///
     /// # Errors
     ///
     /// Returns a classified scheduler failure when the evidence owner cannot be
@@ -384,9 +566,15 @@ impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
     pub(crate) fn prepare_observation(
         &self,
         source: &crucible_engine::ScenarioDefForm,
+        context: &AttemptExecutionContext,
     ) -> Result<Vec<NodeId>, AttemptWorkerFailure<SchedulerError>> {
+        let store = context.create_event_log_store().map_err(|error| {
+            AttemptWorkerFailure::Terminal(SchedulerError::BoundaryViolation {
+                message: format!("create QEMU execution evidence log directory: {error}"),
+            })
+        })?;
         self.evidence
-            .reset()
+            .reset(context.maximum_event_log_bytes(), store)
             .map_err(AttemptWorkerFailure::Retryable)?;
         let vm_nodes = source.world().vm_nodes();
         if vm_nodes.len() > MAX_TERMINAL_FINGERPRINT_SAMPLES {
@@ -484,17 +672,14 @@ where
             AttemptExecutionProduct::PreparedSemantic(result) => {
                 let attached = self
                     .evidence
-                    .snapshot()
+                    .terminal_fingerprints()
                     .map_err(map_terminal_evidence_snapshot_failure)
-                    .and_then(|snapshot| {
-                        snapshot
-                            .terminal_fingerprints()
-                            .ok_or_else(|| {
-                                AttemptWorkerFailure::Terminal(
-                                    QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints,
-                                )
-                            })
-                            .map(<[FingerprintSample]>::to_vec)
+                    .and_then(|terminal_fingerprints| {
+                        terminal_fingerprints.ok_or_else(|| {
+                            AttemptWorkerFailure::Terminal(
+                                QemuTerminalEvidenceExecutionRunnerError::MissingTerminalFingerprints,
+                            )
+                        })
                     })
                     .and_then(|terminal_fingerprints| {
                         result.with_terminal_fingerprints(terminal_fingerprints).map_err(|error| {
@@ -567,13 +752,38 @@ where
         context: &AttemptExecutionContext,
     ) -> Result<Self::Lifecycle, AttemptWorkerFailure<Self::Error>> {
         let fingerprint_nodes = self
-            .prepare_observation(source)
+            .prepare_observation(source, context)
             .map_err(map_observed_evidence_failure::<F::Error>)?;
         let lifecycle = self
             .inner
             .start_fresh_lifecycle(scenario, source, start, signal_fault_replay, context)
             .map_err(map_observed_inner_failure)?;
         Ok(self.observe(lifecycle, fingerprint_nodes))
+    }
+
+    fn prepare_retained_source(
+        &mut self,
+        lifecycle: Self::Lifecycle,
+        source: &crucible_engine::ScenarioDefForm,
+        // crucible-lint: allow host-nondeterminism-state -- the sealed stop boundary is forwarded unchanged to the guarded lifecycle factory.
+        boundary: &crucible_engine::Configuration,
+        replay: &crucible_engine::SignalFaultCampaignReplayPlan,
+    ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
+        let (lifecycle, observation) = lifecycle.into_observation_parts();
+        match self
+            .inner
+            .prepare_retained_source(lifecycle, source, boundary, replay)
+        {
+            QemuRetainedSourcePreparation::Prepared(world) => {
+                QemuRetainedSourcePreparation::Prepared(world)
+            }
+            QemuRetainedSourcePreparation::Recovered(lifecycle) => {
+                QemuRetainedSourcePreparation::Recovered(observation.rebind(lifecycle))
+            }
+            QemuRetainedSourcePreparation::Quarantined => {
+                QemuRetainedSourcePreparation::Quarantined
+            }
+        }
     }
 }
 
@@ -634,7 +844,8 @@ fn map_terminal_evidence_snapshot_failure<E>(
         | SchedulerError::BoundaryViolation { .. }
         | SchedulerError::ResourceLimit { .. }
         | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+        | SchedulerError::TopologyActivationInPast { .. }
+        | SchedulerError::UndeclaredConsoleMatcher(_) => None,
     };
     let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
     match class {

@@ -33,7 +33,18 @@ where
                 let (continuation, endpoint, source) = error.into_parts();
                 self.host_continuation = Some(continuation);
                 self.pending_child_qmp = endpoint;
-                Err(LinuxQemuHotForkReconciliationError::Source(source))
+                // Capture only the already-owned child stream and pidfd before
+                // the reconciliation machine quarantines this failed owner.
+                let report = admission_failure::capture(
+                    &mut self.diagnostics_consumer,
+                    self.process_owner.process.basis(),
+                    self.process_owner.process.identity(),
+                    || self.process_owner.process.terminal_readiness_observed(),
+                );
+                Err(LinuxQemuHotForkReconciliationError::ChildAdmission {
+                    source,
+                    report: Box::new(report),
+                })
             }
         }
     }
@@ -71,11 +82,6 @@ where
                 }
                 LinuxSourceReleasePhase::PluginEndpoints => {
                     self.with_source_mut(|source| source.release_plugin_endpoints())?;
-                    self.source_release = LinuxSourceReleasePhase::ChildConsole;
-                    return Ok(false);
-                }
-                LinuxSourceReleasePhase::ChildConsole => {
-                    self.with_source_mut(|source| source.release_child_console())?;
                     self.source_release = LinuxSourceReleasePhase::ChildQmp;
                     return Ok(false);
                 }

@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Cursor;
 use std::sync::{
     Arc, Mutex, MutexGuard,
     mpsc::{self, Sender, TryRecvError},
@@ -43,6 +42,7 @@ use crucible_store::content_store::{
 use crucible_store::content_store::{RefInventoryFence, RefStoreAdmin};
 
 use super::apply::CampaignGcApplySources;
+use super::spill::create_work_directory;
 use super::*;
 use super::{
     apply_single_host_campaign_gc_with_physical as apply_single_host_campaign_gc,
@@ -69,6 +69,7 @@ use crate::{
 
 mod physical_quota;
 mod s3;
+mod spill_scratch;
 
 #[derive(Default)]
 struct TestCampaignTransferRoots {
@@ -524,14 +525,18 @@ fn publish_pending_finding_fixture_with_observation(
             child,
             child_artifact,
             fingerprint,
-            1,
-            b"pending finding original reproduction".to_vec(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                b"pending finding original reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish pending finding reproduction");
     let replayed_state = hash("crucible.test.pending-finding.replayed-state", 0x18);
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"pending finding deterministic minimizer".to_vec(),
         vec![FindingMinimizationAttempt::new(
             0,
@@ -551,8 +556,12 @@ fn publish_pending_finding_fixture_with_observation(
             child,
             child_artifact,
             fingerprint,
-            1,
-            b"pending finding minimized reproduction".to_vec(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                b"pending finding minimized reproduction".to_vec(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish pending finding minimized reproduction");
@@ -823,26 +832,35 @@ fn decoder_rejects_truncation_trailing_bytes_and_wrong_schema() {
 
 #[test]
 fn root_and_candidate_manifests_round_trip_with_stable_identity() {
+    let temp = tempfile::tempdir().expect("manifest root");
+    let directory = create_work_directory(temp.path()).expect("work directory");
     let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
     let second = ContentId::for_bytes(ObjectKind::Finding, 2, b"second");
-    let roots = CampaignGcRootManifest::new([second, first, first]).expect("root manifest");
+    let roots = CampaignGcRootManifest::from_roots_for_test(&directory, [second, first, first])
+        .expect("root manifest");
     let root_id = roots.id();
     let mut root_bytes = Vec::new();
     roots
         .write_canonical(&mut root_bytes)
         .expect("encode roots");
-    let decoded_roots = CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(root_bytes))
-        .expect("decode roots");
+    let decoded_roots =
+        CampaignGcRootManifest::open(manifest_file(temp.path(), "roots", &root_bytes))
+            .expect("decode roots");
     assert_eq!(decoded_roots, roots);
     assert_eq!(decoded_roots.id(), root_id);
+    assert_eq!(decoded_roots.len(), 2);
     let mut expected_roots = vec![first, second];
     expected_roots.sort_unstable_by(content_id_manifest_order);
-    assert_eq!(decoded_roots.iter().collect::<Vec<_>>(), expected_roots);
+    assert_eq!(decoded_roots.entries_for_test(), expected_roots);
+    assert!(decoded_roots.contains(second).expect("scan roots"));
 
-    let candidates = CampaignGcCandidateManifest::new(vec![
-        CampaignGcCandidate::new("z-tier", second, 20).expect("candidate"),
-        CampaignGcCandidate::new("a-tier", first, 10).expect("candidate"),
-    ])
+    let candidates = CampaignGcCandidateManifest::from_candidates_for_test(
+        &directory,
+        vec![
+            CampaignGcCandidate::new("z-tier", second, 20).expect("candidate"),
+            CampaignGcCandidate::new("a-tier", first, 10).expect("candidate"),
+        ],
+    )
     .expect("candidate manifest");
     let summary = candidates.summary();
     let mut candidate_bytes = Vec::new();
@@ -850,23 +868,36 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
         .write_canonical(&mut candidate_bytes)
         .expect("encode candidates");
     assert!(candidate_bytes.starts_with(b"crucible.campaign.gc-candidate-manifest.v1\0"));
-    let decoded_candidates =
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
-            .expect("decode candidates");
+    let decoded_candidates = CampaignGcCandidateManifest::open(manifest_file(
+        temp.path(),
+        "candidates",
+        &candidate_bytes,
+    ))
+    .expect("decode candidates");
     assert_eq!(decoded_candidates, candidates);
     assert_eq!(decoded_candidates.summary(), summary);
     assert_eq!(summary.candidates(), 2);
     assert_eq!(summary.logical_bytes(), 30);
-    assert_eq!(
-        decoded_candidates.iter().next().expect("first").backend(),
-        "a-tier"
-    );
+    assert_eq!(decoded_candidates.entries_for_test()[0].backend(), "a-tier");
+
+    // Each backend's range is indexed at open and streams on its own.
+    assert_eq!(decoded_candidates.backend_candidates("z-tier"), 1);
+    assert_eq!(decoded_candidates.backend_candidates("m-tier"), 0);
+    let z_tier = decoded_candidates
+        .iter_backend("z-tier")
+        .expect("open z-tier range")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read z-tier range");
+    assert_eq!(z_tier.len(), 1);
+    assert_eq!(z_tier[0].id(), second);
 
     let mut wrong_candidate_schema = candidate_bytes;
     wrong_candidate_schema[0] ^= 1;
     assert!(matches!(
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(
-            wrong_candidate_schema
+        CampaignGcCandidateManifest::open(manifest_file(
+            temp.path(),
+            "wrong-schema",
+            &wrong_candidate_schema
         )),
         Err(CampaignGcManifestError::UnsupportedSchema)
     ));
@@ -874,21 +905,27 @@ fn root_and_candidate_manifests_round_trip_with_stable_identity() {
 
 #[test]
 fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
+    let temp = tempfile::tempdir().expect("manifest root");
+    let directory = create_work_directory(temp.path()).expect("work directory");
     let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
     assert!(matches!(
-        CampaignGcCandidateManifest::new(vec![
-            CampaignGcCandidate::new("tier", first, 1).expect("candidate"),
-            CampaignGcCandidate::new("tier", first, 2).expect("candidate"),
-        ]),
+        CampaignGcCandidateManifest::from_candidates_for_test(
+            &directory,
+            vec![
+                CampaignGcCandidate::new("tier", first, 1).expect("candidate"),
+                CampaignGcCandidate::new("tier", first, 2).expect("candidate"),
+            ]
+        ),
         Err(CampaignGcManifestError::DuplicateCandidate)
     ));
 
-    let roots = CampaignGcRootManifest::new([first]).expect("root manifest");
+    let roots =
+        CampaignGcRootManifest::from_roots_for_test(&directory, [first]).expect("root manifest");
     let mut bytes = Vec::new();
     roots.write_canonical(&mut bytes).expect("encode roots");
     bytes.push(0);
     assert!(matches!(
-        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(bytes)),
+        CampaignGcRootManifest::open(manifest_file(temp.path(), "trailing", &bytes)),
         Err(CampaignGcManifestError::Noncanonical)
     ));
 
@@ -904,13 +941,55 @@ fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
         unordered.extend_from_slice(encoded.as_bytes());
     }
     assert!(matches!(
-        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(unordered)),
+        CampaignGcRootManifest::open(manifest_file(temp.path(), "unordered", &unordered)),
         Err(CampaignGcManifestError::Noncanonical)
     ));
 }
 
 #[test]
+fn full_manifest_iteration_detects_a_file_replaced_after_open() {
+    let temp = tempfile::tempdir().expect("manifest root");
+    let directory = create_work_directory(temp.path()).expect("work directory");
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, b"second");
+    let candidates = CampaignGcCandidateManifest::from_candidates_for_test(
+        &directory,
+        vec![CampaignGcCandidate::new("tier", first, 1).expect("candidate")],
+    )
+    .expect("candidate manifest");
+    let mut original = Vec::new();
+    candidates
+        .write_canonical(&mut original)
+        .expect("encode candidates");
+    let path = manifest_file(temp.path(), "journal-copy", &original);
+    let opened = CampaignGcCandidateManifest::open(&path).expect("open journal copy");
+
+    // A same-length substitute passes the header check but not the identity.
+    let substitute = CampaignGcCandidateManifest::from_candidates_for_test(
+        &directory,
+        vec![CampaignGcCandidate::new("tier", second, 1).expect("candidate")],
+    )
+    .expect("substitute manifest");
+    let mut substitute_bytes = Vec::new();
+    substitute
+        .write_canonical(&mut substitute_bytes)
+        .expect("encode substitute");
+    fs::write(&path, &substitute_bytes).expect("replace journal copy");
+
+    let entries = opened
+        .iter()
+        .expect("reopen journal copy")
+        .collect::<Vec<_>>();
+
+    assert!(matches!(
+        entries.as_slice(),
+        [Err(CampaignGcManifestError::Changed)]
+    ));
+}
+
+#[test]
 fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new("gc-primary", 8 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -954,15 +1033,24 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
         None,
         hash("crucible.test.gc.store-graph.v1", 9),
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan GC");
 
-    assert_eq!(prepared.roots().iter().collect::<Vec<_>>(), vec![live_id]);
+    assert_eq!(
+        prepared
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![live_id]
+    );
     assert_eq!(prepared.reachable_objects(), 1);
     assert_eq!(prepared.candidates().len(), 1);
     let candidate = prepared
         .candidates()
-        .iter()
+        .entries_for_test()
+        .into_iter()
         .next()
         .expect("orphan candidate");
     assert_eq!(candidate.backend(), "gc-primary");
@@ -976,6 +1064,7 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
 
 #[test]
 fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary read-through GC root");
     let cache_root = temp.path().join("cache");
     let source_root = temp.path().join("source");
@@ -1081,13 +1170,15 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan policy-aware GC");
     assert_eq!(prepared.unreachable_candidates(), 0);
     assert_eq!(prepared.reachable_cache_candidates(), 2);
     let candidate = prepared
         .candidates()
-        .iter()
+        .entries_for_test()
+        .into_iter()
         .next()
         .expect("cache candidate");
     assert_eq!(candidate.backend(), cache.as_str());
@@ -1115,25 +1206,37 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
         .write_canonical(&mut candidate_bytes)
         .expect("encode candidates");
     assert_eq!(
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
-            .expect("decode candidates"),
+        CampaignGcCandidateManifest::open(manifest_file(
+            temp.path(),
+            "policy-candidates",
+            &candidate_bytes
+        ))
+        .expect("decode candidates"),
         *prepared.candidates()
     );
     candidate_bytes.push(0);
     assert!(matches!(
-        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes)),
+        CampaignGcCandidateManifest::open(manifest_file(
+            temp.path(),
+            "policy-candidates-trailing",
+            &candidate_bytes
+        )),
         Err(CampaignGcManifestError::Noncanonical)
     ));
 
-    let forged_candidates = CampaignGcCandidateManifest::new(vec![
-        CampaignGcCandidate::new_reachable_cache(
-            source.as_str(),
-            live_id,
-            live_bytes.len() as u64,
-            cache.as_str(),
-        )
-        .expect("swapped-role candidate"),
-    ])
+    let forged_directory = create_work_directory(temp.path()).expect("forged work directory");
+    let forged_candidates = CampaignGcCandidateManifest::from_candidates_for_test(
+        &forged_directory,
+        vec![
+            CampaignGcCandidate::new_reachable_cache(
+                source.as_str(),
+                live_id,
+                live_bytes.len() as u64,
+                cache.as_str(),
+            )
+            .expect("swapped-role candidate"),
+        ],
+    )
     .expect("swapped-role manifest");
     let forged = prepared
         .clone()
@@ -1218,6 +1321,7 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
 
 #[test]
 fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary alias GC root");
     let shared = temp.path().join("shared");
     let root = StoreNodeId::new("aliased-read-through").expect("root node");
@@ -1291,6 +1395,7 @@ fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
         None,
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan aliased graph");
     assert_eq!(prepared.reachable_cache_candidates(), 0);
@@ -1364,6 +1469,7 @@ fn required_graph_path_dominates_a_read_through_cache_role() {
 
 #[test]
 fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new(
         "pending-finding-gc",
         8 * 1024 * 1024,
@@ -1426,9 +1532,14 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan pending finding GC");
-    let retained = prepared.roots().iter().collect::<BTreeSet<_>>();
+    let retained = prepared
+        .roots()
+        .entries_for_test()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     assert_eq!(
         retained,
         BTreeSet::from([observation.content_id(), candidate.content_id()])
@@ -1440,7 +1551,8 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
     assert!(
         prepared
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == orphan)
     );
 
@@ -1480,6 +1592,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan after pending finding restart");
     assert_eq!(
@@ -1491,6 +1604,7 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
 
 #[test]
 fn incorporated_finding_releases_exact_candidate_root_across_restart() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     const CAMPAIGN: &str = "pending-finding-gc-fixture";
 
     let storage = tempfile::tempdir().expect("durable handoff storage");
@@ -1659,12 +1773,14 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan after candidate acknowledgement");
     assert!(
         !prepared
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == candidate.content_id())
     );
     let journal_root = tempfile::tempdir().expect("GC journal directory");
@@ -1757,6 +1873,7 @@ fn pending_finding_restart_publishes_observation_before_finding_and_release() {
 
 #[test]
 fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     const CAMPAIGN: &str = "pending-finding-gc-fixture";
 
     let storage = tempfile::tempdir().expect("lock-order storage");
@@ -1823,6 +1940,7 @@ fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order(
             None,
             hash("crucible.test.finding-lock-order.v1", 0x77),
             &[physical],
+            spill_parent.path(),
         )
         .expect("plan lock-order GC");
         gc_done_tx.send(()).expect("signal GC completion");
@@ -1982,6 +2100,7 @@ fn completed_status_and_control_fail_closed_on_missing_candidate_descendant() {
 
 #[test]
 fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new("hot-gc-primary", 8 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -2034,10 +2153,15 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
         CampaignGcHotCheckpointRoots::new(&hot),
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan with retained fallback");
     assert_eq!(
-        retained.roots().iter().collect::<Vec<_>>(),
+        retained
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .collect::<Vec<_>>(),
         vec![configuration_artifact.content_id()]
     );
     assert!(retained.candidates().is_empty());
@@ -2055,6 +2179,7 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
         CampaignGcHotCheckpointRoots::new(&hot),
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan after fallback release");
     assert_eq!(released.candidates().len(), 2);
@@ -2090,6 +2215,7 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
 
 #[test]
 fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new(
         "combined-hot-transfer-gc",
         1024 * 1024,
@@ -2171,24 +2297,28 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("plan combined hot and transfer roots");
     assert!(
         prepared
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == hot_configuration_artifact.content_id())
     );
     assert!(
         prepared
             .roots()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|root| root == transfer_configuration_artifact.content_id())
     );
     assert!(
         prepared
             .candidates()
-            .iter()
+            .entries_for_test()
+            .into_iter()
             .any(|candidate| candidate.id() == transfer_scenario_artifact.content_id())
     );
 
@@ -2239,6 +2369,7 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
 
 #[test]
 fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
     let staging_root = temp.path().join("staging");
     let destination_root = temp.path().join("destination");
@@ -2334,6 +2465,7 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
         Some(graph.as_ref()),
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan recovered pending transfer with destination present");
     assert_eq!(before_transfer.reachable_cache_candidates(), 0);
@@ -2352,12 +2484,14 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
         Some(graph.as_ref()),
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("plan completed staging eviction");
     assert_eq!(prepared.reachable_cache_candidates(), 2);
     let candidate = prepared
         .candidates()
-        .iter()
+        .entries_for_test()
+        .into_iter()
         .find(|candidate| candidate.id() == live_id)
         .expect("staging child candidate");
     assert_eq!(candidate.backend(), staging.as_str());
@@ -2410,6 +2544,7 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
         Some(graph.as_ref()),
         None,
         &admin,
+        spill_parent.path(),
     )
     .expect("replan after durable journal completion");
     assert_eq!(prepared.reachable_cache_candidates(), 2);
@@ -2448,6 +2583,7 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
 
 #[test]
 fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
     let staging_root = temp.path().join("staging");
     let archive_root = temp.path().join("archive");
@@ -2531,15 +2667,26 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         None,
         graph_id,
         &[archive_physical, staging_physical],
+        spill_parent.path(),
     )
     .expect("plan write-back-aware GC");
     assert_eq!(
-        prepared.roots().iter().collect::<Vec<_>>(),
+        prepared
+            .roots()
+            .entries_for_test()
+            .into_iter()
+            .collect::<Vec<_>>(),
         vec![pending_id]
     );
     assert_eq!(prepared.candidates().len(), 1);
     assert_eq!(
-        prepared.candidates().iter().next().expect("orphan").id(),
+        prepared
+            .candidates()
+            .entries_for_test()
+            .into_iter()
+            .next()
+            .expect("orphan")
+            .id(),
         orphan_id
     );
 
@@ -2574,6 +2721,7 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
 
 #[test]
 fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let temp = tempfile::TempDir::new().expect("temporary exact write-back GC root");
     let staging_root = temp.path().join("staging");
     let destination_root = temp.path().join("destination");
@@ -2750,10 +2898,15 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         graph_id,
         &[destination_physical, staging_physical],
+        spill_parent.path(),
     )
     .expect("plan exact write-back roots");
 
-    let roots = prepared.roots().iter().collect::<BTreeSet<_>>();
+    let roots = prepared
+        .roots()
+        .entries_for_test()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     assert!(roots.contains(&pending_child_id));
     assert!(roots.contains(&pending_parent_id));
     assert!(roots.contains(&retained_parent_id));
@@ -2767,6 +2920,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
     assert_eq!(
         prepared
             .candidates()
+            .entries_for_test()
             .iter()
             .map(CampaignGcCandidate::id)
             .collect::<BTreeSet<_>>(),
@@ -2812,6 +2966,7 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
         graph_id,
         &[destination_physical, staging_physical],
+        spill_parent.path(),
     )
     .expect("replan after second ref publication");
     let (mut journal, _) =
@@ -2856,8 +3011,8 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
 
 #[test]
 fn external_journal_reopens_exact_plan_and_durable_phase() {
-    let prepared = journal_plan_fixture(0x41);
-    let different = journal_plan_fixture(0x42);
+    let (prepared, _prepared_spill) = journal_plan_fixture(0x41);
+    let (different, _different_spill) = journal_plan_fixture(0x42);
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
     let root = temp.path().join("gc-journal");
 
@@ -2910,7 +3065,7 @@ fn external_journal_reopens_exact_plan_and_durable_phase() {
 
 #[test]
 fn external_journal_cancellation_is_durable_idempotent_and_terminal() {
-    let prepared = journal_plan_fixture(0x43);
+    let (prepared, _prepared_spill) = journal_plan_fixture(0x43);
     let temp = tempfile::TempDir::new().expect("temporary journal parent");
     let root = temp.path().join("gc-journal");
 
@@ -2953,7 +3108,7 @@ fn external_journal_rejects_incomplete_and_corrupt_state() {
         Err(CampaignGcJournalError::Incomplete)
     ));
 
-    let prepared = journal_plan_fixture(0x51);
+    let (prepared, _prepared_spill) = journal_plan_fixture(0x51);
     let complete = temp.path().join("complete");
     let (journal, _) =
         DirectoryCampaignGcJournal::create(&complete, &prepared).expect("create complete journal");
@@ -3021,9 +3176,12 @@ struct ApplyFixture {
     ledger: MemoryAssignmentLedger,
     prepared: CampaignGcPreparedPlan,
     graph: CampaignHash,
+    /// Holds the plan's scratch manifests on disk for the fixture's lifetime.
+    spill_parent: tempfile::TempDir,
 }
 
 fn apply_fixture(orphan_count: u8) -> ApplyFixture {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new("apply-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -3046,6 +3204,7 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
         None,
         graph,
         &[physical],
+        spill_parent.path(),
     )
     .expect("prepare apply fixture");
     ApplyFixture {
@@ -3055,10 +3214,13 @@ fn apply_fixture(orphan_count: u8) -> ApplyFixture {
         ledger,
         prepared,
         graph,
+        spill_parent,
     }
 }
 
-fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
+/// Plans one orphan; the returned directory holds the plan's manifests.
+fn journal_plan_fixture(graph_byte: u8) -> (CampaignGcPreparedPlan, tempfile::TempDir) {
+    let spill_parent = tempfile::tempdir().expect("GC spill parent");
     let blobs = Arc::new(MemoryBlobBackend::new("journal-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = CampaignRepository::new(blobs.clone(), refs.clone());
@@ -3070,7 +3232,7 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
     let mut ledger = MemoryAssignmentLedger::default();
     let physical = CampaignGcRawPhysicalStore::new("journal-primary", blobs.as_ref())
         .expect("journal physical store");
-    plan_single_host_campaign_gc(
+    let prepared = plan_single_host_campaign_gc(
         &repository,
         refs.as_ref(),
         &mut ledger,
@@ -3078,8 +3240,48 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
         None,
         hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
         &[physical],
+        spill_parent.path(),
     )
-    .expect("prepare journal plan")
+    .expect("prepare journal plan");
+    (prepared, spill_parent)
+}
+
+/// Reads a whole file-backed manifest eagerly for test assertions.
+pub(crate) trait ManifestEntriesForTest {
+    /// Entry type yielded by the manifest.
+    type Entry;
+
+    /// Returns every entry in canonical order, panicking on read failure.
+    fn entries_for_test(&self) -> Vec<Self::Entry>;
+}
+
+impl ManifestEntriesForTest for CampaignGcRootManifest {
+    type Entry = ContentId;
+
+    fn entries_for_test(&self) -> Vec<ContentId> {
+        self.iter()
+            .expect("open root manifest")
+            .collect::<Result<_, _>>()
+            .expect("read root manifest")
+    }
+}
+
+impl ManifestEntriesForTest for CampaignGcCandidateManifest {
+    type Entry = CampaignGcCandidate;
+
+    fn entries_for_test(&self) -> Vec<CampaignGcCandidate> {
+        self.iter()
+            .expect("open candidate manifest")
+            .collect::<Result<_, _>>()
+            .expect("read candidate manifest")
+    }
+}
+
+/// Writes canonical manifest bytes to a file for [`CampaignGcRootManifest::open`].
+fn manifest_file(directory: &std::path::Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = directory.join(name);
+    fs::write(&path, bytes).expect("write manifest file");
+    path
 }
 
 fn content_id_manifest_order(left: &ContentId, right: &ContentId) -> std::cmp::Ordering {

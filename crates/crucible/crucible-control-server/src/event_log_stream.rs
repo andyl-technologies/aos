@@ -7,7 +7,7 @@
 pub use crucible_session::{
     EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE,
     SessionEventLog as SessionEventLogHub, SessionEventLogFrame, SessionEventLogSnapshot,
-    SessionEventLogStream, SessionEventLogStreamError,
+    SessionEventLogStoreError, SessionEventLogStream, SessionEventLogStreamError,
 };
 
 /// Control-plane facade for cursor-backed event-log subscriptions.
@@ -53,8 +53,15 @@ impl ControlPlaneEventLog {
     }
 
     /// Returns a log-derived snapshot summary through `cursor`.
-    #[must_use]
-    pub fn snapshot_through(&self, cursor: EventLogCursor) -> SessionEventLogSnapshot {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStoreError`] when the sealed segment holding
+    /// `cursor` cannot be read back.
+    pub fn snapshot_through(
+        &self,
+        cursor: EventLogCursor,
+    ) -> Result<SessionEventLogSnapshot, SessionEventLogStoreError> {
         self.hub.snapshot_through(cursor)
     }
 

@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.assertionDeterminismNonPerturbation",
   taskIds ? ["T-ASRT-13"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   triggerAssertions = builtins.readFile ../../crates/crucible/crucible-engine/src/trigger/assertions.rs;
@@ -83,8 +82,8 @@
         needle = "pub struct LintedHostAssertionOracle";
       }
       {
-        label = "host assertion predicate shared reference";
-        needle = "fn leaf_is_true(&self, observed: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool";
+        label = "host assertion predicate answers from accumulator state";
+        needle = "fn leaf_is_true(&self, leaf: NamedLeaf<'_>, state: &Self::State) -> bool;";
       }
       {
         label = "sealed host assertion oracle module";
@@ -96,7 +95,7 @@
       }
       {
         label = "closure predicate blanket impl";
-        needle = "F: for<'log, 'leaf> Fn(ObservedState<'log>, ConditionLeaf<'leaf>) -> bool";
+        needle = "F: for<'leaf, 'batch> Fn(NamedLeaf<'leaf>, &ObservedBatch<'batch>) -> bool";
       }
       {
         label = "host harness lint error";
@@ -122,7 +121,7 @@
       }
       {
         label = "host harness lint acceptance test";
-        needle = "host_assertion_harness_lint_accepts_observed_state_only_predicates";
+        needle = "host_assertion_harness_lint_accepts_pure_accumulator_predicates";
       }
       {
         label = "stable merge order assertion";
@@ -357,58 +356,24 @@ in
   if failures != []
   then throw "crucible phase4 assertion-determinism-nonperturbation check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-determinism-nonperturbation";
-      version = "0";
-      src = crucibleSrc;
 
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sqlite
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-assertion-determinism-nonperturbation";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-assertion-determinism-nonperturbation-target" \
+            crucible-cargo test \
               --features test-double \
               -p crucible-engine \
               --test assertion_determinism_nonperturbation \

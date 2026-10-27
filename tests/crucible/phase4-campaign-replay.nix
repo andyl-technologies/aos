@@ -5,121 +5,50 @@
   taskIds ? ["T-CAM-3.5" "T-CAM-4.7" "T-CAM-4.10" "T-CAM-8.4"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase4-campaign-replay";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite] ++ dependencies;
+    buildDeps = [pkgs.coreutils] ++ dependencies;
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        '';
-      }
       {
         name = "run-campaign-replay";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          run_gate_test() {
+          # One exact invocation per test executable. Each required test
+          # must be listed once, report its own `ok` line, and count toward
+          # the executable's exact pass total.
+          run_gate_tests() {
             gate_package=$1
             gate_binary=$2
-            gate_test=$3
+            shift 2
+            gate_log="$TMPDIR/campaign-replay-$gate_package-$gate_binary.log"
 
-            if output=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/campaign-replay-target" \
-              --manifest-path crates/Cargo.toml \
-              -p "$gate_package" \
-              --test "$gate_binary" \
-              -- --list 2>&1); then
-              :
-            else
-              status=$?
-              printf '%s\n' "$output" >&2
-              exit "$status"
-            fi
-            printf '%s\n' "$output"
-            if match_count=$(printf '%s\n' "$output" | grep -Fxc "$gate_test: test"); then
-              :
-            else
-              match_count=0
-            fi
-            if [ "$match_count" -ne 1 ]; then
-              printf 'expected exactly one listed test named %s; found %s\n' \
-                "$gate_test" "$match_count" >&2
-              exit 1
-            fi
-
-            if output=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/campaign-replay-target" \
-              --manifest-path crates/Cargo.toml \
-              -p "$gate_package" \
-              --test "$gate_binary" \
-              -- --exact "$gate_test" --test-threads=1 2>&1); then
-              :
-            else
-              status=$?
-              printf '%s\n' "$output" >&2
-              exit "$status"
-            fi
-            printf '%s\n' "$output"
-            if ! printf '%s\n' "$output" | grep -Fqx "test $gate_test ... ok"; then
-              printf 'required test did not report success: %s\n' "$gate_test" >&2
-              exit 1
-            fi
-            if ! printf '%s\n' "$output" \
-              | grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;'; then
-              printf 'required test did not produce the exact pass count: %s\n' "$gate_test" >&2
-              exit 1
-            fi
+            CRUCIBLE_EXACT_TESTS_LOG="$gate_log" crucible-exact-tests \
+              -p "$gate_package" --test "$gate_binary" -- --test-threads=1 "$@"
+            for gate_test in "$@"; do
+              if ! grep -Fqx "test $gate_test ... ok" "$gate_log"; then
+                printf 'required test did not report success: %s\n' "$gate_test" >&2
+                exit 1
+              fi
+            done
           }
 
-          run_gate_test \
+          run_gate_tests \
             crucible-campaign \
             gate_campaign_replay \
             strict_campaign_planner_reproduces_every_accepted_step
-          run_gate_test \
+          run_gate_tests \
             crucible-engine \
             gate_campaign_replay \
             offline_rich_finding_replays_without_campaign_store
-          run_gate_test \
+          run_gate_tests \
             crucible-engine \
             gate_minimization \
-            automatic_minimization_selects_and_authenticates_the_latest_interesting_window
-          run_gate_test \
-            crucible-engine \
-            gate_minimization \
+            automatic_minimization_selects_and_authenticates_the_latest_interesting_window \
             automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch
 
           mkdir -p "$out"

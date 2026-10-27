@@ -243,6 +243,7 @@ fn production_reply_keeps_peer_request_private_until_once_only_publication() -> 
 
     lifecycle.apply_selectable_reply(&parent, decision, &selected, pending, &reply)?;
     assert!(lifecycle.pending_held_host_outcomes.is_some());
+    assert!(!lifecycle.pending_selectable_request_is_committed_source(pending)?);
     assert!(lifecycle.capture_checkpoint(&selected).is_err());
     assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
     assert!(lifecycle.drain_pending_selectable_requests()?.is_empty());
@@ -261,6 +262,7 @@ fn production_reply_keeps_peer_request_private_until_once_only_publication() -> 
     let peer = lifecycle.drain_pending_selectable_requests()?;
     assert_eq!(peer.len(), 1);
     assert_ne!(peer[0].node(), pending.node());
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&peer[0])?);
     let (parent, decision, selected, reply) = reply_for(&lifecycle, &peer[0])?;
     lifecycle.apply_selectable_reply(&parent, decision, &selected, &peer[0], &reply)?;
     assert!(lifecycle.pending_held_host_outcomes.is_none());
@@ -294,6 +296,35 @@ fn production_reply_refusal_retains_original_stop_and_request() -> TestResult {
     assert_eq!(lifecycle.drain_pending_selectable_requests()?.len(), 1);
     lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?;
     assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn committed_request_visibility_refuses_poisoned_ownership() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(1)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&pending)?);
+    let retained = lifecycle
+        .inner
+        .backend_mut()
+        .drain_pending_selectable_requests()?;
+
+    lifecycle.inner.abort_host_stop_settlement();
+
+    assert!(
+        lifecycle
+            .pending_selectable_request_is_committed_source(&pending)
+            .is_err()
+    );
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?,
+        retained
+    );
     lifecycle.shutdown()?;
     Ok(())
 }
@@ -511,6 +542,387 @@ fn production_marker_release_settles_zero_peer_hold_and_retains_refused_park() -
     lifecycle
         .inner
         .settle_pending_network_outputs_at_current_frontier()?;
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn an_adopted_template_park_lets_a_fresh_node_set_release_the_marker() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let witness = lifecycle
+        .inner
+        .held_host_stop_witness()
+        .ok_or("marker hold absent")?;
+    let node = witness.node().clone();
+    let parks = lifecycle.inner.backend_mut().campaign_marker_parks()?;
+    let template_park = parks.get(&node).cloned().ok_or("template park absent")?;
+
+    // A hot-fork child world's node set starts without the template's park.
+    // Re-inserting the same node models that fresh set: the park is gone.
+    let backend = lifecycle
+        .inner
+        .backend_mut()
+        .take(&node)
+        .ok_or("parked node absent")?;
+    lifecycle.inner.backend_mut().insert(node.clone(), backend);
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+
+    // Adoption restores the exact proof, revalidated against the live count,
+    // and a second adoption cannot replace it.
+    lifecycle
+        .inner
+        .backend_mut()
+        .adopt_campaign_marker_park(&node, template_park.clone())?;
+    assert_eq!(
+        lifecycle.parked_campaign_marker(&node)?,
+        Some(template_park.clone())
+    );
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .adopt_campaign_marker_park(&node, template_park)
+            .is_err()
+    );
+
+    // The adopted park then serves the recorded branch exactly as the
+    // template's own park would.
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let selectable = crucible_engine::NetworkFaultSelectable::next(
+        &lifecycle.source,
+        &parent,
+        crucible_engine::NetworkFaultPhase::First,
+        lifecycle.inner.loop_impl().frontier(),
+        &[],
+    )?
+    .ok_or("network selectable absent")?;
+    let value = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )?;
+    let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
+    let selected = branch.selected().id();
+    let replay = crucible_engine::NetworkFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch],
+    )?;
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .2
+        .install_campaign_replay(Some(replay), None)?;
+    lifecycle.release_parked_campaign_marker(&node, "fault.transport.ready", selected)?;
+
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+    assert!(lifecycle.campaign_marker_release_committed(&node, "fault.transport.ready", selected));
+    lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+fn boundary_outcome(lifecycle: &ProductionVmLifecycleLoop) -> QuantumOutcome {
+    let scheduler = lifecycle.inner.loop_impl();
+    QuantumOutcome {
+        configuration: scheduler.configuration().clone(),
+        frontier: scheduler.frontier(),
+        advanced_node: None,
+        resolved_events: Vec::new(),
+        decisions: Vec::new(),
+        discovered_choices: Vec::new(),
+        event_log_entries: Vec::new(),
+        event_log_segment_bytes: Vec::new(),
+        event_log_segment_text: String::new(),
+        event_log_segment_hash: None,
+        event_log_offset: scheduler.event_log_offset(),
+        scheduler_quiescence: None,
+    }
+}
+
+#[test]
+fn production_marker_park_unblocks_network_and_requires_join_before_release() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let witness = lifecycle
+        .inner
+        .held_host_stop_witness()
+        .ok_or("marker hold absent")?;
+    let node = witness.node().clone();
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let selectable = crucible_engine::NetworkFaultSelectable::next(
+        &lifecycle.source,
+        &parent,
+        crucible_engine::NetworkFaultPhase::First,
+        lifecycle.inner.loop_impl().frontier(),
+        &[],
+    )?
+    .ok_or("network selectable absent")?;
+    let value = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )?;
+    let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
+    let selected = branch.selected().id();
+    let replay = crucible_engine::NetworkFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch],
+    )?;
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .2
+        .install_campaign_replay(Some(replay), None)?;
+    let mut outcome = boundary_outcome(&lifecycle);
+
+    // Only the named phase markers park.
+    assert_eq!(
+        lifecycle.park_held_campaign_markers(&["fault.followup.ready"], &mut outcome)?,
+        0
+    );
+    lifecycle.inner.validate_held_host_stop(&witness)?;
+
+    assert_eq!(
+        lifecycle.park_held_campaign_markers(&["fault.transport.ready"], &mut outcome)?,
+        1
+    );
+
+    assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle.inner.loop_impl().campaign_parked_nodes(),
+        vec![node.clone()]
+    );
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_some());
+    assert!(
+        outcome
+            .scheduler_quiescence
+            .as_ref()
+            .is_some_and(SchedulerQuiescence::is_quiescent)
+    );
+    assert!(!lifecycle.exact_checkpoint_ready()?);
+    // The held marker no longer blocks queued network settlement.
+    lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    assert!(
+        lifecycle
+            .release_parked_campaign_marker(&node, "fault.transport.ready", selected)
+            .is_err()
+    );
+
+    let joined = lifecycle.join_campaign_parks_to_frontier()?;
+
+    assert_eq!(joined, Some(lifecycle.inner.loop_impl().frontier()));
+    assert!(!lifecycle.inner.has_campaign_parks());
+    lifecycle.release_parked_campaign_marker(&node, "fault.transport.ready", selected)?;
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn production_marker_parks_publish_and_park_a_held_marker_peer() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(1, true)?;
+    let mut outcome = boundary_outcome(&lifecycle);
+
+    // The source parks, its held peer publishes and stops at the same marker,
+    // and that new source parks in turn without resuming the first VM.
+    let parks = lifecycle.park_held_campaign_markers(&["fault.transport.ready"], &mut outcome)?;
+
+    assert_eq!(parks, 2);
+    assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(lifecycle.inner.loop_impl().campaign_parked_nodes().len(), 2);
+    let joined = lifecycle.join_campaign_parks_to_frontier()?;
+    assert_eq!(joined, Some(lifecycle.inner.loop_impl().frontier()));
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&pending)?);
+
+    // Simulate a replacement counter without replacing the original hold.
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .rebase_restarted_backend_counter(
+            pending.node(),
+            crucible_engine::NodeCounter { ticks: 1_000 },
+        )?;
+
+    assert!(
+        lifecycle
+            .pending_selectable_request_is_committed_source(&pending)
+            .is_err()
+    );
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn retained_publication_preserves_unreleased_stop_and_skips_absent_suffix() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
+    let before = lifecycle.resume_state()?.into_parts();
+
+    assert!(lifecycle.publish_released_host_outcomes(&parent)?.is_none());
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    assert!(
+        lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: parent.clone(),
+                control: Vec::new(),
+            })
+            .is_err()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?;
+    let released = lifecycle.resume_state()?.into_parts();
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(&selected)?
+            .is_none()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), released);
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn retained_publication_authenticates_parent_and_returns_the_suffix_once() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(1)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
+    let mut published = lifecycle.resume_state()?.into_parts().1;
+    published
+        .extend(lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?);
+    let committed = lifecycle.resume_state()?.into_parts();
+
+    assert!(lifecycle.publish_released_host_outcomes(&parent).is_err());
+    assert_eq!(lifecycle.resume_state()?.into_parts(), committed);
+    assert!(lifecycle.pending_held_host_outcomes.is_some());
+    let outcome = lifecycle
+        .publish_released_host_outcomes(&selected)?
+        .ok_or("retained suffix absent")?;
+    published.extend(outcome.event_log_entries.clone());
+    assert_eq!(published, lifecycle.resume_state()?.into_parts().1);
+    assert_eq!(lifecycle.completed_quanta(), committed.3);
+    assert_eq!(outcome.frontier, committed.4);
+    assert_eq!(outcome.configuration, committed.0);
+    assert!(lifecycle.pending_held_host_outcomes.is_none());
+    let settled = lifecycle.resume_state()?.into_parts();
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(&outcome.configuration)?
+            .is_none()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), settled);
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn unanswered_guest_choice_declines_retention_without_settling() -> TestResult {
+    // A thin attempt that stops at a guest choice keeps the guest's committed
+    // stop held until a branch replies to it. The hold is a live controller
+    // capability that checkpoint and hot-fork capture refuse, so retaining
+    // the world must decline before anything settles.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    let drained = lifecycle.drain_final_boundary_for_retention()?;
+
+    let refusal = crate::vm_lifecycle::RetentionDrainRefusal::Boundary(
+        crucible_engine::FinalBoundaryRefusal::HeldGuestSelectableStop,
+    );
+    assert_eq!(
+        drained,
+        crate::vm_lifecycle::RetentionDrain::Declined(refusal)
+    );
+    assert_eq!(refusal.token(), "held-guest-selectable-stop");
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    assert!(lifecycle.inner.held_host_stop_witness().is_some());
+    assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
+
+    // Ordinary teardown still discards the hold exactly as before.
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn unparked_campaign_marker_declines_retention_without_settling() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    let drained = lifecycle.drain_final_boundary_for_retention()?;
+
+    assert_eq!(
+        drained,
+        crate::vm_lifecycle::RetentionDrain::Declined(
+            crate::vm_lifecycle::RetentionDrainRefusal::Boundary(
+                crucible_engine::FinalBoundaryRefusal::HeldCampaignMarkerStop,
+            ),
+        )
+    );
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn zero_peer_guest_hold_refuses_portable_exact_capture_and_keeps_the_log() -> TestResult {
+    // After boot, an Envoy guest choice stops with no peer RUN in flight. The
+    // stopped boundary looks checkpoint-ready, but the committed guest stop is
+    // still a held host continuation that no exact checkpoint carries, so
+    // capture must refuse before any snapshot or log entry is produced.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+    let before = lifecycle.resume_state()?.into_parts();
+
+    let refusal = lifecycle
+        .capture_portable_exact_checkpoint_with_boundary(&mut || Ok(()))
+        .err()
+        .ok_or("exact capture accepted a held guest stop")?;
+
+    assert!(
+        refusal
+            .to_string()
+            .contains("cannot retain held or unpublished host RUN outcomes"),
+        "unexpected refusal: {refusal}"
+    );
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    assert!(lifecycle.inner.held_host_stop_witness().is_some());
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn zero_peer_guest_hold_is_not_exact_checkpoint_ready() -> TestResult {
+    // Readiness must agree with capture: a committed guest stop still held as
+    // an unsettled host continuation is a boundary capture refuses, so callers
+    // that poll readiness must keep driving instead of attempting a capture.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle.exact_checkpoint_refusal()?,
+        Some(ProductionExactCheckpointNotReady::UnsettledHostContinuation)
+    );
+    assert!(!lifecycle.exact_checkpoint_ready()?);
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
     lifecycle.shutdown()?;
     Ok(())
 }

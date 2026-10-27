@@ -236,6 +236,41 @@ impl ProcessAudit {
         Ok(())
     }
 
+    /// Requires distinct owned guests for the required immutable kernel arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an argument set has no owned guest or one PID
+    /// matches multiple required sets.
+    pub(super) fn require_guest_argument_sets(
+        &self,
+        required: &[&[&str]],
+    ) -> Result<(), Box<dyn Error>> {
+        let mut guests = BTreeSet::new();
+        for arguments in required {
+            let guest = self.guest_arguments.iter().find_map(|(pid, owned)| {
+                arguments
+                    .iter()
+                    .all(|argument| owned.contains(*argument))
+                    .then_some(*pid)
+            });
+            let Some(pid) = guest else {
+                return Err(format!(
+                    "packaged flight observed no owned QEMU guest for arguments {arguments:?}"
+                )
+                .into());
+            };
+            if !guests.insert(pid) {
+                return Err(format!(
+                    "packaged flight cannot prove distinct guests: QEMU process {pid} matches multiple required argument sets",
+                )
+                .into());
+            }
+        }
+        eprintln!("packaged_guest_roles_observed arguments={required:?} qemu_pids={guests:?}");
+        Ok(())
+    }
+
     pub(super) fn require_guest_workloads(&self, workloads: &[&str]) -> Result<(), Box<dyn Error>> {
         let mut guests = BTreeSet::new();
         for workload in workloads {
@@ -521,6 +556,40 @@ fn revalidate_process_identity(process: &Path, resources: &QemuResources) -> boo
             resources.start_time_ticks,
         )
     })
+}
+
+#[test]
+fn immutable_http_roles_require_three_distinct_owned_guests() -> Result<(), Box<dyn Error>> {
+    let required: &[&[&str]] = &[
+        &["crucible.workload=httpget"],
+        &["crucible.workload=httpd", "crucible.http.role=proxy"],
+        &["crucible.workload=httpd", "crucible.http.role=upstream"],
+    ];
+    let mut processes = ProcessAudit::default();
+    for (pid, arguments) in [(101, required[0]), (102, required[1])] {
+        processes.guest_arguments.insert(
+            pid,
+            arguments.iter().map(|value| (*value).to_owned()).collect(),
+        );
+    }
+    assert!(processes.require_guest_argument_sets(required).is_err());
+    processes.guest_arguments.insert(
+        103,
+        required[2]
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
+    );
+    processes.require_guest_argument_sets(required)?;
+
+    processes.guest_arguments.remove(&103);
+    processes
+        .guest_arguments
+        .get_mut(&102)
+        .ok_or("proxy arguments")?
+        .insert("crucible.http.role=upstream".into());
+    assert!(processes.require_guest_argument_sets(required).is_err());
+    Ok(())
 }
 
 #[test]

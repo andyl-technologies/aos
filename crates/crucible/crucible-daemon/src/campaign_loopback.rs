@@ -115,7 +115,7 @@ use crucible_campaign::{
     WatchCampaignRequest, WatchCampaignResponse,
 };
 
-use crate::campaign_diagnostics::route_campaign_service_diagnostic;
+use crate::campaign_diagnostics::{original_failure_category, route_campaign_service_diagnostic};
 use crate::{
     AttachCampaignRuntimeRequest, AttachCampaignRuntimeResponse, CampaignDebugControlService,
     CampaignRuntimeControlService, CampaignServiceDiagnostic, CampaignServiceDiagnosticSink,
@@ -1162,6 +1162,9 @@ where
 {
     configure_stream(stream, timeouts)?;
     let (kind, body) = read_frame_any(stream, timeouts.read)?;
+    // This cause belongs to this decoded invocation; concurrent requests cannot
+    // replace it before the listener binds the diagnostic to the request digest.
+    let mut branch_failure_category = None;
     let (response_kind, response) = match kind {
         OPEN_CAMPAIGN_DEBUG_SESSION_REQUEST_KIND => {
             let request = OpenCampaignDebugSessionRequest::from_canonical_bytes(&body)?;
@@ -2114,6 +2117,9 @@ where
                             timeouts.write,
                         );
                     }
+                    if diagnostics.is_some() {
+                        branch_failure_category = original_failure_category(&error);
+                    }
                     service_error_response(request.request_digest(), &failure)?
                 }
             }
@@ -2141,6 +2147,16 @@ where
                     failure: error.failure(),
                 },
             );
+            if let Some(category) = branch_failure_category {
+                route_campaign_service_diagnostic(
+                    Some(sink),
+                    CampaignServiceDiagnostic::RequestFailureSource {
+                        operation,
+                        request_digest: error.request_digest(),
+                        category,
+                    },
+                );
+            }
         }
     }
     write_frame(stream, response_kind, &response, timeouts.write)?;

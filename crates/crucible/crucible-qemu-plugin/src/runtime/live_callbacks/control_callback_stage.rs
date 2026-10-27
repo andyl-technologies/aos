@@ -20,6 +20,15 @@
 //! ```text
 //! CRUCIBLE-CONTROL-STAGE-V1 phase=settle-return pid=42 callback=9 token=4400 raw=7 dev=1 ino=8 slot=0 gen=2 result=true
 //! ```
+//!
+//! Independently of that opt-in, a callback that finds the slot unreadable
+//! leaves its request pending and counts the deferral. The first deferral and
+//! each later power-of-two count write one bounded row, so a stalled host
+//! shows up in a flight log without flooding it:
+//!
+//! ```text
+//! CRUCIBLE-CONTROL-CONTENTION-V1 pid=42 raw=7 deferrals=8 reason=slot-unreadable
+//! ```
 
 use std::ffi::OsStr;
 use std::io::{self, Write};
@@ -29,11 +38,50 @@ use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState, PluginShmemOrd
 
 const TOKEN_VALID: u64 = 1;
 
+/// Control callbacks in this process that left a request pending on contention.
+static SNAPSHOT_CONTENTION_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+
+/// Counts one contended callback and reports it at power-of-two counts.
+fn note_snapshot_contention(raw_icount: u64) {
+    let deferrals = SNAPSHOT_CONTENTION_DEFERRALS
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if deferrals.is_power_of_two() {
+        // crucible-lint: allow direct-diagnostic -- rate-limited contention
+        // rows must not change the callback outcome.
+        let _write_result = write_contention_row(&mut io::stderr().lock(), raw_icount, deferrals);
+    }
+}
+
+fn write_contention_row(
+    writer: &mut impl Write,
+    raw_icount: u64,
+    deferrals: u64,
+) -> io::Result<()> {
+    // One compact write keeps rows whole when several QEMU processes share
+    // stderr.
+    let mut bytes = [0_u8; 160];
+    let mut cursor = io::Cursor::new(bytes.as_mut_slice());
+    writeln!(
+        cursor,
+        "CRUCIBLE-CONTROL-CONTENTION-V1 pid={} raw={raw_icount} deferrals={deferrals} reason=slot-unreadable",
+        std::process::id(),
+    )?;
+    let length = cursor.position() as usize;
+    writer.write_all(&bytes[..length])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ControlStageIdentity {
     backing: crucible_qemu_shmem::SetupRegionBackingIdentity,
     slot: u32,
     generation: u64,
+}
+
+impl ControlStageIdentity {
+    pub(super) fn parts(self) -> (crucible_qemu_shmem::SetupRegionBackingIdentity, u32, u64) {
+        (self.backing, self.slot, self.generation)
+    }
 }
 
 /// Holds only the cached diagnostic setting and per-token phase deduplication.
@@ -262,6 +310,8 @@ impl LiveVcpuTimeCallbackState {
         slot: u32,
         generation: u64,
     ) {
+        self.device_wait_witness.rebind();
+        self.idle_plan_witness.rebind();
         if self.control_callback_witness.is_enabled() {
             self.control_stage_identity = Some(ControlStageIdentity {
                 backing,
@@ -269,6 +319,7 @@ impl LiveVcpuTimeCallbackState {
                 generation,
             });
             self.control_callback_witness.stages.reset();
+            self.control_callback_witness.reset_pending();
         }
     }
 
@@ -287,6 +338,21 @@ impl LiveVcpuTimeCallbackState {
         callback: Option<u64>,
         emit: &mut impl FnMut(StageRecord),
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.on_control_boundary_with_console(raw_icount, callback, emit, None)
+    }
+
+    /// Borrows one installed native effect during the original settled callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns original callback errors or native refusal before the odd ACK.
+    pub(super) fn on_control_boundary_with_console(
+        &self,
+        raw_icount: u64,
+        callback: Option<u64>,
+        emit: &mut impl FnMut(StageRecord),
+        mut console: Option<&mut super::console_effect::ConsoleControlEffect<'_>>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         // A stopped boundary permits the host to save VMState. RX poison is not
         // serialized, so no checkpoint may acknowledge ambiguous ownership.
         self.require_network_rx_commit_certain()?;
@@ -296,7 +362,18 @@ impl LiveVcpuTimeCallbackState {
         // a host acquire-load of the odd successor orders every boundary field.
         // Halt tracking and idle publication remain owned by the real
         // idle/resume callbacks.
-        let control_boundary = self.slot.get().snapshot();
+        //
+        // A host lease, or a host or node publication in progress, makes the
+        // slot unreadable. Spinning here would peg QEMU's main loop for as long
+        // as the host holds that state, which is forever if it stalls or dies,
+        // so the request stays pending and the next host wake retries it.
+        let Some(control_boundary) = self.slot.get().try_snapshot() else {
+            if let Some(console) = &mut console {
+                console.retain_pending();
+            }
+            note_snapshot_contention(raw_icount);
+            return Ok(());
+        };
         if control_boundary.control_boundary_ack & 1 != 0 {
             let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
             return Ok(());
@@ -332,6 +409,17 @@ impl LiveVcpuTimeCallbackState {
             raw_icount,
             self.control_stage_identity,
         );
+        let settlement = self.control_callback_witness.settlement_context(
+            callback,
+            raw_icount,
+            control_request,
+            fault_command_frontier,
+            fingerprint_capture_request,
+        );
+        self.control_callback_witness.retain_settlement(
+            settlement,
+            super::control_callback_witness::SettlementReason::Entered,
+        );
         let settled = self.control_callback_witness.stages.observe_work(
             invocation,
             StagePhase::SettleEnter,
@@ -342,11 +430,23 @@ impl LiveVcpuTimeCallbackState {
                     raw_icount,
                     control_request,
                     fault_command_frontier,
+                    settlement,
                 )
+                .inspect_err(|_error| {
+                    self.control_callback_witness.retain_settlement(
+                        settlement,
+                        super::control_callback_witness::SettlementReason::Error,
+                    );
+                })
             },
         )?;
         if !settled {
             return Ok(());
+        }
+        if let Some(console) = &mut console {
+            console
+                .bind_settled(control_boundary, raw_icount)
+                .map_err(|source| LiveVcpuTimeCallbackError::ConsoleControl { source })?;
         }
         let paused = self.control_callback_witness.stages.observe_work(
             invocation,
@@ -354,12 +454,13 @@ impl LiveVcpuTimeCallbackState {
             StagePhase::PauseReturn,
             emit,
             || {
-                self.publish_pause_for_boundary(
+                self.publish_pause_for_boundary_with_console(
                     raw_icount,
                     true,
                     true,
                     fingerprint_capture_request,
                     "control-boundary",
+                    console.as_deref_mut(),
                 )
             },
         )?;
@@ -373,24 +474,66 @@ impl LiveVcpuTimeCallbackState {
                     ceiling_icount,
                 });
             }
-            if self.fingerprint.is_some()
-                && let Some(capture_request) = fingerprint_capture_request
-            {
-                // The main-loop callback holds the BQL after every vCPU has
-                // quiesced, making cross-vCPU register capture safe even when
-                // the serialized RR owner is intentionally absent at idle.
-                self.publish_fingerprint_sample(
+            // Private capture precedes any native inventory lease. The worker
+            // cannot publish/ACK it until successful writer-close and release.
+            let private_capture = if console.is_some() {
+                if let Some(capture_request) = fingerprint_capture_request {
+                    self.capture_fingerprint_sample(current_icount, "requested-control-boundary")?
+                        .map(|captured| (captured, capture_request))
+                } else {
+                    None
+                }
+            } else {
+                if let Some(capture_request) = fingerprint_capture_request {
+                    // Preserve the original no-console capture/enqueue order.
+                    self.publish_fingerprint_sample(
+                        current_icount,
+                        "requested-control-boundary",
+                        capture_request,
+                    )?;
+                }
+                None
+            };
+            // Below the ceiling, a zero-length idle this plugin published for
+            // an earlier advance is not a stop for this one; the writer drops
+            // it against the record and returns what the slot now holds.
+            let answered_advance = self.zero_length_idle_answer.get();
+            let zero_length_idle_advance = if let Some(console) = &mut console {
+                let published = console
+                    .publish_ordinary(
+                        self.slot.get(),
+                        current_icount,
+                        raw_icount,
+                        answered_advance,
+                    )
+                    .map_err(|error| match error {
+                        crucible_qemu_shmem::NodeBoundaryPublicationError::Slot(source) => {
+                            LiveVcpuTimeCallbackError::PublishIcount { source }
+                        }
+                        crucible_qemu_shmem::NodeBoundaryPublicationError::Effect(source) => {
+                            LiveVcpuTimeCallbackError::ConsoleControl { source }
+                        }
+                    })?;
+                match published {
+                    super::console_effect::OrdinaryPublication::Pending => return Ok(()),
+                    super::console_effect::OrdinaryPublication::Published {
+                        zero_length_idle_advance,
+                    } => zero_length_idle_advance,
+                }
+            } else {
+                PluginShmemOrdering::publish_control_boundary_answering(
+                    self.slot.get(),
                     current_icount,
-                    "requested-control-boundary",
-                    capture_request,
-                )?;
+                    raw_icount,
+                    answered_advance,
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?
+            };
+            self.zero_length_idle_answer.set(zero_length_idle_advance);
+            self.claim_zero_length_advance_answered_at_control_boundary(current_icount)?;
+            if let Some((captured, capture_request)) = private_capture {
+                self.submit_fingerprint_sample(captured, capture_request)?;
             }
-            PluginShmemOrdering::publish_control_boundary(
-                self.slot.get(),
-                current_icount,
-                raw_icount,
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
 
@@ -402,7 +545,19 @@ impl LiveVcpuTimeCallbackState {
             // the lifecycle control path.
             self.all_halted_idle_handled.store(false, Ordering::Release);
         }
-        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
+        if let Some(console) = console {
+            // Original pause/device/shutdown deferral has no boundary writer.
+            // A busy native preparation likewise has no accepted mutation;
+            // neither may turn an even request into a completed frontier/ACK.
+            if console.is_pending() || (paused && !console.is_committed()) {
+                return Ok(());
+            }
+            console
+                .require_committed()
+                .map_err(|source| LiveVcpuTimeCallbackError::ConsoleControl { source })?;
+        }
+        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get(), self.header.get())
+            .map_err(|source| LiveVcpuTimeCallbackError::ControlBoundaryNotification { source })?;
         self.control_boundary_dispatch_generation
             .store(u32::MAX, Ordering::Release);
         Ok(())

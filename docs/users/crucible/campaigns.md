@@ -215,11 +215,11 @@ bundle. Its report includes the scenario and configuration semantic IDs,
 verifier-derived artifact IDs, and decision count.
 
 When a Schedule V3 is not already recorded, `campaign schedule compile` accepts
-a strict version-two TOML decision list. It supports the four current offline-
+a strict version-three TOML decision list. It supports the four current offline-
 authorable decision shapes and both preemption actions:
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [[decisions]]
 kind = "delivery-order"
@@ -235,6 +235,7 @@ sequence = 7
 kind = "rng-draw"
 stream_domain = "crucible.network.loss"
 stream_name = "client--server"
+address = { kind = "link-frame", direction = "a-to-b", producer_sequence = 7, role = 2 }
 value = 42
 
 [[decisions]]
@@ -250,6 +251,11 @@ action = "vcpu-switch"
 from_vcpu = 0
 to_vcpu = 1
 ```
+
+An `rng-draw` names the exact draw it records. A draw on a stream one entity
+owns uses `address = { kind = "ordinal", ordinal = N }`; a draw of a link frame
+uses `kind = "link-frame"` with the frame's `direction` (`a-to-b` or `b-to-a`),
+its `producer_sequence`, and the draw's `role` index.
 
 An interrupt preemption instead uses `action = "interrupt-at"` with
 `target_vcpu` and `irq`. `at_tick` is the exact logical picosecond tick;
@@ -1075,7 +1081,8 @@ crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
 Each page authenticates one step under the snapshot's coordination root and
 recomputes scores from its complete retained request. The report is globally
 best-first across the returned pages. If `next_step` is present, repeat from
-that step to continue beyond the selected page bound. The command stops at a
+that step to continue beyond the selected page bound or the 128 MiB
+aggregate response budget. The command stops at a
 different policy, engine, policy artifact, or planning view instead of merging
 incomparable score bases. `--branch-point` and `--source` accept exact canonical
 IDs and filter only after response authentication; `--top` truncates only after
@@ -1112,14 +1119,20 @@ deployment file for inspection. These `store` commands operate on the supplied
 graph; they do not infer the built-in SQLite store from `--campaign-state`.
 `status` authenticates and describes the admitted graph
 without reading object bodies. `ensure` streams one exact content ID through
-authenticated EOF, and `verify` authenticates every bounded physical placement
-under a stable generation:
+authenticated EOF, and `verify` authenticates every physical placement under a
+stable generation:
 
 ```sh
 crucible --format json store status "$STORE"
 crucible --format json store ensure "$CONTENT_ID" --in "$STORE"
 crucible --format json store verify "$STORE"
 ```
+
+`verify` stops once the summed logical bytes exceed `--max-logical-bytes`
+(128 GiB by default). It spools the placement inventory, 45 bytes per
+placement, to a private directory under `--spool-dir`, or by default next to
+the deployment file, so the spool lands on persistent storage rather than a
+RAM-backed temporary directory.
 
 These commands do not grant campaign-ref or deletion authority. An ID appearing
 in a campaign report is still subject to the operation's ordinary campaign

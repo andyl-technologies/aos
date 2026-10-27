@@ -32,6 +32,7 @@ mod journal;
 mod manifest;
 mod planner;
 mod roots;
+mod spill;
 
 #[cfg(target_os = "linux")]
 pub use apply::apply_single_host_campaign_gc_with_hot_checkpoints;
@@ -771,3 +772,5 @@ pub(crate) fn publish_retained_finding_fixture(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::ManifestEntriesForTest;

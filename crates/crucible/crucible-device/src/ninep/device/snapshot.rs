@@ -40,7 +40,7 @@ pub struct NinepSnapshot {
     pub session_epoch: u64,
 }
 
-const NINEP_SNAPSHOT_MAGIC: &[u8] = b"crucible.ninep-snapshot.v4\0";
+const NINEP_SNAPSHOT_MAGIC: &[u8] = b"crucible.ninep-snapshot.v6\0";
 /// Compiled byte ceiling for one 9p device snapshot.
 pub const MAX_NINEP_SNAPSHOT_BYTES: u64 = 536_870_912;
 const MAX_NINEP_FIDS: u64 = 1_048_576;
@@ -411,6 +411,13 @@ fn validate_ninep_snapshot(
         .visibility
         .validate()
         .map_err(|_| NinepSnapshotCodecError::Invalid)?;
+    // Version negotiation retires the previous session, so a checkpoint may
+    // retain frontiers only for the current epoch.
+    if snapshot.visibility.session_count() > 0
+        && !snapshot.visibility.contains_session(snapshot.session_epoch)
+    {
+        return Err(NinepSnapshotCodecError::Invalid);
+    }
     if snapshot.server.msize < MIN_MSIZE
         || snapshot.server.msize > MAX_MSIZE
         || snapshot

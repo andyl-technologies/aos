@@ -5,6 +5,11 @@
 //! mutations accumulated by retention and read-disturb transitions. Healthy
 //! pages and erase blocks allocate no state. Every sparse counter and changed
 //! byte is checkpointed as part of [`BlockFaultState`](super::BlockFaultState).
+//!
+//! A continuation belongs to one resolved rule instance. Once its contributor
+//! can never be resolved again, the owner retires it: wear and page counters
+//! are dropped because no later rule reads them, while its changed-cell masks
+//! fold into a device-level residual so reads stay bit-identical.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,6 +31,44 @@ impl BlockFlashState {
     #[must_use]
     pub const fn continuations(&self) -> &BTreeMap<[u8; 32], BlockFlashContinuation> {
         &self.continuations
+    }
+
+    /// Returns physical-cell XOR masks folded from retired continuations.
+    #[must_use]
+    pub const fn residual_changed_bytes(&self) -> &BTreeMap<u64, u8> {
+        &self.residual_changed_bytes
+    }
+
+    /// Retires one continuation, folding its changed cells into the residual.
+    ///
+    /// The caller guarantees that no later opportunity can name `contributor`.
+    /// A continuation with an in-progress erase decision is kept, as is one
+    /// whose fold would exceed [`HARD_BLOCK_FLASH_SPARSE_ENTRIES`]; keeping a
+    /// continuation never changes behavior. Returns whether it was retired.
+    pub(in crate::block) fn retire_continuation(&mut self, contributor: &[u8; 32]) -> bool {
+        let Some(continuation) = self.continuations.get(contributor) else {
+            return false;
+        };
+        if !continuation.erase_decisions.is_empty() {
+            return false;
+        }
+
+        let mut residual = self.residual_changed_bytes.clone();
+        for (offset, mask) in &continuation.changed_bytes {
+            let folded = residual.get(offset).copied().unwrap_or(0) ^ mask;
+            if folded == 0 {
+                residual.remove(offset);
+            } else {
+                residual.insert(*offset, folded);
+            }
+        }
+        if residual.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES {
+            return false;
+        }
+
+        self.residual_changed_bytes = residual;
+        self.continuations.remove(contributor);
+        true
     }
 
     /// Registers immutable rules without consuming a media opportunity.
@@ -79,6 +122,14 @@ impl BlockFlashState {
     pub fn validate_restore(&self, device_length: u64) -> Result<(), DeviceError> {
         if self.continuations.len() > HARD_BLOCK_FLASH_RULES {
             return Err(limit("flash_rules", HARD_BLOCK_FLASH_RULES));
+        }
+        if self.residual_changed_bytes.len() > HARD_BLOCK_FLASH_SPARSE_ENTRIES
+            || self
+                .residual_changed_bytes
+                .iter()
+                .any(|(offset, mask)| *offset >= device_length || *mask == 0)
+        {
+            return Err(invalid("invalid restored flash residual"));
         }
         for (contributor, continuation) in &self.continuations {
             continuation.rule.validate(device_length)?;
@@ -481,7 +532,8 @@ impl BlockFlashState {
     ///
     /// This remains active when no flash effect is currently selected: removing
     /// a signal contribution stops new retention/disturb transitions but cannot
-    /// heal physical cells that already changed.
+    /// heal physical cells that already changed. Masks are XORed, so the
+    /// residual of retired continuations composes in any order.
     ///
     /// # Errors
     ///
@@ -491,8 +543,9 @@ impl BlockFlashState {
         request_offset: u64,
         bytes: &mut [u8],
     ) -> Result<(), DeviceError> {
+        apply_changed_bytes(&self.residual_changed_bytes, request_offset, bytes)?;
         for continuation in self.continuations.values() {
-            apply_changed_bytes(continuation, request_offset, bytes)?;
+            apply_changed_bytes(&continuation.changed_bytes, request_offset, bytes)?;
         }
         Ok(())
     }

@@ -4,37 +4,13 @@
   pkgs,
   lib,
 }: let
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  probe = pkgs.mkDerivation {
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
+  probe = mkCrucibleBinaries {
     pname = "crucible-project-quota-flight";
-    version = "0";
-    src = source;
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p aos-linux-project-quota --example project-quota-flight
-          mkdir -p "$out/bin"
-          cp "$TMPDIR/target/release/examples/project-quota-flight" "$out/bin/"
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      project-quota-flight = "build --release -p aos-linux-project-quota --example project-quota-flight";
+    };
   };
   quotaKernel = pkgs.linux.override {
     extraConfig = ''

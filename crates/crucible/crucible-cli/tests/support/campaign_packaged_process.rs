@@ -14,7 +14,14 @@ use crucible_session::engine::{
 };
 
 const PROCESS_OBSERVATION_INTERVAL: Duration = Duration::from_millis(100);
+// Each probe of a whole-attempt wait spawns status, request, and explanation
+// CLIs. Those waits last minutes beside several TCG guests competing for the
+// same vCPUs, so they sample once per second; short handshakes stay at the
+// responsive interval above.
+const LONG_ATTEMPT_OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
 
+#[path = "campaign_packaged_process/attempt_progress.rs"]
+mod attempt_progress;
 #[cfg(feature = "packaged-midpoint-flight")]
 #[path = "campaign_packaged_process/envoy_known_finding.rs"]
 mod envoy_known_finding;
@@ -422,8 +429,8 @@ fn execute_initial_discovery(
             // fixtures require their exact-time event before completion.
             assert_eq!(explanation["observation"]["child_artifact"], genesis);
             assert_eq!(
-                explanation["observation"]["discovered_choices"],
-                serde_json::json!([])
+                explanation["observation"]["discovered_choice_count"],
+                serde_json::json!(0)
             );
             return Ok(Some(()));
         }
@@ -514,6 +521,17 @@ fn wait_for_process_observation<T>(
     observe: impl FnMut() -> Result<Option<T>, Box<dyn Error>>,
 ) -> Result<Option<T>, Box<dyn Error>> {
     wait_for_process_observation_with_interval(deadline, PROCESS_OBSERVATION_INTERVAL, observe)
+}
+
+/// Paces observations of a whole attempt at the long-wait interval.
+///
+/// Readiness still comes only from the observer's validated state; the
+/// slower cadence only reduces the CPU the probes take from the guests.
+fn wait_for_long_process_observation<T>(
+    deadline: Instant,
+    observe: impl FnMut() -> Result<Option<T>, Box<dyn Error>>,
+) -> Result<Option<T>, Box<dyn Error>> {
+    wait_for_process_observation_with_interval(deadline, LONG_ATTEMPT_OBSERVATION_INTERVAL, observe)
 }
 
 fn wait_for_process_observation_with_interval<T>(

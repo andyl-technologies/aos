@@ -33,8 +33,17 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
-/// Maximum canonical campaign replay-closure bytes accepted by one resume request.
+/// Maximum total campaign replay-closure frame bytes accepted by one resume request.
+///
+/// This is the unary resume request's own message allowance for the closure;
+/// each frame is separately bounded by [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`].
 pub const RESUME_REPLAY_CLOSURE_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Maximum bytes of one campaign replay-closure frame, the component-message bound.
+pub const RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum campaign replay-closure frames, root included, in one resume request.
+pub const RESUME_REPLAY_CLOSURE_MAX_FRAMES: usize = 32_769;
 
 /// Maximum combined canonical observation proof and raw evidence bytes accepted by resume.
 pub const RESUME_OBSERVATION_SOURCE_MAX_BYTES: usize = 128 * 1024 * 1024;

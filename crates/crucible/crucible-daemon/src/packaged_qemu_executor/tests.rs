@@ -39,6 +39,10 @@ use crucible_store::content_store::{
     ObjectKind,
 };
 
+pub(crate) mod committed_source;
+
+mod stopped_restore_ack;
+
 use super::*;
 use crate::{
     AssignmentLedger, AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionOrigin,
@@ -158,6 +162,14 @@ impl LocalCheckpointPromotionWorker for UnusedPromotionWorker {
     {
         Err(crate::AttemptWorkerFailure::Terminal(()))
     }
+}
+
+/// Returns the resolved-effect trace the controlled inner lifecycle reports.
+fn controlled_effect_trace() -> crucible_engine::model::ResolvedEffectTrace {
+    crucible_engine::model::ResolvedEffectTrace::empty(
+        crucible_engine::model::FaultReplayMode::LockedEffect,
+    )
+    .expect("empty controlled effect trace")
 }
 
 fn unused_host_error() -> QemuVmRealizationError {
@@ -735,15 +747,19 @@ fn retain_packaged_pending_finding(
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            reproduction_payload.clone(),
+            crucible_campaign::ReproductionPayload::new(
+                1,
+                reproduction_payload.clone(),
+                Vec::new(),
+            )
+            .expect("reproduction payload"),
         )
         .expect("publish packaged original reproduction");
     let final_state =
         CampaignHash::derive("crucible.test.packaged-pending-finding.state.v1", b"final");
     let minimization = FindingMinimizationEvidence::new(
         original,
-        3,
+        4,
         b"packaged-pending-finding-policy".to_vec(),
         Vec::new(),
         final_state,
@@ -756,8 +772,8 @@ fn retain_packaged_pending_finding(
             lineage.genesis(),
             lineage.genesis_content(),
             fingerprint,
-            1,
-            reproduction_payload,
+            crucible_campaign::ReproductionPayload::new(1, reproduction_payload, Vec::new())
+                .expect("reproduction payload"),
             minimization.clone(),
         )
         .expect("publish packaged minimized reproduction");
@@ -992,6 +1008,43 @@ fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
     assert!(status.selected_roots.is_empty());
 }
 
+#[test]
+fn paged_reconciliation_selects_a_cataloged_exact_pin_for_status() {
+    let directory = tempfile::tempdir().expect("packaged exact-pin directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    apply_exact_pin(&fixture);
+    let selection_root = directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY);
+    let mut selections = DirectoryExactPinMaterializationStore::open(&selection_root)
+        .expect("open exact-pin selections");
+    let catalog = std::collections::BTreeMap::from([(
+        fixture.configuration,
+        BTreeSet::from([fixture.checkpoint]),
+    )]);
+
+    exact_pin_materializer::reconcile_exact_pins(
+        &fixture.repository,
+        &fixture.checkpoints,
+        &BTreeSet::from([fixture.campaign.clone()]),
+        &catalog,
+        &mut selections,
+    )
+    .expect("reconcile exact pins");
+    let snapshot = fixture
+        .repository
+        .head(fixture.campaign.as_str())
+        .expect("pinned head")
+        .snapshot_id();
+    let status = exact_pin_materializer::materialization_status(
+        &fixture.repository,
+        &fixture.campaign,
+        snapshot,
+        &mut selections,
+    )
+    .expect("read materialization status");
+
+    assert_eq!(status.selected_roots, BTreeSet::from([fixture.checkpoint]));
+}
+
 #[derive(Default)]
 struct ControlledLifecycleBoundary {
     state: Mutex<(u8, u8)>,
@@ -1094,6 +1147,10 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         0
     }
 
+    fn event_log_offset(&self) -> Result<crucible_engine::EventLogOffset, SchedulerError> {
+        Ok(controlled_event_log_offset())
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         panic!("controlled lifecycle does not drive a guest")
     }
@@ -1111,6 +1168,14 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not capture a checkpoint")
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::QemuExactCheckpointRefusal>, SchedulerError> {
+        Ok(Some(crate::QemuExactCheckpointRefusal::Named(
+            crate::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+        )))
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -1120,6 +1185,7 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         Ok(Some(QemuParkedCampaignMarker {
             marker: String::from("fault.transport.ready"),
             marker_icount: Icount { retired: 41 },
+            marker_tick: Icount { retired: 41 },
             physical_raw_icount: Icount { retired: 42 },
             physical_icount: Icount { retired: 42 },
         }))
@@ -1162,6 +1228,19 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
         panic!("controlled lifecycle does not handle selections")
+    }
+
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        match pending.node().name.as_str() {
+            "committed-node" => Ok(true),
+            "refused-node" => Err(SchedulerError::BoundaryViolation {
+                message: String::from("controlled committed-source refusal"),
+            }),
+            _ => Ok(false),
+        }
     }
 
     fn apply_selectable_reply(
@@ -1227,14 +1306,16 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         Ok(())
     }
 
-    fn resolved_effect_trace(&self) -> Result<Option<Vec<u8>>, SchedulerError> {
+    fn resolved_effect_trace(
+        &self,
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, SchedulerError> {
         if self.boundary.fail_effect_trace.load(Ordering::Acquire) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("controlled effect-trace failure"),
             });
         }
 
-        Ok(Some(b"controlled-inner-effect-trace".to_vec()))
+        Ok(Some(controlled_effect_trace()))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -1247,6 +1328,11 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
             Ok(Vec::new())
         }
     }
+}
+
+/// A recognizable offset the controlled lifecycle reports as its scheduler's.
+fn controlled_event_log_offset() -> crucible_engine::EventLogOffset {
+    crucible_engine::EventLogOffset::new(ContentHash::from_bytes(b"controlled-event-log"), 4096, 43)
 }
 
 #[test]
@@ -1291,6 +1377,25 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
     lifecycle.set_choice_free_parallel_boot(true);
     assert!(boundary.live_network_choice_pause.load(Ordering::Acquire));
     assert!(boundary.choice_free_parallel_boot.load(Ordering::Acquire));
+    // An anchor root's replay proof binds the scheduler offset; a wrapper that
+    // falls back to the trait's refusal disables every anchor root.
+    assert_eq!(
+        lifecycle
+            .event_log_offset()
+            .expect("delegated event-log offset"),
+        controlled_event_log_offset()
+    );
+
+    // A savepoint capture names its refusal from the innermost lifecycle; a
+    // wrapper that falls back to the trait's default reports it unnamed.
+    assert_eq!(
+        lifecycle
+            .exact_checkpoint_refusal()
+            .expect("delegated checkpoint refusal"),
+        Some(crate::QemuExactCheckpointRefusal::Named(
+            crate::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+        ))
+    );
 
     let marker_node = NodeId {
         name: String::from("marker-node"),
@@ -1327,6 +1432,47 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         vec![(marker_node, marker.marker, selected)]
     );
 
+    // This provider tests transparent bool/error forwarding only. The public
+    // production-owner regression authenticates the actual opaque held stop.
+    for (name, expected) in [("committed-node", true), ("ordinary-node", false)] {
+        let pending = QemuNodeSelectablePendingRequest::from_test_parts(
+            NodeId {
+                name: name.to_owned(),
+            },
+            crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+                crucible_qemu_protocol::SelectionRequest::new(9, "test.choice", "test", None, 256)
+                    .expect("delegation request"),
+                1,
+                50,
+                0,
+                0x1000,
+            ),
+        );
+        assert_eq!(
+            lifecycle
+                .pending_selectable_request_is_committed_source(&pending)
+                .expect("delegated source query"),
+            expected
+        );
+    }
+    let refused = QemuNodeSelectablePendingRequest::from_test_parts(
+        NodeId {
+            name: String::from("refused-node"),
+        },
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+            crucible_qemu_protocol::SelectionRequest::new(9, "test.choice", "test", None, 256)
+                .expect("delegation request"),
+            1,
+            50,
+            0,
+            0x1000,
+        ),
+    );
+    let refusal = lifecycle
+        .pending_selectable_request_is_committed_source(&refused)
+        .expect_err("original source-query refusal must propagate");
+    assert_eq!(refusal.to_string(), "controlled committed-source refusal");
+
     let requested_node = NodeId {
         name: String::from("requested-node"),
     };
@@ -1350,7 +1496,7 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
         lifecycle
             .resolved_effect_trace()
             .expect("delegated effect trace"),
-        Some(b"controlled-inner-effect-trace".to_vec())
+        Some(controlled_effect_trace())
     );
 
     boundary
@@ -1808,3 +1954,5 @@ fn packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound() {
 }
 
 mod lifecycle_recovery;
+
+mod published_root_status;

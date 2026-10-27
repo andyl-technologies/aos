@@ -1,15 +1,29 @@
 //! Offline verification of one finding's authenticated native replay evidence.
 //!
-//! The existing campaign finding ledger carries snapshot and occurrence proofs,
-//! exact canonical dependency responses, and four segmented triage replays. A
-//! portable bundle wraps one ledger and its executable archive in an atomically
-//! installed directory.
+//! A portable bundle wraps a one-finding campaign findings ledger, the
+//! content-addressed evidence it names, and the finding's executable archive
+//! in an atomically installed directory. The evidence holds the snapshot and
+//! occurrence proofs, exact canonical dependency responses, and four segmented
+//! triage replays per occurrence, each as its own blob.
 //!
 //! ```text
-//! manifest    crucible.campaign.finding-bundle.v2 and archive ID
-//! ledger      crucible.failure-triage.findings-ledger.v4
+//! manifest    crucible.campaign.finding-bundle.v3, archive ID, ledger hash
+//! ledger      crucible.failure-triage.findings-ledger.v5 naming one finding
+//! evidence/   content-addressed evidence records, chunks, and exchanges
 //! archive/    directory-backed campaign object and reference store
 //! ```
+//!
+//! The manifest text is:
+//!
+//! ```text
+//! crucible.campaign.finding-bundle.v3
+//! archive_manifest=<archive manifest ID>
+//! ledger=<blake3 hex of the ledger file>
+//! ```
+//!
+//! Verification reads the ledger under a small bound and authenticates the
+//! finding as a fold over its occurrences, so its memory does not grow with
+//! the occurrence count.
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
@@ -46,8 +60,10 @@ pub(crate) use branch::run_finding_bundle_branch;
 mod minimization;
 use minimization::{FindingBundleMinimizationReport, finding_bundle_minimization_report};
 
-const MANIFEST_HEADER: &str = "crucible.campaign.finding-bundle.v2";
-const MAX_LEDGER_BYTES: usize = 1024 * 1024 * 1024;
+const MANIFEST_HEADER: &str = "crucible.campaign.finding-bundle.v3";
+/// A one-finding ledger manifest is a few hundred bytes.
+const MAX_LEDGER_BYTES: usize = 64 * 1024;
+const MAX_MANIFEST_BYTES: usize = 512;
 // One loose object contributes at most four path components; the margin
 // covers archive metadata and directory administration entries.
 const MAX_ARCHIVE_TREE_ENTRIES: usize = MAX_ARCHIVE_INVENTORY_ENTRIES.saturating_mul(5) + 1024;
@@ -71,7 +87,7 @@ struct FindingBundleVerificationReport {
     schema: &'static str,
     operation: &'static str,
     native_signature_verified: bool,
-    occurrence_count: usize,
+    occurrence_count: u64,
     model_replay: CampaignReplayReport,
     minimization: FindingBundleMinimizationReport,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,9 +102,10 @@ struct AuthenticatedFindingBundle {
 
 /// Verifies an exported finding's native signature and pure model reproduction.
 ///
-/// This command consumes only the bundle directory. The temporary DAG store is
-/// private to this process and holds decoded evidence while the existing ledger
-/// verifier checks every snapshot, occurrence, and triage replay binding.
+/// This command consumes only the bundle directory. The ledger loader checks
+/// every snapshot, occurrence, and triage replay binding against the bundle's
+/// evidence store; a temporary DAG store private to this process receives the
+/// reproduction artifacts it derives.
 ///
 /// # Errors
 ///
@@ -106,12 +123,16 @@ pub(crate) fn verify_exported_finding(
         .id()
         .map_err(|error| backend_error(format!("verified finding identity is invalid: {error}")))?;
     let minimized = args.role.is_selected();
-    let reproduction = if minimized {
-        finding.minimized_reproduction.as_ref().ok_or_else(|| {
-            usage_error("finding bundle has no authenticated minimized reproduction")
-        })?
+    let (reproduction, artifact) = if minimized {
+        finding
+            .minimized_reproduction
+            .as_ref()
+            .zip(finding.minimized_artifact.as_ref())
+            .ok_or_else(|| {
+                usage_error("finding bundle has no authenticated minimized reproduction")
+            })?
     } else {
-        &finding.reproduction
+        (&finding.reproduction, &finding.report.finding.artifact)
     };
     let model_replay = replay_finding_object(
         &finding.campaign,
@@ -119,6 +140,7 @@ pub(crate) fn verify_exported_finding(
         finding_id,
         minimized,
         reproduction,
+        artifact,
     )?;
     let exact_replay = args
         .exact
@@ -136,7 +158,7 @@ pub(crate) fn verify_exported_finding(
         schema: "crucible.cli.campaign-finding-bundle-verification.v2",
         operation: "verify-finding-bundle",
         native_signature_verified: true,
-        occurrence_count: finding.occurrence_proofs.len(),
+        occurrence_count: finding.occurrence_count,
         model_replay,
         minimization: finding_bundle_minimization_report(finding)?,
         exact_replay,
@@ -146,35 +168,47 @@ pub(crate) fn verify_exported_finding(
 
 fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle, CliError> {
     validate_bundle_entries(input)?;
-    let manifest = read_bounded_bytes(&input.join("manifest"), "finding bundle manifest", 512)?;
-    let archive_id = parse_manifest(&manifest)?;
-    let bytes = read_bounded_bytes(
+    let manifest = read_bounded_bytes(
+        &input.join("manifest"),
+        "finding bundle manifest",
+        MAX_MANIFEST_BYTES,
+    )?;
+    let manifest = parse_manifest(&manifest)?;
+    let ledger = read_bounded_bytes(
         &input.join("ledger"),
         "finding bundle ledger",
         MAX_LEDGER_BYTES,
     )?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| usage_error("finding bundle ledger is not valid UTF-8"))?;
+    if crucible_engine::ContentHash::from_bytes(&ledger) != manifest.ledger {
+        return Err(usage_error(
+            "finding bundle ledger differs from its manifest",
+        ));
+    }
+
     let temporary = private_bundle_tempdir()?;
-    let store = crucible_engine::LocalDagStore::new(temporary.path().join("evidence"));
-    let mut loaded =
-        crate::cli_triage_debug::campaign_evidence::parse_campaign_findings_ledger_bytes(
-            &store, &bytes, text,
-        )?;
-    let [finding] = loaded.campaign_evidence.as_mut_slice() else {
+    let artifacts = crucible_engine::LocalDagStore::new(temporary.path().join("artifacts"));
+    let loaded = crate::cli_triage_debug::campaign_evidence::load_campaign_findings_ledger_bytes(
+        &evidence_store(input),
+        &artifacts,
+        &ledger,
+    )?;
+    if loaded.evidence.finding_count() != 1 {
         return Err(backend_error(
             "finding bundle must contain exactly one finding",
         ));
-    };
-    let finding_id = finding
+    }
+    let evidence = loaded.evidence.finding(0)?;
+    let finding_id = evidence
         .finding
         .id()
         .map_err(|error| backend_error(format!("verified finding identity is invalid: {error}")))?;
+
+    let archive_id = manifest.archive;
     let archive = archive_repository(&input.join("archive"));
     let inspection = archive
         .inspect_campaign_archive(archive_id)
         .map_err(|error| backend_error(format!("finding archive is invalid: {error}")))?;
-    if inspection.manifest().source_snapshot() != finding.snapshot {
+    if inspection.manifest().source_snapshot() != evidence.snapshot {
         return Err(backend_error(
             "finding ledger and archive snapshot disagree",
         ));
@@ -182,18 +216,18 @@ fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle,
     let archived_finding = archive
         .inspect_archived_finding(archive_id, finding_id)
         .map_err(|error| backend_error(format!("finding archive lacks finding: {error}")))?;
-    if archived_finding != finding.finding {
+    if archived_finding != evidence.finding {
         return Err(backend_error("finding ledger and archive record disagree"));
     }
-    let evidence = loaded
-        .campaign_evidence
-        .pop()
-        .ok_or_else(|| backend_error("finding bundle lost its authenticated finding"))?;
     Ok(AuthenticatedFindingBundle {
         archive,
         archive_id,
         evidence,
     })
+}
+
+fn evidence_store(bundle: &Path) -> crucible_engine::LocalDagStore {
+    crucible_engine::LocalDagStore::new(bundle.join("evidence"))
 }
 
 fn private_bundle_tempdir() -> Result<tempfile::TempDir, CliError> {
@@ -253,28 +287,56 @@ pub(crate) fn export_finding_bundle(
         .campaign_read_service()
         .map_err(|error| backend_error(format!("local finding reader is unauthorized: {error}")))?;
     let client = CampaignClient::new(service);
-    let evidence =
-        crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding_from_service(
-            &client,
-            principal,
-            campaign.clone(),
-            snapshot,
-            finding,
-        )?;
-    replay_finding_object(&campaign, snapshot, finding, false, &evidence.reproduction)?;
-    if let Some(minimized) = &evidence.minimized_reproduction {
-        replay_finding_object(&campaign, snapshot, finding, true, minimized)?;
-    }
-    let ledger = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
-        std::slice::from_ref(&evidence),
+    let scope = crate::cli_triage_debug::campaign_evidence::CampaignFindingCaptureScope {
+        principal,
+        campaign: campaign.clone(),
+        snapshot,
+        finding,
+    };
+    let membership = crate::cli_triage_debug::campaign_evidence::find_campaign_finding_membership(
+        &client, &scope,
     )?;
-    let manifest = format!(
-        "{MANIFEST_HEADER}\narchive_manifest={}\n",
-        plan.manifest_id()
-    );
-    let (output, ()) = write_new_bundle(&args.output, "finding bundle", |staged, _| {
+    let (output, minimization) = write_new_bundle(&args.output, "finding bundle", |staged, _| {
         std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o700))
             .map_err(CliError::Io)?;
+
+        // Capture straight into the staged evidence store, then authenticate
+        // the staged bytes exactly as `verify` will before anything installs.
+        let evidence = evidence_store(staged);
+        let record =
+            crate::cli_triage_debug::campaign_evidence::capture_campaign_triage_finding_from_service(
+                &client,
+                &scope,
+                &membership,
+                &evidence,
+            )?;
+        let ledger = crate::cli_triage_debug::campaign_evidence::campaign_findings_ledger_bytes(
+            &[(finding, record)],
+        )?;
+        let temporary = private_bundle_tempdir()?;
+        let artifacts = crucible_engine::LocalDagStore::new(temporary.path().join("artifacts"));
+        let loaded =
+            crate::cli_triage_debug::campaign_evidence::load_campaign_findings_ledger_bytes(
+                &evidence, &artifacts, &ledger,
+            )?;
+        let verified = loaded.evidence.finding(0)?;
+        replay_finding_object(
+            &campaign,
+            snapshot,
+            finding,
+            false,
+            &verified.reproduction,
+            &verified.report.finding.artifact,
+        )?;
+        if let Some((minimized, artifact)) = verified
+            .minimized_reproduction
+            .as_ref()
+            .zip(verified.minimized_artifact.as_ref())
+        {
+            replay_finding_object(&campaign, snapshot, finding, true, minimized, artifact)?;
+        }
+        crate::cli_triage_debug::campaign_evidence::sync_evidence_store(evidence.root())?;
+
         let archive = archive_repository(&staged.join("archive"));
         source
             .export_campaign_archive_to_repository(
@@ -288,13 +350,18 @@ pub(crate) fn export_finding_bundle(
         archive
             .inspect_archived_finding(plan.manifest_id(), finding)
             .map_err(|error| backend_error(format!("transferred finding is invalid: {error}")))?;
+        let manifest = format!(
+            "{MANIFEST_HEADER}\narchive_manifest={}\nledger={}\n",
+            plan.manifest_id(),
+            crucible_engine::ContentHash::from_bytes(&ledger).to_hex()
+        );
         write_new_record(
             &staged.join("manifest"),
             "finding bundle manifest",
             manifest.as_bytes(),
         )?;
         write_new_record(&staged.join("ledger"), "finding bundle ledger", &ledger)?;
-        Ok(())
+        finding_bundle_minimization_report(&verified)
     })?;
 
     let report = FindingBundleExportReport {
@@ -305,14 +372,14 @@ pub(crate) fn export_finding_bundle(
         snapshot: snapshot.to_string(),
         finding: finding.to_string(),
         archive_manifest: plan.manifest_id().to_string(),
-        minimization: finding_bundle_minimization_report(&evidence)?,
+        minimization,
         native_signature_verified: true,
     };
     render_export(&report, format)
 }
 
 fn validate_bundle_entries(directory: &Path) -> Result<(), CliError> {
-    let allowed = BTreeSet::from(["manifest", "ledger", "archive"]);
+    let allowed = BTreeSet::from(["manifest", "ledger", "evidence", "archive"]);
     let entries = std::fs::read_dir(directory).map_err(CliError::Io)?;
     let mut found = BTreeSet::new();
     for entry in entries {
@@ -321,7 +388,7 @@ fn validate_bundle_entries(directory: &Path) -> Result<(), CliError> {
         let name = name
             .to_str()
             .ok_or_else(|| usage_error("finding bundle contains an entry with a non-UTF-8 name"))?;
-        let expected_directory = name == "archive";
+        let expected_directory = matches!(name, "archive" | "evidence");
         let file_type = entry.file_type().map_err(CliError::Io)?;
         if !allowed.contains(name)
             || (expected_directory && !file_type.is_dir())
@@ -363,16 +430,30 @@ fn validate_archive_tree(root: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn parse_manifest(bytes: &[u8]) -> Result<CampaignArchiveManifestId, CliError> {
+/// Archive identity and ledger content address named by a bundle manifest.
+struct FindingBundleManifest {
+    archive: CampaignArchiveManifestId,
+    ledger: crucible_engine::ContentHash,
+}
+
+fn parse_manifest(bytes: &[u8]) -> Result<FindingBundleManifest, CliError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| usage_error("finding bundle manifest is not valid UTF-8"))?;
-    let archive = text
+    let (archive, ledger) = text
         .strip_prefix(MANIFEST_HEADER)
         .and_then(|value| value.strip_prefix("\narchive_manifest="))
         .and_then(|value| value.strip_suffix('\n'))
+        .and_then(|value| value.split_once("\nledger="))
         .ok_or_else(|| usage_error("unsupported finding bundle manifest"))?;
-    CampaignArchiveManifestId::parse(archive)
-        .map_err(|error| usage_error(format!("invalid finding archive identity: {error}")))
+    let archive = CampaignArchiveManifestId::parse(archive)
+        .map_err(|error| usage_error(format!("invalid finding archive identity: {error}")))?;
+    let ledger = crucible_engine::ContentAddressedBlobRef::parse(
+        "finding bundle ledger",
+        &format!("blake3:{ledger}"),
+    )
+    .map(crucible_engine::ContentAddressedBlobRef::hash)
+    .map_err(|error| usage_error(format!("invalid finding bundle ledger hash: {error}")))?;
+    Ok(FindingBundleManifest { archive, ledger })
 }
 
 fn archive_repository(root: &Path) -> CampaignRepository {
@@ -478,11 +559,15 @@ mod tests {
 
     #[test]
     fn bundle_manifest_accepts_only_current_executable_archive_format() {
-        let old = b"crucible.campaign.finding-bundle.v1\n";
-        assert!(parse_manifest(old).is_err());
-        assert!(parse_manifest(b"crucible.campaign.finding-bundle.v2\n").is_err());
-        assert!(
-            parse_manifest(b"crucible.campaign.finding-bundle.v2\narchive_manifest=bad\n").is_err()
-        );
+        let ledger = crucible_engine::ContentHash::from_bytes(b"ledger").to_hex();
+        for rejected in [
+            String::from("crucible.campaign.finding-bundle.v1\n"),
+            String::from("crucible.campaign.finding-bundle.v2\narchive_manifest=bad\n"),
+            String::from("crucible.campaign.finding-bundle.v3\n"),
+            format!("crucible.campaign.finding-bundle.v3\narchive_manifest=bad\nledger={ledger}\n"),
+            String::from("crucible.campaign.finding-bundle.v3\narchive_manifest=bad\nledger=bad\n"),
+        ] {
+            assert!(parse_manifest(rejected.as_bytes()).is_err(), "{rejected:?}");
+        }
     }
 }

@@ -145,8 +145,7 @@ impl ProductionFaultRuntime {
                 value: u64::MAX,
             })?;
         let (event_state_records, _bytes) = production_event_state_usage(
-            &self.emitted_events,
-            &[],
+            self.referenced_events.usage(),
             &self.pending_qemu_observations,
             &[],
             &self.pending_qemu_events,

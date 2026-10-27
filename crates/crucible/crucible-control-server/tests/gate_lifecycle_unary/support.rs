@@ -152,7 +152,7 @@ pub(super) fn resume_request(seed: u64) -> ResumeSessionRequest {
         &schedule,
         &checkpoint,
         1,
-        b"replay-closure".to_vec(),
+        vec![b"replay-closure".to_vec()],
     )
     .unwrap_or_else(|error| panic!("replay closure should build: {error}"));
     ResumeSessionRequest::new(
