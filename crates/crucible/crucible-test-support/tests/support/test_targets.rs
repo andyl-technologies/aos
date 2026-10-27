@@ -24,6 +24,9 @@
 //! }
 //! ```
 
+// crucible-lint: allow rust-allow -- Each audit consumes a different part of the declared test API.
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -213,6 +216,66 @@ impl TestTargets {
     /// Returns an error when the package has no source ownership record.
     pub(crate) fn package_directory(&self, package: &str) -> io::Result<&Path> {
         self.architecture.package_directory(package)
+    }
+
+    /// Checks that an owned library has a source-backed, runnable unit test.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for absent package ownership or invalid wrapper selectors.
+    pub(crate) fn library_findings(&self, root: &Path, package: &str) -> io::Result<Vec<String>> {
+        let directory = root.join(self.package_directory(package)?);
+        let mut declared = false;
+        for (_, library) in self.architecture.compilation_targets(package)? {
+            if library.kind != "rust_library" || library.test_only {
+                continue;
+            }
+            declared = true;
+            if library.crate_roots.is_empty()
+                || library
+                    .crate_roots
+                    .iter()
+                    .any(|source| !directory.join(source).is_file())
+            {
+                return Ok(vec![format!(
+                    "{package}: declared library source is absent"
+                )]);
+            }
+
+            // Unit tests may compile an owned test-only copy of the library so
+            // their development dependencies never enter the production graph.
+            let libraries: BTreeSet<_> = self
+                .architecture
+                .compilation_targets(package)?
+                .filter(|(_, target)| {
+                    target.kind == "rust_library" && target.crate_roots == library.crate_roots
+                })
+                .map(|(label, _)| label.to_owned())
+                .collect();
+            for (test_label, compilation) in &self.compilations {
+                if compilation.package != package
+                    || compilation.crate_targets.is_disjoint(&libraries)
+                    || compilation.crate_roots != library.crate_roots
+                {
+                    continue;
+                }
+                for execution in self
+                    .executions
+                    .values()
+                    .filter(|execution| execution.binary == *test_label)
+                {
+                    if execution.argument_selection.is_unfiltered()? {
+                        return Ok(Vec::new());
+                    }
+                }
+            }
+        }
+        let missing = if declared {
+            "missing unfiltered runnable library unit test"
+        } else {
+            "missing declared library compilation"
+        };
+        Ok(vec![format!("{package}: {missing}")])
     }
 
     /// Checks that an integration source has unfiltered, feature-safe wrappers.

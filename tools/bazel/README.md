@@ -4364,8 +4364,7 @@ The [test metadata receipt](tests/evidence/crucible-test-target-metadata.json)
 retains 1,249 compilations, 1,250 wrappers, 172 unit compilations with inherited
 roots, and 70 feature selections. It verifies unchanged production and dependency fields,
 all declared test root bytes, and compatibility with the structural, license,
-and dependency audit readers. Campaign traceability still needs its consumer
-converted to these records.
+and dependency audit readers.
 
 `gate_target_mapping` now consumes those records directly. It requires exact
 owned integration roots, checks required features on every declared compilation
@@ -4381,6 +4380,28 @@ source, with all 80 source guards and 79 SDK contracts checked.
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-gate-targets-parity --no-out-link
 ```
+
+`campaign_gate_traceability` also resolves library and integration contracts
+through declared targets. Library unit tests may bind owned test-only copies
+with the production library's source roots. Integration contracts require
+owned roots, guaranteed features, and unfiltered runnable wrappers. The
+existing exact-selector, ignored-test, evidence, and Nix runner assertions
+remain in place.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-campaign-traceability-parity --no-out-link
+```
+
+The [campaign receipt](tests/evidence/crucible-controller-campaign-traceability.json)
+retains all 25 original cases through strict/broad Bazel execution and the
+independent Cargo oracle, with 16 rejected target, source, and runner inputs.
+It binds the selected RFC, runner, contract, and QEMU fixture bytes to the
+oracle and repeats the gate mapping qualification against the shared reader.
+The [declaration receipt](tests/evidence/crucible-controller-campaign-inventories.json)
+limits ten regenerated inventories to the campaign adapter source, graph
+runfile, and runner fixtures, with all 80 source guards and 79 SDK contracts
+checked. This static traceability qualification does not establish the actual
+campaign runtime flights or qualify production cutover.
 
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link

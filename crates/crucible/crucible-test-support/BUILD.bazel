@@ -124,6 +124,7 @@ aos_rust_test(
             "tests/standalone_dependencies.rs",
             "tests/single_scheduler_boundary.rs",
             "tests/gate_target_mapping.rs",
+            "tests/campaign_gate_traceability.rs",
         ] else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",
@@ -132,7 +133,9 @@ aos_rust_test(
         ] + (["@aos_controller_features//:tools"] if source == "tests/feature_powerset.rs" else []) + ([
             "//:license_boundary_audit_inputs",
             "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
-        ] if source == "tests/gate_license_boundary.rs" else []),
+        ] if source == "tests/gate_license_boundary.rs" else []) + ([
+            "//tests/crucible:campaign_traceability_inputs",
+        ] if source == "tests/campaign_gate_traceability.rs" else []),
         deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
     )
     for source in CONTROLLER_INTEGRATIONS

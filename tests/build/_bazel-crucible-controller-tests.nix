@@ -200,4 +200,11 @@ in {
     retainActionGraph = true;
     sharedBuildCache = false;
   };
+  campaign-traceability = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-campaign-traceability";
+    inherit workspace;
+    targets = ["//crates/crucible/crucible-test-support:campaign_gate_traceability_controller"];
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
 }

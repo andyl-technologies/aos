@@ -7,6 +7,12 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
+#[path = "support/test_targets.rs"]
+mod test_targets;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
@@ -18,6 +24,8 @@ use crucible_test_support::campaign_gates::{
 };
 use crucible_test_support::gate_targets::gate_targets;
 
+#[path = "campaign_gate_traceability/declared_targets.rs"]
+mod declared_targets;
 #[path = "campaign_gate_traceability/integration_exact.rs"]
 mod integration_exact;
 #[path = "campaign_gate_traceability/schema_source_coverage.rs"]
@@ -777,14 +785,21 @@ fn integration_target_failures(
         failures.push(format!("{gate}: missing target {package}:{test_target}"));
     }
 
-    let test_path = workspace::package_path(&root.join("crates"), package)
-        .join("tests")
-        .join(format!("{test_target}.rs"));
-    if !test_path.is_file() {
-        failures.push(format!(
-            "{gate}: target source {} is missing",
-            test_path.display()
-        ));
+    if let Some(directory) = declared_targets::integration_directory(
+        root,
+        gate,
+        package,
+        test_target,
+        false,
+        &mut failures,
+    ) {
+        let test_path = directory.join("tests").join(format!("{test_target}.rs"));
+        if !test_path.is_file() {
+            failures.push(format!(
+                "{gate}: target source {} is missing",
+                test_path.display()
+            ));
+        }
     }
 
     failures
@@ -800,13 +815,7 @@ fn library_exact_target_failures(
     ignored: bool,
 ) -> Vec<String> {
     let mut failures = Vec::new();
-    let manifest = workspace::package_path(&root.join("crates"), package).join("Cargo.toml");
-    if !manifest.is_file() {
-        failures.push(format!(
-            "{gate}: library package manifest {} is missing",
-            manifest.display()
-        ));
-    }
+    failures.extend(declared_targets::library_findings(root, gate, package));
     if selectors.is_empty() {
         failures.push(format!("{gate}: library exact selector set is empty"));
     }
@@ -1105,5 +1114,12 @@ fn rfc_implementation_plan() -> &'static str {
 }
 
 fn workspace_root() -> PathBuf {
+    if std::env::var_os("AOS_BAZEL_ARCHITECTURE").is_some()
+        || std::env::var_os("AOS_SOURCE_CATALOG").is_some()
+    {
+        return std::env::current_dir().unwrap_or_else(|error| {
+            panic!("declared campaign source root is unavailable: {error}")
+        });
+    }
     workspace::repository_root()
 }

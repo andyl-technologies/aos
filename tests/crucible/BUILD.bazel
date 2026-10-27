@@ -23,6 +23,14 @@ filegroup(
 )
 
 filegroup(
+    name = "campaign_traceability_inputs",
+    testonly = True,
+    # Other build families load this package with only their selected fixtures.
+    srcs = glob(["*.nix", "*.sh", "*.toml"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+filegroup(
     name = "qemu_host_gate_audit",
     testonly = True,
     srcs = ["default.nix", "phase2-qemu-inert.nix", "phase2-patch-microtests.nix"],

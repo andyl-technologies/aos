@@ -7788,7 +7788,7 @@
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
     "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
     "docs/rfcs/0010-crucible/BUILD.bazel": "f3af656c28035cefe761a9dc4accea0f5b8478be1d5d0778c70e2b87624b8b75",
-    "tests/crucible/BUILD.bazel": "13741fe0b9138f9171503c5194732633d5f87cd3f3ec9563d7ffa95e2d32c767",
+    "tests/crucible/BUILD.bazel": "e357e527f697e8fea154939036b48f2a196a9959dd3dacd3eed5ecdcac7003eb",
     "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "third_party/rust/accache/aliases.bzl": "4a13ee63bf0a906b80616a9dc34b12adb73f3709fa1be828461214fff446f18a",

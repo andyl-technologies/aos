@@ -21,6 +21,34 @@ in
     test-feature-policy = test-graph.feature-policy;
     test-architecture = test-graph.architecture;
     test-dependencies = test-graph.dependencies;
+    test-campaign-traceability = test-graph.campaign-traceability;
+    test-campaign-traceability-cargo = import ../../../tests/build/_bazel-crucible-controller-campaign-cargo.nix {inherit pkgs;};
+    test-campaign-traceability-parity = let
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-campaign-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_campaign.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-campaign-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_campaign.py \
+          --strict ${test-graph.campaign-traceability} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.campaign-traceability} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-campaign-traceability-cargo} --cargo-root ${test-campaign-traceability-cargo.src} \
+          --graph ${pkgs.aosBazelArchitecture}/architecture.json --output "$out"
+      '';
     test-gate-targets = test-graph.gate-targets;
     test-gate-targets-cargo = import ../../../tests/build/_bazel-crucible-controller-gate-targets-cargo.nix {inherit pkgs;};
     test-gate-targets-parity = let

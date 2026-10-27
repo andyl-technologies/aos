@@ -1,7 +1,5 @@
 //! Exact integration-selector source and Nix-contract validation.
 
-use crate::workspace;
-
 use super::*;
 
 pub(super) fn integration_exact_target_failures(
@@ -22,21 +20,21 @@ pub(super) fn integration_exact_target_failures(
     };
     let package = target.package;
     let mut failures = Vec::new();
-    let manifest = workspace::package_path(&root.join("crates"), package).join("Cargo.toml");
-    if !manifest.is_file() {
-        failures.push(format!(
-            "{gate}: integration package manifest {} is missing",
-            manifest.display()
-        ));
-    }
-    let test_path = workspace::package_path(&root.join("crates"), package)
-        .join("tests")
-        .join(format!("{test_target}.rs"));
-    if !test_path.is_file() {
-        failures.push(format!(
-            "{gate}: integration target source {} is missing",
-            test_path.display()
-        ));
+    if let Some(directory) = declared_targets::integration_directory(
+        root,
+        gate,
+        package,
+        test_target,
+        true,
+        &mut failures,
+    ) {
+        let test_path = directory.join("tests").join(format!("{test_target}.rs"));
+        if !test_path.is_file() {
+            failures.push(format!(
+                "{gate}: integration target source {} is missing",
+                test_path.display()
+            ));
+        }
     }
     if selectors.is_empty() {
         failures.push(format!("{gate}: integration exact selector set is empty"));

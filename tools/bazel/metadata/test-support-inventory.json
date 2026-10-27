@@ -1640,7 +1640,7 @@
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
     "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
-    "crates/crucible/crucible-test-support/BUILD.bazel": "6440ce0e2fb20a7493cab3e06662ac939ad95406b4ed93140fa6647e72ce662e",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "7c5a5e3f1cc457b9489640bf0efd4f30372dcdd0192dc6c4f8704cd989079395",
     "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "third_party/rust/accache/aliases.bzl": "4a13ee63bf0a906b80616a9dc34b12adb73f3709fa1be828461214fff446f18a",
