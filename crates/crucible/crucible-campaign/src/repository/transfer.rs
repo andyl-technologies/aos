@@ -550,23 +550,7 @@ impl CampaignRepository {
                     .ok_or_else(|| integrity("campaign-archive-destination-ram-admission"))?,
             ))
         };
-        let ram_retentions = if plan.ram_roots().is_empty() {
-            None
-        } else {
-            Some((
-                self.ram_retention_authority()
-                    .acquire()
-                    .map_err(map_ram_error)?,
-                destination
-                    .ram_retention_authority()
-                    .acquire()
-                    .map_err(map_ram_error)?,
-            ))
-        };
-        if let Some((source_retention, destination_retention)) = &ram_retentions {
-            let (source_original, destination_original) = ram_accounts
-                .as_ref()
-                .ok_or_else(|| integrity("campaign-archive-ram-admission-missing"))?;
+        if let Some((source_original, destination_original)) = ram_accounts {
             let source_ram = RamStore::new(
                 Arc::clone(&self.blobs),
                 destination_durability,
@@ -585,9 +569,22 @@ impl CampaignRepository {
                     .iter()
                     .find_map(|(world, ram)| (*ram == *id).then_some(*world))
                     .ok_or_else(|| integrity("campaign-archive-ram-owner-missing"))?;
-                let lease = source_retention.retain_root(*id).map_err(map_ram_error)?;
+                // Install the source reader claim before acquiring destination
+                // publication exclusion. The claim protects the source graph
+                // throughout copying without coupling the two GC fences.
+                let lease = {
+                    let source_retention = self
+                        .ram_retention_authority()
+                        .acquire()
+                        .map_err(map_ram_error)?;
+                    source_retention.retain_root(*id).map_err(map_ram_error)?
+                };
                 let root = source_ram
                     .open_with_metadata_resources(lease, source_original, boundary)
+                    .map_err(map_ram_error)?;
+                let destination_retention = destination
+                    .ram_retention_authority()
+                    .acquire()
                     .map_err(map_ram_error)?;
                 let stored = source_ram
                     .transfer_archive_to(
@@ -596,7 +593,7 @@ impl CampaignRepository {
                         &destination_ram,
                         destination_identity,
                         operation,
-                        destination_retention,
+                        &destination_retention,
                         source_original,
                         destination_original,
                         boundary,

@@ -81,6 +81,14 @@ authenticated RAM graph. A failed publication or restart preserves that ownershi
 including an ambiguous directory-sync failure after the progress record is renamed.
 Retries preserve completed progress and reestablish its durability.
 
+RAM copying now installs a source reader claim under a short source publication
+fence, releases that fence, and only then acquires destination publication
+exclusion. The existing partial-copy and completed-root regressions verify that
+source exclusive inventory remains available while destination exclusion is
+held. The previous implementation fails this assertion with `WouldBlock`;
+all 22 transfer tests and 95 policy controls pass with the corrected lifetime.
+The mandatory application-target result for this change remains outstanding.
+
 Receiving execution possession now retains an independent `archive-readers/`
 claim instead of excluding namespace-wide GC for its lifetime. Separate readers
 survive public-name replacement and retire only their own expected bindings;

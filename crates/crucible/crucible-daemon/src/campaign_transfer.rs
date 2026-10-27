@@ -3,8 +3,9 @@
 //! Source and destination journals retain the same bounded object inventory
 //! before copying starts. Source records initially classify authenticated RAM
 //! roots as complete; destination records advance each root after storage. The
-//! records are independent, so no operation holds both repositories' GC fences
-//! or journal mutations at once.
+//! journals are initialized under separate repository publication guards, and
+//! no journal mutation spans both endpoints. RAM copying retains a source reader
+//! claim while the destination publication guard protects closure journaling.
 //!
 //! ```text
 //! <root>/writer.lock
@@ -934,11 +935,12 @@ impl CampaignArchiveCheckpointResolver for ExactPinCampaignArchiveCheckpointReso
 
 /// Executes one restart-safe archive copy and transfers retention to destination refs.
 ///
-/// The source journal is durable before the destination journal. No repository
-/// or journal fence spans both sides. The destination archive ref is published
-/// only after every object and the bounded inventory authenticate there. An
-/// optional ordinary campaign ref is accepted only for an executable or mirror
-/// archive.
+/// The source journal is durable before the destination journal; each is
+/// initialized under its own repository publication guard. RAM copying then
+/// retains a source reader claim and the destination publication guard through
+/// completed-closure journaling. The archive ref is published only after every
+/// object and the bounded inventory authenticate there. An optional ordinary
+/// campaign ref is accepted only for an executable or mirror archive.
 ///
 /// # Errors
 ///

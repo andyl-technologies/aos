@@ -504,6 +504,19 @@ fn run_partial_transfer(stage: PartialStage) {
                         flock(&file, FlockOperation::NonBlockingLockExclusive),
                         Err(rustix::io::Errno::WOULDBLOCK)
                     );
+
+                    let _source_descriptor = source
+                        .graph
+                        .metadata_resources()
+                        .expect("same source resources")
+                        .reserve_resources(1, 0)
+                        .expect("source probe descriptor before open");
+                    let source_file = File::open(source_refs.join(".ref-admin/publication-lock"))
+                        .expect("actual source publication lock");
+                    flock(&source_file, FlockOperation::NonBlockingLockExclusive)
+                        .expect("source reader claim permits GC during destination copying");
+                    drop(source_file);
+
                     assert!(
                         source_journal_observer
                             .contains(operation)
