@@ -183,9 +183,19 @@ pub(in crate::repository) fn push_static_integer_candidate(
     domain: &IntegerDomain,
     value: IntegerValue,
 ) -> Result<(), CampaignRepositoryError> {
-    if domain.contains_integer(value) && seen.insert(value) {
+    if domain.contains_integer(value) && !seen.contains(&value) {
+        crucible_store::owned_decode::charge_btree_set_entry::<IntegerValue>()
+            .map_err(CampaignCodecError::from)?;
+        seen.insert(value);
         if values.len() == MAX_STATIC_GENERATOR_CANDIDATES {
             return Err(integrity("static-generator-candidate-limit"));
+        }
+
+        if values.len() == values.capacity() {
+            // The active decode scope retains both old and new capacity charges.
+            let capacity = values.capacity().saturating_mul(2).max(8);
+            crucible_store::owned_decode::reserve_vec(values, capacity - values.len())
+                .map_err(CampaignCodecError::from)?;
         }
         values.push(value);
     }

@@ -534,21 +534,6 @@ impl CampaignRepository {
         Ok(self.merkle.insert(root, key, value)?.content_id())
     }
 
-    pub(super) fn coordination_matches_parent_result(
-        &self,
-        parent: &LoadedSnapshot,
-        next: ContentId,
-    ) -> Result<bool, CampaignRepositoryError> {
-        let parent_content = parent.envelope.content_id();
-        let upserts = self
-            .parent_result_upsert(parent_content, parent)?
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
-        self.merkle
-            .equals_after_upserts(parent.snapshot.roots().coordination, next, &upserts)
-            .map_err(CampaignRepositoryError::from)
-    }
-
     fn mutation_result_snapshot(
         &self,
         current_content: ContentId,

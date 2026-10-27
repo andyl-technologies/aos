@@ -1,6 +1,7 @@
 //! Planner invocation, response, accounting, and scan transactions.
 
 use super::*;
+use crate::repository::closure::read::with_compatibility_semantic;
 
 impl CampaignRepository {
     /// Publishes a complete immutable basis for one snapshot-bound planner call.
@@ -907,25 +908,9 @@ impl CampaignRepository {
         current: &LoadedSnapshot,
         disposition: &PlannerDisposition,
     ) -> Result<(), CampaignRepositoryError> {
-        let PlannerDisposition::ContinueScan { cursor } = disposition else {
-            return Ok(());
-        };
-        let Some(after) = cursor.after() else {
-            return Ok(());
-        };
-        let request_content = after.source().content_id();
-        if self.merkle.get(
-            current.snapshot.roots().exploration,
-            map_key_content("exploration.branch-request", request_content),
-        )? != Some(request_content)
-        {
-            return Err(integrity("planner-step-scan-cursor-is-not-authoritative"));
-        }
-        let request = self.read_branch_request(request_content)?;
-        if request.branch_point() != after.branch_point() {
-            return Err(integrity("planner-step-scan-cursor-branch-point-mismatch"));
-        }
-        Ok(())
+        with_compatibility_semantic(self, |reader| {
+            reader.validate_planner_cursor(current, disposition)
+        })
     }
 
     pub(in crate::repository) fn validate_planner_page(
@@ -933,15 +918,9 @@ impl CampaignRepository {
         view: &CampaignPlanningView,
         invocation: &PlannerInvocation,
     ) -> Result<(), CampaignRepositoryError> {
-        let expected = self.planner_scan_page(
-            view,
-            invocation.scan_page().after(),
-            invocation.scan_page().limit(),
-        )?;
-        if expected != *invocation.scan_page() {
-            return Err(integrity("planner-invocation-scan-page-mismatch"));
-        }
-        Ok(())
+        with_compatibility_semantic(self, |reader| {
+            reader.validate_planner_page(view, invocation)
+        })
     }
 
     pub(in crate::repository) fn validate_planner_invocation_start(
@@ -949,19 +928,9 @@ impl CampaignRepository {
         coordination: ContentId,
         invocation: &PlannerInvocation,
     ) -> Result<Option<PlannerStepId>, CampaignRepositoryError> {
-        let parent = self
-            .merkle
-            .get(coordination, planner_head_key())?
-            .map(PlannerStepId::from_content_id)
-            .transpose()?;
-        let Some(parent_id) = parent else {
-            self.validate_planner_invocation_parent(None, invocation)?;
-            return Ok(None);
-        };
-
-        let parent_step = self.read_planner_step(parent_id.content_id())?;
-        self.validate_planner_invocation_parent(Some(&parent_step), invocation)?;
-        Ok(Some(parent_id))
+        with_compatibility_semantic(self, |reader| {
+            reader.validate_planner_invocation_start(coordination, invocation)
+        })
     }
 
     pub(in crate::repository) fn validate_planner_invocation_parent(
@@ -969,59 +938,9 @@ impl CampaignRepository {
         parent: Option<&PlannerStep>,
         invocation: &PlannerInvocation,
     ) -> Result<(), CampaignRepositoryError> {
-        let Some(parent_step) = parent else {
-            if invocation.scan_page().after().is_some() {
-                return Err(integrity("planner-invocation-scan-start-mismatch"));
-            }
-            let engine = self.require_record_kind(
-                invocation.engine().content_id(),
-                crate::CampaignRecordKind::PlannerEngine,
-            )?;
-            let engine: PlannerEngine = crate::codec::decode(engine.body())?;
-            let initial = if CanonicalFrontierPlanner::supports_descriptor(&engine)? {
-                Some(CanonicalFrontierPlanner::initial_state_for_engine(&engine)?)
-            } else if CanonicalPuctPlanner::supports_descriptor(&engine)? {
-                Some(CanonicalPuctPlanner::initial_state_for_engine(&engine)?)
-            } else if CanonicalBeamPlanner::supports_descriptor(&engine)? {
-                Some(CanonicalBeamPlanner::initial_state_for_engine(&engine)?)
-            } else if crate::CanonicalSearchPlanner::supports_descriptor(&engine)? {
-                Some(crate::CanonicalSearchPlanner::initial_state_for_engine(
-                    &engine,
-                )?)
-            } else {
-                None
-            };
-            if let Some(initial) = initial {
-                let state = self.require_record_kind(
-                    invocation.planner_state().content_id(),
-                    crate::CampaignRecordKind::PlannerState,
-                )?;
-                if crate::codec::decode::<PlannerState>(state.body())? != initial {
-                    return Err(integrity("builtin-planner-initial-state-mismatch"));
-                }
-            }
-            return Ok(());
-        };
-        if parent_step.next_state() != invocation.planner_state() {
-            return Err(integrity("planner-step-parent-state-discontinuity"));
-        }
-        let expected_after = if parent_step.input_view() != invocation.input_view() {
-            None
-        } else {
-            match parent_step.disposition() {
-                PlannerDisposition::ContinueScan { cursor } => cursor.after(),
-                PlannerDisposition::NoWork => {
-                    return Err(integrity("planner-invocation-reopens-complete-view"));
-                }
-                PlannerDisposition::Issue { .. } => {
-                    return Err(integrity("planner-invocation-reopens-issued-view"));
-                }
-            }
-        };
-        if invocation.scan_page().after() != expected_after {
-            return Err(integrity("planner-invocation-scan-start-mismatch"));
-        }
-        Ok(())
+        with_compatibility_semantic(self, |reader| {
+            reader.validate_planner_invocation_parent(parent, invocation)
+        })
     }
 
     pub(in crate::repository) fn validate_planner_disposition_page(
@@ -1053,42 +972,9 @@ impl CampaignRepository {
         disposition: &PlannerDisposition,
         proposed_requests: Option<&[BranchRequest]>,
     ) -> Result<(), CampaignRepositoryError> {
-        let PlannerDisposition::Issue { selected, .. } = disposition else {
-            return Ok(());
-        };
-        let content = selected.source().content_id();
-        let authoritative = self.merkle.get(
-            view.exploration(),
-            map_key_content("exploration.branch-request", content),
-        )? == Some(content);
-        let selected_request = if authoritative {
-            self.read_branch_request(content)?
-        } else if let Some(request) = proposed_requests.and_then(|requests| {
-            requests
-                .iter()
-                .find(|request| request.id().ok() == Some(selected.source()))
-        }) {
-            request.clone()
-        } else {
-            self.read_branch_request(content)?
-        };
-        let newly_issued_statistical = !authoritative
-            && disposition.issued_proposals().is_empty()
-            && disposition
-                .issued_branch_requests()
-                .contains(&selected.source())
-            && matches!(
-                selected_request.source(),
-                CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
-            );
-        if (!authoritative && !newly_issued_statistical)
-            || selected_request.branch_point() != selected.branch_point()
-        {
-            return Err(integrity(
-                "planner-step-selected-source-is-not-authoritative",
-            ));
-        }
-        Ok(())
+        with_compatibility_semantic(self, |reader| {
+            reader.validate_planner_selected_source(view, disposition, proposed_requests)
+        })
     }
 }
 

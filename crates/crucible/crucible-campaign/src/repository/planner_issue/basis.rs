@@ -2,6 +2,7 @@
 
 use super::super::projection::CandidateSourceProfile;
 use super::*;
+use crate::repository::closure::read::ClosureSemanticRead;
 
 /// Holds one guarded operation's basis, never a repository or cross-operation cache.
 ///
@@ -25,44 +26,37 @@ pub(in crate::repository) struct PlannerIssueBasis<'a> {
     pub(super) completed_visits: u64,
 }
 
-impl CampaignRepository {
-    /// Resolves immutable inputs after the caller authenticates the invocation.
-    /// Both owner projections still independently derive all output and index changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns a store, codec, or integrity error for missing or corrupt selected
-    /// records, a mismatched invocation view or policy, or an invalid selection.
+impl ClosureSemanticRead<'_, '_> {
     pub(in crate::repository) fn planner_issue_basis<'a>(
-        &self,
+        &mut self,
         snapshot: &'a LoadedSnapshot,
         invocation: &'a PlannerInvocation,
         selected: PlanningScanPosition,
         branch_requests: &'a [BranchRequest],
         proposals: &'a [Proposal],
     ) -> Result<PlannerIssueBasis<'a>, CampaignRepositoryError> {
+        let _operation = self.enter_operation();
         let invocation_id = invocation.id()?;
         if invocation.policy() != snapshot.snapshot.active_policy()
             || invocation.input_view() != snapshot.snapshot.planning_view().id()?
         {
             return Err(integrity("planner-issue-invocation-is-not-current"));
         }
-        let selected_request = branch_requests
-            .iter()
-            .find_map(|request| {
-                request
-                    .id()
-                    .ok()
-                    .filter(|request_id| *request_id == selected.source())
-                    .map(|_| request.clone())
-            })
-            .map(Ok)
-            .unwrap_or_else(|| self.read_branch_request(selected.source().content_id()))?;
-        let selected_is_new = branch_requests
-            .iter()
-            .map(BranchRequest::id)
-            .collect::<Result<BTreeSet<_>, _>>()?
-            .contains(&selected.source());
+
+        let mut selected_request = None;
+        let mut selected_is_new = false;
+        for request in branch_requests {
+            self.poll()?;
+            if request.id()? == selected.source() {
+                selected_request = Some(crate::codec::admitted_clone(request)?);
+                selected_is_new = true;
+                break;
+            }
+        }
+        let selected_request = match selected_request {
+            Some(request) => request,
+            None => self.read_branch_request(selected.source())?,
+        };
         if selected_is_new
             && (!proposals.is_empty()
                 || !matches!(
@@ -77,6 +71,7 @@ impl CampaignRepository {
         if selected_request.branch_point() != selected.branch_point() {
             return Err(integrity("planner-issue-selected-request-mismatch"));
         }
+
         let selected_opportunity =
             self.read_opportunity(selected_request.opportunity().content_id())?;
         let selected_domain = self.read_choice_domain(selected_request.domain().content_id())?;
@@ -97,10 +92,14 @@ impl CampaignRepository {
         let completed_visits = if proposals.is_empty() {
             0
         } else {
-            self.branch_completed_visits(
-                snapshot.snapshot.roots().observations,
-                selected_request.branch_point(),
-            )?
+            let observations = snapshot.snapshot.roots().observations;
+            match self.merkle_get(
+                observations,
+                branch_credit_index_key(selected_request.branch_point()),
+            )? {
+                Some(index) => self.merkle_inspect_shallow(index)?.entry_count(),
+                None => 0,
+            }
         };
 
         Ok(PlannerIssueBasis {
@@ -118,6 +117,28 @@ impl CampaignRepository {
             lineage,
             parent_path,
             completed_visits,
+        })
+    }
+}
+
+impl CampaignRepository {
+    /// Resolves immutable inputs after the caller authenticates the invocation.
+    /// Both owner projections still independently derive all output and index changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error for missing or corrupt selected
+    /// records, a mismatched invocation view or policy, or an invalid selection.
+    pub(in crate::repository) fn planner_issue_basis<'a>(
+        &self,
+        snapshot: &'a LoadedSnapshot,
+        invocation: &'a PlannerInvocation,
+        selected: PlanningScanPosition,
+        branch_requests: &'a [BranchRequest],
+        proposals: &'a [Proposal],
+    ) -> Result<PlannerIssueBasis<'a>, CampaignRepositoryError> {
+        with_compatibility_semantic(self, |reader| {
+            reader.planner_issue_basis(snapshot, invocation, selected, branch_requests, proposals)
         })
     }
 }

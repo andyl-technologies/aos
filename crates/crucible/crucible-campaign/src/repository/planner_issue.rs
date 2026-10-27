@@ -1,6 +1,7 @@
 //! Atomic owner projection for planner-issued requests, proposals, and admissions.
 
 use super::*;
+use crate::repository::closure::read::{ClosureSemanticRead, with_compatibility_semantic};
 use crate::{BranchBudget, ProbabilityModelId};
 
 // The canonical frontier planner emits at most this many finite choices in one Issue.
@@ -20,6 +21,8 @@ pub(super) struct PlannerIssueProjection {
 mod basis;
 pub(super) use basis::PlannerIssueBasis;
 
+mod checked;
+
 mod validation;
 use validation::{
     IssueGeneratorValidation, IssueProjectionMode, PlannerIssueAttemptBasis,
@@ -33,35 +36,9 @@ impl CampaignRepository {
         offer: &Proposal,
     ) -> Result<(crate::PlannerSearchCandidate, BranchPath, BranchPath), CampaignRepositoryError>
     {
-        let request = self.read_branch_request(offer.request().content_id())?;
-        let domain = self.read_choice_domain(offer.domain().content_id())?;
-        let lineage = self.read_lineage(snapshot.snapshot.lineage().content_id())?;
-        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
-        let edge =
-            Selection::campaign_edge_id(offer.branch_point(), domain.semantic_id(), offer.value());
-        let mut segments = parent_path.segments().to_vec();
-        segments.push(crate::BranchPathSegment::new(offer.branch_point(), edge));
-        let path = BranchPath::new(segments)?;
-        let depth = u64::try_from(path.edges().len()).map_err(|_| {
-            CampaignRepositoryError::Codec(CampaignCodecError::LimitExceeded {
-                limit: "planner-search-candidate-depth",
-            })
-        })?;
-        let candidate = crate::PlannerSearchCandidate::new(
-            snapshot.snapshot.planning_view().id()?,
-            snapshot.snapshot.active_policy(),
-            PlanningScanPosition::new(offer.branch_point(), offer.request()),
-            offer.domain(),
-            domain.semantic_id(),
-            offer.value().clone(),
-            offer.ordinal(),
-            edge,
-            parent_path.id()?,
-            path.id()?,
-            depth,
-        )?;
-
-        Ok((candidate, parent_path, path))
+        with_compatibility_semantic(self, |reader| {
+            reader.planner_search_candidate(snapshot, offer)
+        })
     }
 
     /// Projects one offer without publishing its selection, path, or attempt.
@@ -72,66 +49,9 @@ impl CampaignRepository {
         ledger: crate::CampaignBudgetLedger,
         request_budget_work: Option<&mut usize>,
     ) -> Result<crate::PlannerCandidateBudget, CampaignRepositoryError> {
-        let request = self.read_branch_request(offer.request().content_id())?;
-        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
-        let domain = self.read_choice_domain(request.domain().content_id())?;
-        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &request)?;
-        let attempt = self.derive_planner_issue_attempt(
-            &PlannerIssueAttemptBasis {
-                snapshot,
-                lineage: &lineage,
-                request: &request,
-                opportunity: &opportunity,
-                domain: &domain,
-                parent_path: &parent_path,
-            },
-            offer,
-            IssueProjectionMode::Preflight,
-            &mut Vec::new(),
-        )?;
-        let attempt = attempt.id()?;
-        let accounting = snapshot.snapshot.roots().accounting;
-        let indexed_attempt = self.merkle.get(
-            accounting,
-            map_key_content("accounting.attempt", attempt.content_id()),
-        )?;
-        let indexed_basis = self.merkle.get(
-            accounting,
-            map_key_content("accounting.attempt-execution-basis", attempt.content_id()),
-        )?;
-        let new_attempt = match (indexed_attempt, indexed_basis) {
-            (None, None) => true,
-            (Some(indexed), Some(basis)) if indexed == attempt.content_id() => {
-                let admission = self.decode_attempt_admission(basis)?;
-                if admission.attempt() != attempt
-                    || !matches!(
-                        admission.role(),
-                        AttemptAdmissionRole::ExecutionBasis { .. }
-                    )
-                {
-                    return Err(integrity("planner-budget-attempt-basis-mismatch"));
-                }
-                false
-            }
-            _ => return Err(integrity("planner-budget-attempt-index-mismatch")),
-        };
-        let work = request_budget_work
-            .ok_or_else(|| integrity("planner-candidate-request-budget-is-missing"))?;
-        let remaining = self.remaining_request_attempts_before(
-            snapshot,
-            offer.request(),
-            offer.ordinal(),
-            request.budget().maximum_attempts(),
-            work,
-        )?;
-        Ok(crate::PlannerCandidateBudget::new(
-            offer,
-            ledger.remaining_proposals(),
-            ledger.remaining_attempts(),
-            new_attempt,
-            remaining,
-        )?)
+        with_compatibility_semantic(self, |reader| {
+            reader.planner_candidate_budget(snapshot, offer, ledger, request_budget_work)
+        })
     }
 
     pub(super) fn preflight_planner_issue(
@@ -160,51 +80,6 @@ impl CampaignRepository {
             return Err(integrity("planner-issue-preflight-publication-mismatch"));
         }
         Ok(published)
-    }
-
-    pub(super) fn validate_planner_issue_projection(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        step: &PlannerStep,
-    ) -> Result<(), CampaignRepositoryError> {
-        let PlannerDisposition::Issue {
-            selected,
-            issued_branch_requests,
-            issued_proposals,
-            ..
-        } = step.disposition()
-        else {
-            return Err(integrity("planner-step-is-not-issue"));
-        };
-        let branch_requests = issued_branch_requests
-            .iter()
-            .map(|id| self.decode_branch_request(id.content_id()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let proposals = issued_proposals
-            .iter()
-            .map(|id| self.decode_proposal(id.content_id()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let invocation = self.load_planner_invocation(step.invocation())?;
-        let basis =
-            self.planner_issue_basis(parent, &invocation, *selected, &branch_requests, &proposals)?;
-        let projected = self.project_planner_issue(
-            &basis,
-            IssueProjectionMode::Validate {
-                target_exploration: child.snapshot.roots().exploration,
-                target_accounting: child.snapshot.roots().accounting,
-            },
-        )?;
-        if projected.branch_requests != *issued_branch_requests
-            || projected.proposals != *issued_proposals
-            || projected.exploration != child.snapshot.roots().exploration
-            || projected.accounting != child.snapshot.roots().accounting
-            || projected.attempts != step.accounting().attempts
-            || projected.deduplicated != step.accounting().deduplicated
-        {
-            return Err(integrity("planner-issue-owner-recomputation-mismatch"));
-        }
-        Ok(())
     }
 
     fn project_planner_issue(
@@ -416,24 +291,6 @@ impl CampaignRepository {
                 &mut pending_publications,
             )?;
             let attempt_id = attempt.id()?;
-            let stored_admission = match mode {
-                IssueProjectionMode::Validate {
-                    target_accounting, ..
-                } => {
-                    let content = self
-                        .merkle
-                        .get(
-                            target_accounting,
-                            map_key_content(
-                                "accounting.proposal-admission",
-                                proposal_id.content_id(),
-                            ),
-                        )?
-                        .ok_or_else(|| integrity("planner-issue-admission-is-missing"))?;
-                    Some((content, self.decode_attempt_admission(content)?))
-                }
-                IssueProjectionMode::Preflight | IssueProjectionMode::Publish => None,
-            };
             let expected = self.expected_planner_issue_admission(
                 prior_accounting,
                 &accounting_upserts,
@@ -460,17 +317,6 @@ impl CampaignRepository {
                     expected.id()?.content_id()
                 }
                 IssueProjectionMode::Preflight => expected.id()?.content_id(),
-                IssueProjectionMode::Validate {
-                    target_accounting: _,
-                    target_exploration: _,
-                } => {
-                    let (content, admission) = stored_admission
-                        .ok_or_else(|| integrity("planner-issue-stored-admission-is-missing"))?;
-                    if admission != expected {
-                        return Err(integrity("planner-issue-admission-owner-mismatch"));
-                    }
-                    content
-                }
             };
             prepared_admissions.insert(admission_content, expected);
             match expected.role() {
@@ -637,10 +483,8 @@ impl CampaignRepository {
             && (1..=MAX_SIMPLE_FINITE_ISSUE_PROPOSALS).contains(&proposals.len())
             && projections.len() == 1
             && feedback_projection.is_none();
-        let exploration =
-            self.finish_issue_root(prior_exploration, &exploration_upserts, mode, true)?;
-        let accounting =
-            self.finish_issue_root(prior_accounting, &accounting_upserts, mode, false)?;
+        let exploration = self.finish_issue_root(prior_exploration, &exploration_upserts, mode)?;
+        let accounting = self.finish_issue_root(prior_accounting, &accounting_upserts, mode)?;
 
         Ok(PlannerIssueProjection {
             exploration,
@@ -994,43 +838,8 @@ impl CampaignRepository {
                 return Err(integrity("planner-issue-attempt-publication-id-mismatch"));
             }
             pending_publications.extend([selection_envelope, path_envelope, attempt_envelope]);
-        } else if mode.validates_import()
-            && (self.resolve_selection(selection.id()?)?.selection() != &selection
-                || self.read_branch_path(path.id()?.content_id())? != path
-                || self.read_attempt(attempt.id()?.content_id())? != attempt)
-        {
-            return Err(integrity("planner-issue-derived-attempt-mismatch"));
         }
         Ok(attempt)
-    }
-
-    pub(in crate::repository) fn planner_issue_parent_path(
-        &self,
-        snapshot: &LoadedSnapshot,
-        lineage: &CampaignLineage,
-        request: &BranchRequest,
-    ) -> Result<BranchPath, CampaignRepositoryError> {
-        if request.parent() == lineage.genesis_content() {
-            return BranchPath::new(Vec::new()).map_err(Into::into);
-        }
-
-        let path_index = self
-            .merkle
-            .get(
-                snapshot.snapshot.roots().observations,
-                configuration_path_index_key(request.parent()),
-            )?
-            .ok_or_else(|| integrity("planner-issue-parent-path-index-is-missing"))?;
-        let page = self.merkle.scan(path_index, None, 1)?;
-        let [(key, content)] = page.entries() else {
-            return Err(integrity("planner-issue-parent-path-index-is-empty"));
-        };
-        let path_id = BranchPathId::from_content_id(*content)?;
-        if *key != path_index_order_key(path_id) {
-            return Err(integrity("planner-issue-parent-path-index-key-mismatch"));
-        }
-        let path = self.read_branch_path(*content)?;
-        Ok(path)
     }
 
     fn overlay_get(
@@ -1084,26 +893,11 @@ impl CampaignRepository {
         prior: ContentId,
         upserts: &BTreeMap<CampaignHash, ContentId>,
         mode: IssueProjectionMode,
-        exploration: bool,
     ) -> Result<ContentId, CampaignRepositoryError> {
         match mode {
             IssueProjectionMode::Preflight => Ok(prior),
             IssueProjectionMode::Publish => {
                 Ok(self.merkle.insert_many(prior, upserts)?.content_id())
-            }
-            IssueProjectionMode::Validate {
-                target_exploration,
-                target_accounting,
-            } => {
-                let target = if exploration {
-                    target_exploration
-                } else {
-                    target_accounting
-                };
-                if !self.merkle.equals_after_upserts(prior, target, upserts)? {
-                    return Err(integrity("planner-issue-root-delta-mismatch"));
-                }
-                Ok(target)
             }
         }
     }

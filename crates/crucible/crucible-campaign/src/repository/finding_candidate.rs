@@ -2,11 +2,11 @@
 
 use super::*;
 use crate::{
-    CampaignName, ConfigurationId, FindingCandidateBundle, FindingCandidateBundleId,
-    FindingExactPins, FindingExactRetentionDisposition, FindingId, FindingTarget,
-    FindingTriageReplayStorageDescription, FindingTriageReplayStorageObject,
-    FindingTriageReplayStorageObjectRole, MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES,
-    ScenarioArtifactId, ScenarioDefId,
+    CampaignName, ConfigurationId, ExactCheckpointId, FindingCandidateBundle,
+    FindingCandidateBundleId, FindingExactPins, FindingExactRetentionDisposition, FindingId,
+    FindingKind, FindingTarget, FindingTriageReplayStorageDescription,
+    FindingTriageReplayStorageObject, FindingTriageReplayStorageObjectRole,
+    MAX_FINDING_TRIAGE_REPLAY_STORAGE_RANGE_BYTES, ScenarioArtifactId, ScenarioDefId,
 };
 
 const MAX_FINDING_EXACT_PIN_ROOT_BYTES: u64 = 64 * 1024 * 1024;
@@ -16,6 +16,7 @@ const MAX_FINDING_ASSERTION_TRACE_BYTES: u64 = 64 * 1024 * 1024;
 mod recovery;
 mod replay_evidence;
 
+use crate::repository::closure::read::ClosureSemanticRead;
 pub(super) use recovery::FindingCandidateValidation;
 pub use recovery::{
     AuthenticatedFindingCandidateIncorporation, AuthenticatedFindingExactCheckpoint,
@@ -25,6 +26,444 @@ use recovery::{
     BoundFindingCandidateIncorporationAuthorization,
     finding_candidate_incorporation_operation_digest,
 };
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn read_finding_candidate_bundle(
+        &mut self,
+        id: FindingCandidateBundleId,
+    ) -> Result<FindingCandidateBundle, CampaignRepositoryError> {
+        let bundle = self.decode_finding_candidate_bundle(id)?;
+        self.validate_finding_candidate_bundle(&bundle, &mut ChoiceValidationCache::default())?;
+        Ok(bundle)
+    }
+
+    pub(in crate::repository) fn validate_finding_candidate_bundle(
+        &mut self,
+        bundle: &FindingCandidateBundle,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = self.decode_observation(bundle.observation().content_id())?;
+        self.validate_observation_references_cached(&observation, choice_cache)?;
+        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
+        if bundle.signature().kind() == FindingKind::PropertyViolation {
+            let property = bundle
+                .signature()
+                .property()
+                .ok_or_else(|| integrity("finding-property-signature-has-no-property"))?;
+            let properties_envelope = self.require_record_kind(
+                observation.properties().content_id(),
+                crate::CampaignRecordKind::PropertyVerdictSet,
+            )?;
+            let properties = self.repository().decode_property_verdict_set_envelope(
+                observation.properties().content_id(),
+                &properties_envelope,
+            )?;
+            if properties
+                .properties()
+                .get(property)
+                .map(|evidence| evidence.verdict())
+                != Some(PropertyVerdict::Failed)
+            {
+                return Err(integrity("finding-property-is-not-a-failed-verdict"));
+            }
+        }
+        let reproduction = self.read_reproduction_artifact(bundle.reproduction().content_id())?;
+        if reproduction.finding_fingerprint() != bundle.signature().fingerprint()
+            || reproduction.scenario() != child.scenario()
+            || reproduction.configuration_artifact() != observation.child_content()
+        {
+            return Err(integrity("finding-candidate-reproduction-basis-mismatch"));
+        }
+        let minimized = self.read_reproduction_artifact(bundle.minimized().content_id())?;
+        if minimized.finding_fingerprint() != bundle.signature().fingerprint()
+            || minimized.scenario() != child.scenario()
+        {
+            return Err(integrity("finding-candidate-minimized-basis-mismatch"));
+        }
+        let minimization = minimized
+            .minimization()
+            .ok_or_else(|| integrity("finding-candidate-minimized-has-no-retained-trace"))?;
+        if minimization.original() != bundle.reproduction() {
+            return Err(integrity(
+                "finding-candidate-minimization-original-mismatch",
+            ));
+        }
+        bundle
+            .signature_minimization()
+            .validate_against(bundle.signature(), minimization)?;
+        match bundle.signature().target() {
+            Some(FindingTarget::Configuration(configuration))
+                if configuration != observation.child_content() =>
+            {
+                return Err(integrity("finding-candidate-configuration-target-mismatch"));
+            }
+            Some(FindingTarget::ChoiceOpportunity(opportunity))
+                if !observation.discovered_choices().contains(&opportunity) =>
+            {
+                return Err(integrity("finding-candidate-choice-target-mismatch"));
+            }
+            _ => {}
+        }
+        for evidence in bundle.signature().causal_evidence() {
+            let owned = *evidence == observation.attempt().content_id()
+                || *evidence == observation.child_content().content_id()
+                || *evidence == observation.path().content_id()
+                || *evidence == observation.measurements().content_id()
+                || *evidence == observation.properties().content_id()
+                || *evidence == observation.coverage().content_id()
+                || observation.resolved_effect_trace() == Some(*evidence)
+                || observation
+                    .discovered_choices()
+                    .iter()
+                    .any(|id| id.content_id() == *evidence)
+                || observation
+                    .produced_selections()
+                    .iter()
+                    .any(|id| id.content_id() == *evidence);
+            if !owned {
+                return Err(integrity(
+                    "finding-candidate-evidence-is-not-observation-owned",
+                ));
+            }
+        }
+
+        self.validate_finding_exact_retention(bundle, &observation, &minimized, choice_cache)?;
+        self.validate_finding_exact_pin_closures(bundle.exact_pins())?;
+        self.validate_finding_candidate_triage_evidence(bundle, minimization)?;
+        Ok(())
+    }
+
+    fn validate_finding_exact_retention(
+        &mut self,
+        bundle: &FindingCandidateBundle,
+        observation: &Observation,
+        minimized: &ReproductionArtifact,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let retention = bundle.exact_retention();
+        let source = self.read_snapshot(retention.snapshot().content_id())?;
+        let accounting = source.snapshot.roots().accounting;
+        if self.merkle_get(accounting, attempt_index_key(observation.attempt()))?
+            != Some(observation.attempt().content_id())
+        {
+            return Err(integrity(
+                "finding-exact-retention-attempt-is-not-in-source-snapshot",
+            ));
+        }
+        if self.merkle_get(
+            accounting,
+            attempt_execution_basis_key(observation.attempt()),
+        )? != Some(retention.admission().content_id())
+        {
+            return Err(integrity(
+                "finding-exact-retention-admission-is-not-selected-by-source-snapshot",
+            ));
+        }
+        let source_lineage = self.read_lineage(source.snapshot.lineage().content_id())?;
+        if source_lineage.scenario() != minimized.scenario() {
+            return Err(integrity(
+                "finding-exact-retention-source-snapshot-scenario-mismatch",
+            ));
+        }
+        let admission = self.decode_attempt_admission(retention.admission().content_id())?;
+        self.validate_attempt_admission_references_shallow_cached(&admission, choice_cache)?;
+        let AttemptAdmissionRole::ExecutionBasis { .. } = admission.role() else {
+            return Err(integrity(
+                "finding-exact-retention-admission-is-not-execution-basis",
+            ));
+        };
+        if admission.attempt() != observation.attempt() {
+            return Err(integrity(
+                "finding-exact-retention-admission-attempt-mismatch",
+            ));
+        }
+        let policy_id = retention.policy();
+        if admission.retention_policy() != policy_id {
+            return Err(integrity(
+                "finding-exact-retention-policy-admission-mismatch",
+            ));
+        }
+        let policy = self.read_policy(policy_id.content_id())?;
+        if policy.scenario() != minimized.scenario() {
+            return Err(integrity(
+                "finding-exact-retention-policy-scenario-mismatch",
+            ));
+        }
+        let requested = policy.retention().exact_findings();
+        match retention.disposition() {
+            FindingExactRetentionDisposition::Disabled if requested => Err(integrity(
+                "finding-exact-retention-disabled-by-requesting-policy",
+            )),
+            FindingExactRetentionDisposition::Complete
+            | FindingExactRetentionDisposition::Incomplete(_)
+                if !requested =>
+            {
+                Err(integrity(
+                    "finding-exact-retention-enabled-by-disabled-policy",
+                ))
+            }
+            FindingExactRetentionDisposition::Complete => {
+                self.validate_authenticated_finding_exact_retention(bundle, observation)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_authenticated_finding_exact_retention(
+        &mut self,
+        bundle: &FindingCandidateBundle,
+        observation: &Observation,
+    ) -> Result<(), CampaignRepositoryError> {
+        let evidence = bundle
+            .exact_retention_evidence()
+            .ok_or_else(|| integrity("finding-exact-retention-evidence-is-missing"))?;
+        let expected_measurement = match observation.stop() {
+            crate::StopOutcome::ObservationReached(proof) => {
+                if evidence.assertion_boundary().is_some() {
+                    return Err(integrity(
+                        "observation exact retention has assertion witness",
+                    ));
+                }
+                Some(proof.boundary().start_events())
+            }
+            crate::StopOutcome::AssertionFailure(property) => {
+                let boundary = evidence.assertion_boundary().ok_or_else(|| {
+                    integrity("assertion exact retention lacks terminal boundary witness")
+                })?;
+                let measurements_envelope = self.require_record_kind(
+                    observation.measurements().content_id(),
+                    crate::CampaignRecordKind::MeasurementSet,
+                )?;
+                let measurements = self.repository().decode_measurement_set_envelope(
+                    observation.measurements().content_id(),
+                    &measurements_envelope,
+                )?;
+                let properties_envelope = self.require_record_kind(
+                    observation.properties().content_id(),
+                    crate::CampaignRecordKind::PropertyVerdictSet,
+                )?;
+                let properties = self.repository().decode_property_verdict_set_envelope(
+                    observation.properties().content_id(),
+                    &properties_envelope,
+                )?;
+                if boundary.property() != property
+                    || boundary.terminal_events() != evidence.failure_events()
+                    || measurements.evaluation().evidence().len() != 1
+                    || !measurements
+                        .evaluation()
+                        .evidence()
+                        .contains(&boundary.trace())
+                    || properties
+                        .properties()
+                        .get(property)
+                        .is_none_or(|entry| entry.verdict() != crate::PropertyVerdict::Failed)
+                {
+                    return Err(integrity(
+                        "assertion exact retention witness disagrees with observation",
+                    ));
+                }
+                Some(boundary.quantum_start_events())
+            }
+            _ => {
+                if evidence.assertion_boundary().is_some() {
+                    return Err(integrity("unrelated exact retention has assertion witness"));
+                }
+                None
+            }
+        };
+        if evidence.measurement_boundary_events() != expected_measurement {
+            return Err(integrity(
+                "finding-exact-retention-measurement-boundary-mismatch",
+            ));
+        }
+        let mut declared = BTreeMap::new();
+        for candidate in evidence.candidates() {
+            crucible_store::owned_decode::charge_btree_entry::<ExactCheckpointId, u64>()
+                .map_err(CampaignCodecError::from)?;
+            declared.insert(candidate.checkpoint(), candidate.event_count());
+        }
+        if declared.get(&evidence.captured_failure()) != Some(&evidence.failure_events()) {
+            return Err(integrity(
+                "finding-exact-retention-failure-boundary-mismatch",
+            ));
+        }
+        let selected = select_authenticated_finding_pins(
+            &declared,
+            evidence.failure_events(),
+            evidence.measurement_boundary_events(),
+        )?;
+        if &selected != evidence.selected() || &selected != bundle.exact_pins() {
+            return Err(integrity("finding-exact-retention-selection-mismatch"));
+        }
+        Ok(())
+    }
+
+    fn validate_finding_exact_pin_closures(
+        &mut self,
+        pins: &FindingExactPins,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut pending = Vec::new();
+        for checkpoint in pins.all() {
+            self.push(&mut pending, checkpoint.content_id())?;
+        }
+        let mut visited = BTreeSet::new();
+        let mut manifest_bytes = 0_u64;
+        while let Some(id) = pending.pop() {
+            if !visited.contains(&id) {
+                crucible_store::owned_decode::charge_btree_set_entry::<ContentId>()
+                    .map_err(CampaignCodecError::from)?;
+            }
+            if !visited.insert(id) {
+                continue;
+            }
+            if visited.len() > MAX_CAMPAIGN_CLOSURE_OBJECTS {
+                return Err(integrity("finding-exact-pin-closure-object-limit"));
+            }
+            if is_opaque_campaign_leaf(id.kind()) {
+                self.authenticate_opaque(id)?;
+                continue;
+            }
+            if id.kind() != ObjectKind::ExactManifest {
+                return Err(integrity("finding-exact-pin-closure-kind"));
+            }
+            let (envelope, length) = self.read_content_envelope(id)?;
+            manifest_bytes = manifest_bytes
+                .checked_add(length)
+                .ok_or_else(|| integrity("finding-exact-pin-closure-byte-limit"))?;
+            if length > MAX_FINDING_EXACT_PIN_ROOT_BYTES
+                || manifest_bytes > MAX_FINDING_EXACT_PIN_ROOT_BYTES_TOTAL
+            {
+                return Err(integrity("finding-exact-pin-closure-byte-limit"));
+            }
+            for child in envelope.children() {
+                if child.id().kind() != ObjectKind::ExactManifest
+                    && !is_opaque_campaign_leaf(child.id().kind())
+                {
+                    return Err(integrity("finding-exact-pin-closure-kind"));
+                }
+                self.push(&mut pending, child.id())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_finding_candidate_triage_evidence(
+        &mut self,
+        bundle: &FindingCandidateBundle,
+        minimization: &FindingMinimizationEvidence,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(evidence) = bundle.triage_evidence() else {
+            return Ok(());
+        };
+        let selected_index = minimization
+            .attempts()
+            .iter()
+            .position(|attempt| attempt.accepted())
+            .map_or(0, |index| index + 1);
+        let signatures = bundle.signature_minimization();
+        let expected = [
+            (
+                evidence.minimization_original(),
+                bundle.reproduction(),
+                signatures
+                    .minimization_pass()
+                    .first()
+                    .and_then(Option::as_ref),
+            ),
+            (
+                evidence.minimization_selected(),
+                bundle.minimized(),
+                signatures
+                    .minimization_pass()
+                    .get(selected_index)
+                    .and_then(Option::as_ref),
+            ),
+            (
+                evidence.verification_original(),
+                bundle.reproduction(),
+                signatures
+                    .verification_pass()
+                    .first()
+                    .and_then(Option::as_ref),
+            ),
+            (
+                evidence.verification_selected(),
+                bundle.minimized(),
+                signatures
+                    .verification_pass()
+                    .get(selected_index)
+                    .and_then(Option::as_ref),
+            ),
+        ];
+        for (id, reproduction, signature) in expected {
+            let signature = signature.ok_or_else(|| {
+                integrity("finding-triage-signature-minimization-entry-is-missing")
+            })?;
+            let retained = self.decode_finding_triage_replay_evidence(id.content_id())?;
+            if retained.reproduction() != reproduction || retained.observed_signature() != signature
+            {
+                return Err(integrity("finding-triage-replay-evidence-basis-mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn decode_finding_triage_replay_evidence(
+        &mut self,
+        id: ContentId,
+    ) -> Result<FindingTriageReplayEvidence, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::FindingTriageReplayEvidence)?;
+        let manifest = FindingTriageReplayEvidence::manifest_from_canonical_bytes(envelope.body())?;
+        let payload_bytes = manifest.payload_bytes()?;
+        let mut payload = Vec::new();
+        crucible_store::owned_decode::reserve_vec(&mut payload, payload_bytes)
+            .map_err(CampaignCodecError::from)?;
+        for descriptor in manifest.chunks().iter().copied() {
+            let chunk = self.require_record_kind(
+                descriptor.content(),
+                crate::CampaignRecordKind::FindingTriageReplayEvidenceChunk,
+            )?;
+            let bytes = FindingTriageReplayEvidence::chunk_from_canonical_bytes(chunk.body())?;
+            if bytes.len() != descriptor.logical_bytes() as usize {
+                return Err(integrity(
+                    "finding-triage-replay-evidence-chunk-length-mismatch",
+                ));
+            }
+            payload.extend_from_slice(&bytes);
+        }
+        let evidence = manifest.into_evidence(payload)?;
+        if evidence.id()?.content_id() != id {
+            return Err(integrity("finding-triage-replay-evidence-envelope-shape"));
+        }
+        let reproduction = self.read_reproduction_artifact(evidence.reproduction().content_id())?;
+        if reproduction.finding_fingerprint() != evidence.observed_signature().fingerprint() {
+            return Err(integrity(
+                "finding-triage-replay-evidence-fingerprint-mismatch",
+            ));
+        }
+        if matches!(
+            evidence.observed_signature().target(),
+            Some(FindingTarget::Configuration(configuration))
+                if configuration != reproduction.configuration_artifact()
+        ) {
+            return Err(integrity(
+                "finding-triage-replay-evidence-configuration-mismatch",
+            ));
+        }
+        for child in evidence.observed_signature().causal_evidence() {
+            self.authenticate_opaque(*child)?;
+        }
+        if let Some(target) = evidence.observed_signature().target() {
+            let target = match target {
+                FindingTarget::Configuration(id) => id.content_id(),
+                FindingTarget::ChoiceOpportunity(id) => id.content_id(),
+            };
+            self.authenticate_opaque(target)?;
+        }
+        Ok(evidence)
+    }
+}
 
 impl CampaignRepository {
     /// Publishes one fully verified finding candidate handoff.
@@ -499,8 +938,8 @@ impl CampaignRepository {
         // These reads reconstruct borrowed validation inputs, including local
         // choice caches and Merkle paths. Nothing enters the repository's head
         // or beam caches; the caller's decoded bundle keeps its outer charge.
-        let validation_budget =
-            crucible_store::owned_decode::current_child_budget().map_err(CampaignCodecError::from)?;
+        let validation_budget = crucible_store::owned_decode::current_child_budget()
+            .map_err(CampaignCodecError::from)?;
         let _scope = validation_budget.as_ref().map(|budget| budget.enter());
 
         let observation = self.read_observation(bundle.observation().content_id())?;

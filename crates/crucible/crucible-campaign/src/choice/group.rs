@@ -618,11 +618,10 @@ impl ChoiceGroup {
 
     pub(crate) fn content_children(
         &self,
-    ) -> Vec<(String, crucible_store::content_store::ContentId)> {
+    ) -> impl Iterator<Item = (&'static str, crucible_store::content_store::ContentId)> + '_ {
         self.members
             .iter()
-            .map(|member| ("member".to_owned(), member.content_id()))
-            .collect()
+            .map(|member| ("member", member.content_id()))
     }
 
     /// Validates a proposed tuple before atomic application.
@@ -647,9 +646,30 @@ impl ChoiceGroup {
     /// member that distinguishes every emitted proposal.
     #[must_use]
     pub fn supports_progressive_generation(&self, maximum_proposals: u32) -> bool {
-        self.progressive_identity_member(maximum_proposals)
+        let mut poll = || Ok::<(), CampaignCodecError>(());
+        matches!(
+            self.supports_progressive_generation_checked(maximum_proposals, &mut poll),
+            Ok(true)
+        )
+    }
+
+    /// Checks bounded progressive support under a fallible operation boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `E` when polling or original allocation admission fails.
+    pub(crate) fn supports_progressive_generation_checked<E>(
+        &self,
+        maximum_proposals: u32,
+        poll: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<bool, E>
+    where
+        E: From<CampaignCodecError>,
+    {
+        Ok(self
+            .progressive_identity_member_checked(maximum_proposals, poll)?
             .is_some()
-            && self.progressive_fixed_members().is_some()
+            && self.progressive_fixed_members_checked(poll)?.is_some())
     }
 
     /// Produces one complete tuple under the bounded group generator contract.
@@ -667,39 +687,66 @@ impl ChoiceGroup {
         ordinal: u64,
         maximum_proposals: u32,
     ) -> Result<ChoiceGroupValue, CampaignCodecError> {
+        let mut poll = || Ok::<(), CampaignCodecError>(());
+        self.progressive_candidate_checked(ordinal, maximum_proposals, &mut poll)
+    }
+
+    /// Produces one complete tuple under a fallible operation boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `E` for the same invalid inputs as [`Self::progressive_candidate`],
+    /// or when polling or original allocation admission fails.
+    pub(crate) fn progressive_candidate_checked<E>(
+        &self,
+        ordinal: u64,
+        maximum_proposals: u32,
+        poll: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<ChoiceGroupValue, E>
+    where
+        E: From<CampaignCodecError>,
+    {
         if ordinal == 0 || ordinal > u64::from(maximum_proposals) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "group proposal ordinal exceeds its bound",
-            });
+            }
+            .into());
         }
-        let identity = self.progressive_identity_member(maximum_proposals).ok_or(
-            CampaignCodecError::InvalidValue {
+        let identity = self
+            .progressive_identity_member_checked(maximum_proposals, poll)?
+            .ok_or(CampaignCodecError::InvalidValue {
                 reason: "group does not support bounded progressive generation",
+            })?;
+        let fixed_members = self.progressive_fixed_members_checked(poll)?.ok_or(
+            CampaignCodecError::InvalidValue {
+                reason: "group generator constraints have no common admitted values",
             },
         )?;
-        let fixed_members =
-            self.progressive_fixed_members()
-                .ok_or(CampaignCodecError::InvalidValue {
-                    reason: "group generator constraints have no common admitted values",
-                })?;
         let ChoiceGroupDomain::Cartesian { members, .. } = &self.domain else {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "group progressive generation requires a Cartesian domain",
-            });
+            }
+            .into());
         };
 
         let mut values = BTreeMap::new();
         for (id, domain) in members {
+            poll()?;
             let declaration =
                 self.declarations
                     .get(id)
                     .ok_or(CampaignCodecError::InvalidValue {
                         reason: "group generator member declaration is missing",
                     })?;
-            values.insert(
-                *id,
-                group_member_candidate(domain, declaration.default(), ordinal, *id == identity)?,
-            );
+            let candidate = group_member_candidate_checked(
+                domain,
+                declaration.default(),
+                ordinal,
+                *id == identity,
+                poll,
+            )?;
+            charge_btree_map_entry::<SelectableId, ChoiceValue>()?;
+            values.insert(*id, candidate);
         }
         // Constrained antecedents use a stable common value before evaluating
         // implications. Other consequents can still vary when the implication
@@ -712,10 +759,12 @@ impl ChoiceGroup {
         let ChoiceGroupDomain::Cartesian { constraints, .. } = &self.domain else {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "group progressive generation requires a Cartesian domain",
-            });
+            }
+            .into());
         };
         let mut active: BTreeMap<SelectableId, BTreeSet<ChoiceValue>> = BTreeMap::new();
         for constraint in constraints {
+            poll()?;
             let admitted = match constraint {
                 ChoiceRelationalConstraint::Member(member, allowed) => Some((member, allowed)),
                 ChoiceRelationalConstraint::Implies {
@@ -729,13 +778,17 @@ impl ChoiceGroup {
                 _ => None,
             };
             if let Some((member, allowed)) = admitted {
-                active
-                    .entry(*member)
-                    .and_modify(|common| common.retain(|value| allowed.contains(value)))
-                    .or_insert_with(|| allowed.clone());
+                if let Some(common) = active.get_mut(member) {
+                    common.retain(|value| allowed.contains(value));
+                } else {
+                    let allowed = clone_progressive_values(allowed, poll)?;
+                    charge_btree_map_entry::<SelectableId, BTreeSet<ChoiceValue>>()?;
+                    active.insert(*member, allowed);
+                }
             }
         }
         for (id, admitted) in active {
+            poll()?;
             if !values
                 .get(&id)
                 .is_some_and(|value| admitted.contains(value))
@@ -750,15 +803,22 @@ impl ChoiceGroup {
                 values.insert(id, selected);
             }
         }
-        self.select(ChoiceTuple::new(values))
+        self.select(ChoiceTuple::new(values)).map_err(Into::into)
     }
 
-    fn progressive_fixed_members(&self) -> Option<BTreeMap<SelectableId, ChoiceValue>> {
+    fn progressive_fixed_members_checked<E>(
+        &self,
+        poll: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<BTreeMap<SelectableId, ChoiceValue>>, E>
+    where
+        E: From<CampaignCodecError>,
+    {
         let ChoiceGroupDomain::Cartesian { constraints, .. } = &self.domain else {
-            return None;
+            return Ok(None);
         };
         let mut intersections: BTreeMap<SelectableId, BTreeSet<ChoiceValue>> = BTreeMap::new();
         for constraint in constraints {
+            poll()?;
             let (member, allowed) = match constraint {
                 ChoiceRelationalConstraint::Member(member, allowed) => (member, allowed),
                 ChoiceRelationalConstraint::Implies {
@@ -767,60 +827,93 @@ impl ChoiceGroup {
                     ..
                 } => (then_member, allowed),
                 ChoiceRelationalConstraint::Equal(_, _)
-                | ChoiceRelationalConstraint::LessThan(_, _) => return None,
+                | ChoiceRelationalConstraint::LessThan(_, _) => return Ok(None),
             };
-            intersections
-                .entry(*member)
-                .and_modify(|common| common.retain(|value| allowed.contains(value)))
-                .or_insert_with(|| allowed.clone());
+            if let Some(common) = intersections.get_mut(member) {
+                common.retain(|value| allowed.contains(value));
+            } else {
+                let allowed = clone_progressive_values(allowed, poll)?;
+                charge_btree_map_entry::<SelectableId, BTreeSet<ChoiceValue>>()?;
+                intersections.insert(*member, allowed);
+            }
         }
-        intersections
-            .into_iter()
-            .map(|(member, values)| values.into_iter().next().map(|value| (member, value)))
-            .collect()
+
+        let mut fixed = BTreeMap::new();
+        for (member, values) in intersections {
+            poll()?;
+            let Some(value) = values.into_iter().next() else {
+                return Ok(None);
+            };
+            charge_btree_map_entry::<SelectableId, ChoiceValue>()?;
+            fixed.insert(member, value);
+        }
+        Ok(Some(fixed))
     }
 
-    fn progressive_identity_member(&self, maximum_proposals: u32) -> Option<SelectableId> {
+    fn progressive_identity_member_checked<E>(
+        &self,
+        maximum_proposals: u32,
+        poll: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<SelectableId>, E> {
         if maximum_proposals == 0 {
-            return None;
+            return Ok(None);
         }
         let ChoiceGroupDomain::Cartesian {
             members,
             constraints,
         } = &self.domain
         else {
-            return None;
+            return Ok(None);
         };
-        if constraints.iter().any(|constraint| {
-            matches!(
+        for constraint in constraints {
+            poll()?;
+            if matches!(
                 constraint,
                 ChoiceRelationalConstraint::Equal(_, _)
                     | ChoiceRelationalConstraint::LessThan(_, _)
-            )
-        }) {
-            return None;
+            ) {
+                return Ok(None);
+            }
         }
-        members.iter().find_map(|(id, domain)| {
+
+        for (id, domain) in members {
+            poll()?;
             let ChoiceDomain::Integer(integer) = domain else {
-                return None;
+                continue;
             };
-            (integer.cardinality() >= u128::from(maximum_proposals)
-                && !constraints.iter().any(|constraint| match constraint {
+            if integer.cardinality() < u128::from(maximum_proposals) {
+                continue;
+            }
+            let mut constrained = false;
+            for constraint in constraints {
+                poll()?;
+                constrained = match constraint {
                     ChoiceRelationalConstraint::Member(member, _) => member == id,
                     ChoiceRelationalConstraint::Implies { then_member, .. } => then_member == id,
                     _ => false,
-                }))
-            .then_some(*id)
-        })
+                };
+                if constrained {
+                    break;
+                }
+            }
+            if !constrained {
+                return Ok(Some(*id));
+            }
+        }
+        Ok(None)
     }
 }
 
-fn group_member_candidate(
+fn group_member_candidate_checked<E>(
     domain: &ChoiceDomain,
     default: &ChoiceValue,
     ordinal: u64,
     identity: bool,
-) -> Result<ChoiceValue, CampaignCodecError> {
+    poll: &mut impl FnMut() -> Result<(), E>,
+) -> Result<ChoiceValue, E>
+where
+    E: From<CampaignCodecError>,
+{
     let offset = u128::from(ordinal - 1);
     match domain {
         ChoiceDomain::Boolean(_) => Ok(ChoiceValue::Boolean(ordinal.is_multiple_of(2))),
@@ -840,9 +933,10 @@ fn group_member_candidate(
                 .ok_or(CampaignCodecError::InvalidValue {
                     reason: "group discrete candidate is missing",
                 })
+                .map_err(Into::into)
         }
         ChoiceDomain::Integer(integer) if identity => {
-            let anchors = integer_anchors(integer, default);
+            let anchors = integer_anchors_checked(integer, default, poll)?;
             if let Some(value) = anchors.get(usize::try_from(offset).unwrap_or(usize::MAX)) {
                 return Ok(ChoiceValue::Integer(*value));
             }
@@ -850,11 +944,15 @@ fn group_member_candidate(
             // Skip anchors while walking the stepped range, so the integer
             // member remains a one-to-one proof of proposal identity.
             let mut candidate_offset = offset - anchors.len() as u128;
-            let anchor_offsets = anchors
-                .into_iter()
-                .map(|anchor| integer.offset_of(anchor))
-                .collect::<Result<BTreeSet<_>, _>>()?;
+            let mut anchor_offsets = BTreeSet::new();
+            for anchor in anchors {
+                poll()?;
+                let anchor = integer.offset_of(anchor)?;
+                charge_btree_set_entry::<u128>()?;
+                anchor_offsets.insert(anchor);
+            }
             for anchor_offset in anchor_offsets {
+                poll()?;
                 if anchor_offset <= candidate_offset {
                     candidate_offset += 1;
                 }
@@ -862,28 +960,50 @@ fn group_member_candidate(
             integer
                 .value_at_offset(candidate_offset)
                 .map(ChoiceValue::Integer)
+                .map_err(Into::into)
         }
         ChoiceDomain::Integer(integer) => {
-            let anchors = integer_anchors(integer, default);
+            let anchors = integer_anchors_checked(integer, default, poll)?;
             if let Some(value) = anchors.get(usize::try_from(offset).unwrap_or(usize::MAX)) {
                 Ok(ChoiceValue::Integer(*value))
             } else {
                 let offset = (offset - anchors.len() as u128) % integer.cardinality();
-                integer.value_at_offset(offset).map(ChoiceValue::Integer)
+                integer
+                    .value_at_offset(offset)
+                    .map(ChoiceValue::Integer)
+                    .map_err(Into::into)
             }
         }
         ChoiceDomain::Group(_) => Err(CampaignCodecError::InvalidValue {
             reason: "group generator cannot nest atomic groups",
-        }),
+        }
+        .into()),
     }
 }
 
-fn integer_anchors(integer: &IntegerDomain, default: &ChoiceValue) -> Vec<IntegerValue> {
-    let mut anchors = Vec::with_capacity(integer.landmarks().len() + 3);
+fn integer_anchors_checked<E>(
+    integer: &IntegerDomain,
+    default: &ChoiceValue,
+    poll: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Vec<IntegerValue>, E>
+where
+    E: From<CampaignCodecError>,
+{
+    let capacity =
+        integer
+            .landmarks()
+            .len()
+            .checked_add(3)
+            .ok_or(CampaignCodecError::InvalidValue {
+                reason: "group integer anchor count overflow",
+            })?;
+    let mut anchors = Vec::new();
+    reserve_vec(&mut anchors, capacity)?;
     for anchor in std::iter::once(default)
         .chain(std::iter::once(&ChoiceValue::Integer(integer.minimum())))
         .chain(std::iter::once(&ChoiceValue::Integer(integer.maximum())))
     {
+        poll()?;
         if let ChoiceValue::Integer(value) = anchor
             && !anchors.contains(value)
         {
@@ -891,11 +1011,51 @@ fn integer_anchors(integer: &IntegerDomain, default: &ChoiceValue) -> Vec<Intege
         }
     }
     for landmark in integer.landmarks() {
+        poll()?;
         if !anchors.contains(landmark) {
             anchors.push(*landmark);
         }
     }
-    anchors
+    Ok(anchors)
+}
+
+fn clone_progressive_values<E>(
+    values: &BTreeSet<ChoiceValue>,
+    poll: &mut impl FnMut() -> Result<(), E>,
+) -> Result<BTreeSet<ChoiceValue>, E>
+where
+    E: From<CampaignCodecError>,
+{
+    let mut cloned = BTreeSet::new();
+    for value in values {
+        poll()?;
+        let value = match value {
+            ChoiceValue::Boolean(value) => ChoiceValue::Boolean(*value),
+            ChoiceValue::Discrete(value) => ChoiceValue::Discrete(*value),
+            ChoiceValue::Integer(value) => ChoiceValue::Integer(*value),
+            ChoiceValue::Group(_) => {
+                return Err(CampaignCodecError::InvalidValue {
+                    reason: "group generator cannot nest atomic group values",
+                }
+                .into());
+            }
+        };
+        charge_btree_set_entry::<ChoiceValue>()?;
+        cloned.insert(value);
+    }
+    Ok(cloned)
+}
+
+fn charge_btree_map_entry<K, V>() -> Result<(), CampaignCodecError> {
+    crucible_store::owned_decode::charge_btree_entry::<K, V>().map_err(CampaignCodecError::from)
+}
+
+fn charge_btree_set_entry<T>() -> Result<(), CampaignCodecError> {
+    crucible_store::owned_decode::charge_btree_set_entry::<T>().map_err(CampaignCodecError::from)
+}
+
+fn reserve_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), CampaignCodecError> {
+    crucible_store::owned_decode::reserve_vec(values, additional).map_err(CampaignCodecError::from)
 }
 
 impl Canonical for ChoiceGroup {

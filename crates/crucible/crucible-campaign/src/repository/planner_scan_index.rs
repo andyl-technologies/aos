@@ -11,6 +11,7 @@
 //! is the complete stable ordering key within one branch point.
 
 use super::*;
+use crate::repository::closure::read::with_compatibility_semantic;
 
 pub(super) fn planner_scan_index_anchor_key() -> CampaignHash {
     CampaignHash::derive("crucible.campaign.planner-scan-index.v3", b"root")
@@ -75,6 +76,12 @@ impl CampaignRepository {
         retired: Option<(BranchRequestId, crate::BranchPointId)>,
         publish: bool,
     ) -> Result<ContentId, CampaignRepositoryError> {
+        if !publish {
+            return with_compatibility_semantic(self, |reader| {
+                reader.planner_scan_index_after(exploration, requests, retired)
+            });
+        }
+
         let index = self
             .merkle
             .get(exploration, planner_scan_index_anchor_key())?

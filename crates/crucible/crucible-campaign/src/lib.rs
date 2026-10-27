@@ -48,7 +48,7 @@ pub use archive::{
     ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
     CampaignArchiveCheckpointSelection, CampaignArchiveInspection, CampaignArchiveInventoryPage,
     CampaignArchiveManifest, CampaignArchivePlan, CampaignArchivePolicy, CampaignArchiveReport,
-    CampaignArchiveTransferReport, MAX_ARCHIVE_INVENTORY_ENTRIES,
+    CampaignArchiveTransferReport, CampaignArchivedFinding, MAX_ARCHIVE_INVENTORY_ENTRIES,
     MAX_ARCHIVE_INVENTORY_PAGE_ENTRIES,
 };
 pub use artifact::{ConfigurationArtifact, ScenarioArtifact};

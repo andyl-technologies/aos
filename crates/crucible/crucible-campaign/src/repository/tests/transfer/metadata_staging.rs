@@ -2,11 +2,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_store::content_envelope::{ContentChild, ContentEnvelope};
 use crucible_store::content_store::{
-    BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, ObjectKind,
+    BackendCapabilities, BlobHandle, ByteRange, CheckedPublicationMetadata, ContentId,
+    DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, ObjectKind, PutBatchReceipt,
+    PutReceipt, StoreError, StorePhysicalQuotaGuard,
 };
+use crucible_store::owned_decode::DecodeBudget;
 
 use super::*;
 
@@ -27,6 +31,70 @@ fn direct_staging_file_at_least(directory: &Path, minimum: u64) -> bool {
 
 fn object_parent(root: &Path, id: ContentId) -> PathBuf {
     root.join("objects").join(format!("{:02x}", id.digest()[0]))
+}
+
+struct CheckedOnlyMetadataBackend {
+    child: Arc<dyn ImmutableBlobBackend>,
+    ordinary_reads: AtomicU64,
+}
+
+impl ImmutableBlobBackend for CheckedOnlyMetadataBackend {
+    fn name(&self) -> &str {
+        self.child.name()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn metadata_resources(&self) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        self.child.metadata_resources()
+    }
+
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
+    fn contains(&self, _id: ContentId) -> Result<bool, StoreError> {
+        self.ordinary_reads.fetch_add(1, Ordering::SeqCst);
+        Err(StoreError::Unsupported {
+            capability: "metadata-staging-test-ordinary-contains",
+        })
+    }
+
+    fn read(&self, _id: ContentId, _range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.ordinary_reads.fetch_add(1, Ordering::SeqCst);
+        Err(StoreError::Unsupported {
+            capability: "metadata-staging-test-ordinary-read",
+        })
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.child.read_with_boundary(original, id, range, boundary)
+    }
+
+    fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.child.put_if_absent(id, source)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        self.child
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
 }
 
 #[test]
@@ -63,8 +131,8 @@ fn large_archive_metadata_staging_cancels_privately_and_retries_idempotently() {
     }
     let source = CampaignRepository::new(
         blobs.clone(),
-        refs,
-        crate::CampaignRamAdmission::Available(original),
+        refs.clone(),
+        crate::CampaignRamAdmission::Available(original.clone()),
     );
     let head = source
         .create(
@@ -113,11 +181,21 @@ fn large_archive_metadata_staging_cancels_privately_and_retries_idempotently() {
     assert!(page_bytes.len() > 64 * 1024);
     let page_parent = object_parent(&object_root, page_id);
 
-    let _gc = source
+    let checked_blobs = Arc::new(CheckedOnlyMetadataBackend {
+        child: blobs.clone(),
+        ordinary_reads: AtomicU64::new(0),
+    });
+    let checked_source = CampaignRepository::new(
+        checked_blobs.clone(),
+        refs,
+        crate::CampaignRamAdmission::Available(original),
+    );
+
+    let _gc = checked_source
         .acquire_gc_exclusion_guard()
         .expect("source publication guard");
     let mut observed_private_page = false;
-    let canceled = source.stage_campaign_archive_metadata_with_boundary(&plan, &mut || {
+    let canceled = checked_source.stage_campaign_archive_metadata_with_boundary(&plan, &mut || {
         if direct_staging_file_at_least(&page_parent, 64 * 1024) {
             observed_private_page = true;
             Err(crucible_store::ram::RamStoreError::Canceled)
@@ -154,12 +232,13 @@ fn large_archive_metadata_staging_cancels_privately_and_retries_idempotently() {
     ));
     assert!(!direct_staging_file_at_least(&page_parent, 0));
 
-    source
+    checked_source
         .stage_campaign_archive_metadata_with_boundary(&plan, &mut || Ok(()))
         .expect("successful checked metadata staging");
-    source
+    checked_source
         .stage_campaign_archive_metadata_with_boundary(&plan, &mut || Ok(()))
         .expect("idempotent checked metadata staging");
+    assert_eq!(checked_blobs.ordinary_reads.load(Ordering::SeqCst), 0);
     assert_eq!(
         blobs
             .read(page_id, None)

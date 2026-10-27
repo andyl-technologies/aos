@@ -184,6 +184,7 @@ impl StopCondition {
         virtual_time_picoseconds: Option<u64>,
         execution_quanta: Option<u64>,
     ) -> Result<Self, CampaignCodecError> {
+        crucible_store::owned_decode::charge_array::<StopCondition>(1)?;
         let bounded = Self::Bounded {
             primary: Box::new(primary),
             virtual_time_picoseconds,

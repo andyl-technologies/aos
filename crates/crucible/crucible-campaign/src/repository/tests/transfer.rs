@@ -13,7 +13,7 @@ mod no_ram;
 mod metadata_staging;
 
 #[path = "transfer/inspection_io.rs"]
-mod inspection_io;
+pub(super) mod inspection_io;
 
 use crucible_store::content_envelope::ContentEnvelope;
 use crucible_store::content_store::{

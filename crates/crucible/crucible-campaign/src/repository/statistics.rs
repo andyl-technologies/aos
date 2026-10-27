@@ -19,6 +19,8 @@ use crate::{
     verify_sequential_monte_carlo_evidence,
 };
 
+mod checked;
+
 impl CampaignRepository {
     pub(super) fn statistical_request_basis(
         &self,

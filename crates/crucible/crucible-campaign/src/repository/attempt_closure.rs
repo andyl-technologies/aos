@@ -5,6 +5,7 @@
 //! admission ordinal without manufacturing modeled observation evidence.
 
 use super::*;
+use crate::repository::closure::read::ClosureSemanticRead;
 
 /// Stable response for a non-modeled terminal attempt disposition.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +22,124 @@ pub struct NonModeledAttemptResult {
     pub disposition: NonModeledAttemptDisposition,
     /// Whether an existing transition was returned.
     pub replayed: bool,
+}
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn validate_attempt_closed_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        transition_content: ContentId,
+        attempt: AttemptId,
+        ordinal: AdmissionOrdinal,
+        disposition: NonModeledAttemptDisposition,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "attempt-closure-transition-changed-campaign-basis",
+            ));
+        }
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+        {
+            return Err(integrity(
+                "attempt-closure-transition-changed-unrelated-root",
+            ));
+        }
+        if self.validate_non_modeled_attempt_basis(parent, attempt)? != ordinal {
+            return Err(integrity("attempt-closure-transition-ordinal-mismatch"));
+        }
+        if self
+            .merkle_get(
+                prior.observations,
+                map_key_content("observations.attempt", attempt.content_id()),
+            )?
+            .is_some()
+        {
+            return Err(integrity("attempt-closure-transition-already-observed"));
+        }
+        self.validate_strict_completion_order(parent, ordinal)?;
+        let mut upserts = BTreeMap::new();
+        self.insert_map(
+            &mut upserts,
+            non_modeled_attempt_key(attempt),
+            transition_content,
+        )?;
+        self.insert_map(
+            &mut upserts,
+            non_modeled_ordinal_key(ordinal),
+            transition_content,
+        )?;
+        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+        if policy.mode() == CampaignMode::Strict {
+            self.insert_map(&mut upserts, observation_sequence_key(), transition_content)?;
+        }
+        for key in upserts.keys() {
+            if *key != observation_sequence_key()
+                && self.merkle_get(prior.accounting, *key)?.is_some()
+            {
+                return Err(integrity("attempt-closure-transition-reused-index"));
+            }
+        }
+        if !self.merkle_equals_after_upserts(prior.accounting, next.accounting, &upserts)? {
+            return Err(integrity(
+                "attempt-closure-transition-accounting-root-mismatch",
+            ));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity(
+                "attempt-closure-transition-coordination-root-mismatch",
+            ));
+        }
+        let fact = self.read_fact(transition_content)?;
+        if fact
+            != (CampaignFact::AttemptClosed {
+                attempt,
+                ordinal,
+                disposition,
+            })
+        {
+            return Err(integrity("attempt-closure-transition-fact-mismatch"));
+        }
+        Ok(())
+    }
+
+    fn validate_non_modeled_attempt_basis(
+        &mut self,
+        snapshot: &LoadedSnapshot,
+        attempt: AttemptId,
+    ) -> Result<AdmissionOrdinal, CampaignRepositoryError> {
+        let accounting = snapshot.snapshot.roots().accounting;
+        if self.merkle_get(
+            accounting,
+            map_key_content("accounting.attempt", attempt.content_id()),
+        )? != Some(attempt.content_id())
+        {
+            return Err(integrity("attempt-closure-attempt-is-not-admitted"));
+        }
+        let basis = self
+            .merkle_get(
+                accounting,
+                map_key_content("accounting.attempt-execution-basis", attempt.content_id()),
+            )?
+            .ok_or_else(|| integrity("attempt-closure-execution-basis-is-missing"))?;
+        let admission = self.read_attempt_admission(basis)?;
+        match admission.role() {
+            AttemptAdmissionRole::ExecutionBasis {
+                admission_ordinal, ..
+            } if admission.attempt() == attempt => Ok(admission_ordinal),
+            _ => Err(integrity("attempt-closure-execution-basis-mismatch")),
+        }
+    }
 }
 
 impl CampaignRepository {
@@ -151,88 +270,6 @@ impl CampaignRepository {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
         }
-    }
-
-    pub(super) fn validate_attempt_closed_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        transition_content: ContentId,
-        attempt: AttemptId,
-        ordinal: AdmissionOrdinal,
-        disposition: NonModeledAttemptDisposition,
-    ) -> Result<(), CampaignRepositoryError> {
-        if child.snapshot.lineage() != parent.snapshot.lineage()
-            || child.snapshot.active_policy() != parent.snapshot.active_policy()
-        {
-            return Err(integrity(
-                "attempt-closure-transition-changed-campaign-basis",
-            ));
-        }
-        let prior = parent.snapshot.roots();
-        let next = child.snapshot.roots();
-        if prior.graph != next.graph
-            || prior.exploration != next.exploration
-            || prior.observations != next.observations
-            || prior.corpus != next.corpus
-            || prior.coverage != next.coverage
-            || prior.findings != next.findings
-            || prior.pins != next.pins
-        {
-            return Err(integrity(
-                "attempt-closure-transition-changed-unrelated-root",
-            ));
-        }
-        if self.validate_non_modeled_attempt_basis(parent, attempt)? != ordinal {
-            return Err(integrity("attempt-closure-transition-ordinal-mismatch"));
-        }
-        if self
-            .merkle
-            .get(
-                prior.observations,
-                map_key_content("observations.attempt", attempt.content_id()),
-            )?
-            .is_some()
-        {
-            return Err(integrity("attempt-closure-transition-already-observed"));
-        }
-        self.validate_strict_completion_order(parent, ordinal)?;
-        let mut upserts = non_modeled_attempt_upserts(attempt, ordinal, transition_content);
-        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
-        if policy.mode() == CampaignMode::Strict {
-            upserts.insert(observation_sequence_key(), transition_content);
-        }
-        for key in upserts.keys() {
-            if *key != observation_sequence_key()
-                && self.merkle.get(prior.accounting, *key)?.is_some()
-            {
-                return Err(integrity("attempt-closure-transition-reused-index"));
-            }
-        }
-        if !self
-            .merkle
-            .equals_after_upserts(prior.accounting, next.accounting, &upserts)?
-        {
-            return Err(integrity(
-                "attempt-closure-transition-accounting-root-mismatch",
-            ));
-        }
-        if !self.coordination_matches_parent_result(parent, next.coordination)? {
-            return Err(integrity(
-                "attempt-closure-transition-coordination-root-mismatch",
-            ));
-        }
-        let fact = self.read_fact(transition_content)?;
-        if fact
-            != (CampaignFact::AttemptClosed {
-                attempt,
-                ordinal,
-                disposition,
-            })
-        {
-            return Err(integrity("attempt-closure-transition-fact-mismatch"));
-        }
-        Ok(())
     }
 
     fn validate_non_modeled_attempt_basis(

@@ -10,6 +10,8 @@
 use super::*;
 use crate::{PinRetention, ScenarioArtifactId};
 
+use super::closure::read::ClosureSemanticRead;
+
 const RETENTION_SCAN_PAGE_ITEMS: usize = 10_000;
 
 /// One authenticated live semantic pin and its thin replay roots.
@@ -260,6 +262,140 @@ impl CampaignRepository {
 
     fn read_retained_configuration(
         &self,
+        id: ContentId,
+        lineage: &CampaignLineage,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        if envelope.record_kind() != crate::CampaignRecordKind::ConfigurationArtifact {
+            return Err(integrity("pin-retention-configuration-envelope-shape"));
+        }
+        let artifact = ConfigurationArtifact::from_canonical_bytes(envelope.body())?;
+        if artifact.id()?.content_id() != id {
+            return Err(integrity("pin-retention-configuration-envelope-shape"));
+        }
+
+        if artifact.scenario() != lineage.scenario()
+            || artifact.scenario_artifact() != lineage.scenario_content()
+        {
+            return Err(integrity("pin-retention-scenario-artifact-mismatch"));
+        }
+        Ok(artifact)
+    }
+}
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn visit_pin_retention_roots_at(
+        &mut self,
+        snapshot: CampaignSnapshotId,
+        visitor: &mut dyn FnMut(CampaignPinRetentionRecord),
+    ) -> Result<CampaignPinRetentionSummary, CampaignRepositoryError> {
+        self.validate_snapshot_ancestry(
+            snapshot.content_id(),
+            &mut ChoiceValidationCache::default(),
+            MAX_SNAPSHOT_ANCESTRY,
+        )?;
+        let loaded = self.read_snapshot(snapshot.content_id())?;
+        let roots = loaded.snapshot.roots();
+        let lineage = self.read_retention_lineage(loaded.snapshot.lineage().content_id())?;
+        let mut after = None;
+        let mut entries = 0_u64;
+        let mut thin_pins = 0_u64;
+        let mut exact_pins = 0_u64;
+        let mut tombstones = 0_u64;
+
+        loop {
+            let page = self.merkle_scan(roots.pins, after, RETENTION_SCAN_PAGE_ITEMS)?;
+            for (key, fact_content) in page.entries() {
+                entries = checked_count(entries, "pin-retention-entry-count-overflow")?;
+                let fact_id = CampaignFactId::from_content_id(*fact_content)?;
+                let request = match self.read_fact(*fact_content)? {
+                    CampaignFact::PinCommandAccepted(request) => request,
+                    CampaignFact::SavepointCaptureRequested(capture) => PinRequest {
+                        command: capture.command,
+                        expected_snapshot: capture.expected_snapshot,
+                        change: capture.pin_change()?,
+                    },
+                    _ => return Err(integrity("pin-retention-value-is-not-retention-command")),
+                };
+                if *key != pin_configuration_key(request.change.configuration()) {
+                    return Err(integrity("pin-retention-key-mismatch"));
+                }
+
+                let Some(retention) = request.change.retention() else {
+                    tombstones =
+                        checked_count(tombstones, "pin-retention-tombstone-count-overflow")?;
+                    continue;
+                };
+                let configuration = request.change.configuration();
+                let configuration_content = self
+                    .merkle_get(
+                        roots.graph,
+                        map_key_hash("graph.configuration", configuration.as_hash()),
+                    )?
+                    .ok_or_else(|| integrity("pin-retention-configuration-not-in-graph"))?;
+                let artifact = self.read_retained_configuration(configuration_content, &lineage)?;
+                if artifact.configuration() != configuration {
+                    return Err(integrity("pin-retention-configuration-index-mismatch"));
+                }
+                let configuration_artifact =
+                    ConfigurationArtifactId::from_content_id(configuration_content)?;
+                let record = CampaignPinRetentionRecord {
+                    fact: fact_id,
+                    request,
+                    retention,
+                    configuration_artifact,
+                    scenario_artifact: artifact.scenario_artifact(),
+                };
+                match retention {
+                    PinRetention::Thin => {
+                        thin_pins = checked_count(thin_pins, "pin-retention-thin-count-overflow")?;
+                    }
+                    PinRetention::Exact => {
+                        exact_pins =
+                            checked_count(exact_pins, "pin-retention-exact-count-overflow")?;
+                    }
+                }
+                visitor(record);
+            }
+            let Some(next) = page.next_after() else {
+                break;
+            };
+            after = Some(next);
+        }
+
+        Ok(CampaignPinRetentionSummary {
+            snapshot,
+            pins_root: roots.pins,
+            entries,
+            thin_pins,
+            exact_pins,
+            tombstones,
+        })
+    }
+
+    fn read_retention_lineage(
+        &mut self,
+        id: ContentId,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        if envelope.record_kind() != crate::CampaignRecordKind::Lineage {
+            return Err(integrity("pin-retention-lineage-envelope-shape"));
+        }
+        let lineage = CampaignLineage::from_canonical_bytes(envelope.body())?;
+        if ObjectEnvelope::for_lineage(&lineage)? != envelope || lineage.id()?.content_id() != id {
+            return Err(integrity("pin-retention-lineage-envelope-shape"));
+        }
+        let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
+        if scenario.scenario() != lineage.scenario()
+            || scenario.payload_schema() != lineage.scenario_schema()
+        {
+            return Err(integrity("pin-retention-lineage-scenario-mismatch"));
+        }
+        Ok(lineage)
+    }
+
+    fn read_retained_configuration(
+        &mut self,
         id: ContentId,
         lineage: &CampaignLineage,
     ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {

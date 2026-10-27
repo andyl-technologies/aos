@@ -5,6 +5,7 @@
 //! spend or grant budget a second time. Version-3 snapshots authenticate an
 //! indexed ledger against every causal transition.
 
+use super::closure::read::ClosureSemanticRead;
 use super::*;
 use crate::{CampaignBudgetLedger, CampaignBudgetLedgerId, CampaignRoots};
 
@@ -14,6 +15,115 @@ thread_local! {
 }
 
 pub(super) const MAX_PLANNER_REQUEST_BUDGET_PROPOSALS: usize = 65_536;
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn parent_budget_ledger(
+        &mut self,
+        parent: &LoadedSnapshot,
+    ) -> Result<CampaignBudgetLedger, CampaignRepositoryError> {
+        self.read_budget_ledger(parent.snapshot.budget_ledger())
+    }
+
+    pub(in crate::repository) fn read_budget_ledger(
+        &mut self,
+        id: CampaignBudgetLedgerId,
+    ) -> Result<CampaignBudgetLedger, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id.content_id())?;
+        if envelope.record_kind() != crate::CampaignRecordKind::BudgetLedger {
+            return Err(integrity("campaign-budget-ledger-kind-mismatch"));
+        }
+        Ok(CampaignBudgetLedger::from_canonical_bytes(envelope.body())?)
+    }
+
+    pub(in crate::repository) fn validate_genesis_budget(
+        &mut self,
+        snapshot: &CampaignSnapshot,
+    ) -> Result<(), CampaignRepositoryError> {
+        let actual = self.read_budget_ledger(snapshot.budget_ledger())?;
+        let expected = CampaignBudgetLedger::empty(MerkleMap::empty_content_id()?)?;
+        if actual != expected {
+            return Err(integrity("campaign-genesis-budget-is-not-empty"));
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_budget_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        fact: &CampaignFact,
+    ) -> Result<(), CampaignRepositoryError> {
+        #[cfg(test)]
+        BUDGET_STAGE_COUNTS.with(|counts| {
+            let (derivations, cold_validations) = counts.get();
+            counts.set((derivations, cold_validations + 1));
+        });
+
+        let actual = self.read_budget_ledger(child.snapshot.budget_ledger())?;
+        let prior = self.parent_budget_ledger(parent)?;
+        let mut expected = prior;
+        let proposals = match fact {
+            CampaignFact::ControlRequested(request) => {
+                if let CampaignControlAction::GrantBudget(grant) = request.action {
+                    expected = expected.with_grant(grant)?;
+                }
+                0
+            }
+            CampaignFact::ProposalIssued(_) => 1,
+            CampaignFact::PlannerAdvanced(step) => {
+                match self
+                    .read_planner_step_with_request(step.content_id())?
+                    .0
+                    .disposition()
+                {
+                    PlannerDisposition::Issue {
+                        issued_proposals, ..
+                    } => u64::try_from(issued_proposals.len())
+                        .map_err(|_| integrity("campaign-budget-proposal-count-overflow"))?,
+                    PlannerDisposition::ContinueScan { .. } | PlannerDisposition::NoWork => 0,
+                }
+            }
+            CampaignFact::CampaignDerived(_)
+            | CampaignFact::ChoiceOpportunityDiscovered { .. }
+            | CampaignFact::BranchRequestAccepted { .. }
+            | CampaignFact::AttemptClosed { .. }
+            | CampaignFact::ObservationCredited(_)
+            | CampaignFact::FindingPublished(_)
+            | CampaignFact::ObjectiveEvaluationPublished(_)
+            | CampaignFact::PolicyActivated(_)
+            | CampaignFact::BudgetGranted(_)
+            | CampaignFact::PinChanged(_)
+            | CampaignFact::PinCommandAccepted(_)
+            | CampaignFact::DiscoveryRequested(_)
+            | CampaignFact::SavepointCaptureRequested(_)
+            | CampaignFact::SavepointCaptureResolved(_)
+            | CampaignFact::SavepointContinuationSelected(_)
+            | CampaignFact::AttemptAdmitted(_) => 0,
+        };
+        let prior_attempts = self.accounted_attempts(parent.snapshot.roots().accounting)?;
+        let attempts = self
+            .accounted_attempts(child.snapshot.roots().accounting)?
+            .checked_sub(prior_attempts)
+            .ok_or_else(|| integrity("campaign-budget-admission-sequence-regressed"))?;
+        expected = expected.with_spending(proposals, attempts)?;
+        let request_spending =
+            self.request_spending_root_after(prior, child.snapshot.roots().accounting)?;
+        let request_admissions =
+            self.request_admissions_root_after(prior, child.snapshot.roots().accounting, fact)?;
+        expected = CampaignBudgetLedger::from_accounted_totals(
+            expected.granted_proposals(),
+            expected.granted_attempts(),
+            expected.spent_proposals(),
+            expected.spent_attempts(),
+            request_spending,
+            request_admissions,
+        )?;
+        if actual != expected {
+            return Err(integrity("campaign-budget-successor-mismatch"));
+        }
+        Ok(())
+    }
+}
 
 struct ComputedBudgetSuccessor {
     ledger: CampaignBudgetLedger,
@@ -235,6 +345,7 @@ impl CampaignBudgetProjection {
 
 impl CampaignRepository {
     /// Reads authenticated request-local spending from the current ledger index.
+    #[cfg(test)]
     pub(super) fn remaining_request_attempts_before(
         &self,
         snapshot: &LoadedSnapshot,
@@ -473,37 +584,5 @@ impl CampaignRepository {
             return Err(integrity("local-successor-budget-witness-mismatch"));
         }
         Ok((&witness.fact, witness.closure_growth_upper))
-    }
-
-    pub(super) fn validate_budget_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        fact: &CampaignFact,
-    ) -> Result<(), CampaignRepositoryError> {
-        #[cfg(test)]
-        BUDGET_STAGE_COUNTS.with(|counts| {
-            let (derivations, cold_validations) = counts.get();
-            counts.set((derivations, cold_validations + 1));
-        });
-
-        let actual = self.read_budget_ledger(child.snapshot.budget_ledger())?;
-        let expected = self.successor_budget_ledger(parent, child.snapshot.roots(), fact, false)?;
-        if actual != expected.ledger {
-            return Err(integrity("campaign-budget-successor-mismatch"));
-        }
-        Ok(())
-    }
-
-    pub(super) fn validate_genesis_budget(
-        &self,
-        snapshot: &CampaignSnapshot,
-    ) -> Result<(), CampaignRepositoryError> {
-        let actual = self.read_budget_ledger(snapshot.budget_ledger())?;
-        let expected = CampaignBudgetLedger::empty(MerkleMap::empty_content_id()?)?;
-        if actual != expected {
-            return Err(integrity("campaign-genesis-budget-is-not-empty"));
-        }
-        Ok(())
     }
 }

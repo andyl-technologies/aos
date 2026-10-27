@@ -1,6 +1,403 @@
 //! Low-level immutable campaign record storage and decoding.
 
 use super::*;
+use crate::repository::closure::read::ClosureSemanticRead;
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn read_fact(
+        &mut self,
+        id: ContentId,
+    ) -> Result<CampaignFact, CampaignRepositoryError> {
+        self.read_fact_with_planner_step(id).map(|(fact, _)| fact)
+    }
+
+    pub(in crate::repository) fn read_fact_with_planner_step(
+        &mut self,
+        id: ContentId,
+    ) -> Result<(CampaignFact, Option<(PlannerStep, PlannerRequest)>), CampaignRepositoryError>
+    {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Fact)?;
+        let fact = CampaignFact::from_canonical_bytes(envelope.body())?;
+        let planner_step = if let CampaignFact::PlannerAdvanced(step) = &fact {
+            Some(self.read_planner_step_with_request(step.content_id())?)
+        } else {
+            self.validate_fact_references(&envelope)?;
+            None
+        };
+        Ok((fact, planner_step))
+    }
+
+    pub(in crate::repository) fn read_snapshot(
+        &mut self,
+        id: ContentId,
+    ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
+        if id.kind() != ObjectKind::CampaignSnapshot {
+            return Err(integrity("snapshot-content-kind"));
+        }
+        let envelope = self.read_envelope(id)?;
+        if envelope.record_kind() != crate::CampaignRecordKind::Snapshot {
+            return Err(integrity("snapshot-record-kind"));
+        }
+        let snapshot = CampaignSnapshot::from_canonical_bytes(envelope.body())?;
+        if ObjectEnvelope::for_snapshot(&snapshot)? != envelope || snapshot.id()?.content_id() != id
+        {
+            return Err(integrity("snapshot-child-table-mismatch"));
+        }
+        Ok(LoadedSnapshot { envelope, snapshot })
+    }
+
+    pub(in crate::repository) fn read_scenario_artifact(
+        &mut self,
+        id: ContentId,
+    ) -> Result<ScenarioArtifact, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        self.repository()
+            .decode_scenario_artifact_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn read_configuration_artifact(
+        &mut self,
+        id: ContentId,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        let artifact = self
+            .repository()
+            .decode_configuration_artifact_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        self.repository()
+            .validate_configuration_artifact_scenario(&artifact, &scenario)?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn read_reproduction_artifact(
+        &mut self,
+        id: ContentId,
+    ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::ReproductionArtifact)?;
+        let artifact = self
+            .repository()
+            .decode_reproduction_artifact_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        let configuration =
+            self.read_configuration_artifact(artifact.configuration_artifact().content_id())?;
+        self.repository().validate_reproduction_artifact_basis(
+            &artifact,
+            &scenario,
+            &configuration,
+        )?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn read_lineage(
+        &mut self,
+        id: ContentId,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        let lineage = self.repository().decode_lineage_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
+        let genesis = self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        self.repository()
+            .validate_lineage_artifacts(&lineage, &scenario, &genesis)?;
+        Ok(lineage)
+    }
+
+    pub(in crate::repository) fn read_policy(
+        &mut self,
+        id: ContentId,
+    ) -> Result<CampaignPolicy, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        let policy = self.repository().decode_policy_envelope(id, &envelope)?;
+        for (role, child) in policy.content_children() {
+            let kind = CampaignRepository::policy_child_kind(&role)?;
+            self.require_record_kind(child, kind)?;
+        }
+        Ok(policy)
+    }
+
+    pub(in crate::repository) fn read_generator(
+        &mut self,
+        id: ContentId,
+    ) -> Result<CandidateGeneratorSpec, CampaignRepositoryError> {
+        let envelope = self.read_envelope(id)?;
+        let generator = self.repository().decode_generator_envelope(id, &envelope)?;
+        for (_, child) in generator.content_children() {
+            self.require_record_kind(child, crate::CampaignRecordKind::CandidateGeneratorSpec)?;
+        }
+        Ok(generator)
+    }
+
+    pub(in crate::repository) fn validate_finding_indexes_and_exact_pins(
+        &mut self,
+        finding: &Finding,
+    ) -> Result<(), CampaignRepositoryError> {
+        let occurrences = self.merkle_inspect_shallow(finding.occurrences())?;
+        if occurrences.entry_count() != u64::from(finding.occurrence_count())
+            || self.merkle_get(
+                finding.occurrences(),
+                finding_occurrence_key(finding.observation()),
+            )? != Some(finding.observation().content_id())
+            || self.merkle_get(
+                finding.occurrences(),
+                finding_occurrence_key(finding.latest_occurrence()),
+            )? != Some(finding.latest_occurrence().content_id())
+        {
+            return Err(integrity("finding-occurrence-root-mismatch"));
+        }
+
+        let first = finding.candidate_bundle();
+        let root = finding.candidate_occurrences();
+        let latest = finding.latest_candidate_bundle();
+        let candidate_occurrences = self.merkle_inspect_shallow(root)?;
+        if candidate_occurrences.entry_count() != u64::from(finding.candidate_occurrence_count())
+            || self.merkle_get(root, finding_candidate_occurrence_key(first))?
+                != Some(first.content_id())
+            || self.merkle_get(root, finding_candidate_occurrence_key(latest))?
+                != Some(latest.content_id())
+        {
+            return Err(integrity("finding-candidate-occurrence-root-mismatch"));
+        }
+        for pin in finding.exact_pins() {
+            self.authenticate_opaque(pin.content_id())?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_finding_references_cached(
+        &mut self,
+        finding: &Finding,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let observation = self.decode_observation(finding.observation().content_id())?;
+        self.validate_observation_references_cached(&observation, choice_cache)?;
+        let observation_child =
+            self.read_configuration_artifact(observation.child_content().content_id())?;
+        self.validate_finding_indexes_and_exact_pins(finding)?;
+
+        let first_bundle = self.decode_finding_candidate_bundle(finding.candidate_bundle())?;
+        if first_bundle.signature() != finding.signature()
+            || !first_bundle
+                .exact_pins()
+                .all()
+                .is_subset(finding.exact_pins())
+        {
+            return Err(integrity("finding-first-candidate-bundle-mismatch"));
+        }
+        let latest_bundle =
+            self.decode_finding_candidate_bundle(finding.latest_candidate_bundle())?;
+        if latest_bundle.signature() != finding.signature()
+            || !latest_bundle
+                .exact_pins()
+                .all()
+                .is_subset(finding.exact_pins())
+        {
+            return Err(integrity("finding-latest-candidate-bundle-mismatch"));
+        }
+        let reproduction = self.read_reproduction_artifact(finding.reproduction().content_id())?;
+        self.read_snapshot(finding.first_seen_snapshot().content_id())?;
+        if reproduction.finding_fingerprint() != finding.signature().fingerprint()
+            || reproduction.scenario() != observation_child.scenario()
+            || reproduction.configuration_artifact() != observation.child_content()
+        {
+            return Err(integrity("finding-reproduction-observation-basis-mismatch"));
+        }
+        if finding.latest_occurrence() != finding.observation() {
+            let latest = self.decode_observation(finding.latest_occurrence().content_id())?;
+            self.validate_observation_references_cached(&latest, choice_cache)?;
+            let latest_child =
+                self.read_configuration_artifact(latest.child_content().content_id())?;
+            if latest_child.scenario() != observation_child.scenario() {
+                return Err(integrity("finding-occurrence-scenario-mismatch"));
+            }
+        }
+        if let Some(minimized) = finding.minimized() {
+            let minimized = self.read_reproduction_artifact(minimized.content_id())?;
+            if minimized.finding_fingerprint() != finding.signature().fingerprint()
+                || minimized.scenario() != observation_child.scenario()
+            {
+                return Err(integrity("finding-minimized-reproduction-basis-mismatch"));
+            }
+            let minimization = minimized
+                .minimization()
+                .ok_or_else(|| integrity("finding-minimized-reproduction-has-no-trace"))?;
+            if minimization.original() != finding.reproduction() {
+                return Err(integrity("finding-minimization-original-mismatch"));
+            }
+        }
+        for pin in finding.exact_pins() {
+            self.authenticate_opaque(pin.content_id())?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn read_finding_cached(
+        &mut self,
+        id: ContentId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Finding)?;
+        let finding = self.repository().decode_finding_envelope(id, &envelope)?;
+        self.validate_finding_references_cached(&finding, choice_cache)?;
+        Ok(finding)
+    }
+
+    pub(in crate::repository) fn decode_finding_candidate_bundle(
+        &mut self,
+        id: FindingCandidateBundleId,
+    ) -> Result<FindingCandidateBundle, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(
+            id.content_id(),
+            crate::CampaignRecordKind::FindingCandidateBundle,
+        )?;
+        let bundle = FindingCandidateBundle::from_canonical_bytes(envelope.body())?;
+        if bundle.id()? != id {
+            return Err(integrity("finding-candidate-bundle-envelope-shape"));
+        }
+        Ok(bundle)
+    }
+
+    pub(in crate::repository) fn validate_fact_references(
+        &mut self,
+        envelope: &ObjectEnvelope,
+    ) -> Result<(), CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::Fact {
+            return Err(integrity("fact-envelope-shape"));
+        }
+        let fact = CampaignFact::from_canonical_bytes(envelope.body())?;
+        match &fact {
+            CampaignFact::CampaignDerived(derivation) => {
+                self.require_record_kind(
+                    derivation.source().content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    derivation.active_policy().content_id(),
+                    crate::CampaignRecordKind::Policy,
+                )?;
+            }
+            CampaignFact::ChoiceOpportunityDiscovered {
+                parent,
+                opportunity,
+                ..
+            } => {
+                self.require_record_kind(
+                    parent.content_id(),
+                    crate::CampaignRecordKind::ConfigurationArtifact,
+                )?;
+                self.require_record_kind(
+                    opportunity.content_id(),
+                    crate::CampaignRecordKind::ChoiceOpportunity,
+                )?;
+            }
+            CampaignFact::PolicyActivated(activation) => {
+                self.require_record_kind(
+                    activation.prior().content_id(),
+                    crate::CampaignRecordKind::Policy,
+                )?;
+                self.require_record_kind(
+                    activation.next().content_id(),
+                    crate::CampaignRecordKind::Policy,
+                )?;
+            }
+            CampaignFact::ControlRequested(request) => {
+                self.require_record_kind(
+                    request.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                if let CampaignControlAction::ActivatePolicy(policy) = request.action {
+                    self.require_record_kind(
+                        policy.content_id(),
+                        crate::CampaignRecordKind::Policy,
+                    )?;
+                }
+            }
+            CampaignFact::PinCommandAccepted(request) => {
+                self.require_record_kind(
+                    request.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+            }
+            CampaignFact::DiscoveryRequested(request) => {
+                self.require_record_kind(
+                    request.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    request.configuration.content_id(),
+                    crate::CampaignRecordKind::ConfigurationArtifact,
+                )?;
+            }
+            CampaignFact::SavepointCaptureRequested(request) => {
+                self.require_record_kind(
+                    request.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    request.attempt.content_id(),
+                    crate::CampaignRecordKind::Attempt,
+                )?;
+                self.require_record_kind(
+                    request.configuration.content_id(),
+                    crate::CampaignRecordKind::ConfigurationArtifact,
+                )?;
+            }
+            CampaignFact::SavepointCaptureResolved(resolution) => {
+                self.require_record_kind(
+                    resolution.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    resolution.request.content_id(),
+                    crate::CampaignRecordKind::Fact,
+                )?;
+            }
+            CampaignFact::SavepointContinuationSelected(selection) => {
+                self.require_record_kind(
+                    selection.expected_snapshot.content_id(),
+                    crate::CampaignRecordKind::Snapshot,
+                )?;
+                self.require_record_kind(
+                    selection.request.content_id(),
+                    crate::CampaignRecordKind::Fact,
+                )?;
+                self.require_record_kind(
+                    selection.ready.content_id(),
+                    crate::CampaignRecordKind::Fact,
+                )?;
+                self.require_record_kind(
+                    selection.continuation.content_id(),
+                    crate::CampaignRecordKind::Attempt,
+                )?;
+            }
+            CampaignFact::BranchRequestAccepted { request, .. } => {
+                self.read_branch_request(*request)?;
+            }
+            CampaignFact::PlannerAdvanced(id) => {
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::PlannerStep)?;
+            }
+            CampaignFact::ProposalIssued(id) => {
+                self.read_proposal(id.content_id())?;
+            }
+            CampaignFact::AttemptAdmitted(admission) => {
+                self.read_attempt_admission(admission.content_id())?;
+            }
+            CampaignFact::AttemptClosed { attempt, .. } => {
+                self.require_record_kind(attempt.content_id(), crate::CampaignRecordKind::Attempt)?;
+            }
+            CampaignFact::ObservationCredited(id) => {
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Observation)?;
+            }
+            CampaignFact::FindingPublished(id) => {
+                self.require_record_kind(id.content_id(), crate::CampaignRecordKind::Finding)?;
+            }
+            CampaignFact::ObjectiveEvaluationPublished(id) => {
+                self.read_objective_evaluation(id.content_id())?;
+            }
+            CampaignFact::BudgetGranted(_) | CampaignFact::PinChanged(_) => {}
+        }
+        Ok(())
+    }
+}
 
 impl CampaignRepository {
     pub(in crate::repository) fn put_lineage(
@@ -424,15 +821,34 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<CampaignLineage, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
+        let lineage = self.decode_lineage_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
+        let genesis = self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        self.validate_lineage_artifacts(&lineage, &scenario, &genesis)?;
+        Ok(lineage)
+    }
+
+    pub(in crate::repository) fn decode_lineage_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<CampaignLineage, CampaignRepositoryError> {
         if envelope.record_kind() != crate::CampaignRecordKind::Lineage {
             return Err(integrity("lineage-envelope-shape"));
         }
         let lineage = CampaignLineage::from_canonical_bytes(envelope.body())?;
-        if ObjectEnvelope::for_lineage(&lineage)? != envelope || lineage.id()?.content_id() != id {
+        if ObjectEnvelope::for_lineage(&lineage)? != *envelope || lineage.id()?.content_id() != id {
             return Err(integrity("lineage-envelope-shape"));
         }
-        let scenario = self.read_scenario_artifact(lineage.scenario_content().content_id())?;
-        let genesis = self.read_configuration_artifact(lineage.genesis_content().content_id())?;
+        Ok(lineage)
+    }
+
+    pub(in crate::repository) fn validate_lineage_artifacts(
+        &self,
+        lineage: &CampaignLineage,
+        scenario: &ScenarioArtifact,
+        genesis: &ConfigurationArtifact,
+    ) -> Result<(), CampaignRepositoryError> {
         if scenario.scenario() != lineage.scenario()
             || scenario.payload_schema() != lineage.scenario_schema()
             || genesis.scenario() != lineage.scenario()
@@ -441,7 +857,7 @@ impl CampaignRepository {
         {
             return Err(integrity("lineage-execution-model-artifact-mismatch"));
         }
-        Ok(lineage)
+        Ok(())
     }
 
     pub(in crate::repository) fn read_scenario_artifact(
@@ -449,6 +865,14 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<ScenarioArtifact, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
+        self.decode_scenario_artifact_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn decode_scenario_artifact_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<ScenarioArtifact, CampaignRepositoryError> {
         if envelope.record_kind() != crate::CampaignRecordKind::ScenarioArtifact {
             return Err(integrity("scenario-artifact-envelope-shape"));
         }
@@ -464,6 +888,17 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
+        let artifact = self.decode_configuration_artifact_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        self.validate_configuration_artifact_scenario(&artifact, &scenario)?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn decode_configuration_artifact_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<ConfigurationArtifact, CampaignRepositoryError> {
         if envelope.record_kind() != crate::CampaignRecordKind::ConfigurationArtifact {
             return Err(integrity("configuration-artifact-envelope-shape"));
         }
@@ -471,11 +906,18 @@ impl CampaignRepository {
         if artifact.id()?.content_id() != id {
             return Err(integrity("configuration-artifact-envelope-shape"));
         }
-        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn validate_configuration_artifact_scenario(
+        &self,
+        artifact: &ConfigurationArtifact,
+        scenario: &ScenarioArtifact,
+    ) -> Result<(), CampaignRepositoryError> {
         if scenario.scenario() != artifact.scenario() {
             return Err(integrity("configuration-scenario-artifact-mismatch"));
         }
-        Ok(artifact)
+        Ok(())
     }
 
     pub(crate) fn read_reproduction_artifact(
@@ -484,13 +926,35 @@ impl CampaignRepository {
     ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::ReproductionArtifact)?;
+        let artifact = self.decode_reproduction_artifact_envelope(id, &envelope)?;
+        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+        let configuration =
+            self.read_configuration_artifact(artifact.configuration_artifact().content_id())?;
+        self.validate_reproduction_artifact_basis(&artifact, &scenario, &configuration)?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn decode_reproduction_artifact_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<ReproductionArtifact, CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::ReproductionArtifact {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
         let artifact = ReproductionArtifact::from_canonical_bytes(envelope.body())?;
         if artifact.id()?.content_id() != id {
             return Err(integrity("finding-reproduction-envelope-shape"));
         }
-        let scenario = self.read_scenario_artifact(artifact.scenario_artifact().content_id())?;
-        let configuration =
-            self.read_configuration_artifact(artifact.configuration_artifact().content_id())?;
+        Ok(artifact)
+    }
+
+    pub(in crate::repository) fn validate_reproduction_artifact_basis(
+        &self,
+        artifact: &ReproductionArtifact,
+        scenario: &ScenarioArtifact,
+        configuration: &ConfigurationArtifact,
+    ) -> Result<(), CampaignRepositoryError> {
         if scenario.scenario() != artifact.scenario()
             || configuration.scenario() != artifact.scenario()
             || configuration.scenario_artifact() != artifact.scenario_artifact()
@@ -498,7 +962,7 @@ impl CampaignRepository {
         {
             return Err(integrity("finding-reproduction-artifact-basis-mismatch"));
         }
-        Ok(artifact)
+        Ok(())
     }
 
     pub(crate) fn read_finding(&self, id: ContentId) -> Result<Finding, CampaignRepositoryError> {
@@ -510,6 +974,17 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<Finding, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Finding)?;
+        self.decode_finding_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn decode_finding_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<Finding, CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::Finding {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
         let finding = Finding::from_canonical_bytes(envelope.body())?;
         if finding.id()?.content_id() != id {
             return Err(integrity("finding-envelope-shape"));
@@ -626,26 +1101,41 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<CampaignPolicy, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
+        let policy = self.decode_policy_envelope(id, &envelope)?;
+        for (role, child) in policy.content_children() {
+            let kind = Self::policy_child_kind(&role)?;
+            self.require_record_kind(child, kind)?;
+        }
+        Ok(policy)
+    }
+
+    pub(in crate::repository) fn decode_policy_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<CampaignPolicy, CampaignRepositoryError> {
         if envelope.record_kind() != crate::CampaignRecordKind::Policy {
             return Err(integrity("policy-envelope-shape"));
         }
         let policy = CampaignPolicy::from_canonical_bytes(envelope.body())?;
-        if ObjectEnvelope::for_policy(&policy)? != envelope || policy.id()?.content_id() != id {
+        if ObjectEnvelope::for_policy(&policy)? != *envelope || policy.id()?.content_id() != id {
             return Err(integrity("policy-envelope-shape"));
         }
-        for (role, child) in policy.content_children() {
-            let kind = if role.starts_with("choice-generator.") {
-                crate::CampaignRecordKind::CandidateGeneratorSpec
-            } else if role.starts_with("statistical-opportunity.") {
-                crate::CampaignRecordKind::ChoiceOpportunity
-            } else if role.starts_with("statistical-domain.") {
-                crate::CampaignRecordKind::ChoiceDomain
-            } else {
-                return Err(integrity("policy-child-role-is-unknown"));
-            };
-            self.require_record_kind(child, kind)?;
-        }
         Ok(policy)
+    }
+
+    pub(in crate::repository) fn policy_child_kind(
+        role: &str,
+    ) -> Result<crate::CampaignRecordKind, CampaignRepositoryError> {
+        if role.starts_with("choice-generator.") {
+            Ok(crate::CampaignRecordKind::CandidateGeneratorSpec)
+        } else if role.starts_with("statistical-opportunity.") {
+            Ok(crate::CampaignRecordKind::ChoiceOpportunity)
+        } else if role.starts_with("statistical-domain.") {
+            Ok(crate::CampaignRecordKind::ChoiceDomain)
+        } else {
+            Err(integrity("policy-child-role-is-unknown"))
+        }
     }
 
     pub(in crate::repository) fn read_generator(
@@ -653,6 +1143,18 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<CandidateGeneratorSpec, CampaignRepositoryError> {
         let envelope = self.read_envelope(id)?;
+        let generator = self.decode_generator_envelope(id, &envelope)?;
+        for (_, child) in generator.content_children() {
+            self.require_record_kind(child, crate::CampaignRecordKind::CandidateGeneratorSpec)?;
+        }
+        Ok(generator)
+    }
+
+    pub(in crate::repository) fn decode_generator_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<CandidateGeneratorSpec, CampaignRepositoryError> {
         if envelope.record_kind() != crate::CampaignRecordKind::CandidateGeneratorSpec {
             return Err(integrity("candidate-generator-envelope-shape"));
         }
@@ -662,11 +1164,8 @@ impl CampaignRepository {
             crate::object::content_children(generator.content_children())?,
             generator.canonical_bytes(),
         )?;
-        if expected != envelope || generator.id()?.content_id() != id {
+        if expected != *envelope || generator.id()?.content_id() != id {
             return Err(integrity("candidate-generator-envelope-shape"));
-        }
-        for (_, child) in generator.content_children() {
-            self.require_record_kind(child, crate::CampaignRecordKind::CandidateGeneratorSpec)?;
         }
         Ok(generator)
     }

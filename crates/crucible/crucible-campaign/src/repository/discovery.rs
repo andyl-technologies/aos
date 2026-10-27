@@ -7,6 +7,227 @@
 //! admission sequence rather than manufacturing another job.
 
 use super::*;
+use crate::repository::closure::read::ClosureSemanticRead;
+
+impl ClosureSemanticRead<'_, '_> {
+    fn discovery_lifecycle(
+        &mut self,
+        parent: &LoadedSnapshot,
+    ) -> Result<CampaignState, CampaignRepositoryError> {
+        let (_, projected, _, _) = self.validate_snapshot_ancestry(
+            parent.envelope.content_id(),
+            &mut ChoiceValidationCache::default(),
+            MAX_SNAPSHOT_ANCESTRY,
+        )?;
+        Ok(projected.visible)
+    }
+
+    fn initial_discovery_basis(
+        &mut self,
+        parent: &LoadedSnapshot,
+    ) -> Result<Option<(BranchPath, Attempt, AttemptAdmission)>, CampaignRepositoryError> {
+        let roots = parent.snapshot.roots();
+        if self
+            .merkle_get(roots.accounting, admission_sequence_key())?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        if self.discovery_lifecycle(parent)? != CampaignState::Running {
+            return Ok(None);
+        }
+        let frontier = self
+            .merkle_get(roots.exploration, frontier_index_anchor_key())?
+            .ok_or_else(|| integrity("initial-discovery-frontier-index-missing"))?;
+        let has_budget = self.parent_budget_ledger(parent)?.remaining_attempts() > 0;
+        if !self.merkle_scan(frontier, None, 1)?.entries().is_empty() || !has_budget {
+            return Ok(None);
+        }
+        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+        let path = BranchPath::new(Vec::new())?;
+        let attempt = Attempt::new(
+            AttemptStart::Discover {
+                configuration: lineage.genesis_content(),
+            },
+            path.id()?,
+            policy.bound_stop(StopCondition::NextChoice)?,
+        )?;
+        let admission = AttemptAdmission::new(
+            attempt.id()?,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: None,
+                cause: BranchRequestCause::ExhaustivePolicy(parent.snapshot.active_policy()),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            },
+            parent.snapshot.active_policy(),
+        );
+        Ok(Some((path, attempt, admission)))
+    }
+
+    fn discovery_request_basis(
+        &mut self,
+        parent: &LoadedSnapshot,
+        request: &DiscoveryRequest,
+    ) -> Result<(BranchPath, Attempt, AttemptAdmission), CampaignRepositoryError> {
+        if request.expected_snapshot != parent.snapshot.id()? {
+            return Err(integrity("discovery-request-precondition-parent-mismatch"));
+        }
+        let state = self.discovery_lifecycle(parent)?;
+        if state != CampaignState::Running {
+            return Err(CampaignRepositoryError::InvalidTransition { state });
+        }
+
+        let roots = parent.snapshot.roots();
+        if self
+            .merkle_get(roots.accounting, admission_sequence_key())?
+            .is_some()
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "explicit-discovery-requires-empty-admission-sequence",
+            });
+        }
+        let frontier = self
+            .merkle_get(roots.exploration, frontier_index_anchor_key())?
+            .ok_or_else(|| integrity("discovery-frontier-index-missing"))?;
+        if !self.merkle_scan(frontier, None, 1)?.entries().is_empty() {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "explicit-discovery-requires-empty-frontier",
+            });
+        }
+
+        let lineage = self.read_lineage(parent.snapshot.lineage().content_id())?;
+        let configuration = self.read_configuration_artifact(request.configuration.content_id())?;
+        if configuration.scenario() != lineage.scenario()
+            || configuration.scenario_artifact() != lineage.scenario_content()
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "explicit-discovery-configuration-is-outside-lineage",
+            });
+        }
+        if self.merkle_get(
+            roots.graph,
+            map_key_hash(
+                "graph.configuration",
+                configuration.configuration().as_hash(),
+            ),
+        )? != Some(request.configuration.content_id())
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "explicit-discovery-configuration-is-not-in-campaign-graph",
+            });
+        }
+
+        request.stop.validate()?;
+        let policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
+        if let StopCondition::NamedBoundary(name) = &request.stop
+            && !policy.stop_conditions().contains(name)
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "explicit-discovery-stop-boundary-is-not-in-active-policy",
+            });
+        }
+        let path = BranchPath::new(Vec::new())?;
+        let attempt = Attempt::new(
+            AttemptStart::Discover {
+                configuration: request.configuration,
+            },
+            path.id()?,
+            policy.bound_stop(request.stop.clone())?,
+        )?;
+        let admission = AttemptAdmission::new(
+            attempt.id()?,
+            AttemptAdmissionRole::ExecutionBasis {
+                proposal: None,
+                cause: BranchRequestCause::Operator(request.command),
+                admission_ordinal: AdmissionOrdinal::new(1),
+            },
+            parent.snapshot.active_policy(),
+        );
+        Ok((path, attempt, admission))
+    }
+
+    pub(in crate::repository) fn validate_initial_discovery_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        admission: AttemptAdmission,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some((_, _, expected)) = self.initial_discovery_basis(parent)? else {
+            return Err(integrity("initial-discovery-is-not-admissible"));
+        };
+        if admission != expected {
+            return Err(integrity("initial-discovery-owner-recomputation-mismatch"));
+        }
+        let mut expected_roots = parent.snapshot.roots();
+        expected_roots.accounting = child.snapshot.roots().accounting;
+        expected_roots.coordination = child.snapshot.roots().coordination;
+        let upserts = self.attempt_admission_upserts(admission.id()?.content_id(), admission)?;
+        if expected_roots != child.snapshot.roots()
+            || !self.merkle_equals_after_upserts(
+                parent.snapshot.roots().accounting,
+                child.snapshot.roots().accounting,
+                &upserts,
+            )?
+            || !self
+                .coordination_matches_parent_result(parent, child.snapshot.roots().coordination)?
+        {
+            return Err(integrity("initial-discovery-successor-root-mismatch"));
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_discovery_request_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        transition_content: ContentId,
+        request: &DiscoveryRequest,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("discovery-request-changed-lineage-or-policy"));
+        }
+        let (_, attempt, expected_admission) = self.discovery_request_basis(parent, request)?;
+        self.parent_budget_ledger(parent)?.with_spending(0, 1)?;
+
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+        {
+            return Err(integrity("discovery-request-changed-unrelated-root"));
+        }
+
+        let command_key = map_key_hash("accounting.command", request.command.as_hash());
+        if self.merkle_get(prior.accounting, command_key)?.is_some() {
+            return Err(integrity("discovery-request-reused-command"));
+        }
+        let admission_content = self
+            .merkle_get(next.accounting, attempt_execution_basis_key(attempt.id()?))?
+            .ok_or_else(|| integrity("discovery-request-admission-is-missing"))?;
+        let admission = self.read_attempt_admission(admission_content)?;
+        if admission != expected_admission {
+            return Err(integrity("discovery-request-admission-owner-mismatch"));
+        }
+        let mut upserts =
+            self.attempt_admission_upserts(admission.id()?.content_id(), admission)?;
+        self.insert_map(&mut upserts, command_key, transition_content)?;
+        if !self.merkle_equals_after_upserts(prior.accounting, next.accounting, &upserts)? {
+            return Err(integrity("discovery-request-accounting-root-mismatch"));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity("discovery-request-coordination-root-mismatch"));
+        }
+        Ok(())
+    }
+}
 
 impl CampaignRepository {
     /// Admits one explicit, idempotent discovery of a campaign-owned configuration.
@@ -341,88 +562,5 @@ impl CampaignRepository {
             parent.snapshot.active_policy(),
         );
         Ok((path, attempt, admission))
-    }
-
-    pub(super) fn validate_initial_discovery_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        admission: AttemptAdmission,
-    ) -> Result<(), CampaignRepositoryError> {
-        let Some((_, _, expected)) = self.initial_discovery_basis(parent)? else {
-            return Err(integrity("initial-discovery-is-not-admissible"));
-        };
-        if admission != expected {
-            return Err(integrity("initial-discovery-owner-recomputation-mismatch"));
-        }
-        let mut expected_roots = parent.snapshot.roots();
-        expected_roots.accounting = child.snapshot.roots().accounting;
-        expected_roots.coordination = child.snapshot.roots().coordination;
-        if expected_roots != child.snapshot.roots()
-            || !self.merkle.equals_after_upserts(
-                parent.snapshot.roots().accounting,
-                child.snapshot.roots().accounting,
-                &attempt_admission_upserts(admission.id()?.content_id(), admission)?,
-            )?
-            || !self
-                .coordination_matches_parent_result(parent, child.snapshot.roots().coordination)?
-        {
-            return Err(integrity("initial-discovery-successor-root-mismatch"));
-        }
-        Ok(())
-    }
-
-    pub(super) fn validate_discovery_request_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        transition_content: ContentId,
-        request: &DiscoveryRequest,
-    ) -> Result<(), CampaignRepositoryError> {
-        if child.snapshot.lineage() != parent.snapshot.lineage()
-            || child.snapshot.active_policy() != parent.snapshot.active_policy()
-        {
-            return Err(integrity("discovery-request-changed-lineage-or-policy"));
-        }
-        let (_, attempt, expected_admission) = self.discovery_request_basis(parent, request)?;
-        self.ensure_budget_available(parent, 0, 1)?;
-
-        let prior = parent.snapshot.roots();
-        let next = child.snapshot.roots();
-        if prior.graph != next.graph
-            || prior.exploration != next.exploration
-            || prior.observations != next.observations
-            || prior.corpus != next.corpus
-            || prior.coverage != next.coverage
-            || prior.findings != next.findings
-            || prior.pins != next.pins
-        {
-            return Err(integrity("discovery-request-changed-unrelated-root"));
-        }
-
-        let command_key = map_key_hash("accounting.command", request.command.as_hash());
-        if self.merkle.get(prior.accounting, command_key)?.is_some() {
-            return Err(integrity("discovery-request-reused-command"));
-        }
-        let admission_content = self
-            .merkle
-            .get(next.accounting, attempt_execution_basis_key(attempt.id()?))?
-            .ok_or_else(|| integrity("discovery-request-admission-is-missing"))?;
-        let admission = self.read_attempt_admission(admission_content)?;
-        if admission != expected_admission {
-            return Err(integrity("discovery-request-admission-owner-mismatch"));
-        }
-        let mut upserts = attempt_admission_upserts(admission.id()?.content_id(), admission)?;
-        upserts.insert(command_key, transition_content);
-        if !self
-            .merkle
-            .equals_after_upserts(prior.accounting, next.accounting, &upserts)?
-        {
-            return Err(integrity("discovery-request-accounting-root-mismatch"));
-        }
-        if !self.coordination_matches_parent_result(parent, next.coordination)? {
-            return Err(integrity("discovery-request-coordination-root-mismatch"));
-        }
-        Ok(())
     }
 }

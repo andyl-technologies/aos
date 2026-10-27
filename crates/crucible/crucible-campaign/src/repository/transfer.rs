@@ -14,7 +14,7 @@ use crucible_store::content_store::{
 };
 
 use super::*;
-use crate::archive::inventory_digest;
+use crate::archive::{inventory_digest, inventory_digest_admitted};
 use crate::object_profile::profile_authenticated_exact_leaf;
 use crate::{
     ArchiveInventoryDisposition, ArchiveObjectEntry, CampaignArchiveCheckpointResolver,
@@ -852,6 +852,10 @@ impl CampaignRepository {
         ram_original: Option<Option<&crucible_store::owned_decode::DecodeBudget>>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<(), CampaignRepositoryError> {
+        if let Some(Some(saved)) = ram_original {
+            return self.verify_plan_against_source_checked(plan, saved, boundary);
+        }
+
         let roots = [plan.manifest.source_snapshot().content_id()]
             .into_iter()
             .chain(
@@ -896,6 +900,102 @@ impl CampaignRepository {
             || plan.manifest.omitted_digest() != inventory_digest(&plan.omitted)
         {
             return Err(integrity("campaign-archive-plan-no-longer-matches-source"));
+        }
+        Ok(())
+    }
+
+    fn verify_plan_against_source_checked(
+        &self,
+        plan: &CampaignArchivePlan,
+        saved: &crucible_store::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        self.verify_ram_admission()?;
+        let operation = saved.child().map_err(|source| {
+            CampaignRepositoryError::Ram(crucible_store::ram::RamStoreError::from_admission(
+                saved, source,
+            ))
+        })?;
+        let reader =
+            crate::repository::closure::read::ClosureRead::from_operation(self, saved, &operation);
+        let _scope = operation.enter();
+
+        let roots = [plan.manifest.source_snapshot().content_id()]
+            .into_iter()
+            .chain(
+                plan.manifest
+                    .checkpoint_selections()
+                    .iter()
+                    .map(|selection| selection.checkpoint().content_id()),
+            )
+            .chain(plan.manifest.retained_roots().iter().copied());
+        let closure = self.authenticated_archive_closure_with_operation(
+            roots, true, saved, &operation, boundary,
+        )?;
+        let mut semantic = reader.semantic(boundary);
+        self.reject_nested_archive_metadata_checked(
+            &closure.objects,
+            &closure.exact_leaves,
+            &mut semantic,
+        )?;
+
+        let represented = closure.objects;
+        let mut selected = BTreeSet::new();
+        for entry in &plan.selected {
+            semantic.insert_set(&mut selected, entry.id())?;
+        }
+        let mut selected_ram = Vec::new();
+        for root in closure.ram_roots {
+            if selected.contains(&root) {
+                semantic.push(&mut selected_ram, root)?;
+            }
+        }
+        let mut selected_bindings = Vec::new();
+        for (world, root) in closure.ram_bindings {
+            if selected.contains(&world.content_id()) && selected.contains(&root) {
+                semantic.push(&mut selected_bindings, (world, root))?;
+            }
+        }
+        if selected_ram != plan.ram_roots() || selected_bindings != plan.ram_bindings {
+            return Err(integrity("campaign-archive-plan-ram-binding-mismatch"));
+        }
+
+        let mut declared = BTreeSet::new();
+        for entry in plan.selected.iter().chain(&plan.omitted) {
+            semantic.insert_set(&mut declared, entry.id())?;
+        }
+        if represented != declared
+            || plan.manifest.selected_digest() != inventory_digest_admitted(&plan.selected)?
+            || plan.manifest.omitted_digest() != inventory_digest_admitted(&plan.omitted)?
+        {
+            return Err(integrity("campaign-archive-plan-no-longer-matches-source"));
+        }
+        semantic.poll()?;
+        Ok(())
+    }
+
+    fn reject_nested_archive_metadata_checked(
+        &self,
+        closure: &BTreeSet<ContentId>,
+        exact_leaves: &BTreeSet<ContentId>,
+        semantic: &mut crate::repository::closure::read::ClosureSemanticRead<'_, '_>,
+    ) -> Result<(), CampaignRepositoryError> {
+        for id in closure {
+            if exact_leaves.contains(id)
+                || !is_campaign_record_kind(id.kind())
+                || id.kind() == ObjectKind::MerkleNode
+            {
+                continue;
+            }
+            let envelope = semantic.read_envelope(*id)?;
+            if matches!(
+                envelope.record_kind(),
+                CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage
+            ) {
+                return Err(CampaignRepositoryError::InvalidRequest {
+                    reason: "mirror retained roots cannot contain archive metadata",
+                });
+            }
         }
         Ok(())
     }

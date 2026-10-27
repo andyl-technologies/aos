@@ -14,9 +14,23 @@ use crucible_store::owned_decode::{DecodeBudget, DecodeScratch};
 
 use super::*;
 
+#[path = "inspection_io/planner.rs"]
+mod planner;
+
+#[path = "inspection_io/expansion.rs"]
+mod expansion;
+#[path = "inspection_io/replay.rs"]
+mod replay;
+
+use replay::assert_checked_archive;
+pub(in crate::repository::tests) use replay::assert_checked_mirror_archive;
+
 struct ObservedCheckedBackend {
     child: Arc<dyn ImmutableBlobBackend>,
     progress: BTreeMap<ContentId, Arc<AtomicU64>>,
+    ordinary_reads: AtomicU64,
+    write_attempts: AtomicU64,
+    reject_ordinary: bool,
 }
 
 impl ImmutableBlobBackend for ObservedCheckedBackend {
@@ -33,10 +47,22 @@ impl ImmutableBlobBackend for ObservedCheckedBackend {
     }
 
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+        self.ordinary_reads.fetch_add(1, Ordering::SeqCst);
+        if self.reject_ordinary {
+            return Err(StoreError::Unsupported {
+                capability: "inspection-test-ordinary-contains",
+            });
+        }
         self.child.contains(id)
     }
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        self.ordinary_reads.fetch_add(1, Ordering::SeqCst);
+        if self.reject_ordinary {
+            return Err(StoreError::Unsupported {
+                capability: "inspection-test-ordinary-read",
+            });
+        }
         self.child.read(id, range)
     }
 
@@ -65,6 +91,12 @@ impl ImmutableBlobBackend for ObservedCheckedBackend {
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
+        self.write_attempts.fetch_add(1, Ordering::SeqCst);
+        if self.reject_ordinary {
+            return Err(StoreError::Unsupported {
+                capability: "inspection-test-publication",
+            });
+        }
         self.child.put_if_absent(id, source)
     }
 }
@@ -338,6 +370,9 @@ fn checked_inspection_cancels_during_large_page_and_streams_large_opaque_object(
     let opaque_progress = Arc::new(AtomicU64::new(0));
     let observed: Arc<dyn ImmutableBlobBackend> = Arc::new(ObservedCheckedBackend {
         child: blobs,
+        ordinary_reads: AtomicU64::new(0),
+        write_attempts: AtomicU64::new(0),
+        reject_ordinary: false,
         progress: BTreeMap::from([
             (page_id, page_progress.clone()),
             (large_trace, opaque_progress.clone()),
@@ -380,5 +415,342 @@ fn checked_inspection_cancels_during_large_page_and_streams_large_opaque_object(
     assert_eq!(inspection.manifest(), plan.manifest());
     assert!(page_progress.load(Ordering::SeqCst) >= page_length);
     assert!(opaque_progress.load(Ordering::SeqCst) >= LARGE_TRACE_BYTES as u64);
+    let retained_usage = resources.usage();
+    assert_eq!(retained_usage.0, baseline.0);
+    assert!(retained_usage.1 > baseline.1);
+
+    let retained = inspection.clone();
+    assert!(std::ptr::eq(inspection.manifest(), retained.manifest()));
+    assert!(std::ptr::eq(inspection.selected(), retained.selected()));
+    assert!(std::ptr::eq(
+        inspection.retained_objects(),
+        retained.retained_objects(),
+    ));
+    assert_eq!(resources.usage(), retained_usage);
+    drop(inspection);
+    assert_eq!(resources.usage(), retained_usage);
+    drop(retained);
     assert_eq!(resources.usage(), baseline);
+}
+
+fn publish_inspection_savepoint_continuation(
+    repository: &CampaignRepository,
+    lineage: &CampaignLineage,
+    parent: CampaignSnapshotId,
+    origin_id: AttemptId,
+    checkpoint: ExactCheckpointId,
+) -> CampaignSnapshotId {
+    const NAME: &str = "checked-closure";
+    let running = repository
+        .apply_control(
+            NAME,
+            &command(
+                "checked-capture-resume",
+                parent,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("running capture source");
+    let origin = repository.load_attempt(origin_id).expect("capture origin");
+    let request = SavepointCaptureRequest::new(
+        crate::CampaignCommandId::from_hash(CampaignHash::derive("checked-capture", b"request")),
+        running.new_snapshot,
+        origin_id,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        origin.stop().clone(),
+        "checked archive savepoint ancestry",
+    )
+    .expect("capture request");
+    let captured = repository
+        .request_savepoint_capture(NAME, &request)
+        .expect("accepted capture");
+
+    let assignment = crate::SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x31; 16]).expect("assignment ID"),
+        crate::DaemonEpoch::from_bytes([0x32; 16]).expect("daemon epoch"),
+        lineage.id().expect("lineage ID"),
+        origin_id,
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("capture limits"),
+        ExecutionRetentionIntent::RetainAlways,
+        crate::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .and_then(|assignment| {
+        crate::SubmitAttemptRequest::new_savepoint_capture(
+            assignment,
+            captured.request,
+            captured.configuration,
+        )
+    })
+    .expect("scoped capture assignment");
+    let query = crate::GetAttemptExecutionRequest::new(
+        &assignment,
+        ExecutionId::from_bytes([0x33; 16]).expect("execution ID"),
+    )
+    .expect("capture query");
+    let status = crate::GetAttemptExecutionResponse::new(
+        &query,
+        crate::GetAttemptExecutionDisposition::Paused { checkpoint },
+    )
+    .expect("ready capture status");
+    let resolution = SavepointCaptureResolution {
+        command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "checked-capture",
+            b"ready",
+        )),
+        expected_snapshot: captured.new_snapshot,
+        request: captured.request,
+        outcome: SavepointCaptureOutcome::Ready,
+    };
+    let ready = repository
+        .resolve_savepoint_capture(NAME, &resolution, &assignment, &status)
+        .expect("ready capture");
+
+    let continuation = Attempt::new(
+        AttemptStart::AfterAttempt {
+            origin: origin_id,
+            reached: lineage.genesis_content(),
+        },
+        origin.path(),
+        StopCondition::ExecutionQuanta(2),
+    )
+    .expect("savepoint continuation");
+    let selection = SavepointContinuationSelection {
+        command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+            "checked-capture",
+            b"selection",
+        )),
+        expected_snapshot: ready.new_snapshot,
+        request: captured.request,
+        ready: CampaignFact::SavepointCaptureResolved(resolution)
+            .id()
+            .expect("ready fact ID"),
+        continuation: continuation.id().expect("continuation ID"),
+    };
+    repository
+        .select_savepoint_continuation(NAME, &selection, &continuation)
+        .expect("selected continuation")
+        .new_snapshot
+}
+
+#[test]
+fn every_checked_archive_policy_uses_only_checked_blob_reads() {
+    let (_memory_source, lineage, policy, memory_blobs) = counted_fixture();
+    let directory = tempfile::tempdir().expect("durable closure inspection directory");
+    let resources = Arc::new(resources::TransferResources::new(128, 512 * 1024 * 1024));
+    let quota: Arc<dyn StorePhysicalQuotaGuard> = resources.clone();
+    let original = DecodeBudget::for_store(quota.clone()).expect("finite closure authority");
+    let blobs = DirectoryBlobBackend::new_with_physical_quota(
+        "checked-closure-source",
+        directory.path().join("objects"),
+        quota,
+    )
+    .expect("quota-bound closure objects");
+    let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
+    let mut seed_ids = Vec::new();
+    memory_blobs
+        .acquire_inventory_fence()
+        .expect("metadata source inventory")
+        .visit_inventory(&mut |record| {
+            seed_ids.push(record.id());
+            Ok(())
+        })
+        .expect("metadata source identities");
+    for id in seed_ids {
+        let bytes = memory_blobs.read(id, None).expect("metadata source bytes");
+        blobs
+            .put_if_absent(id, &bytes)
+            .expect("durable source seed");
+    }
+    let source = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crate::CampaignRamAdmission::Available(original.clone()),
+    );
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&source, &lineage, &policy, "checked-closure");
+    let observed = source
+        .publish_observation("checked-closure", admitted.new_snapshot, &observation)
+        .expect("representative observed source");
+    let properties = source
+        .load_property_verdict_set(observation.properties())
+        .expect("objective observation properties");
+    let evaluation =
+        crate::evaluate_objectives(&policy, &observation, &properties, BTreeMap::new())
+            .expect("representative objective evaluation");
+    let evaluated = source
+        .publish_objective_evaluation("checked-closure", observed.new_snapshot, &evaluation)
+        .expect("representative evaluated source");
+    let checkpoint_envelope = ContentEnvelope::new(
+        "crucible.test.checked-inspection-exact-checkpoint",
+        6,
+        BTreeSet::new(),
+        b"checked inspection checkpoint".to_vec(),
+    )
+    .expect("representative exact checkpoint");
+    let checkpoint_content = checkpoint_envelope.content_id(ObjectKind::ExactManifest);
+    source
+        .blobs
+        .put_if_absent(
+            checkpoint_content,
+            &BlobHandle::from_bytes(checkpoint_envelope.canonical_bytes()),
+        )
+        .expect("publish exact checkpoint");
+    let checkpoint = ExactCheckpointId::try_from(checkpoint_content).expect("exact checkpoint ID");
+    let continued = publish_inspection_savepoint_continuation(
+        &source,
+        &lineage,
+        evaluated.new_snapshot,
+        admitted.attempt,
+        checkpoint,
+    );
+    let fingerprint = CampaignHash::derive("checked-inspection-finding", b"all policies");
+    let reproduction = source
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"checked inspection reproduction".to_vec(),
+        )
+        .expect("representative reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.checked-inspection".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("representative finding signature");
+    let found = source
+        .publish_incomplete_test_finding(
+            "checked-closure",
+            continued,
+            signature,
+            observed.observation,
+            reproduction,
+        )
+        .expect("representative finding");
+    source
+        .apply_pin(
+            "checked-closure",
+            &PinRequest {
+                command: crate::CampaignCommandId::from_hash(CampaignHash::derive(
+                    "checked-inspection-exact-pin",
+                    b"checked-closure",
+                )),
+                expected_snapshot: found.new_snapshot,
+                change: PinChange::new(
+                    observation.child(),
+                    Some(PinRetention::Exact),
+                    "retain checked inspection checkpoint",
+                )
+                .expect("exact pin change"),
+            },
+        )
+        .expect("pin representative configuration");
+    let head = source
+        .head("checked-closure")
+        .expect("source campaign head");
+    let checked_backend = Arc::new(ObservedCheckedBackend {
+        child: blobs,
+        progress: BTreeMap::new(),
+        ordinary_reads: AtomicU64::new(0),
+        write_attempts: AtomicU64::new(0),
+        reject_ordinary: true,
+    });
+    let inspected = CampaignRepository::new(
+        checked_backend.clone(),
+        refs,
+        crate::CampaignRamAdmission::Available(original),
+    );
+    let policies = [
+        CampaignArchivePolicy::Metadata,
+        CampaignArchivePolicy::Findings,
+        CampaignArchivePolicy::Debug,
+        CampaignArchivePolicy::Executable,
+        CampaignArchivePolicy::Mirror,
+    ];
+
+    for archive_policy in policies {
+        let mut checkpoint_resolver = FixedCheckpoint(checkpoint);
+        let resolver = matches!(
+            archive_policy,
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        )
+        .then_some(&mut checkpoint_resolver as &mut dyn CampaignArchiveCheckpointResolver);
+        let plan = source
+            .plan_campaign_archive(head.snapshot_id(), archive_policy, [], resolver)
+            .expect("representative archive policy plan");
+        source
+            .stage_campaign_archive_metadata(&plan)
+            .expect("stage policy inventory");
+        let expected = source
+            .inspect_campaign_archive(plan.manifest_id())
+            .expect("compatibility inspection");
+        let baseline = resources.usage();
+
+        let actual = inspected
+            .inspect_campaign_archive_with_boundary(plan.manifest_id(), &mut || Ok(()))
+            .unwrap_or_else(|error| panic!("{archive_policy:?} checked inspection: {error:?}"));
+
+        assert_eq!(actual, expected, "{archive_policy:?} semantic result");
+        assert_eq!(checked_backend.ordinary_reads.load(Ordering::SeqCst), 0);
+        drop(actual);
+        assert_eq!(
+            resources.usage(),
+            baseline,
+            "{archive_policy:?} custody closes"
+        );
+
+        if matches!(
+            archive_policy,
+            CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
+        ) {
+            let finding = inspected
+                .inspect_archived_finding_with_boundary(
+                    plan.manifest_id(),
+                    found.finding,
+                    &mut || Ok(()),
+                )
+                .expect("checked finding handoff");
+            assert_eq!(finding.id().expect("finding identity"), found.finding);
+            assert_eq!(checked_backend.ordinary_reads.load(Ordering::SeqCst), 0);
+            let finding_usage = resources.usage();
+            assert_eq!(finding_usage.0, baseline.0);
+            assert!(finding_usage.1 > baseline.1);
+
+            let retained = finding.clone();
+            assert!(std::ptr::eq(finding.signature(), retained.signature()));
+            assert!(std::ptr::eq(finding.exact_pins(), retained.exact_pins()));
+            assert_eq!(resources.usage(), finding_usage);
+            drop(finding);
+            assert_eq!(resources.usage(), finding_usage);
+            drop(retained);
+            assert_eq!(resources.usage(), baseline);
+
+            let exact = inspected.inspect_archived_exact_finding_with_boundary(
+                plan.manifest_id(),
+                found.finding,
+                &mut || Ok(()),
+            );
+            assert!(matches!(
+                &exact,
+                Err(CampaignRepositoryError::InvalidRequest {
+                    reason: "archived finding has no retained exact checkpoint",
+                })
+            ));
+            drop(exact);
+            assert_eq!(checked_backend.ordinary_reads.load(Ordering::SeqCst), 0);
+            assert_eq!(resources.usage(), baseline);
+        }
+    }
+
+    drop(inspected);
+    drop(source);
+    drop(checked_backend);
+    assert_eq!(resources.usage(), (0, 0));
 }

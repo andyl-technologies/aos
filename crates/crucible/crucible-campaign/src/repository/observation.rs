@@ -23,6 +23,7 @@ struct ObservationProjection {
 
 mod candidate_validation;
 mod strict_order;
+mod validation;
 
 impl CampaignRepository {
     /// Publishes one fully validated immutable executor result without advancing a campaign.
@@ -324,92 +325,6 @@ impl CampaignRepository {
                 Err(CampaignRepositoryError::RefConflict { current })
             }
         }
-    }
-
-    pub(super) fn validate_credited_observation_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        observation_id: ObservationId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        self.validate_observation_successor_version(parent, child, observation_id, choice_cache)
-    }
-
-    fn validate_observation_successor_version(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        observation_id: ObservationId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        if child.snapshot.lineage() != parent.snapshot.lineage()
-            || child.snapshot.active_policy() != parent.snapshot.active_policy()
-        {
-            return Err(integrity("observation-transition-changed-campaign-basis"));
-        }
-        let prior = parent.snapshot.roots();
-        let next = child.snapshot.roots();
-        if prior.findings != next.findings || prior.pins != next.pins {
-            return Err(integrity("observation-transition-changed-unrelated-root"));
-        }
-
-        let observation = self.decode_observation(observation_id.content_id())?;
-        let projection = self.project_observation(
-            parent,
-            observation_id.content_id(),
-            &observation,
-            choice_cache,
-            self.merkle
-                .get(prior.graph, choice_index_anchor_key())?
-                .is_some(),
-        )?;
-        for (before, after, upserts, reason) in [
-            (
-                prior.exploration,
-                next.exploration,
-                &projection.exploration,
-                "observation-transition-exploration-root",
-            ),
-            (
-                prior.graph,
-                next.graph,
-                &projection.graph,
-                "observation-transition-graph-root",
-            ),
-            (
-                prior.observations,
-                next.observations,
-                &projection.observations,
-                "observation-transition-observations-root",
-            ),
-            (
-                prior.corpus,
-                next.corpus,
-                &projection.corpus,
-                "observation-transition-corpus-root",
-            ),
-            (
-                prior.coverage,
-                next.coverage,
-                &projection.coverage,
-                "observation-transition-coverage-root",
-            ),
-            (
-                prior.accounting,
-                next.accounting,
-                &projection.accounting,
-                "observation-transition-accounting-root",
-            ),
-        ] {
-            if !self.merkle.equals_after_upserts(before, after, upserts)? {
-                return Err(integrity(reason));
-            }
-        }
-        if !self.coordination_matches_parent_result(parent, next.coordination)? {
-            return Err(integrity("observation-transition-coordination-root"));
-        }
-        Ok(())
     }
 
     fn project_observation(

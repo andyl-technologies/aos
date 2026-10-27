@@ -1,14 +1,15 @@
 //! Snapshot-bound branch-request acceptance computation.
 
 use super::*;
+use crate::repository::closure::read::{ClosureSemanticRead, with_compatibility_semantic};
 
 // This bound determines exact-versus-range v7 fact bytes and cold replay.
 // Changing it or the bounded scan requires explicit schema compatibility.
 const MAX_ACCEPTANCE_EDGE_LOOKUPS: u64 = 65_536;
 
-impl CampaignRepository {
-    pub(super) fn branch_acceptance_summary(
-        &self,
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn branch_acceptance_summary(
+        &mut self,
         graph: ContentId,
         request: &BranchRequest,
     ) -> Result<BranchAcceptanceSummary, CampaignRepositoryError> {
@@ -69,7 +70,7 @@ impl CampaignRepository {
     }
 
     fn static_acceptance_counts(
-        &self,
+        &mut self,
         graph: ContentId,
         request: &BranchRequest,
         domain: &ChoiceDomain,
@@ -86,8 +87,7 @@ impl CampaignRepository {
             let edge =
                 Selection::campaign_edge_id(request.branch_point(), domain.semantic_id(), &value);
             if self
-                .merkle
-                .get(
+                .merkle_get(
                     graph,
                     map_key_hash("graph.branch-edge-child", edge.as_hash()),
                 )?
@@ -109,5 +109,17 @@ impl CampaignRepository {
             BranchAcceptanceCount::between(deduplicated, deduplicated + unchecked)?,
             BranchAcceptanceCount::between(known_remaining, known_remaining + unchecked)?,
         ))
+    }
+}
+
+impl CampaignRepository {
+    pub(super) fn branch_acceptance_summary(
+        &self,
+        graph: ContentId,
+        request: &BranchRequest,
+    ) -> Result<BranchAcceptanceSummary, CampaignRepositoryError> {
+        with_compatibility_semantic(self, |reader| {
+            reader.branch_acceptance_summary(graph, request)
+        })
     }
 }

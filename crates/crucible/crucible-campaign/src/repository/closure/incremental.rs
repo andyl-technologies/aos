@@ -1,5 +1,6 @@
 //! Incremental campaign closure authentication.
 
+use super::read::ClosureRead;
 use super::*;
 
 /// Authenticated campaign metadata with a separate bounded RAM frontier.
@@ -12,6 +13,8 @@ pub struct CampaignStorageClosure {
     pub(in crate::repository) exact_leaves: BTreeSet<ContentId>,
     pub(in crate::repository) ram_roots: Vec<ContentId>,
     pub(in crate::repository) ram_bindings: Vec<(crate::ExactCheckpointId, ContentId)>,
+    // Checked collection allocations close before their operation custody.
+    _custody: Option<crucible_store::owned_decode::DecodeCustody>,
 }
 
 impl CampaignStorageClosure {
@@ -38,6 +41,12 @@ pub(in crate::repository) struct ClosureCollection<'a> {
     // RAM for an archive operation whose validated closure must contain none.
     pub(in crate::repository) ram_original:
         Option<Option<&'a crucible_store::owned_decode::DecodeBudget>>,
+    pub(in crate::repository) checked_original:
+        Option<&'a crucible_store::owned_decode::DecodeBudget>,
+    pub(in crate::repository) checked_operation:
+        Option<&'a crucible_store::owned_decode::DecodeBudget>,
+    pub(in crate::repository) operation:
+        Option<&'a mut Option<crucible_store::owned_decode::DecodeBudget>>,
 }
 
 pub(in crate::repository) struct ArchiveRamInventory {
@@ -241,6 +250,43 @@ impl CampaignRepository {
         ram_original: Option<Option<&crucible_store::owned_decode::DecodeBudget>>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.authenticated_archive_closure_under_resources(
+            roots,
+            verify_contents,
+            ram_original,
+            None,
+            boundary,
+        )
+    }
+
+    pub(in crate::repository) fn authenticated_archive_closure_with_operation(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        verify_contents: bool,
+        saved: &crucible_store::owned_decode::DecodeBudget,
+        operation: &crucible_store::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.authenticated_archive_closure_under_resources(
+            roots,
+            verify_contents,
+            None,
+            Some((saved, operation)),
+            boundary,
+        )
+    }
+
+    fn authenticated_archive_closure_under_resources(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        verify_contents: bool,
+        ram_original: Option<Option<&crucible_store::owned_decode::DecodeBudget>>,
+        checked: Option<(
+            &crucible_store::owned_decode::DecodeBudget,
+            &crucible_store::owned_decode::DecodeBudget,
+        )>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
         self.verify_ram_admission()?;
         let mut objects = BTreeSet::new();
         let mut exact_leaves = BTreeSet::new();
@@ -249,6 +295,8 @@ impl CampaignRepository {
             bindings: BTreeSet::new(),
             verify_contents,
         };
+        let mut operation = None;
+        let (checked_original, checked_operation) = checked.unzip();
         self.verify_campaign_closures_anchored_cached_collect(
             roots,
             &BTreeSet::new(),
@@ -258,6 +306,9 @@ impl CampaignRepository {
                 exact_leaves: Some(&mut exact_leaves),
                 ram: Some(&mut ram),
                 ram_original,
+                checked_original,
+                checked_operation,
+                operation: Some(&mut operation),
             },
             boundary,
         )?;
@@ -268,11 +319,15 @@ impl CampaignRepository {
         {
             return Err(integrity("campaign-exact-ram-root-is-untyped"));
         }
+        let ram_roots = collect_checked_vec(operation.as_ref(), ram.roots)?;
+        let ram_bindings = collect_checked_vec(operation.as_ref(), ram.bindings)?;
+        let custody = operation.map(|operation| operation.custody());
         Ok(CampaignStorageClosure {
             objects,
             exact_leaves,
-            ram_roots: ram.roots.into_iter().collect(),
-            ram_bindings: ram.bindings.into_iter().collect(),
+            ram_roots,
+            ram_bindings,
+            _custody: custody,
         })
     }
 
@@ -286,7 +341,7 @@ impl CampaignRepository {
         self.authenticate_ram_root_under(id, verify_contents, &original, boundary)
     }
 
-    fn authenticate_ram_root_under(
+    pub(in crate::repository) fn authenticate_ram_root_under(
         &self,
         id: ContentId,
         verify_contents: bool,
@@ -385,19 +440,37 @@ impl CampaignRepository {
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<usize, CampaignRepositoryError> {
         self.verify_ram_admission()?;
-        let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
+        let reader = match (collection.checked_original, collection.checked_operation) {
+            (Some(saved), Some(operation)) => ClosureRead::from_operation(self, saved, operation),
+            (saved, None) => ClosureRead::new(self, saved)?,
+            (None, Some(_)) => {
+                return Err(integrity(
+                    "campaign-closure-checked-operation-has-no-original",
+                ));
+            }
+        };
+        let _operation_scope = reader.enter_operation();
+        let mut stack = Vec::new();
+        for id in roots {
+            reader.push(&mut stack, (id, false))?;
+        }
         let mut visited = BTreeSet::new();
         let mut verified_merkle_positions = BTreeSet::new();
 
         while let Some((id, exact_leaf)) = stack.pop() {
-            boundary().map_err(CampaignRepositoryError::Ram)?;
+            reader.poll(boundary)?;
             if anchors.contains(&id) {
                 continue;
             }
-            if !visited.insert((id, exact_leaf)) {
+            if visited.contains(&(id, exact_leaf)) {
                 continue;
             }
+            reader.charge_btree_entry::<(ContentId, bool), ()>()?;
+            visited.insert((id, exact_leaf));
             if let Some(objects) = collection.objects.as_deref_mut() {
+                if !objects.contains(&id) {
+                    reader.charge_btree_entry::<ContentId, ()>()?;
+                }
                 objects.insert(id);
             }
             if visited
@@ -412,19 +485,19 @@ impl CampaignRepository {
                 // A full cold walk reads every yielded leaf below. Anchored
                 // incremental walks may skip known parent leaves, so they
                 // still check leaf presence during Merkle verification.
-                let verified = if anchors.is_empty() {
-                    self.merkle
-                        .verify_closure_structure_cached(id, &mut verified_merkle_positions)?
-                } else {
-                    self.merkle
-                        .verify_closure_objects_cached(id, &mut verified_merkle_positions)?
-                };
+                let verified = reader.verify_merkle_closure(
+                    id,
+                    &mut verified_merkle_positions,
+                    !anchors.is_empty(),
+                    boundary,
+                )?;
                 if let Some(objects) = collection.objects.as_deref_mut() {
-                    objects.extend(
-                        verified_merkle_positions
-                            .iter()
-                            .map(|(node, _prefix)| *node),
-                    );
+                    for (node, _prefix) in &verified_merkle_positions {
+                        if !objects.contains(node) {
+                            reader.charge_btree_entry::<ContentId, ()>()?;
+                        }
+                        objects.insert(*node);
+                    }
                 }
                 if visited
                     .len()
@@ -433,34 +506,32 @@ impl CampaignRepository {
                 {
                     return Err(integrity("campaign-closure-object-limit"));
                 }
-                stack.extend(verified.values.into_iter().map(|id| (id, false)));
+                for id in verified.values {
+                    reader.push(&mut stack, (id, false))?;
+                }
                 continue;
             }
 
-            let handle = self.blobs.read(id, None)?;
             if exact_leaf {
                 // Exact-root choice and replay evidence use Observation identities
                 // for raw protocol bytes. Their parent role, not their kind alone,
                 // grants opaque traversal; the immutable digest remains checked.
-                if id.kind() != ObjectKind::Observation
-                    || id.schema_version() != 1
-                    || ContentId::for_source(id.kind(), id.schema_version(), &handle)? != id
-                {
-                    return Err(integrity("campaign-exact-leaf-identity-mismatch"));
-                }
+                reader.authenticate_exact_leaf(id, boundary)?;
                 if let Some(leaves) = collection.exact_leaves.as_deref_mut() {
+                    if !leaves.contains(&id) {
+                        reader.charge_btree_entry::<ContentId, ()>()?;
+                    }
                     leaves.insert(id);
                 }
                 continue;
             }
             if is_opaque_campaign_leaf(id.kind()) {
-                let mut sink = std::io::sink();
-                handle.copy_to(&mut sink)?;
+                reader.authenticate_opaque(id, boundary)?;
                 continue;
             }
-            let bytes = handle.read_all(MAX_ENVELOPE_BYTES)?;
+            let bytes = reader.read_envelope_bytes(id, boundary)?;
             if !is_campaign_record_kind(id.kind()) {
-                let envelope = ContentEnvelope::from_canonical_bytes(&bytes)
+                let envelope = ContentEnvelope::from_canonical_bytes(bytes.as_ref())
                     .map_err(CampaignCodecError::from)?;
                 if envelope.content_id(id.kind()) != id {
                     return Err(integrity("campaign-closure-envelope-id-mismatch"));
@@ -486,19 +557,11 @@ impl CampaignRepository {
                         .ram
                         .as_ref()
                         .is_none_or(|ram| ram.verify_contents);
-                    match collection.ram_original {
-                        None => self.authenticate_ram_root(id, verify, boundary)?,
-                        Some(Some(original)) => {
-                            self.authenticate_ram_root_under(id, verify, original, boundary)?;
-                        }
-                        Some(None) => {
-                            return Err(StoreError::Unsupported {
-                                capability: "campaign-archive-ram-admission",
-                            }
-                            .into());
-                        }
-                    }
+                    reader.authenticate_ram_root(id, verify, collection.ram_original, boundary)?;
                     if let Some(ram) = collection.ram.as_deref_mut() {
+                        if !ram.roots.contains(&id) {
+                            reader.charge_btree_entry::<ContentId, ()>()?;
+                        }
                         ram.roots.insert(id);
                     }
                     if collection.ram.is_some() || collection.objects.is_none() {
@@ -520,6 +583,12 @@ impl CampaignRepository {
                             return Err(integrity("campaign-exact-ram-root-role-mismatch"));
                         }
                         if let Some(ram) = collection.ram.as_deref_mut() {
+                            if !ram.bindings.contains(&(owner, child.id())) {
+                                reader.charge_btree_entry::<
+                                    (crate::ExactCheckpointId, ContentId),
+                                    (),
+                                >()?;
+                            }
                             ram.bindings.insert((owner, child.id()));
                         }
                         ordinal = ordinal
@@ -527,137 +596,364 @@ impl CampaignRepository {
                             .ok_or_else(|| integrity("campaign-exact-ram-root-limit"))?;
                     }
                 }
-                stack.extend(envelope.children().iter().map(|child| {
+                for child in envelope.children() {
                     let exact_leaf = exact_root
                         && matches!(
                             child.role(),
                             "checkpoint-choice-closure" | "replay-oracle-evidence"
                         );
-                    (child.id(), exact_leaf)
-                }));
+                    reader.push(&mut stack, (child.id(), exact_leaf))?;
+                }
                 continue;
             }
-            let envelope = ObjectEnvelope::from_canonical_bytes(&bytes)?;
+            let envelope = ObjectEnvelope::from_canonical_bytes(bytes.as_ref())?;
             if envelope.content_id() != id {
                 return Err(integrity("campaign-closure-envelope-id-mismatch"));
             }
 
             match envelope.record_kind() {
                 crate::CampaignRecordKind::Lineage => {
-                    self.read_lineage(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_lineage(id)?;
+                    } else {
+                        self.read_lineage(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::Policy => {
-                    self.read_policy(id)?;
+                    if reader.is_checked() {
+                        let policy = self.decode_policy_envelope(id, &envelope)?;
+                        let mut semantic = reader.semantic(boundary);
+                        for (role, child) in policy.content_children() {
+                            let kind = Self::policy_child_kind(&role)?;
+                            semantic.require_record_kind(child, kind)?;
+                        }
+                    } else {
+                        self.read_policy(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::Fact => {
-                    self.read_fact(id)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_fact_references(&envelope)?;
+                    } else {
+                        self.read_fact(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::CandidateGeneratorSpec => {
-                    self.read_generator(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_generator(id)?;
+                    } else {
+                        self.read_generator(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ScenarioArtifact => {
-                    self.read_scenario_artifact(id)?;
+                    if reader.is_checked() {
+                        self.decode_scenario_artifact_envelope(id, &envelope)?;
+                    } else {
+                        self.read_scenario_artifact(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ConfigurationArtifact => {
-                    self.read_configuration_artifact(id)?;
+                    if reader.is_checked() {
+                        let artifact =
+                            self.decode_configuration_artifact_envelope(id, &envelope)?;
+                        let mut semantic = reader.semantic(boundary);
+                        let scenario = semantic
+                            .read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+                        self.validate_configuration_artifact_scenario(&artifact, &scenario)?;
+                    } else {
+                        self.read_configuration_artifact(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ReproductionArtifact => {
-                    self.read_reproduction_artifact(id)?;
+                    if reader.is_checked() {
+                        let artifact = self.decode_reproduction_artifact_envelope(id, &envelope)?;
+                        let mut semantic = reader.semantic(boundary);
+                        let scenario = semantic
+                            .read_scenario_artifact(artifact.scenario_artifact().content_id())?;
+                        let configuration = semantic.read_configuration_artifact(
+                            artifact.configuration_artifact().content_id(),
+                        )?;
+                        self.validate_reproduction_artifact_basis(
+                            &artifact,
+                            &scenario,
+                            &configuration,
+                        )?;
+                    } else {
+                        self.read_reproduction_artifact(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::Finding => {
-                    self.read_finding_cached(id, choice_cache)?;
+                    if reader.is_checked() {
+                        let finding = self.decode_finding_envelope(id, &envelope)?;
+                        reader
+                            .semantic(boundary)
+                            .validate_finding_references_cached(&finding, choice_cache)?;
+                    } else {
+                        self.read_finding_cached(id, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::FindingCandidateBundle => {
-                    let bundle = self.decode_finding_candidate_bundle(id)?;
-                    self.validate_finding_candidate_bundle(
-                        &bundle,
-                        super::finding_candidate::FindingCandidateValidation::Load,
-                    )?;
+                    if reader.is_checked() {
+                        let bundle = FindingCandidateBundle::from_canonical_bytes(envelope.body())?;
+                        if bundle.id()?.content_id() != id {
+                            return Err(integrity("finding-candidate-bundle-envelope-shape"));
+                        }
+                        reader
+                            .semantic(boundary)
+                            .validate_finding_candidate_bundle(&bundle, choice_cache)?;
+                    } else {
+                        let bundle = self.decode_finding_candidate_bundle(id)?;
+                        self.validate_finding_candidate_bundle(
+                            &bundle,
+                            super::finding_candidate::FindingCandidateValidation::Load,
+                        )?;
+                    }
                 }
                 crate::CampaignRecordKind::FindingTriageReplayEvidence => {
-                    let evidence = self.decode_finding_triage_replay_evidence(id)?;
-                    self.validate_finding_triage_replay_evidence(&evidence)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .decode_finding_triage_replay_evidence(id)?;
+                    } else {
+                        let evidence = self.decode_finding_triage_replay_evidence(id)?;
+                        self.validate_finding_triage_replay_evidence(&evidence)?;
+                    }
                 }
                 crate::CampaignRecordKind::BranchRequest => {
-                    let request = self.decode_branch_request(id)?;
-                    self.validate_branch_request_references_shallow(&request)?;
+                    if reader.is_checked() {
+                        let mut semantic = reader.semantic(boundary);
+                        let request = semantic.decode_branch_request(id)?;
+                        semantic
+                            .validate_branch_request_references_shallow(&request, choice_cache)?;
+                    } else {
+                        let request = self.decode_branch_request(id)?;
+                        self.validate_branch_request_references_shallow(&request)?;
+                    }
                 }
                 crate::CampaignRecordKind::Proposal => {
-                    let proposal = self.decode_proposal(id)?;
-                    self.validate_proposal_references_shallow(&proposal)?;
+                    if reader.is_checked() {
+                        let mut semantic = reader.semantic(boundary);
+                        let proposal = semantic.decode_proposal(id)?;
+                        semantic.validate_proposal_references_shallow(&proposal)?;
+                    } else {
+                        let proposal = self.decode_proposal(id)?;
+                        self.validate_proposal_references_shallow(&proposal)?;
+                    }
                 }
                 crate::CampaignRecordKind::Attempt => {
-                    self.read_attempt_cached(id, choice_cache)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .read_attempt_cached(id, choice_cache)?;
+                    } else {
+                        self.read_attempt_cached(id, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::AttemptAdmission => {
-                    let admission = self.decode_attempt_admission(id)?;
-                    self.validate_attempt_admission_references_shallow_cached(
-                        &admission,
-                        choice_cache,
-                    )?;
+                    if reader.is_checked() {
+                        let mut semantic = reader.semantic(boundary);
+                        let admission = semantic.decode_attempt_admission(id)?;
+                        semantic.validate_attempt_admission_references_shallow_cached(
+                            &admission,
+                            choice_cache,
+                        )?;
+                    } else {
+                        let admission = self.decode_attempt_admission(id)?;
+                        self.validate_attempt_admission_references_shallow_cached(
+                            &admission,
+                            choice_cache,
+                        )?;
+                    }
                 }
                 crate::CampaignRecordKind::PlannerStep => {
-                    self.read_planner_step(id)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .read_planner_step_with_request(id)?;
+                    } else {
+                        self.read_planner_step(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::RetainedPlannerRequest => {
-                    self.read_planner_request(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_planner_request(id)?;
+                    } else {
+                        self.read_planner_request(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ExpansionState => {
-                    self.read_expansion_state(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_expansion_state(id)?;
+                    } else {
+                        self.read_expansion_state(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ContinuationProjection => {
-                    self.read_continuation_projection(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_continuation_projection(id)?;
+                    } else {
+                        self.read_continuation_projection(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::ExpansionCredit => {
-                    self.read_expansion_credit(id)?;
+                    if reader.is_checked() {
+                        reader.semantic(boundary).read_expansion_credit(id)?;
+                    } else {
+                        self.read_expansion_credit(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::MeasurementSet => {
-                    self.read_measurement_set(id)?;
+                    if reader.is_checked() {
+                        self.decode_measurement_set_envelope(id, &envelope)?;
+                    } else {
+                        self.read_measurement_set(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::PropertyVerdictSet => {
-                    self.read_property_verdict_set(id)?;
+                    if reader.is_checked() {
+                        self.decode_property_verdict_set_envelope(id, &envelope)?;
+                    } else {
+                        self.read_property_verdict_set(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::CoverageProjection => {
-                    self.read_coverage_projection(id)?;
+                    if reader.is_checked() {
+                        self.decode_coverage_projection_envelope(id, &envelope)?;
+                    } else {
+                        self.read_coverage_projection(id)?;
+                    }
                 }
                 crate::CampaignRecordKind::Observation => {
-                    let observation = self.decode_observation(id)?;
-                    self.validate_observation_references_cached(&observation, choice_cache)?;
+                    if reader.is_checked() {
+                        let mut semantic = reader.semantic(boundary);
+                        let observation = semantic.decode_observation(id)?;
+                        semantic
+                            .validate_observation_references_cached(&observation, choice_cache)?;
+                    } else {
+                        let observation = self.decode_observation(id)?;
+                        self.validate_observation_references_cached(&observation, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::ObjectiveEvaluation => {
-                    self.read_objective_evaluation_cached(id, choice_cache)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .read_objective_evaluation_cached(id, choice_cache)?;
+                    } else {
+                        self.read_objective_evaluation_cached(id, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::RankingExplanation => {
-                    self.read_ranking_explanation_cached(id, choice_cache)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .read_ranking_explanation_cached(id, choice_cache)?;
+                    } else {
+                        self.read_ranking_explanation_cached(id, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::SurvivorSelection => {
-                    self.read_survivor_selection_bundle_cached(id, choice_cache)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .read_survivor_selection_bundle_cached(id, choice_cache)?;
+                    } else {
+                        self.read_survivor_selection_bundle_cached(id, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::PolicyArtifact => {
-                    self.validate_policy_artifact_references(&envelope)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_policy_artifact_references(&envelope)?;
+                    } else {
+                        self.validate_policy_artifact_references(&envelope)?;
+                    }
                 }
                 crate::CampaignRecordKind::PlannerState => {
-                    self.validate_planner_state_references(&envelope)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_planner_state_references(&envelope)?;
+                    } else {
+                        self.validate_planner_state_references(&envelope)?;
+                    }
                 }
                 crate::CampaignRecordKind::PlannerInvocation => {
-                    self.validate_planner_invocation_references(&envelope)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_planner_invocation_references(&envelope)?;
+                    } else {
+                        self.validate_planner_invocation_references(&envelope)?;
+                    }
                 }
                 crate::CampaignRecordKind::ChoiceOpportunity => {
-                    self.validate_opportunity_references_cached(&envelope, choice_cache)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_opportunity_references_cached(&envelope, choice_cache)?;
+                    } else {
+                        self.validate_opportunity_references_cached(&envelope, choice_cache)?;
+                    }
                 }
                 crate::CampaignRecordKind::ChoiceGroup => {
-                    self.validate_group_references(&envelope)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_group_references(&envelope)?;
+                    } else {
+                        self.validate_group_references(&envelope)?;
+                    }
                 }
                 crate::CampaignRecordKind::Selection => {
-                    self.validate_selection_references(&envelope)?;
+                    if reader.is_checked() {
+                        reader
+                            .semantic(boundary)
+                            .validate_selection_references(&envelope, choice_cache)?;
+                    } else {
+                        self.validate_selection_references(&envelope)?;
+                    }
                 }
                 _ => {}
             }
-            stack.extend(envelope.children().iter().map(|child| (child.id(), false)));
+            for child in envelope.children() {
+                reader.push(&mut stack, (child.id(), false))?;
+            }
         }
-        visited
+        let objects = visited
             .len()
             .checked_add(verified_merkle_positions.len())
-            .ok_or_else(|| integrity("campaign-closure-object-limit"))
+            .ok_or_else(|| integrity("campaign-closure-object-limit"))?;
+        if let Some(operation) = collection.operation.as_deref_mut() {
+            *operation = reader.retained_operation();
+        }
+        Ok(objects)
     }
+}
+
+fn collect_checked_vec<T: Ord>(
+    operation: Option<&crucible_store::owned_decode::DecodeBudget>,
+    values: BTreeSet<T>,
+) -> Result<Vec<T>, CampaignRepositoryError> {
+    let Some(operation) = operation else {
+        return Ok(values.into_iter().collect());
+    };
+    operation
+        .charge_array::<T>(values.len())
+        .map_err(CampaignCodecError::from)?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(values.len())
+        .map_err(|source| StoreError::Allocation {
+            source,
+            custody: Some(operation.custody()),
+        })?;
+    if output.capacity() > values.len() {
+        return Err(StoreError::Quota.into());
+    }
+    output.extend(values);
+    Ok(output)
 }

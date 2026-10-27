@@ -6,16 +6,18 @@ use std::collections::BinaryHeap;
 use num_bigint::BigUint;
 
 use super::*;
+use crate::repository::closure::read::{ClosureSemanticRead, with_compatibility_semantic};
 use crate::{ChoiceValue, IntegerDomain, IntegerRepresentation, IntegerValue};
 
 mod beam;
 mod branch;
 mod candidate_generation;
+mod source;
 
 pub(super) use beam::BeamProjectionCacheEntry;
 pub(super) use candidate_generation::*;
 
-const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
+pub(super) const PROJECTION_SCAN_PAGE_ITEMS: usize = 10_000;
 const MAX_STATIC_GENERATOR_CANDIDATES: usize = 512;
 const MAX_WEIGHTED_CATEGORICAL_REJECTION_DRAWS: u64 = 256;
 
@@ -56,6 +58,8 @@ struct AttemptProposalPrior {
 pub(super) struct PlannerCandidateProjectionCache {
     requests: BTreeMap<BranchRequestId, Arc<BranchRequest>>,
     domains: BTreeMap<crate::ChoiceDomainId, Arc<ChoiceDomain>>,
+    checked_requests: BTreeMap<BranchRequestId, BranchRequest>,
+    checked_domains: BTreeMap<crate::ChoiceDomainId, ChoiceDomain>,
     domain_bytes: usize,
     prospective_priors:
         BTreeMap<(crate::BranchPointId, u64), crate::exploration::BranchProspectivePriorBasis>,
@@ -173,6 +177,14 @@ pub(super) enum ContinuationProgressBasis {
 }
 
 impl CandidateViewRoots {
+    pub(super) const fn observations(self) -> ContentId {
+        self.observations
+    }
+
+    pub(super) const fn corpus(self) -> ContentId {
+        self.corpus
+    }
+
     pub(super) const fn from_roots(roots: crate::CampaignRoots) -> Self {
         Self {
             exploration: roots.exploration,
@@ -232,7 +244,10 @@ impl CandidateSourceProfile {
         }
     }
 
-    fn available_count(self, completed_visits: u64) -> Result<u64, CampaignRepositoryError> {
+    pub(super) fn available_count(
+        self,
+        completed_visits: u64,
+    ) -> Result<u64, CampaignRepositoryError> {
         match self {
             Self::Static { count, .. } => Ok(count),
             Self::ProgressiveInteger {
@@ -250,7 +265,10 @@ impl CandidateSourceProfile {
         }
     }
 
-    fn required_visits(self, proposed: u64) -> Result<Option<u64>, CampaignRepositoryError> {
+    pub(super) fn required_visits(
+        self,
+        proposed: u64,
+    ) -> Result<Option<u64>, CampaignRepositoryError> {
         let Self::ProgressiveInteger {
             initial_count,
             feedback_interval,
@@ -433,654 +451,40 @@ impl CampaignRepository {
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<Option<CandidateSourceProfile>, CampaignRepositoryError> {
-        if let Some(count) = self.static_candidate_count(request, domain)? {
-            let proposal_budget_covers_domain =
-                domain.cardinality() <= u128::from(request.budget().maximum_proposals());
-            let modeled_source = matches!(request.source(), CandidateSource::ModeledGenerated(_));
-            let budget_bounded_generator = if let Some(generator) = request.source().generator() {
-                let spec = self.read_generator(generator.content_id())?;
-                matches!(
-                    (domain, spec.algorithm(), spec.implementation_version()),
-                    (
-                        ChoiceDomain::Integer(_),
-                        CandidateGeneratorAlgorithm::All,
-                        crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION
-                    ) | (
-                        ChoiceDomain::Group(_),
-                        CandidateGeneratorAlgorithm::GroupProgressive { .. },
-                        crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION
-                    )
-                )
-            } else {
-                false
-            };
-            let exhausts_domain =
-                if matches!(domain, ChoiceDomain::Group(_)) && budget_bounded_generator {
-                    false
-                } else {
-                    (!modeled_source && !budget_bounded_generator) || proposal_budget_covers_domain
-                };
-            return Ok(Some(CandidateSourceProfile::Static {
-                count,
-                exhausts_domain,
-            }));
-        }
-        let Some(generator) = request.source().generator() else {
-            return Ok(None);
-        };
-        let spec = self.read_generator(generator.content_id())?;
-        if let (
-            CandidateGeneratorAlgorithm::MutateNearCorpus { maximum_distance },
-            crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
-            ChoiceDomain::Integer(_),
-        ) = (spec.algorithm(), spec.implementation_version(), domain)
-        {
-            if *maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE {
-                return Err(integrity("corpus-mutation-generator-distance-limit"));
-            }
-            if request.budget().maximum_proposals() > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS
-            {
-                return Err(integrity("corpus-mutation-generator-proposal-limit"));
-            }
-            return Ok(Some(CandidateSourceProfile::CorpusMutation));
-        }
-        if matches!(
-            (spec.algorithm(), spec.implementation_version(), domain),
-            (
-                CandidateGeneratorAlgorithm::MutateNearCorpus { .. },
-                crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-        ) {
-            return Err(integrity("candidate-generator-domain-family-mismatch"));
-        }
-
-        let (
-            CandidateGeneratorAlgorithm::ProgressiveInteger {
-                initial_strata,
-                feedback_interval,
-            },
-            crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-            ChoiceDomain::Integer(integer),
-        ) = (spec.algorithm(), spec.implementation_version(), domain)
-        else {
-            return Ok(None);
-        };
-        if *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA {
-            return Err(integrity("progressive-generator-initial-strata-limit"));
-        }
-        if request.budget().maximum_proposals() > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_PROPOSALS
-        {
-            return Err(integrity("progressive-generator-proposal-limit"));
-        }
-
-        let budget = request.budget().maximum_proposals();
-        let cardinality = integer.cardinality();
-        let count = u64::try_from(cardinality.min(u128::from(budget)))
-            .map_err(|_| integrity("candidate-source-cardinality-overflow"))?;
-        let initial_count = count.min(u64::from(*initial_strata));
-        count
-            .checked_sub(initial_count)
-            .and_then(|refinements| refinements.checked_mul(*feedback_interval))
-            .ok_or_else(|| integrity("progressive-generator-feedback-threshold-overflow"))?;
-        Ok(Some(CandidateSourceProfile::ProgressiveInteger {
-            count,
-            initial_count,
-            feedback_interval: *feedback_interval,
-            exhausts_domain: cardinality <= u128::from(budget),
-        }))
+        with_compatibility_semantic(self, |reader| {
+            reader.candidate_source_profile(request, domain)
+        })
     }
 
     /// Resolves the exact cardinality of a history-independent source.
     ///
     /// `None` means that the source requires a generator owner with cursor or
     /// feedback semantics that this repository checkpoint does not implement.
+    #[cfg(test)]
     pub(super) fn static_candidate_count(
         &self,
         request: &BranchRequest,
         domain: &ChoiceDomain,
     ) -> Result<Option<u64>, CampaignRepositoryError> {
-        if matches!(
-            request.source(),
-            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
-        ) {
-            return Ok(Some(1));
-        }
-        if let Some(values) = request.source().finite_values() {
-            return u64::try_from(values.len())
-                .map(Some)
-                .map_err(|_| integrity("candidate-source-cardinality-overflow"));
-        }
-
-        let generator = request
-            .source()
-            .generator()
-            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-        let spec = self.read_generator(generator.content_id())?;
-        match (spec.algorithm(), spec.implementation_version(), domain) {
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_),
-            ) => Ok(Some(2)),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => u64::try_from(discrete.alternatives().len())
-                .map(Some)
-                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Group(group),
-            ) => match group.domain() {
-                crate::ChoiceGroupDomain::Finite { tuples, .. } => u64::try_from(tuples.len())
-                    .map(Some)
-                    .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-                crate::ChoiceGroupDomain::Cartesian { .. } => Err(integrity(
-                    "Cartesian group requires a bounded group generator",
-                )),
-            },
-            (
-                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals },
-                crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Group(group),
-            ) if group.supports_progressive_generation(*maximum_proposals) => Ok(Some(
-                u64::from(*maximum_proposals).min(request.budget().maximum_proposals()),
-            )),
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => u64::try_from(
-                self.weighted_categorical_candidates(request, discrete, weights)?
-                    .len(),
-            )
-            .map(Some)
-            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-            (
-                CandidateGeneratorAlgorithm::OrderedMixture { components },
-                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-                _,
-            ) => self
-                .ordered_mixture_candidates(request, domain, components)?
-                .map(|candidates| {
-                    u64::try_from(candidates.len())
-                        .map_err(|_| integrity("candidate-source-cardinality-overflow"))
-                })
-                .transpose(),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => u64::try_from(
-                integer
-                    .cardinality()
-                    .min(u128::from(request.budget().maximum_proposals())),
-            )
-            .map(Some)
-            .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::LogInteger { .. },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            ) => Err(integrity("candidate-generator-domain-family-mismatch")),
-            (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => u64::try_from(self.boundary_integer_candidates(request, integer)?.len())
-                .map(Some)
-                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-            (
-                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => stratified_integer_candidate_count(*strata, integer).map(Some),
-            (
-                CandidateGeneratorAlgorithm::LogInteger { base },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => u64::try_from(log_integer_candidates(*base, integer)?.len())
-                .map(Some)
-                .map_err(|_| integrity("candidate-source-cardinality-overflow")),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
-                modeled_uniform_integer_candidate_count(request, integer).map(Some)
-            }
-            _ => Ok(None),
-        }
+        with_compatibility_semantic(self, |reader| {
+            reader.static_candidate_count(request, domain)
+        })
     }
 
     /// Resolves one one-based candidate ordinal from a history-independent source.
+    #[cfg(test)]
     pub(super) fn static_candidate_at(
         &self,
         request: &BranchRequest,
         domain: &ChoiceDomain,
         ordinal: u64,
     ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
-        if ordinal == 0 {
-            return Err(integrity("proposal-ordinal-is-not-canonical"));
-        }
-        if let CandidateSource::StatisticalFinite(source) = request.source() {
-            if ordinal != 1 {
-                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-            }
-            let BranchRequestCause::Planner(invocation_id) = request.cause() else {
-                return Err(integrity("statistical-request-cause-is-not-planner"));
-            };
-            let invocation = self.load_planner_invocation(invocation_id)?;
-            let policy = self.read_policy(invocation.policy().content_id())?;
-            let design = policy
-                .statistical_sampling_design()
-                .ok_or_else(|| integrity("statistical-policy-lacks-sampling-design"))?;
-            let draw_plan = design
-                .draw(source.coordinate())
-                .ok_or_else(|| integrity("statistical-request-coordinate-is-not-planned"))?;
-            let distribution = design
-                .distributions()
-                .get(&draw_plan.model())
-                .ok_or_else(|| integrity("statistical-request-model-is-not-planned"))?;
-            if source.model() != draw_plan.model()
-                || source.target_masses() != distribution.target_masses()
-                || source.proposal_masses() != distribution.proposal_masses()
-            {
-                return Err(integrity("statistical-request-distribution-mismatch"));
-            }
-            let draw = weighted_categorical_draw(
-                invocation.policy().content_id().digest(),
-                source.coordinate(),
-                u128::from(source.proposal_total()),
-            )?;
-            let mut cumulative = 0_u128;
-            for (value, mass) in source.proposal_masses() {
-                cumulative = cumulative
-                    .checked_add(u128::from(*mass))
-                    .ok_or_else(|| integrity("statistical-proposal-mass-sum-overflow"))?;
-                if draw < cumulative {
-                    return Ok(Some(value.clone()));
-                }
-            }
-            return Err(integrity("statistical-proposal-draw-is-out-of-range"));
-        }
-        if let CandidateSource::StatisticalSmc(source) = request.source() {
-            if ordinal != 1 {
-                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-            }
-            let BranchRequestCause::Planner(invocation_id) = request.cause() else {
-                return Err(integrity("SMC request cause is not a planner"));
-            };
-            let invocation = self.load_planner_invocation(invocation_id)?;
-            let policy = self.read_policy(invocation.policy().content_id())?;
-            let design = policy
-                .sequential_monte_carlo_design()
-                .ok_or_else(|| integrity("SMC policy lacks a design"))?;
-            let stage = design
-                .stage(source.stage())
-                .ok_or_else(|| integrity("SMC request stage is not planned"))?;
-            let distribution = design
-                .distributions()
-                .get(&stage.selector().model())
-                .ok_or_else(|| integrity("SMC request model is not planned"))?;
-            if source.model() != stage.selector().model()
-                || source.target_masses() != distribution.target_masses()
-                || source.proposal_masses() != distribution.proposal_masses()
-            {
-                return Err(integrity("SMC request distribution mismatch"));
-            }
-            let draw = smc_weighted_categorical_draw(
-                invocation.policy().content_id().digest(),
-                source.stage(),
-                source.slot(),
-                u128::from(source.proposal_total()),
-            )?;
-            let mut cumulative = 0_u128;
-            for (value, mass) in source.proposal_masses() {
-                cumulative = cumulative
-                    .checked_add(u128::from(*mass))
-                    .ok_or_else(|| integrity("SMC proposal mass sum overflow"))?;
-                if draw < cumulative {
-                    return Ok(Some(value.clone()));
-                }
-            }
-            return Err(integrity("SMC proposal draw is out of range"));
-        }
-        if let Some(values) = request.source().finite_values() {
-            return values
-                .iter()
-                .nth(candidate_index(ordinal)?)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality"));
-        }
-
-        let generator = request
-            .source()
-            .generator()
-            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-        let spec = self.read_generator(generator.content_id())?;
-        match (spec.algorithm(), spec.implementation_version(), domain) {
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_),
-            ) => match ordinal {
-                1 => Ok(Some(ChoiceValue::Boolean(false))),
-                2 => Ok(Some(ChoiceValue::Boolean(true))),
-                _ => Err(integrity("proposal-ordinal-exceeds-source-cardinality")),
-            },
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => discrete
-                .alternatives()
-                .keys()
-                .nth(candidate_index(ordinal)?)
-                .copied()
-                .map(ChoiceValue::Discrete)
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Group(group),
-            ) => match group.domain() {
-                crate::ChoiceGroupDomain::Finite { tuples, .. } => tuples
-                    .iter()
-                    .nth(candidate_index(ordinal)?)
-                    .cloned()
-                    .map(|tuple| group.select(tuple).map(ChoiceValue::Group))
-                    .transpose()?
-                    .map(Some)
-                    .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-                crate::ChoiceGroupDomain::Cartesian { .. } => Err(integrity(
-                    "Cartesian group requires a bounded group generator",
-                )),
-            },
-            (
-                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals },
-                crate::GROUP_PROGRESSIVE_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Group(group),
-            ) => group
-                .progressive_candidate(ordinal, *maximum_proposals)
-                .map(ChoiceValue::Group)
-                .map(Some)
-                .map_err(Into::into),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => integer_candidate_at_offset(integer, u128::from(ordinal - 1))
-                .map(ChoiceValue::Integer)
-                .map(Some),
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => self
-                .weighted_categorical_candidates(request, discrete, weights)?
-                .get(candidate_index(ordinal)?)
-                .copied()
-                .map(ChoiceValue::Discrete)
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (
-                CandidateGeneratorAlgorithm::OrderedMixture { components },
-                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-                _,
-            ) => self
-                .ordered_mixture_candidates(request, domain, components)?
-                .ok_or_else(|| integrity("generated-proposal-owner-is-not-implemented"))?
-                .get(candidate_index(ordinal)?)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::LogInteger { .. },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            ) => Err(integrity("candidate-generator-domain-family-mismatch")),
-            (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => self
-                .boundary_integer_candidates(request, integer)?
-                .get(candidate_index(ordinal)?)
-                .copied()
-                .map(ChoiceValue::Integer)
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (
-                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => stratified_integer_candidate(*strata, integer, ordinal)
-                .map(ChoiceValue::Integer)
-                .map(Some),
-            (
-                CandidateGeneratorAlgorithm::LogInteger { base },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => log_integer_candidates(*base, integer)?
-                .get(candidate_index(ordinal)?)
-                .copied()
-                .map(ChoiceValue::Integer)
-                .map(Some)
-                .ok_or_else(|| integrity("proposal-ordinal-exceeds-source-cardinality")),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => {
-                modeled_uniform_integer_candidate(request, integer, ordinal)
-                    .map(ChoiceValue::Integer)
-                    .map(Some)
-            }
-            _ => Ok(None),
-        }
+        with_compatibility_semantic(self, |reader| {
+            reader.static_candidate_at(request, domain, ordinal)
+        })
     }
 
-    /// Resolves one bounded prefix without repeating source traversal or generation.
-    pub(super) fn static_candidate_prefix(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        limit: u64,
-    ) -> Result<Vec<ChoiceValue>, CampaignRepositoryError> {
-        let limit = usize::try_from(limit)
-            .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))?;
-        if matches!(
-            request.source(),
-            CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
-        ) {
-            return if limit == 0 {
-                Ok(Vec::new())
-            } else {
-                self.static_candidate_at(request, domain, 1)?
-                    .map(|value| vec![value])
-                    .ok_or_else(|| integrity("statistical-proposal-draw-is-missing"))
-            };
-        }
-        if let Some(values) = request.source().finite_values() {
-            return Ok(values.iter().take(limit).cloned().collect());
-        }
-
-        let generator = request
-            .source()
-            .generator()
-            .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-        let spec = self.read_generator(generator.content_id())?;
-        let ordinals = || {
-            u64::try_from(limit)
-                .map(|limit| 1..=limit)
-                .map_err(|_| integrity("static-candidate-prefix-limit-overflow"))
-        };
-        let candidates = match (spec.algorithm(), spec.implementation_version(), domain) {
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_),
-            ) => [ChoiceValue::Boolean(false), ChoiceValue::Boolean(true)]
-                .into_iter()
-                .take(limit)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => discrete
-                .alternatives()
-                .keys()
-                .take(limit)
-                .copied()
-                .map(ChoiceValue::Discrete)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => ordinals()?
-                .map(|ordinal| {
-                    integer_candidate_at_offset(integer, u128::from(ordinal - 1))
-                        .map(ChoiceValue::Integer)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => self
-                .weighted_categorical_candidates(request, discrete, weights)?
-                .into_iter()
-                .take(limit)
-                .map(ChoiceValue::Discrete)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::OrderedMixture { components },
-                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-                _,
-            ) => self
-                .ordered_mixture_candidates(request, domain, components)?
-                .ok_or_else(|| integrity("generated-proposal-owner-is-not-implemented"))?
-                .into_iter()
-                .take(limit)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => self
-                .boundary_integer_candidates(request, integer)?
-                .into_iter()
-                .take(limit)
-                .map(ChoiceValue::Integer)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => ordinals()?
-                .map(|ordinal| {
-                    stratified_integer_candidate(*strata, integer, ordinal)
-                        .map(ChoiceValue::Integer)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            (
-                CandidateGeneratorAlgorithm::LogInteger { base },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => log_integer_candidates(*base, integer)?
-                .into_iter()
-                .take(limit)
-                .map(ChoiceValue::Integer)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) if matches!(request.source(), CandidateSource::ModeledGenerated(_)) => ordinals()?
-                .map(|ordinal| {
-                    modeled_uniform_integer_candidate(request, integer, ordinal)
-                        .map(ChoiceValue::Integer)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            _ => return Err(integrity("static-candidate-prefix-is-not-implemented")),
-        };
-        Ok(candidates)
-    }
-
-    pub(super) fn candidate_at_with_feedback(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        ordinal: u64,
-        completed_visits: u64,
-    ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
-        let Some(profile) = self.candidate_source_profile(request, domain)? else {
-            return Ok(None);
-        };
-        let Some(count) = profile.count() else {
-            return Ok(None);
-        };
-        if ordinal == 0 || ordinal > count {
-            return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-        }
-        if ordinal > profile.available_count(completed_visits)? {
-            return Err(integrity("progressive-generator-feedback-is-insufficient"));
-        }
-        if let Some(value) = self.static_candidate_at(request, domain, ordinal)? {
-            return Ok(Some(value));
-        }
-
-        Ok(None)
-    }
-
+    /// Resolves one mutation ordinal from its authenticated corpus view.
     fn corpus_mutation_next_candidate(
         &self,
         request: &BranchRequest,
@@ -1106,109 +510,9 @@ impl CampaignRepository {
         ordinal: u64,
         basis: CandidateEnumerationBasis<'_>,
     ) -> Result<Option<ChoiceValue>, CampaignRepositoryError> {
-        let CandidateEnumerationBasis {
-            view,
-            completed_visits,
-            additional_previous,
-            feedback_projection,
-        } = basis;
-        let Some(profile) = self.candidate_source_profile(request, domain)? else {
-            return Ok(None);
-        };
-        if profile.scores_intervals() {
-            let count = profile.count().unwrap_or_default();
-            if ordinal == 0 || ordinal > count {
-                return Err(integrity("proposal-ordinal-exceeds-source-cardinality"));
-            }
-            if ordinal > profile.available_count(completed_visits)? {
-                return Err(integrity("progressive-generator-feedback-is-insufficient"));
-            }
-            let ChoiceDomain::Integer(integer) = domain else {
-                return Err(integrity("candidate-generator-domain-family-mismatch"));
-            };
-            let generator = request
-                .source()
-                .generator()
-                .ok_or_else(|| integrity("candidate-source-kind-is-invalid"))?;
-            let spec = self.read_generator(generator.content_id())?;
-            let CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. } =
-                spec.algorithm()
-            else {
-                return Err(integrity("progressive-generator-basis-mismatch"));
-            };
-            if spec.implementation_version()
-                != crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
-            {
-                return Err(integrity("progressive-generator-basis-mismatch"));
-            }
-            if ordinal <= u64::from(*initial_strata).min(count) {
-                return stratified_integer_candidate(*initial_strata, integer, ordinal)
-                    .map(ChoiceValue::Integer)
-                    .map(Some);
-            }
-            let feedback = feedback_projection
-                .ok_or_else(|| integrity("progressive-generator-feedback-projection-is-missing"))?;
-            let additional_count = u64::try_from(additional_previous.len())
-                .map_err(|_| integrity("progressive-generator-proposal-history-mismatch"))?;
-            let base_ordinal = ordinal
-                .checked_sub(additional_count)
-                .ok_or_else(|| integrity("progressive-generator-proposal-history-mismatch"))?;
-            let mut proposed =
-                self.proposed_values_before(view.exploration, request.id()?, base_ordinal)?;
-            for (index, proposal) in additional_previous.iter().enumerate() {
-                let expected_ordinal = base_ordinal
-                    .checked_add(u64::try_from(index).map_err(|_| {
-                        integrity("progressive-generator-proposal-history-mismatch")
-                    })?)
-                    .ok_or_else(|| integrity("progressive-generator-proposal-history-mismatch"))?;
-                if proposal.request() != request.id()?
-                    || proposal.ordinal() != expected_ordinal
-                    || !proposed.insert(proposal.value().clone())
-                {
-                    return Err(integrity("progressive-generator-proposal-history-mismatch"));
-                }
-            }
-            return feedback_progressive_integer_candidate(
-                request,
-                integer,
-                domain.semantic_id(),
-                &proposed,
-                feedback,
-            )
-            .map(ChoiceValue::Integer)
-            .map(Some);
-        }
-        if profile != CandidateSourceProfile::CorpusMutation {
-            return self.candidate_at_with_feedback(request, domain, ordinal, completed_visits);
-        }
-        if ordinal == 0 || ordinal > crate::CORPUS_MUTATION_GENERATOR_MAX_PROPOSALS {
-            return Err(integrity("corpus-mutation-proposal-ordinal-limit"));
-        }
-        let additional_count = u64::try_from(additional_previous.len())
-            .map_err(|_| integrity("corpus-mutation-proposal-ordinal-limit"))?;
-        let base_ordinal = ordinal
-            .checked_sub(additional_count)
-            .ok_or_else(|| integrity("corpus-mutation-proposal-history-mismatch"))?;
-        let mut proposed =
-            self.proposed_values_before(view.exploration, request.id()?, base_ordinal)?;
-        for (index, proposal) in additional_previous.iter().enumerate() {
-            let expected_ordinal = base_ordinal
-                .checked_add(
-                    u64::try_from(index)
-                        .map_err(|_| integrity("corpus-mutation-proposal-ordinal-limit"))?,
-                )
-                .ok_or_else(|| integrity("corpus-mutation-proposal-ordinal-limit"))?;
-            if proposal.request() != request.id()?
-                || proposal.ordinal() != expected_ordinal
-                || !proposed.insert(proposal.value().clone())
-            {
-                return Err(integrity("corpus-mutation-proposal-history-mismatch"));
-            }
-        }
-        Ok(self
-            .corpus_mutation_candidates(request, domain, view, None)?
-            .into_iter()
-            .find(|candidate| !proposed.contains(candidate)))
+        with_compatibility_semantic(self, |reader| {
+            reader.expected_candidate_at_view(request, domain, ordinal, basis)
+        })
     }
 
     fn proposed_values_before(
@@ -1351,336 +655,6 @@ impl CampaignRepository {
             .map(|values| values.into_iter().map(ChoiceValue::Integer).collect())
     }
 
-    fn weighted_categorical_candidates(
-        &self,
-        request: &BranchRequest,
-        domain: &crate::DiscreteDomain,
-        weights: &BTreeMap<crate::AlternativeId, u64>,
-    ) -> Result<Vec<crate::AlternativeId>, CampaignRepositoryError> {
-        if weights.len() > crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES {
-            return Err(integrity("weighted-generator-alternative-limit"));
-        }
-        if weights
-            .keys()
-            .any(|alternative| !domain.alternatives().contains_key(alternative))
-        {
-            return Err(integrity(
-                "candidate-generator-discrete-alternative-mismatch",
-            ));
-        }
-
-        let request_digest = request.id()?.content_id().digest();
-        let mut remaining = weights
-            .iter()
-            .map(|(alternative, weight)| (*alternative, *weight))
-            .collect::<Vec<_>>();
-        let mut candidates = Vec::with_capacity(remaining.len());
-        while !remaining.is_empty() {
-            let total_weight = remaining.iter().try_fold(0_u128, |total, (_, weight)| {
-                total
-                    .checked_add(u128::from(*weight))
-                    .ok_or_else(|| integrity("weighted-generator-weight-sum-overflow"))
-            })?;
-            let draw = weighted_categorical_draw(
-                request_digest,
-                u64::try_from(candidates.len())
-                    .map_err(|_| integrity("candidate-source-cardinality-overflow"))?,
-                total_weight,
-            )?;
-            let mut cumulative = 0_u128;
-            let mut selected = None;
-            for (index, (_, weight)) in remaining.iter().enumerate() {
-                cumulative = cumulative
-                    .checked_add(u128::from(*weight))
-                    .ok_or_else(|| integrity("weighted-generator-weight-sum-overflow"))?;
-                if draw < cumulative {
-                    selected = Some(index);
-                    break;
-                }
-            }
-            let selected =
-                selected.ok_or_else(|| integrity("weighted-generator-draw-is-out-of-range"))?;
-            candidates.push(remaining.remove(selected).0);
-        }
-        Ok(candidates)
-    }
-
-    fn ordered_mixture_candidates(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        components: &[crate::WeightedGenerator],
-    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
-        let mut remaining_work = crate::ORDERED_MIXTURE_GENERATOR_MAX_WORK_ITEMS;
-        self.ordered_mixture_candidates_with_budget(
-            request,
-            domain,
-            components,
-            0,
-            &mut remaining_work,
-        )
-    }
-
-    fn ordered_mixture_candidates_with_budget(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        components: &[crate::WeightedGenerator],
-        depth: usize,
-        remaining_work: &mut usize,
-    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
-        if depth > crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH {
-            return Err(integrity("ordered-mixture-generator-depth-limit"));
-        }
-        let mut states = Vec::with_capacity(components.len());
-        for component in components {
-            let Some(values) = self.bounded_static_generator_candidates(
-                request,
-                domain,
-                component.generator(),
-                depth + 1,
-                remaining_work,
-            )?
-            else {
-                return Ok(None);
-            };
-            states.push(MixtureComponentState {
-                values,
-                cursor: 0,
-                weight: component.weight(),
-            });
-        }
-
-        let mut emitted = BTreeSet::new();
-        let mut candidates = Vec::new();
-        while let Some(selected) = next_mixture_component(&states)? {
-            charge_mixture_work(remaining_work, 1)?;
-            let state = &mut states[selected];
-            let value = state
-                .values
-                .get(state.cursor)
-                .cloned()
-                .ok_or_else(|| integrity("ordered-mixture-cursor-is-invalid"))?;
-            state.cursor += 1;
-            if !emitted.insert(value.clone()) {
-                continue;
-            }
-            if candidates.len() == crate::ORDERED_MIXTURE_GENERATOR_MAX_CANDIDATES {
-                return Err(integrity("ordered-mixture-generator-candidate-limit"));
-            }
-            candidates.push(value);
-        }
-        Ok(Some(candidates))
-    }
-
-    fn bounded_static_generator_candidates(
-        &self,
-        request: &BranchRequest,
-        domain: &ChoiceDomain,
-        generator: CandidateGeneratorSpecId,
-        depth: usize,
-        remaining_work: &mut usize,
-    ) -> Result<Option<Vec<ChoiceValue>>, CampaignRepositoryError> {
-        if depth > crate::ORDERED_MIXTURE_GENERATOR_MAX_DEPTH {
-            return Err(integrity("ordered-mixture-generator-depth-limit"));
-        }
-        let spec = self.read_generator(generator.content_id())?;
-        let values = match (spec.algorithm(), spec.implementation_version(), domain) {
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_),
-            ) => vec![ChoiceValue::Boolean(false), ChoiceValue::Boolean(true)],
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => {
-                require_mixture_work_capacity(remaining_work, discrete.alternatives().len())?;
-                discrete
-                    .alternatives()
-                    .keys()
-                    .copied()
-                    .map(ChoiceValue::Discrete)
-                    .collect()
-            }
-            (
-                CandidateGeneratorAlgorithm::All,
-                crate::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => {
-                let count = integer
-                    .cardinality()
-                    .min(u128::from(request.budget().maximum_proposals()));
-                let count = usize::try_from(count)
-                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
-                require_mixture_work_capacity(remaining_work, count)?;
-                (0..count)
-                    .map(|offset| {
-                        integer_candidate_at_offset(integer, offset as u128)
-                            .map(ChoiceValue::Integer)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => self
-                .boundary_integer_candidates(request, integer)?
-                .into_iter()
-                .map(ChoiceValue::Integer)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::StratifiedInteger { strata },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => {
-                let count = stratified_integer_candidate_count(*strata, integer)?;
-                let count = usize::try_from(count)
-                    .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
-                require_mixture_work_capacity(remaining_work, count)?;
-                (1..=count)
-                    .map(|ordinal| {
-                        let ordinal = u64::try_from(ordinal)
-                            .map_err(|_| integrity("ordered-mixture-generator-work-limit"))?;
-                        stratified_integer_candidate(*strata, integer, ordinal)
-                            .map(ChoiceValue::Integer)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            (
-                CandidateGeneratorAlgorithm::LogInteger { base },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Integer(integer),
-            ) => log_integer_candidates(*base, integer)?
-                .into_iter()
-                .map(ChoiceValue::Integer)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { weights },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Discrete(discrete),
-            ) => self
-                .weighted_categorical_candidates(request, discrete, weights)?
-                .into_iter()
-                .map(ChoiceValue::Discrete)
-                .collect(),
-            (
-                CandidateGeneratorAlgorithm::OrderedMixture { components },
-                crate::ORDERED_MIXTURE_GENERATOR_IMPLEMENTATION_VERSION,
-                _,
-            ) => {
-                return self.ordered_mixture_candidates_with_budget(
-                    request,
-                    domain,
-                    components,
-                    depth,
-                    remaining_work,
-                );
-            }
-            (
-                CandidateGeneratorAlgorithm::WeightedCategorical { .. },
-                crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Integer(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::BoundaryInteger,
-                crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::StratifiedInteger { .. },
-                crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::LogInteger { .. },
-                crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            )
-            | (
-                CandidateGeneratorAlgorithm::PermutedInteger,
-                crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
-                ChoiceDomain::Boolean(_) | ChoiceDomain::Discrete(_),
-            ) => return Err(integrity("candidate-generator-domain-family-mismatch")),
-            _ => return Ok(None),
-        };
-        charge_mixture_work(remaining_work, values.len())?;
-        Ok(Some(values))
-    }
-
-    fn boundary_integer_candidates(
-        &self,
-        request: &BranchRequest,
-        domain: &IntegerDomain,
-    ) -> Result<Vec<IntegerValue>, CampaignRepositoryError> {
-        if domain.landmarks().len() > crate::BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS {
-            return Err(integrity("boundary-generator-landmark-limit"));
-        }
-        let opportunity = self.read_opportunity(request.opportunity().content_id())?;
-        let ChoiceValue::Integer(default) = opportunity.default() else {
-            return Err(integrity("boundary-generator-default-is-not-integer"));
-        };
-        let mut values = Vec::new();
-        let mut seen = BTreeSet::new();
-        push_static_integer_candidate(&mut values, &mut seen, domain, domain.minimum())?;
-        push_static_integer_candidate(&mut values, &mut seen, domain, domain.maximum())?;
-        push_static_integer_candidate(&mut values, &mut seen, domain, *default)?;
-        for landmark in domain.landmarks() {
-            push_static_integer_candidate(&mut values, &mut seen, domain, *landmark)?;
-        }
-
-        let anchors = values.clone();
-        for anchor in anchors {
-            if let Some(lower) = integer_step_neighbor(anchor, domain.step(), false) {
-                push_static_integer_candidate(&mut values, &mut seen, domain, lower)?;
-            }
-            if let Some(upper) = integer_step_neighbor(anchor, domain.step(), true) {
-                push_static_integer_candidate(&mut values, &mut seen, domain, upper)?;
-            }
-        }
-
-        match domain.representation() {
-            IntegerRepresentation::Unsigned64 => {
-                for exponent in 0..64 {
-                    if let Some(value) = 1_u64.checked_shl(exponent) {
-                        push_static_integer_candidate(
-                            &mut values,
-                            &mut seen,
-                            domain,
-                            IntegerValue::Unsigned(value),
-                        )?;
-                    }
-                }
-            }
-            IntegerRepresentation::Signed64 => {
-                for exponent in 0..64 {
-                    if exponent < 63 {
-                        push_static_integer_candidate(
-                            &mut values,
-                            &mut seen,
-                            domain,
-                            IntegerValue::Signed(1_i64 << exponent),
-                        )?;
-                    }
-                    let negative = if exponent == 63 {
-                        i64::MIN
-                    } else {
-                        -(1_i64 << exponent)
-                    };
-                    push_static_integer_candidate(
-                        &mut values,
-                        &mut seen,
-                        domain,
-                        IntegerValue::Signed(negative),
-                    )?;
-                }
-            }
-        }
-        Ok(values)
-    }
-
     pub(super) fn frontier_index_after(
         &self,
         exploration_root: ContentId,
@@ -1729,6 +703,12 @@ impl CampaignRepository {
         requests: &[(BranchRequestId, crate::BranchPointId)],
         publish: bool,
     ) -> Result<ContentId, CampaignRepositoryError> {
+        if !publish {
+            return with_compatibility_semantic(self, |reader| {
+                reader.branch_request_index_after(exploration_root, requests)
+            });
+        }
+
         let index = self
             .merkle
             .get(exploration_root, branch_request_index_anchor_key())?

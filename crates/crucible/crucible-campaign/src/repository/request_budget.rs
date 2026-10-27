@@ -10,6 +10,196 @@
 
 use super::*;
 use crate::CampaignBudgetLedger;
+use crate::repository::closure::read::ClosureSemanticRead;
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn indexed_request_execution_bases(
+        &mut self,
+        ledger: CampaignBudgetLedger,
+        request: BranchRequestId,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let Some(request_root) =
+            self.merkle_get(ledger.request_spending(), request_spending_key(request))?
+        else {
+            return Ok(0);
+        };
+        Ok(self.merkle_inspect_shallow(request_root)?.entry_count())
+    }
+
+    pub(in crate::repository) fn request_execution_bases_at(
+        &mut self,
+        snapshot: &LoadedSnapshot,
+        request: BranchRequestId,
+    ) -> Result<u64, CampaignRepositoryError> {
+        let ledger = self.parent_budget_ledger(snapshot)?;
+        self.indexed_request_execution_bases(ledger, request)
+    }
+
+    pub(in crate::repository) fn request_admissions_root_after(
+        &mut self,
+        ledger: CampaignBudgetLedger,
+        accounting: ContentId,
+        fact: &CampaignFact,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let proposals = self.new_request_admission_proposals(fact)?;
+        let prior = ledger.request_admissions();
+        let empty = MerkleMap::empty_content_id()?;
+        let mut by_request = BTreeMap::<BranchRequestId, BTreeMap<CampaignHash, ContentId>>::new();
+        for proposal in proposals {
+            let admission_content = self
+                .merkle_get(
+                    accounting,
+                    map_key_content("accounting.proposal-admission", proposal.content_id()),
+                )?
+                .ok_or_else(|| integrity("request-admissions-proposal-has-no-admission"))?;
+            let admission = self.decode_attempt_admission(admission_content)?;
+            let admitted_proposal = match admission.role() {
+                AttemptAdmissionRole::ExecutionBasis {
+                    proposal: Some(proposal),
+                    ..
+                }
+                | AttemptAdmissionRole::AdditionalCause { proposal } => proposal,
+                AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {
+                    return Err(integrity("request-admissions-unbacked-admission"));
+                }
+            };
+            if admitted_proposal != proposal {
+                return Err(integrity("request-admissions-proposal-mismatch"));
+            }
+            let request = self.decode_proposal(proposal.content_id())?.request();
+            if !by_request.contains_key(&request) {
+                self.insert_map(&mut by_request, request, BTreeMap::new())?;
+            }
+            let admissions = by_request
+                .get_mut(&request)
+                .ok_or_else(|| integrity("request-admissions-projection-missing"))?;
+            if admissions.contains_key(&request_proposal_key(proposal)) {
+                return Err(integrity("request-admissions-duplicate-proposal"));
+            }
+            self.insert_map(
+                admissions,
+                request_proposal_key(proposal),
+                admission_content,
+            )?;
+        }
+
+        let mut outer = BTreeMap::new();
+        for (request, admissions) in by_request {
+            let key = request_admissions_key(request);
+            let request_root = self.merkle_get(prior, key)?.unwrap_or(empty);
+            for proposal in admissions.keys() {
+                if self.merkle_get(request_root, *proposal)?.is_some() {
+                    return Err(integrity("request-admissions-reused-proposal"));
+                }
+            }
+            let next = self.merkle_root_after_upserts(request_root, &admissions)?;
+            self.insert_map(&mut outer, key, next)?;
+        }
+        self.merkle_root_after_upserts(prior, &outer)
+    }
+
+    fn new_request_admission_proposals(
+        &mut self,
+        fact: &CampaignFact,
+    ) -> Result<Vec<ProposalId>, CampaignRepositoryError> {
+        let mut proposals = Vec::new();
+        match fact {
+            CampaignFact::AttemptAdmitted(id) => {
+                let admission = self.decode_attempt_admission(id.content_id())?;
+                match admission.role() {
+                    AttemptAdmissionRole::ExecutionBasis {
+                        proposal: Some(proposal),
+                        ..
+                    }
+                    | AttemptAdmissionRole::AdditionalCause { proposal } => {
+                        self.push(&mut proposals, proposal)?;
+                    }
+                    AttemptAdmissionRole::ExecutionBasis { proposal: None, .. } => {}
+                }
+            }
+            CampaignFact::PlannerAdvanced(step) => {
+                let (step, _) = self.read_planner_step_with_request(step.content_id())?;
+                for proposal in step.disposition().issued_proposals() {
+                    self.push(&mut proposals, *proposal)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(proposals)
+    }
+
+    pub(in crate::repository) fn request_spending_root_after(
+        &mut self,
+        ledger: CampaignBudgetLedger,
+        accounting: ContentId,
+    ) -> Result<ContentId, CampaignRepositoryError> {
+        let final_ordinal = self.accounted_attempts(accounting)?;
+        if final_ordinal < ledger.spent_attempts() {
+            return Err(integrity("request-budget-admission-sequence-regressed"));
+        }
+        if final_ordinal > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
+            return Err(integrity("request-budget-admission-index-limit"));
+        }
+        let empty = MerkleMap::empty_content_id()?;
+        let prior = ledger.request_spending();
+        let first = ledger
+            .spent_attempts()
+            .checked_add(1)
+            .ok_or_else(|| integrity("request-budget-admission-ordinal-overflow"))?;
+        let mut requests = BTreeMap::<BranchRequestId, BTreeMap<CampaignHash, ContentId>>::new();
+        for ordinal in first..=final_ordinal {
+            let content = self
+                .merkle_get(
+                    accounting,
+                    admission_ordinal_key(AdmissionOrdinal::new(ordinal)),
+                )?
+                .ok_or_else(|| integrity("request-budget-missing-dense-admission"))?;
+            let admission = self.decode_attempt_admission(content)?;
+            let AttemptAdmissionRole::ExecutionBasis {
+                proposal,
+                admission_ordinal,
+                ..
+            } = admission.role()
+            else {
+                return Err(integrity(
+                    "request-budget-dense-index-is-not-execution-basis",
+                ));
+            };
+            if admission_ordinal.value() != ordinal {
+                return Err(integrity("request-budget-dense-admission-ordinal-mismatch"));
+            }
+            let Some(proposal) = proposal else {
+                continue;
+            };
+            let request = self.decode_proposal(proposal.content_id())?.request();
+            if !requests.contains_key(&request) {
+                self.insert_map(&mut requests, request, BTreeMap::new())?;
+            }
+            let admissions = requests
+                .get_mut(&request)
+                .ok_or_else(|| integrity("request-budget-projection-missing"))?;
+            let key = request_attempt_key(admission.attempt());
+            if admissions.contains_key(&key) {
+                return Err(integrity("request-budget-repeated-execution-basis"));
+            }
+            self.insert_map(admissions, key, content)?;
+        }
+
+        let mut outer = BTreeMap::new();
+        for (request, admissions) in requests {
+            let key = request_spending_key(request);
+            let request_root = self.merkle_get(prior, key)?.unwrap_or(empty);
+            for attempt in admissions.keys() {
+                if self.merkle_get(request_root, *attempt)?.is_some() {
+                    return Err(integrity("request-budget-reused-execution-basis-slot"));
+                }
+            }
+            let next = self.merkle_root_after_upserts(request_root, &admissions)?;
+            self.insert_map(&mut outer, key, next)?;
+        }
+        self.merkle_root_after_upserts(prior, &outer)
+    }
+}
 
 type RequestAttemptPageScan = (
     Vec<(Proposal, AttemptAdmission)>,

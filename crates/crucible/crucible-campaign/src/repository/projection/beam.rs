@@ -7,6 +7,8 @@
 
 use super::*;
 
+mod checked;
+
 const MAX_BEAM_FRONTIER_POSITIONS: usize = 65_536;
 const MAX_BEAM_OBSERVATION_ROOT_ENTRIES: usize = 262_144;
 const MAX_BEAM_TARGET_COHORT_ATTEMPTS: usize = 262_144;

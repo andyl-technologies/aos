@@ -17,6 +17,8 @@ use crate::{CampaignCodecError, CampaignHash, CampaignRecordKind, ChildReference
 
 mod bulk;
 mod checked_batch;
+mod checked_closure;
+mod checked_edits;
 mod checked_lookup;
 
 const MERKLE_NODE_SCHEMA_VERSION: u32 = 1;

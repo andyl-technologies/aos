@@ -2,6 +2,320 @@
 
 use super::*;
 use crate::BranchBudget;
+use crate::repository::closure::read::ClosureSemanticRead;
+
+mod scope;
+
+impl ClosureSemanticRead<'_, '_> {
+    pub(in crate::repository) fn decode_branch_request(
+        &mut self,
+        id: ContentId,
+    ) -> Result<BranchRequest, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::BranchRequest)?;
+        let request = BranchRequest::from_canonical_bytes(envelope.body())?;
+        if request.id()?.content_id() != id {
+            return Err(integrity("branch-request-envelope-shape"));
+        }
+        Ok(request)
+    }
+
+    pub(in crate::repository) fn validate_branch_request_references_shallow(
+        &mut self,
+        request: &BranchRequest,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let parent = self.read_configuration_artifact(request.parent().content_id())?;
+        let opportunity =
+            self.read_opportunity_cached(request.opportunity().content_id(), cache)?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        request.validate_resolved(&parent, &opportunity, &domain)?;
+        if let Some(generator) = request.source().generator() {
+            self.require_record_kind(
+                generator.content_id(),
+                crate::CampaignRecordKind::CandidateGeneratorSpec,
+            )?;
+        }
+        match request.cause() {
+            BranchRequestCause::Planner(invocation) => {
+                self.require_record_kind(
+                    invocation.content_id(),
+                    crate::CampaignRecordKind::PlannerInvocation,
+                )?;
+            }
+            BranchRequestCause::ExhaustivePolicy(policy)
+            | BranchRequestCause::ScenarioDefault(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
+            BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_branch_request_references(
+        &mut self,
+        request: &BranchRequest,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let parent = self.read_configuration_artifact(request.parent().content_id())?;
+        let opportunity =
+            self.read_opportunity_cached(request.opportunity().content_id(), cache)?;
+        let domain = self.read_choice_domain(request.domain().content_id())?;
+        request.validate_resolved(&parent, &opportunity, &domain)?;
+        let mut remaining = MAX_CAMPAIGN_CLOSURE_OBJECTS;
+        self.validate_candidate_source_generator_with_budget(
+            request.source(),
+            &domain,
+            &mut remaining,
+        )?;
+        match request.cause() {
+            BranchRequestCause::Planner(invocation) => {
+                self.read_planner_invocation(invocation)?;
+            }
+            BranchRequestCause::ExhaustivePolicy(policy)
+            | BranchRequestCause::ScenarioDefault(policy) => {
+                self.read_policy(policy.content_id())?;
+            }
+            BranchRequestCause::Operator(_) | BranchRequestCause::Debugger(_) => {}
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_candidate_source_generator_with_budget(
+        &mut self,
+        source: &CandidateSource,
+        domain: &ChoiceDomain,
+        remaining: &mut usize,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(generator_id) = source.generator() else {
+            return Ok(());
+        };
+        if let CandidateSource::ModeledGenerated(_) = source {
+            let generator = self.read_generator(generator_id.content_id())?;
+            let ChoiceDomain::Integer(integer) = domain else {
+                return Err(integrity("modeled-uniform-integer-domain-family-mismatch"));
+            };
+            let cardinality = integer.cardinality();
+            if generator.algorithm() != &CandidateGeneratorAlgorithm::PermutedInteger
+                || generator.implementation_version()
+                    != crate::PERMUTED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                || cardinality == 0
+                || !cardinality.is_power_of_two()
+                || cardinality > u128::from(u64::MAX) + 1
+            {
+                return Err(integrity("modeled-generated-source-contract-mismatch"));
+            }
+            if *remaining == 0 {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            *remaining -= 1;
+            return Ok(());
+        }
+        self.validate_generator_for_domain_with_budget(generator_id, domain, remaining)
+    }
+
+    fn validate_generator_for_domain_with_budget(
+        &mut self,
+        root: CandidateGeneratorSpecId,
+        domain: &ChoiceDomain,
+        remaining: &mut usize,
+    ) -> Result<(), CampaignRepositoryError> {
+        let mut stack = Vec::new();
+        self.push(&mut stack, (root, 0_usize))?;
+        let mut visited = BTreeSet::new();
+        while let Some((id, depth)) = stack.pop() {
+            if depth > 1024 {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            if !self.insert_set(&mut visited, id)? {
+                continue;
+            }
+            if *remaining == 0 {
+                return Err(integrity("candidate-generator-validation-limit"));
+            }
+            *remaining -= 1;
+            let generator = self.read_generator(id.content_id())?;
+            match generator.algorithm() {
+                CandidateGeneratorAlgorithm::All => {
+                    if matches!(domain, ChoiceDomain::Group(group)
+                        if matches!(group.domain(), crate::ChoiceGroupDomain::Cartesian { .. }))
+                    {
+                        return Err(integrity(
+                            "Cartesian group requires a bounded group generator",
+                        ));
+                    }
+                }
+                CandidateGeneratorAlgorithm::GroupProgressive { maximum_proposals } => {
+                    let ChoiceDomain::Group(group) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if !group
+                        .supports_progressive_generation_checked(*maximum_proposals, &mut || {
+                            self.poll()
+                        })?
+                    {
+                        return Err(integrity(
+                            "group-generator-lacks-unconstrained-integer-member",
+                        ));
+                    }
+                }
+                CandidateGeneratorAlgorithm::WeightedCategorical { weights } => {
+                    let ChoiceDomain::Discrete(discrete) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if weights
+                        .keys()
+                        .any(|alternative| !discrete.alternatives().contains_key(alternative))
+                    {
+                        return Err(integrity(
+                            "candidate-generator-discrete-alternative-mismatch",
+                        ));
+                    }
+                    if generator.implementation_version()
+                        == crate::WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION
+                        && weights.len() > crate::WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES
+                    {
+                        return Err(integrity("weighted-generator-alternative-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::BoundaryInteger => {
+                    let ChoiceDomain::Integer(integer) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    if generator.implementation_version()
+                        == crate::BOUNDARY_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && integer.landmarks().len()
+                            > crate::BOUNDARY_INTEGER_GENERATOR_MAX_LANDMARKS
+                    {
+                        return Err(integrity("boundary-generator-landmark-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::StratifiedInteger { strata } => {
+                    if !matches!(domain, ChoiceDomain::Integer(_)) {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    }
+                    if generator.implementation_version()
+                        == crate::STRATIFIED_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && *strata > crate::STRATIFIED_INTEGER_GENERATOR_MAX_STRATA
+                    {
+                        return Err(integrity("stratified-generator-strata-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::LogInteger { .. } => {
+                    let ChoiceDomain::Integer(integer) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    let minimum_is_positive = match integer.minimum() {
+                        IntegerValue::Signed(value) => value > 0,
+                        IntegerValue::Unsigned(value) => value > 0,
+                    };
+                    if generator.implementation_version()
+                        == crate::LOG_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && !minimum_is_positive
+                    {
+                        return Err(integrity("log-generator-domain-is-not-positive"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::PermutedInteger => {
+                    let ChoiceDomain::Integer(_) = domain else {
+                        return Err(integrity("candidate-generator-domain-family-mismatch"));
+                    };
+                    return Err(integrity("permuted-generator-requires-modeled-source"));
+                }
+                CandidateGeneratorAlgorithm::ProgressiveInteger { initial_strata, .. }
+                    if matches!(domain, ChoiceDomain::Integer(_)) =>
+                {
+                    if generator.implementation_version()
+                        == crate::PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION
+                        && *initial_strata > crate::PROGRESSIVE_INTEGER_GENERATOR_MAX_INITIAL_STRATA
+                    {
+                        return Err(integrity("progressive-generator-initial-strata-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::MutateNearCorpus { maximum_distance }
+                    if matches!(domain, ChoiceDomain::Integer(_)) =>
+                {
+                    if generator.implementation_version()
+                        == crate::CORPUS_MUTATION_GENERATOR_IMPLEMENTATION_VERSION
+                        && *maximum_distance > crate::CORPUS_MUTATION_GENERATOR_MAX_DISTANCE
+                    {
+                        return Err(integrity("corpus-mutation-generator-distance-limit"));
+                    }
+                }
+                CandidateGeneratorAlgorithm::OrderedMixture { components } => {
+                    for component in components.iter().rev() {
+                        self.push(&mut stack, (component.generator(), depth + 1))?;
+                    }
+                }
+                _ => return Err(integrity("candidate-generator-domain-family-mismatch")),
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn decode_proposal(
+        &mut self,
+        id: ContentId,
+    ) -> Result<Proposal, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Proposal)?;
+        let proposal = Proposal::from_canonical_bytes(envelope.body())?;
+        if proposal.id()?.content_id() != id {
+            return Err(integrity("proposal-envelope-shape"));
+        }
+        Ok(proposal)
+    }
+
+    pub(in crate::repository) fn validate_proposal_references_shallow(
+        &mut self,
+        proposal: &Proposal,
+    ) -> Result<(), CampaignRepositoryError> {
+        let request = self.decode_branch_request(proposal.request().content_id())?;
+        let domain = self.read_choice_domain(proposal.domain().content_id())?;
+        proposal.validate_resolved(&request, &domain)?;
+        self.read_policy(proposal.policy().content_id())?;
+        self.require_record_kind(
+            proposal.guidance_basis().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        if let Some(invocation_id) = proposal.planner_invocation() {
+            let envelope = self.require_record_kind(
+                invocation_id.content_id(),
+                crate::CampaignRecordKind::PlannerInvocation,
+            )?;
+            let invocation = crate::codec::decode::<PlannerInvocation>(envelope.body())?;
+            if invocation.id()? != invocation_id
+                || invocation.policy() != proposal.policy()
+                || invocation.input_view() != proposal.guidance_basis()
+            {
+                return Err(integrity("proposal-planner-invocation-mismatch"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn read_proposal(
+        &mut self,
+        id: ContentId,
+    ) -> Result<Proposal, CampaignRepositoryError> {
+        let proposal = self.decode_proposal(id)?;
+        let request = self.read_branch_request(proposal.request())?;
+        let domain = self.read_choice_domain(proposal.domain().content_id())?;
+        proposal.validate_resolved(&request, &domain)?;
+        self.read_policy(proposal.policy().content_id())?;
+        self.require_record_kind(
+            proposal.guidance_basis().content_id(),
+            crate::CampaignRecordKind::PlanningView,
+        )?;
+        if let Some(invocation) = proposal.planner_invocation() {
+            let invocation = self.read_planner_invocation(invocation)?;
+            if invocation.policy() != proposal.policy()
+                || invocation.input_view() != proposal.guidance_basis()
+            {
+                return Err(integrity("proposal-planner-invocation-mismatch"));
+            }
+        }
+        Ok(proposal)
+    }
+}
 
 impl CampaignRepository {
     pub(crate) fn read_branch_request(

@@ -760,7 +760,9 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crucible_store::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
+    use crucible_store::owned_decode::{
+        DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -826,6 +828,9 @@ mod tests {
         assert!(budget.check().is_err());
         drop(_scope);
         drop(budget);
+        // Refusal evidence retains the original account until the caller closes it.
+        assert!(authority.0.load(Ordering::SeqCst) > 0);
+        drop(result);
         assert_eq!(authority.0.load(Ordering::SeqCst), 0);
         Ok(())
     }

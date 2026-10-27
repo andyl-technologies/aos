@@ -1,6 +1,7 @@
 //! Atomic finding publication and imported finding-owner validation.
 
 use super::*;
+use crate::repository::closure::read::ClosureSemanticRead;
 use crate::{
     FindingCandidateBundleId, FindingExactPins, FindingKind, FindingSignature, FindingTarget,
 };
@@ -27,6 +28,263 @@ pub(super) struct FindingPublicationInput<'a> {
     pub(super) minimized: Option<ReproductionArtifactId>,
     pub(super) exact_pins: FindingExactPins,
     pub(super) candidate_bundle: FindingCandidateBundleId,
+}
+
+impl ClosureSemanticRead<'_, '_> {
+    fn validate_finding_candidate_basis(
+        &mut self,
+        signature: &FindingSignature,
+        observation: &Observation,
+        reproduction: ReproductionArtifactId,
+        minimized: Option<ReproductionArtifactId>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
+        if signature.kind() == FindingKind::PropertyViolation {
+            let property = signature
+                .property()
+                .ok_or_else(|| integrity("finding-property-signature-has-no-property"))?;
+            let envelope = self.require_record_kind(
+                observation.properties().content_id(),
+                crate::CampaignRecordKind::PropertyVerdictSet,
+            )?;
+            let properties = self.repository().decode_property_verdict_set_envelope(
+                observation.properties().content_id(),
+                &envelope,
+            )?;
+            if properties
+                .properties()
+                .get(property)
+                .map(|evidence| evidence.verdict())
+                != Some(PropertyVerdict::Failed)
+            {
+                return Err(integrity("finding-property-is-not-a-failed-verdict"));
+            }
+        }
+        let reproduction_id = reproduction;
+        let reproduction = self.read_reproduction_artifact(reproduction_id.content_id())?;
+        if reproduction.finding_fingerprint() != signature.fingerprint()
+            || reproduction.scenario() != child.scenario()
+            || reproduction.configuration_artifact() != observation.child_content()
+        {
+            return Err(integrity("finding-candidate-reproduction-basis-mismatch"));
+        }
+        if let Some(minimized) = minimized {
+            let minimized_value = self.read_reproduction_artifact(minimized.content_id())?;
+            if minimized_value.finding_fingerprint() != signature.fingerprint()
+                || minimized_value.scenario() != child.scenario()
+            {
+                return Err(integrity("finding-candidate-minimized-basis-mismatch"));
+            }
+            let minimization = minimized_value
+                .minimization()
+                .ok_or_else(|| integrity("finding-candidate-minimized-has-no-retained-trace"))?;
+            if minimization.original() != reproduction_id {
+                return Err(integrity(
+                    "finding-candidate-minimization-original-mismatch",
+                ));
+            }
+        }
+        match signature.target() {
+            Some(FindingTarget::Configuration(configuration))
+                if configuration != observation.child_content() =>
+            {
+                return Err(integrity("finding-candidate-configuration-target-mismatch"));
+            }
+            Some(FindingTarget::ChoiceOpportunity(opportunity))
+                if !observation.discovered_choices().contains(&opportunity) =>
+            {
+                return Err(integrity("finding-candidate-choice-target-mismatch"));
+            }
+            _ => {}
+        }
+        let mut observation_children = BTreeSet::new();
+        for (_, child) in observation.content_children() {
+            self.insert_set(&mut observation_children, child)?;
+        }
+        if !signature.causal_evidence().is_subset(&observation_children) {
+            return Err(integrity(
+                "finding-candidate-evidence-is-not-observation-owned",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_finding_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        finding_id: FindingId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity("finding-transition-changed-campaign-basis"));
+        }
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.observations != next.observations
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.pins != next.pins
+            || prior.accounting != next.accounting
+        {
+            return Err(integrity("finding-transition-changed-unrelated-root"));
+        }
+        let finding = self.read_finding_cached(finding_id.content_id(), choice_cache)?;
+        let representative = self.decode_observation(finding.observation().content_id())?;
+        self.validate_finding_candidate_basis(
+            finding.signature(),
+            &representative,
+            finding.reproduction(),
+            finding.minimized(),
+        )?;
+        let bundle = self.read_finding_candidate_bundle(finding.candidate_bundle())?;
+        if bundle.signature() != finding.signature()
+            || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
+            || self.merkle_get(
+                finding.occurrences(),
+                finding_occurrence_key(bundle.observation()),
+            )? != Some(bundle.observation().content_id())
+        {
+            return Err(integrity("finding-candidate-bundle-retention-mismatch"));
+        }
+        let latest = self.decode_observation(finding.latest_occurrence().content_id())?;
+        if self.merkle_get(
+            prior.observations,
+            map_key_content("observations.attempt", latest.attempt().content_id()),
+        )? != Some(finding.latest_occurrence().content_id())
+        {
+            return Err(integrity("finding-transition-occurrence-is-not-canonical"));
+        }
+        let prior_finding = self
+            .merkle_get(
+                prior.findings,
+                finding_signature_key(finding.signature().cluster_key()),
+            )?
+            .map(|id| self.read_finding_cached(id, choice_cache))
+            .transpose()?;
+        if let Some(previous) = prior_finding {
+            let latest_was_present = self.merkle_get(
+                previous.occurrences(),
+                finding_occurrence_key(finding.latest_occurrence()),
+            )? == Some(finding.latest_occurrence().content_id());
+            let mut occurrence_upserts = BTreeMap::new();
+            self.insert_map(
+                &mut occurrence_upserts,
+                finding_occurrence_key(finding.latest_occurrence()),
+                finding.latest_occurrence().content_id(),
+            )?;
+            let expected_occurrences =
+                self.merkle_root_after_upserts(previous.occurrences(), &occurrence_upserts)?;
+            let expected_count = previous
+                .occurrence_count()
+                .checked_add(u32::from(!latest_was_present))
+                .ok_or_else(|| integrity("finding-occurrence-count"))?;
+            let previous_candidate_root = previous.candidate_occurrences();
+            let latest_bundle = finding.latest_candidate_bundle();
+            let candidate_key = finding_candidate_occurrence_key(latest_bundle);
+            let candidate_was_present = self.merkle_get(previous_candidate_root, candidate_key)?
+                == Some(latest_bundle.content_id());
+            let mut candidate_upserts = BTreeMap::new();
+            self.insert_map(
+                &mut candidate_upserts,
+                candidate_key,
+                latest_bundle.content_id(),
+            )?;
+            let expected_candidate_root =
+                self.merkle_root_after_upserts(previous_candidate_root, &candidate_upserts)?;
+            let expected_candidate_count = previous
+                .candidate_occurrence_count()
+                .checked_add(u32::from(!candidate_was_present))
+                .ok_or_else(|| integrity("finding-candidate-occurrence-count"))?;
+            if !candidate_was_present {
+                let bundle = self.read_finding_candidate_bundle(latest_bundle)?;
+                let observation = self.decode_observation(bundle.observation().content_id())?;
+                if bundle.signature() != finding.signature()
+                    || self.merkle_get(
+                        finding.occurrences(),
+                        finding_occurrence_key(bundle.observation()),
+                    )? != Some(bundle.observation().content_id())
+                    || self.merkle_get(
+                        prior.observations,
+                        map_key_content("observations.attempt", observation.attempt().content_id()),
+                    )? != Some(bundle.observation().content_id())
+                {
+                    return Err(integrity("finding-transition-candidate-occurrence-basis"));
+                }
+            }
+            if previous.signature() != finding.signature()
+                || previous.observation() != finding.observation()
+                || previous.reproduction() != finding.reproduction()
+                || previous.first_seen_snapshot() != finding.first_seen_snapshot()
+                || finding.occurrences() != expected_occurrences
+                || finding.occurrence_count() != expected_count
+                || finding.candidate_occurrences() != expected_candidate_root
+                || finding.candidate_occurrence_count() != expected_candidate_count
+                || candidate_was_present
+                    && finding.latest_candidate_bundle() != previous.latest_candidate_bundle()
+                || !previous.exact_pins().is_subset(finding.exact_pins())
+                || matches!(
+                    (previous.minimized(), finding.minimized()),
+                    (Some(left), Some(right)) if left != right
+                )
+                || matches!((previous.minimized(), finding.minimized()), (Some(_), None))
+                || previous.candidate_bundle() != finding.candidate_bundle()
+            {
+                return Err(integrity(
+                    "finding-transition-cluster-regressed-or-replaced",
+                ));
+            }
+        } else {
+            let mut occurrence_upserts = BTreeMap::new();
+            self.insert_map(
+                &mut occurrence_upserts,
+                finding_occurrence_key(finding.latest_occurrence()),
+                finding.latest_occurrence().content_id(),
+            )?;
+            let expected_occurrences = self
+                .merkle_root_after_upserts(MerkleMap::empty_content_id()?, &occurrence_upserts)?;
+            let bundle = finding.candidate_bundle();
+            let mut candidate_upserts = BTreeMap::new();
+            self.insert_map(
+                &mut candidate_upserts,
+                finding_candidate_occurrence_key(bundle),
+                bundle.content_id(),
+            )?;
+            let expected_candidate_occurrences =
+                self.merkle_root_after_upserts(MerkleMap::empty_content_id()?, &candidate_upserts)?;
+            if finding.first_seen_snapshot().content_id() != parent.envelope.content_id()
+                || finding.observation() != finding.latest_occurrence()
+                || finding.occurrences() != expected_occurrences
+                || finding.occurrence_count() != 1
+                || finding.candidate_occurrences() != expected_candidate_occurrences
+                || finding.candidate_occurrence_count() != 1
+                || finding.latest_candidate_bundle() != finding.candidate_bundle()
+            {
+                return Err(integrity("finding-transition-first-publication-basis"));
+            }
+        }
+        let mut finding_upserts = BTreeMap::new();
+        self.insert_map(
+            &mut finding_upserts,
+            finding_signature_key(finding.signature().cluster_key()),
+            finding_id.content_id(),
+        )?;
+        let expected_findings = self.merkle_root_after_upserts(prior.findings, &finding_upserts)?;
+        if next.findings != expected_findings {
+            return Err(integrity("finding-transition-findings-root"));
+        }
+        if next.findings == prior.findings {
+            return Err(integrity("finding-transition-did-not-change-cluster"));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity("finding-transition-coordination-root"));
+        }
+        Ok(())
+    }
 }
 
 impl CampaignRepository {
@@ -394,177 +652,6 @@ impl CampaignRepository {
             return Err(integrity(
                 "finding-candidate-evidence-is-not-observation-owned",
             ));
-        }
-        Ok(())
-    }
-
-    pub(super) fn validate_finding_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        finding_id: FindingId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        if child.snapshot.lineage() != parent.snapshot.lineage()
-            || child.snapshot.active_policy() != parent.snapshot.active_policy()
-        {
-            return Err(integrity("finding-transition-changed-campaign-basis"));
-        }
-        let prior = parent.snapshot.roots();
-        let next = child.snapshot.roots();
-        if prior.graph != next.graph
-            || prior.exploration != next.exploration
-            || prior.observations != next.observations
-            || prior.corpus != next.corpus
-            || prior.coverage != next.coverage
-            || prior.pins != next.pins
-            || prior.accounting != next.accounting
-        {
-            return Err(integrity("finding-transition-changed-unrelated-root"));
-        }
-        let finding = self.read_finding_cached(finding_id.content_id(), choice_cache)?;
-        let representative = self.decode_observation(finding.observation().content_id())?;
-        self.validate_finding_candidate_basis(
-            finding.signature(),
-            &representative,
-            finding.reproduction(),
-            finding.minimized(),
-        )?;
-        let bundle = self.load_finding_candidate_bundle(finding.candidate_bundle())?;
-        if bundle.signature() != finding.signature()
-            || !exact_pins_contain(finding.exact_pin_retention(), bundle.exact_pins())
-            || self.merkle.get(
-                finding.occurrences(),
-                finding_occurrence_key(bundle.observation()),
-            )? != Some(bundle.observation().content_id())
-        {
-            return Err(integrity("finding-candidate-bundle-retention-mismatch"));
-        }
-        let latest = self.decode_observation(finding.latest_occurrence().content_id())?;
-        if self.merkle.get(
-            prior.observations,
-            map_key_content("observations.attempt", latest.attempt().content_id()),
-        )? != Some(finding.latest_occurrence().content_id())
-        {
-            return Err(integrity("finding-transition-occurrence-is-not-canonical"));
-        }
-        let prior_finding = self
-            .merkle
-            .get(
-                prior.findings,
-                finding_signature_key(finding.signature().cluster_key()),
-            )?
-            .map(|id| self.read_finding_cached(id, choice_cache))
-            .transpose()?;
-        if let Some(previous) = prior_finding {
-            let latest_was_present = self.merkle.get(
-                previous.occurrences(),
-                finding_occurrence_key(finding.latest_occurrence()),
-            )? == Some(finding.latest_occurrence().content_id());
-            let expected_occurrences = self.merkle.root_after_upserts(
-                previous.occurrences(),
-                &BTreeMap::from([(
-                    finding_occurrence_key(finding.latest_occurrence()),
-                    finding.latest_occurrence().content_id(),
-                )]),
-            )?;
-            let expected_count = previous
-                .occurrence_count()
-                .checked_add(u32::from(!latest_was_present))
-                .ok_or_else(|| integrity("finding-occurrence-count"))?;
-            let previous_candidate_root = previous.candidate_occurrences();
-            let latest_bundle = finding.latest_candidate_bundle();
-            let candidate_key = finding_candidate_occurrence_key(latest_bundle);
-            let candidate_was_present = self.merkle.get(previous_candidate_root, candidate_key)?
-                == Some(latest_bundle.content_id());
-            let candidate_upserts = BTreeMap::from([(candidate_key, latest_bundle.content_id())]);
-            let expected_candidate_root = self
-                .merkle
-                .root_after_upserts(previous_candidate_root, &candidate_upserts)?;
-            let expected_candidate_count = previous
-                .candidate_occurrence_count()
-                .checked_add(u32::from(!candidate_was_present))
-                .ok_or_else(|| integrity("finding-candidate-occurrence-count"))?;
-            if !candidate_was_present {
-                let bundle = self.load_finding_candidate_bundle(latest_bundle)?;
-                let observation = self.decode_observation(bundle.observation().content_id())?;
-                if bundle.signature() != finding.signature()
-                    || self.merkle.get(
-                        finding.occurrences(),
-                        finding_occurrence_key(bundle.observation()),
-                    )? != Some(bundle.observation().content_id())
-                    || self.merkle.get(
-                        prior.observations,
-                        map_key_content("observations.attempt", observation.attempt().content_id()),
-                    )? != Some(bundle.observation().content_id())
-                {
-                    return Err(integrity("finding-transition-candidate-occurrence-basis"));
-                }
-            }
-            if previous.signature() != finding.signature()
-                || previous.observation() != finding.observation()
-                || previous.reproduction() != finding.reproduction()
-                || previous.first_seen_snapshot() != finding.first_seen_snapshot()
-                || finding.occurrences() != expected_occurrences
-                || finding.occurrence_count() != expected_count
-                || finding.candidate_occurrences() != expected_candidate_root
-                || finding.candidate_occurrence_count() != expected_candidate_count
-                || candidate_was_present
-                    && finding.latest_candidate_bundle() != previous.latest_candidate_bundle()
-                || !previous.exact_pins().is_subset(finding.exact_pins())
-                || matches!(
-                    (previous.minimized(), finding.minimized()),
-                    (Some(left), Some(right)) if left != right
-                )
-                || matches!((previous.minimized(), finding.minimized()), (Some(_), None))
-                || previous.candidate_bundle() != finding.candidate_bundle()
-            {
-                return Err(integrity(
-                    "finding-transition-cluster-regressed-or-replaced",
-                ));
-            }
-        } else {
-            let expected_occurrences = self.merkle.root_after_upserts(
-                MerkleMap::empty_content_id()?,
-                &BTreeMap::from([(
-                    finding_occurrence_key(finding.latest_occurrence()),
-                    finding.latest_occurrence().content_id(),
-                )]),
-            )?;
-            let bundle = finding.candidate_bundle();
-            let expected_candidate_occurrences = self.merkle.root_after_upserts(
-                MerkleMap::empty_content_id()?,
-                &BTreeMap::from([(
-                    finding_candidate_occurrence_key(bundle),
-                    bundle.content_id(),
-                )]),
-            )?;
-            if finding.first_seen_snapshot().content_id() != parent.envelope.content_id()
-                || finding.observation() != finding.latest_occurrence()
-                || finding.occurrences() != expected_occurrences
-                || finding.occurrence_count() != 1
-                || finding.candidate_occurrences() != expected_candidate_occurrences
-                || finding.candidate_occurrence_count() != 1
-                || finding.latest_candidate_bundle() != finding.candidate_bundle()
-            {
-                return Err(integrity("finding-transition-first-publication-basis"));
-            }
-        }
-        let expected_findings = self.merkle.root_after_upserts(
-            prior.findings,
-            &BTreeMap::from([(
-                finding_signature_key(finding.signature().cluster_key()),
-                finding_id.content_id(),
-            )]),
-        )?;
-        if next.findings != expected_findings {
-            return Err(integrity("finding-transition-findings-root"));
-        }
-        if next.findings == prior.findings {
-            return Err(integrity("finding-transition-did-not-change-cluster"));
-        }
-        if !self.coordination_matches_parent_result(parent, next.coordination)? {
-            return Err(integrity("finding-transition-coordination-root"));
         }
         Ok(())
     }

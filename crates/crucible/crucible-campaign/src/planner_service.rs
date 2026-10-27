@@ -59,6 +59,32 @@ pub const MAX_RETAINED_PLANNER_REQUEST_BUNDLE_OBJECTS: usize =
     MAX_PLANNING_BUNDLE_OBJECTS - RETAINED_PLANNER_REQUEST_FIXED_CHILDREN;
 const _: () = assert!(MAX_RETAINED_PLANNER_REQUEST_BYTES < MAX_PLANNER_COMPONENT_MESSAGE_BYTES);
 
+fn insert_paid_btree_map<K: Ord, V>(
+    values: &mut BTreeMap<K, V>,
+    key: K,
+    value: V,
+) -> Result<Option<V>, CampaignCodecError> {
+    if !values.contains_key(&key) {
+        crucible_store::owned_decode::charge_btree_entry::<K, V>()?;
+    }
+    Ok(values.insert(key, value))
+}
+
+fn insert_paid_btree_set<T: Ord>(
+    values: &mut BTreeSet<T>,
+    value: T,
+) -> Result<bool, CampaignCodecError> {
+    if values.contains(&value) {
+        return Ok(false);
+    }
+    crucible_store::owned_decode::charge_btree_set_entry::<T>()?;
+    Ok(values.insert(value))
+}
+
+fn reserve_paid_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), CampaignCodecError> {
+    crucible_store::owned_decode::reserve_vec(values, additional).map_err(CampaignCodecError::from)
+}
+
 /// Bounded content-addressed interpretation objects supplied to a pure planner.
 ///
 /// A canonical-frontier engine receives each served branch request, its exact
@@ -692,7 +718,7 @@ impl CampaignPlanningBundle {
                     let projection = ContinuationProjection::from_canonical_bytes(object.body())?;
                     let position =
                         PlanningScanPosition::new(projection.branch_point(), projection.request());
-                    if continuations.insert(position, projection).is_some() {
+                    if insert_paid_btree_map(&mut continuations, position, projection)?.is_some() {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats a continuation projection",
                         });
@@ -707,7 +733,7 @@ impl CampaignPlanningBundle {
                     }
                     let position =
                         PlanningScanPosition::new(proposal.branch_point(), proposal.request());
-                    if offers.insert(position, proposal).is_some() {
+                    if insert_paid_btree_map(&mut offers, position, proposal)?.is_some() {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats a candidate offer",
                         });
@@ -716,7 +742,9 @@ impl CampaignPlanningBundle {
                 crate::CampaignRecordKind::PlannerCandidateGuidance => {
                     let projection =
                         crate::PlannerCandidateGuidance::from_canonical_bytes(object.body())?;
-                    if guidance.insert(projection.position(), projection).is_some() {
+                    if insert_paid_btree_map(&mut guidance, projection.position(), projection)?
+                        .is_some()
+                    {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats candidate guidance",
                         });
@@ -725,7 +753,9 @@ impl CampaignPlanningBundle {
                 crate::CampaignRecordKind::PlannerCandidateBudget => {
                     let projection =
                         crate::PlannerCandidateBudget::from_canonical_bytes(object.body())?;
-                    if budgets.insert(projection.position(), projection).is_some() {
+                    if insert_paid_btree_map(&mut budgets, projection.position(), projection)?
+                        .is_some()
+                    {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats candidate budget eligibility",
                         });
@@ -734,9 +764,12 @@ impl CampaignPlanningBundle {
                 crate::CampaignRecordKind::PlannerBeamCandidate => {
                     let projection =
                         crate::PlannerBeamCandidate::from_canonical_bytes(object.body())?;
-                    if beam_candidates
-                        .insert(projection.position(), projection)
-                        .is_some()
+                    if insert_paid_btree_map(
+                        &mut beam_candidates,
+                        projection.position(),
+                        projection,
+                    )?
+                    .is_some()
                     {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats Beam candidate membership",
@@ -745,9 +778,12 @@ impl CampaignPlanningBundle {
                 }
                 crate::CampaignRecordKind::PlannerSearchCandidate => {
                     let projection = PlannerSearchCandidate::from_canonical_bytes(object.body())?;
-                    if search_candidates
-                        .insert(projection.position(), projection)
-                        .is_some()
+                    if insert_paid_btree_map(
+                        &mut search_candidates,
+                        projection.position(),
+                        projection,
+                    )?
+                    .is_some()
                     {
                         return Err(CampaignCodecError::InvalidValue {
                             reason: "planner input bundle repeats a search-order candidate",
@@ -758,40 +794,36 @@ impl CampaignPlanningBundle {
             }
         }
 
-        let expected_offers = continuations
-            .iter()
-            .filter_map(|(position, projection)| {
-                (projection.state() == ContinuationState::Ready).then_some(*position)
-            })
-            .collect::<BTreeSet<_>>();
-        if offers.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
+        let mut expected_offers = BTreeSet::new();
+        for (position, projection) in &continuations {
+            if projection.state() == ContinuationState::Ready {
+                insert_paid_btree_set(&mut expected_offers, *position)?;
+            }
+        }
+        if !offers.keys().eq(expected_offers.iter()) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner candidate offers disagree with Ready continuations",
             });
         }
-        if (puct && guidance.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
-            || (!puct && !guidance.is_empty())
+        if (puct && !guidance.keys().eq(expected_offers.iter())) || (!puct && !guidance.is_empty())
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner candidate guidance disagrees with offered continuations",
             });
         }
-        if budgets.keys().copied().collect::<BTreeSet<_>>() != expected_offers {
+        if !budgets.keys().eq(expected_offers.iter()) {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner candidate budgets disagree with offered continuations",
             });
         }
-        let expected_beam_candidates = expected_offers.clone();
-        if (beam
-            && beam_candidates.keys().copied().collect::<BTreeSet<_>>() != expected_beam_candidates)
+        if (beam && !beam_candidates.keys().eq(expected_offers.iter()))
             || (!beam && !beam_candidates.is_empty())
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner Beam membership disagrees with the served scan page",
             });
         }
-        if (search_order
-            && search_candidates.keys().copied().collect::<BTreeSet<_>>() != expected_offers)
+        if (search_order && !search_candidates.keys().eq(expected_offers.iter()))
             || (!search_order && !search_candidates.is_empty())
         {
             return Err(CampaignCodecError::InvalidValue {
@@ -971,7 +1003,8 @@ impl CampaignPlanningBundle {
                     });
                 }
             }
-            inputs.insert(
+            insert_paid_btree_map(
+                &mut inputs,
                 *position,
                 PlannerCandidateInput {
                     continuation,
@@ -982,7 +1015,7 @@ impl CampaignPlanningBundle {
                     beam: beam_candidate,
                     search: search_candidate,
                 },
-            );
+            )?;
         }
         if !continuations.is_empty()
             || !offers.is_empty()
@@ -1029,10 +1062,13 @@ impl CampaignPlanningBundle {
         let mut members_by_selection = BTreeMap::<_, BTreeSet<_>>::new();
         for candidate in candidates {
             if let Some(selection) = candidate.selection() {
-                members_by_selection
-                    .entry(selection)
-                    .or_default()
-                    .insert(candidate.configuration());
+                if let Some(members) = members_by_selection.get_mut(&selection) {
+                    insert_paid_btree_set(members, candidate.configuration())?;
+                } else {
+                    let mut members = BTreeSet::new();
+                    insert_paid_btree_set(&mut members, candidate.configuration())?;
+                    insert_paid_btree_map(&mut members_by_selection, selection, members)?;
+                }
             }
         }
         for (selection_id, projected_members) in members_by_selection {
@@ -1059,7 +1095,8 @@ impl CampaignPlanningBundle {
                 });
             }
 
-            let mut ranking_candidates = Vec::with_capacity(selection.considered().len());
+            let mut ranking_candidates = Vec::new();
+            reserve_paid_vec(&mut ranking_candidates, selection.considered().len())?;
             for (configuration, evaluation_id) in selection.considered() {
                 let evaluation = self.object(evaluation_id.content_id())?.ok_or(
                     CampaignCodecError::InvalidValue {
@@ -1154,26 +1191,32 @@ impl CampaignPlanningBundle {
                 codec::encode(&request.input_view),
             )?,
         ];
-        let direct_ids = direct_objects
+        if direct_objects
             .iter()
             .map(ObjectEnvelope::content_id)
-            .collect::<BTreeSet<_>>();
-        if direct_ids
-            .iter()
-            .any(|content| self.objects.contains_key(content))
+            .any(|content| self.objects.contains_key(&content))
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "planner input bundle duplicates a by-value basis object",
             });
         }
         let candidate_inputs = self.candidate_inputs(request)?;
-        let mut pending = direct_objects
+        let direct_child_count = direct_objects
             .iter()
             .flat_map(|object| object.children())
             .map(|child| child.id())
             .filter(|child| self.objects.contains_key(child))
-            .collect::<Vec<_>>();
-        pending.reserve(page.positions().len());
+            .count();
+
+        let mut pending = Vec::new();
+        reserve_paid_vec(&mut pending, direct_child_count)?;
+        pending.extend(
+            direct_objects
+                .iter()
+                .flat_map(|object| object.children())
+                .map(|child| child.id())
+                .filter(|child| self.objects.contains_key(child)),
+        );
         let mut request_bytes = 0_u64;
         for position in page.positions() {
             let content = position.source().content_id();
@@ -1204,6 +1247,16 @@ impl CampaignPlanningBundle {
                 .ok_or(CampaignCodecError::LimitExceeded {
                     limit: "planner-scan-input-byte-count",
                 })?;
+
+            let candidate_reference_count = candidate_inputs.get(position).map_or(0, |input| {
+                1_usize
+                    + usize::from(input.offer.is_some())
+                    + usize::from(input.guidance.is_some())
+                    + usize::from(input.budget.is_some())
+                    + usize::from(input.beam.is_some())
+                    + usize::from(input.search.is_some())
+            });
+            reserve_paid_vec(&mut pending, 1 + candidate_reference_count)?;
             pending.push(content);
             if let Some(input) = candidate_inputs.get(position) {
                 pending.push(input.continuation.id()?.content_id());
@@ -1232,7 +1285,7 @@ impl CampaignPlanningBundle {
 
         let mut reachable = BTreeSet::new();
         while let Some(content) = pending.pop() {
-            if !reachable.insert(content) {
+            if !insert_paid_btree_set(&mut reachable, content)? {
                 continue;
             }
             let object = self
@@ -1240,6 +1293,13 @@ impl CampaignPlanningBundle {
                 .ok_or(CampaignCodecError::InvalidValue {
                     reason: "planner input bundle reachability changed during validation",
                 })?;
+            let reachable_child_count = object
+                .children()
+                .iter()
+                .map(|child| child.id())
+                .filter(|child| self.objects.contains_key(child))
+                .count();
+            reserve_paid_vec(&mut pending, reachable_child_count)?;
             pending.extend(
                 object
                     .children()
@@ -1281,7 +1341,7 @@ fn insert_planning_bundle_object(
             limit: "planner-input-bundle-encoded-bytes",
         });
     }
-    objects.insert(id, bytes);
+    insert_paid_btree_map(objects, id, bytes)?;
     *retained_bytes = next_bytes;
     Ok(())
 }
@@ -1317,7 +1377,7 @@ impl Canonical for CampaignPlanningBundle {
         )?;
         let mut objects = BTreeMap::new();
         for (id, bytes) in entries {
-            if objects.insert(id, bytes).is_some() {
+            if insert_paid_btree_map(&mut objects, id, bytes)?.is_some() {
                 return Err(CampaignCodecError::InvalidValue {
                     reason: "planner input bundle contains a duplicate object",
                 });

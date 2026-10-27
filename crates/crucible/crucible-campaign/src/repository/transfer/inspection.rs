@@ -1,26 +1,195 @@
 //! Authenticated compact archive inventories and complete RAM availability.
 //!
 //! Operational readers verify RAM graphs under retained source authority. The
-//! checked inspection route supervises inventory metadata and selected-object
-//! reads; closure, policy, source-snapshot, finding and ref reads remain on
-//! their existing compatibility routes. GC readers authenticate only bounded
-//! inventory and root records under an existing exclusive fence, then require
-//! separate transitive RAM marking.
+//! checked inspection route supervises inventory, selected-object, closure,
+//! policy, snapshot, and finding reads under one saved original. Compatibility
+//! inspection retains its ordinary backend dispatch. GC readers authenticate
+//! bounded inventory and root records under an existing exclusive fence, then
+//! require separate transitive RAM marking.
 
 use std::io;
 
 use super::*;
 use crate::CampaignArchiveInspection;
-use crate::archive::build_inspection;
+use crate::archive::{build_inspection, inventory_digest_admitted};
 use crate::object_profile::{
     profile_authenticated_campaign_envelope, profile_authenticated_exact_leaf,
     profile_authenticated_opaque,
 };
 
-#[derive(Clone, Copy)]
 enum ArchiveInspectionRead<'a> {
     Compatibility,
-    Checked(&'a crucible_store::owned_decode::DecodeBudget),
+    Checked {
+        saved: &'a crucible_store::owned_decode::DecodeBudget,
+        operation: crucible_store::owned_decode::DecodeBudget,
+    },
+}
+
+impl<'a> ArchiveInspectionRead<'a> {
+    fn checked(
+        saved: &'a crucible_store::owned_decode::DecodeBudget,
+    ) -> Result<Self, CampaignRepositoryError> {
+        let operation = saved.child().map_err(|source| {
+            CampaignRepositoryError::Ram(crucible_store::ram::RamStoreError::from_admission(
+                saved, source,
+            ))
+        })?;
+        Ok(Self::Checked { saved, operation })
+    }
+
+    fn accounts(
+        &self,
+    ) -> Option<(
+        &crucible_store::owned_decode::DecodeBudget,
+        &crucible_store::owned_decode::DecodeBudget,
+    )> {
+        match self {
+            Self::Compatibility => None,
+            Self::Checked { saved, operation } => Some((saved, operation)),
+        }
+    }
+
+    fn operation(&self) -> Option<&crucible_store::owned_decode::DecodeBudget> {
+        self.accounts().map(|(_, operation)| operation)
+    }
+
+    fn vec_with_capacity<T>(&self, capacity: usize) -> Result<Vec<T>, CampaignRepositoryError> {
+        let Some(operation) = self.operation() else {
+            return Ok(Vec::with_capacity(capacity));
+        };
+        operation
+            .charge_array::<T>(capacity)
+            .map_err(CampaignCodecError::from)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(capacity)
+            .map_err(|source| StoreError::Allocation {
+                source,
+                custody: Some(operation.custody()),
+            })?;
+        if values.capacity() > capacity {
+            return Err(StoreError::Quota.into());
+        }
+        Ok(values)
+    }
+
+    fn reserve_growth<T>(
+        &self,
+        values: &mut Vec<T>,
+        additional: usize,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some(operation) = self.operation() else {
+            values.reserve(additional);
+            return Ok(());
+        };
+        let required = values
+            .len()
+            .checked_add(additional)
+            .ok_or(StoreError::Quota)?;
+        if required <= values.capacity() || std::mem::size_of::<T>() == 0 {
+            return Ok(());
+        }
+        let target = values
+            .capacity()
+            .checked_mul(2)
+            .ok_or(StoreError::Quota)?
+            .max(8)
+            .max(required);
+        let geometric = target.checked_sub(values.len()).ok_or(StoreError::Quota)?;
+        let _scope = operation.enter();
+        crucible_store::owned_decode::reserve_vec(values, geometric)
+            .map_err(CampaignCodecError::from)?;
+        Ok(())
+    }
+
+    fn insert_set<T: Ord>(
+        &self,
+        values: &mut BTreeSet<T>,
+        value: T,
+    ) -> Result<bool, CampaignRepositoryError> {
+        if !values.contains(&value)
+            && let Some(operation) = self.operation()
+        {
+            operation
+                .charge_btree_entry::<T, ()>()
+                .map_err(CampaignCodecError::from)?;
+        }
+        Ok(values.insert(value))
+    }
+
+    fn insert_map<K: Ord, V>(
+        &self,
+        values: &mut BTreeMap<K, V>,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, CampaignRepositoryError> {
+        if !values.contains_key(&key)
+            && let Some(operation) = self.operation()
+        {
+            operation
+                .charge_btree_entry::<K, V>()
+                .map_err(CampaignCodecError::from)?;
+        }
+        Ok(values.insert(key, value))
+    }
+
+    fn collect_set_with_boundary<T: Ord>(
+        &self,
+        values: impl IntoIterator<Item = T>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<BTreeSet<T>, CampaignRepositoryError> {
+        let mut output = BTreeSet::new();
+        for value in values {
+            self.insert_set(&mut output, value)?;
+            self.poll_checked(boundary)?;
+        }
+        Ok(output)
+    }
+
+    fn poll_checked(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        if matches!(self, Self::Checked { .. }) {
+            self.poll(boundary)?;
+        }
+        Ok(())
+    }
+
+    fn poll(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some((saved, operation)) = self.accounts() else {
+            return boundary().map_err(CampaignRepositoryError::Ram);
+        };
+        let mut supervised = || poll_inspection_saved(saved, boundary);
+        crucible_store::ram::with_store_operation_boundary(operation, &mut supervised, |checked| {
+            checked()
+        })
+        .map_err(map_inspection_read_error)
+    }
+
+    fn with_store<T>(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+        action: impl FnOnce(
+            &crucible_store::owned_decode::DecodeBudget,
+            &mut dyn FnMut() -> Result<(), StoreError>,
+        ) -> Result<T, StoreError>,
+    ) -> Result<T, CampaignRepositoryError> {
+        let Some((saved, operation)) = self.accounts() else {
+            return Err(StoreError::Unsupported {
+                capability: "campaign-archive-inspection-checked-read",
+            }
+            .into());
+        };
+        let mut supervised = || poll_inspection_saved(saved, boundary);
+        crucible_store::ram::with_store_operation_boundary(operation, &mut supervised, |checked| {
+            action(operation, checked)
+        })
+        .map_err(map_inspection_read_error)
+    }
 }
 
 struct AuthenticatedGenericEnvelope {
@@ -45,6 +214,19 @@ fn map_inspection_read_error(
         crucible_store::ram::RamStoreError::Store(source) => CampaignRepositoryError::Store(source),
         source => CampaignRepositoryError::Ram(source),
     }
+}
+
+fn poll_inspection_saved(
+    saved: &crucible_store::owned_decode::DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+) -> Result<(), crucible_store::ram::RamStoreError> {
+    saved
+        .verify_live()
+        .map_err(|source| crucible_store::ram::RamStoreError::from_admission(saved, source))?;
+    boundary()?;
+    saved
+        .verify_live()
+        .map_err(|source| crucible_store::ram::RamStoreError::from_admission(saved, source))
 }
 
 impl CampaignRepository {
@@ -100,12 +282,8 @@ impl CampaignRepository {
             .read_ref(&archive_ref(name)?)?
             .ok_or(CampaignRepositoryError::NotFound)?;
         let id = CampaignArchiveManifestId::from_content_id(target)?;
-        self.inspect_campaign_archive_under(
-            id,
-            true,
-            ArchiveInspectionRead::Checked(original),
-            boundary,
-        )
+        let reads = ArchiveInspectionRead::checked(original)?;
+        self.inspect_campaign_archive_under(id, true, &reads, boundary)
     }
 
     /// Authenticates one archive manifest, every inventory page, and every selected object.
@@ -146,12 +324,8 @@ impl CampaignRepository {
             .ok_or(StoreError::Unsupported {
                 capability: "campaign-archive-inspection-admission",
             })?;
-        self.inspect_campaign_archive_under(
-            id,
-            true,
-            ArchiveInspectionRead::Checked(original),
-            boundary,
-        )
+        let reads = ArchiveInspectionRead::checked(original)?;
+        self.inspect_campaign_archive_under(id, true, &reads, boundary)
     }
 
     /// Authenticates archive metadata under an already held destructive fence.
@@ -192,23 +366,20 @@ impl CampaignRepository {
         verify_ram: bool,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
-        self.inspect_campaign_archive_under(
-            id,
-            verify_ram,
-            ArchiveInspectionRead::Compatibility,
-            boundary,
-        )
+        let reads = ArchiveInspectionRead::Compatibility;
+        self.inspect_campaign_archive_under(id, verify_ram, &reads, boundary)
     }
 
     fn inspect_campaign_archive_under(
         &self,
         id: CampaignArchiveManifestId,
         verify_ram: bool,
-        reads: ArchiveInspectionRead<'_>,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
         self.verify_ram_admission()?;
-        boundary().map_err(CampaignRepositoryError::Ram)?;
+        let _operation_scope = reads.operation().map(|operation| operation.enter());
+        reads.poll(boundary)?;
         let envelope = self.read_archive_record(
             id.content_id(),
             CampaignRecordKind::ArchiveManifest,
@@ -216,7 +387,11 @@ impl CampaignRepository {
             boundary,
         )?;
         let manifest = CampaignArchiveManifest::from_canonical_bytes(envelope.body())?;
-        if manifest.id()? != id {
+        let decoded_id = manifest.id()?;
+        // Canonical identity reconstruction allocates under the operation
+        // account. Surface a sticky refusal before reporting a derived mismatch.
+        reads.poll_checked(boundary)?;
+        if decoded_id != id {
             return Err(integrity("campaign-archive-manifest-envelope-shape"));
         }
 
@@ -232,20 +407,23 @@ impl CampaignRepository {
             reads,
             boundary,
         )?;
+        reads.reserve_growth(&mut page_ids, omitted_page_ids.len())?;
         page_ids.extend(omitted_page_ids);
         if selected.len() as u64 != manifest.selected_count()
             || omitted.len() as u64 != manifest.omitted_count()
-            || inventory_digest(&selected) != manifest.selected_digest()
-            || inventory_digest(&omitted) != manifest.omitted_digest()
+        {
+            return Err(integrity("campaign-archive-inventory-manifest-mismatch"));
+        }
+        if inventory_digest_admitted(&selected)? != manifest.selected_digest()
+            || inventory_digest_admitted(&omitted)? != manifest.omitted_digest()
         {
             return Err(integrity("campaign-archive-inventory-manifest-mismatch"));
         }
 
-        let declared = selected
-            .iter()
-            .chain(&omitted)
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
+        let declared = reads.collect_set_with_boundary(
+            selected.iter().chain(&omitted).map(|entry| entry.id()),
+            boundary,
+        )?;
         if !declared.contains(&manifest.source_snapshot().content_id()) {
             return Err(integrity("campaign-archive-source-snapshot-is-undeclared"));
         }
@@ -263,22 +441,27 @@ impl CampaignRepository {
                         .iter()
                         .map(|selection| selection.checkpoint().content_id()),
                 );
-            Some(self.authenticated_archive_closure(roots, verify_ram, boundary)?)
+            Some(if let Some((saved, operation)) = reads.accounts() {
+                self.authenticated_archive_closure_with_operation(
+                    roots, verify_ram, saved, operation, boundary,
+                )?
+            } else {
+                self.authenticated_archive_closure(roots, verify_ram, boundary)?
+            })
         } else {
             None
         };
-        let mut exact_leaves = executable_closure
-            .as_ref()
-            .map_or_else(BTreeSet::new, |closure| closure.exact_leaves.clone());
-        let selected_ids = selected
-            .iter()
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
-        let ram_roots = manifest
-            .ram_roots()
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
+        let mut exact_leaves = reads.collect_set_with_boundary(
+            executable_closure
+                .as_ref()
+                .into_iter()
+                .flat_map(|closure| closure.exact_leaves.iter().copied()),
+            boundary,
+        )?;
+        let selected_ids =
+            reads.collect_set_with_boundary(selected.iter().map(|entry| entry.id()), boundary)?;
+        let ram_roots =
+            reads.collect_set_with_boundary(manifest.ram_roots().iter().copied(), boundary)?;
         if !ram_roots.is_subset(&selected_ids) {
             return Err(integrity("campaign-archive-ram-root-is-not-selected"));
         }
@@ -286,7 +469,7 @@ impl CampaignRepository {
         let mut world_ram_roots = BTreeSet::new();
         let mut selected_children = BTreeMap::new();
         for entry in &selected {
-            boundary().map_err(CampaignRepositoryError::Ram)?;
+            reads.poll(boundary)?;
             if entry.id().kind() != ObjectKind::ExactManifest {
                 continue;
             }
@@ -296,53 +479,60 @@ impl CampaignRepository {
                 return Err(integrity("campaign-archive-exact-root-identity"));
             }
             if envelope.schema_name() == "crucible.ram.root" && envelope.schema_version() == 1 {
-                typed_selected_roots.insert(entry.id());
+                reads.insert_set(&mut typed_selected_roots, entry.id())?;
             }
             if envelope.schema_name() == "crucible.executor.exact-checkpoint-root"
                 && envelope.schema_version() == 6
             {
                 let mut ordinal = 0_u32;
-                for child in envelope
-                    .children()
-                    .iter()
-                    .filter(|child| child.role().starts_with("ram-root-"))
-                {
-                    if child.role() != format!("ram-root-{ordinal:08x}")
+                for child in envelope.children() {
+                    if !child.role().starts_with("ram-root-") {
+                        reads.poll_checked(boundary)?;
+                        continue;
+                    }
+                    let role_ordinal = child
+                        .role()
+                        .strip_prefix("ram-root-")
+                        .filter(|suffix| suffix.len() == 8)
+                        .and_then(|suffix| u32::from_str_radix(suffix, 16).ok());
+                    if role_ordinal != Some(ordinal)
                         || child.id().kind() != ObjectKind::ExactManifest
                         || child.id().schema_version() != 1
                     {
                         return Err(integrity("campaign-archive-world-ram-role-mismatch"));
                     }
-                    world_ram_roots.insert(child.id());
+                    reads.insert_set(&mut world_ram_roots, child.id())?;
                     ordinal = ordinal
                         .checked_add(1)
                         .ok_or_else(|| integrity("campaign-archive-world-ram-limit"))?;
+                    reads.poll_checked(boundary)?;
                 }
-                for child in envelope.children().iter().filter(|child| {
-                    matches!(
+                for child in envelope.children() {
+                    if matches!(
                         child.role(),
                         "checkpoint-choice-closure" | "replay-oracle-evidence"
-                    )
-                }) {
-                    exact_leaves.insert(child.id());
+                    ) {
+                        reads.insert_set(&mut exact_leaves, child.id())?;
+                    }
+                    reads.poll_checked(boundary)?;
                 }
             }
-            if let ArchiveInspectionRead::Checked(_) = reads {
+            if matches!(reads, ArchiveInspectionRead::Checked { .. }) {
                 let profile =
                     profile_authenticated_opaque(entry.id(), authenticated.logical_length)?;
                 let children = if ram_roots.contains(&entry.id()) {
-                    self.authenticate_ram_root(
+                    self.authenticate_inspection_ram_root(
                         entry.id(),
                         verify_ram && executable_closure.is_none(),
+                        reads,
                         boundary,
                     )?;
                     BTreeSet::new()
                 } else {
-                    envelope
-                        .children()
-                        .iter()
-                        .map(crate::ChildReference::id)
-                        .collect()
+                    reads.collect_set_with_boundary(
+                        envelope.children().iter().map(crate::ChildReference::id),
+                        boundary,
+                    )?
                 };
                 if !entry.matches_profile(profile) {
                     return Err(integrity(
@@ -352,7 +542,7 @@ impl CampaignRepository {
                 if children.iter().any(|child| !declared.contains(child)) {
                     return Err(integrity("campaign-archive-selected-child-is-undeclared"));
                 }
-                selected_children.insert(entry.id(), children);
+                reads.insert_map(&mut selected_children, entry.id(), children)?;
             }
         }
         if typed_selected_roots != ram_roots || !ram_roots.is_subset(&world_ram_roots) {
@@ -364,7 +554,7 @@ impl CampaignRepository {
             return Err(StoreError::Corrupt { id: entry.id() }.into());
         }
         for entry in &selected {
-            if matches!(reads, ArchiveInspectionRead::Checked(_))
+            if matches!(reads, ArchiveInspectionRead::Checked { .. })
                 && entry.id().kind() == ObjectKind::ExactManifest
             {
                 continue;
@@ -385,7 +575,7 @@ impl CampaignRepository {
             if children.iter().any(|child| !declared.contains(child)) {
                 return Err(integrity("campaign-archive-selected-child-is-undeclared"));
             }
-            selected_children.insert(entry.id(), children);
+            reads.insert_map(&mut selected_children, entry.id(), children)?;
         }
         let mut omitted_inventory_verified = true;
         for entry in &omitted {
@@ -409,9 +599,21 @@ impl CampaignRepository {
                 Err(source) => return Err(source),
             }
         }
-        self.validate_archive_policy(&manifest, &selected, &omitted, &selected_children)?;
+        self.validate_archive_policy(
+            &manifest,
+            &selected,
+            &omitted,
+            &selected_children,
+            reads,
+            boundary,
+        )?;
         if let Some(complete) = executable_closure {
-            self.reject_nested_archive_metadata(&complete.objects, &complete.exact_leaves)?;
+            self.reject_nested_archive_metadata_for_inspection(
+                &complete.objects,
+                &complete.exact_leaves,
+                reads,
+                boundary,
+            )?;
             if complete.objects != selected_ids
                 || complete.ram_roots != manifest.ram_roots()
                 || !omitted.is_empty()
@@ -428,17 +630,41 @@ impl CampaignRepository {
             omitted,
             page_ids,
             omitted_inventory_verified,
+            reads.operation(),
         )
         .map_err(CampaignRepositoryError::from)?;
-        if let ArchiveInspectionRead::Checked(original) = reads {
-            crucible_store::ram::with_store_operation_boundary(
-                original,
-                boundary,
-                |checked_boundary| checked_boundary(),
-            )
-            .map_err(map_inspection_read_error)?;
-        }
+        reads.poll(boundary)?;
         Ok(inspection)
+    }
+
+    fn reject_nested_archive_metadata_for_inspection(
+        &self,
+        closure: &BTreeSet<ContentId>,
+        exact_leaves: &BTreeSet<ContentId>,
+        reads: &ArchiveInspectionRead<'_>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        if reads.accounts().is_none() {
+            return self.reject_nested_archive_metadata(closure, exact_leaves);
+        }
+        for id in closure {
+            if !exact_leaves.contains(id)
+                && is_campaign_record_kind(id.kind())
+                && id.kind() != ObjectKind::MerkleNode
+            {
+                let envelope = self.read_campaign_envelope(*id, reads, boundary)?.envelope;
+                if matches!(
+                    envelope.record_kind(),
+                    CampaignRecordKind::ArchiveManifest | CampaignRecordKind::ArchiveInventoryPage
+                ) {
+                    return Err(CampaignRepositoryError::InvalidRequest {
+                        reason: "mirror retained roots cannot contain archive metadata",
+                    });
+                }
+            }
+            reads.poll_checked(boundary)?;
+        }
+        Ok(())
     }
 
     /// Authenticates one finding in a complete imported archive.
@@ -485,8 +711,15 @@ impl CampaignRepository {
         archive: CampaignArchiveManifestId,
         finding: crate::FindingId,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
-    ) -> Result<Finding, CampaignRepositoryError> {
-        let inspection = self.inspect_campaign_archive_with_boundary(archive, boundary)?;
+    ) -> Result<crate::CampaignArchivedFinding, CampaignRepositoryError> {
+        let original = self
+            .ram_admission()
+            .original()
+            .ok_or(StoreError::Unsupported {
+                capability: "campaign-archive-inspection-admission",
+            })?;
+        let reads = ArchiveInspectionRead::checked(original)?;
+        let inspection = self.inspect_campaign_archive_under(archive, true, &reads, boundary)?;
         if !matches!(
             inspection.manifest().policy(),
             CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
@@ -496,10 +729,32 @@ impl CampaignRepository {
             });
         }
 
-        boundary().map_err(CampaignRepositoryError::Ram)?;
-        let snapshot = self.read_snapshot(inspection.manifest().source_snapshot().content_id())?;
-        let (finding, _) = self.finding_with_proof(snapshot.snapshot.roots().findings, finding)?;
-        Ok(finding)
+        let (saved, operation) = reads.accounts().ok_or(StoreError::Unsupported {
+            capability: "campaign-archive-inspection-admission",
+        })?;
+        let reader =
+            crate::repository::closure::read::ClosureRead::from_operation(self, saved, operation);
+        let _scope = operation.enter();
+        let mut semantic = reader.semantic(boundary);
+        let snapshot =
+            semantic.read_snapshot(inspection.manifest().source_snapshot().content_id())?;
+        let finding = semantic
+            .read_finding_cached(finding.content_id(), &mut ChoiceValidationCache::default())?;
+        if semantic.merkle_get(
+            snapshot.snapshot.roots().findings,
+            finding_signature_key(finding.signature().cluster_key()),
+        )? != Some(finding.id()?.content_id())
+        {
+            return Err(CampaignRepositoryError::InvalidRequest {
+                reason: "campaign-finding-is-not-in-snapshot",
+            });
+        }
+        reader.poll(boundary)?;
+        let admitted = crate::CampaignArchivedFinding::admitted(finding, operation)
+            .map_err(CampaignCodecError::from)
+            .map_err(CampaignRepositoryError::from)?;
+        reader.poll(boundary)?;
+        Ok(admitted)
     }
 
     /// Authenticates one exact-capable finding in a complete imported archive.
@@ -535,7 +790,7 @@ impl CampaignRepository {
         archive: CampaignArchiveManifestId,
         finding: crate::FindingId,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
-    ) -> Result<Finding, CampaignRepositoryError> {
+    ) -> Result<crate::CampaignArchivedFinding, CampaignRepositoryError> {
         let finding = self.inspect_archived_finding_with_boundary(archive, finding, boundary)?;
         if finding.exact_pins().is_empty() {
             return Err(CampaignRepositoryError::InvalidRequest {
@@ -549,13 +804,13 @@ impl CampaignRepository {
         &self,
         ids: &[CampaignArchiveInventoryPageId],
         disposition: ArchiveInventoryDisposition,
-        reads: ArchiveInspectionRead<'_>,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<(Vec<ArchiveObjectEntry>, Vec<ContentId>), CampaignRepositoryError> {
         let mut entries = Vec::new();
-        let mut page_ids = Vec::with_capacity(ids.len());
+        let mut page_ids = reads.vec_with_capacity(ids.len())?;
         for (ordinal, id) in ids.iter().copied().enumerate() {
-            boundary().map_err(CampaignRepositoryError::Ram)?;
+            reads.poll(boundary)?;
             let envelope = self.read_archive_record(
                 id.content_id(),
                 CampaignRecordKind::ArchiveInventoryPage,
@@ -563,7 +818,9 @@ impl CampaignRepository {
                 boundary,
             )?;
             let page = CampaignArchiveInventoryPage::from_canonical_bytes(envelope.body())?;
-            if page.id()? != id
+            let decoded_id = page.id()?;
+            reads.poll_checked(boundary)?;
+            if decoded_id != id
                 || page.disposition() != disposition
                 || page.ordinal() as usize != ordinal
             {
@@ -575,7 +832,12 @@ impl CampaignRepository {
             {
                 return Err(integrity("campaign-archive-inventory-order-mismatch"));
             }
-            entries.extend_from_slice(page.entries());
+            let entries_per_poll = (64 * 1024 / std::mem::size_of::<ArchiveObjectEntry>()).max(1);
+            for chunk in page.entries().chunks(entries_per_poll) {
+                reads.reserve_growth(&mut entries, chunk.len())?;
+                entries.extend_from_slice(chunk);
+                reads.poll_checked(boundary)?;
+            }
             page_ids.push(id.content_id());
         }
         Ok((entries, page_ids))
@@ -587,7 +849,7 @@ impl CampaignRepository {
         exact_leaf: bool,
         ram_root: bool,
         verify_ram: bool,
-        reads: ArchiveInspectionRead<'_>,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<
         (
@@ -596,9 +858,9 @@ impl CampaignRepository {
         ),
         CampaignRepositoryError,
     > {
-        if let ArchiveInspectionRead::Checked(original) = reads {
+        if reads.accounts().is_some() {
             return self.authenticate_archive_object_checked(
-                id, exact_leaf, ram_root, verify_ram, original, boundary,
+                id, exact_leaf, ram_root, verify_ram, reads, boundary,
             );
         }
         boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -628,22 +890,20 @@ impl CampaignRepository {
                 if envelope.content_id() != id {
                     return Err(integrity("campaign-archive-object-envelope-id-mismatch"));
                 }
-                envelope
-                    .children()
-                    .iter()
-                    .map(crate::ChildReference::id)
-                    .collect()
+                reads.collect_set_with_boundary(
+                    envelope.children().iter().map(crate::ChildReference::id),
+                    boundary,
+                )?
             } else {
                 let envelope = ContentEnvelope::from_canonical_bytes(&bytes)
                     .map_err(CampaignCodecError::from)?;
                 if envelope.content_id(id.kind()) != id {
                     return Err(integrity("campaign-archive-generic-envelope-id-mismatch"));
                 }
-                envelope
-                    .children()
-                    .iter()
-                    .map(crate::ChildReference::id)
-                    .collect()
+                reads.collect_set_with_boundary(
+                    envelope.children().iter().map(crate::ChildReference::id),
+                    boundary,
+                )?
             }
         };
         boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -656,7 +916,7 @@ impl CampaignRepository {
         exact_leaf: bool,
         ram_root: bool,
         verify_ram: bool,
-        original: &crucible_store::owned_decode::DecodeBudget,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<
         (
@@ -666,7 +926,7 @@ impl CampaignRepository {
         CampaignRepositoryError,
     > {
         let (profile, children) = if exact_leaf || ram_root || is_archive_opaque_leaf(id.kind()) {
-            let logical_length = self.authenticate_checked_stream(id, original, boundary)?;
+            let logical_length = self.authenticate_checked_stream(id, reads, boundary)?;
             if exact_leaf && (id.kind() != ObjectKind::Observation || id.schema_version() != 1) {
                 return Err(StoreError::Corrupt { id }.into());
             }
@@ -675,40 +935,38 @@ impl CampaignRepository {
                 BTreeSet::new(),
             )
         } else if is_campaign_record_kind(id.kind()) {
-            let envelope = self.read_campaign_envelope(id, original, boundary)?;
+            let envelope = self.read_campaign_envelope(id, reads, boundary)?;
             let profile = profile_authenticated_campaign_envelope(
                 id,
                 &envelope.envelope,
                 envelope.logical_length,
             )?;
-            let children = envelope
-                .envelope
-                .children()
-                .iter()
-                .map(crate::ChildReference::id)
-                .collect();
+            let children = reads.collect_set_with_boundary(
+                envelope
+                    .envelope
+                    .children()
+                    .iter()
+                    .map(crate::ChildReference::id),
+                boundary,
+            )?;
             (profile, children)
         } else {
-            let authenticated =
-                self.read_generic_envelope(id, ArchiveInspectionRead::Checked(original), boundary)?;
+            let authenticated = self.read_generic_envelope(id, reads, boundary)?;
             let profile = profile_authenticated_opaque(id, authenticated.logical_length)?;
-            let children = authenticated
-                .envelope
-                .children()
-                .iter()
-                .map(crate::ChildReference::id)
-                .collect();
+            let children = reads.collect_set_with_boundary(
+                authenticated
+                    .envelope
+                    .children()
+                    .iter()
+                    .map(crate::ChildReference::id),
+                boundary,
+            )?;
             (profile, children)
         };
         if ram_root {
-            self.authenticate_ram_root(id, verify_ram, boundary)?;
+            self.authenticate_inspection_ram_root(id, verify_ram, reads, boundary)?;
         }
-        boundary().map_err(CampaignRepositoryError::Ram)?;
-        original.verify_live().map_err(|source| {
-            CampaignRepositoryError::Ram(crucible_store::ram::RamStoreError::from_admission(
-                original, source,
-            ))
-        })?;
+        reads.poll(boundary)?;
         Ok((profile, children))
     }
 
@@ -716,13 +974,13 @@ impl CampaignRepository {
         &self,
         id: ContentId,
         expected: CampaignRecordKind,
-        reads: ArchiveInspectionRead<'_>,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<ObjectEnvelope, CampaignRepositoryError> {
-        let ArchiveInspectionRead::Checked(original) = reads else {
+        if reads.accounts().is_none() {
             return self.require_record_kind(id, expected);
-        };
-        let authenticated = self.read_campaign_envelope(id, original, boundary)?;
+        }
+        let authenticated = self.read_campaign_envelope(id, reads, boundary)?;
         if authenticated.envelope.record_kind() != expected {
             return Err(integrity("campaign-child-record-kind-mismatch"));
         }
@@ -732,10 +990,10 @@ impl CampaignRepository {
     fn read_campaign_envelope(
         &self,
         id: ContentId,
-        original: &crucible_store::owned_decode::DecodeBudget,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<AuthenticatedCampaignEnvelope, CampaignRepositoryError> {
-        let (bytes, logical_length) = self.read_checked_bytes(id, original, boundary)?;
+        let (bytes, logical_length) = self.read_checked_bytes(id, reads, boundary)?;
         let envelope = if id.kind() == ObjectKind::MerkleNode {
             ObjectEnvelope::from_canonical_bytes_for_owner(&bytes)?
         } else {
@@ -753,7 +1011,7 @@ impl CampaignRepository {
     fn read_generic_envelope(
         &self,
         id: ContentId,
-        reads: ArchiveInspectionRead<'_>,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<AuthenticatedGenericEnvelope, CampaignRepositoryError> {
         let (envelope, logical_length) = match reads {
@@ -768,8 +1026,8 @@ impl CampaignRepository {
                     logical_length,
                 )
             }
-            ArchiveInspectionRead::Checked(original) => {
-                let (bytes, logical_length) = self.read_checked_bytes(id, original, boundary)?;
+            ArchiveInspectionRead::Checked { .. } => {
+                let (bytes, logical_length) = self.read_checked_bytes(id, reads, boundary)?;
                 (
                     ContentEnvelope::from_canonical_bytes(&bytes)
                         .map_err(CampaignCodecError::from)?,
@@ -789,38 +1047,87 @@ impl CampaignRepository {
     fn read_checked_bytes(
         &self,
         id: ContentId,
-        original: &crucible_store::owned_decode::DecodeBudget,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<(crucible_store::content_store::OwnedBlobBytes, u64), CampaignRepositoryError> {
-        crucible_store::ram::with_store_operation_boundary(original, boundary, |checked_boundary| {
+        reads.with_store(boundary, |operation, checked_boundary| {
             let source = self
                 .blobs
-                .read_with_boundary(original, id, None, checked_boundary)?;
+                .read_with_boundary(operation, id, None, checked_boundary)?;
             let logical_length = source.logical_length();
             let bytes =
-                source.read_all_with_boundary(original, MAX_ENVELOPE_BYTES, checked_boundary)?;
+                source.read_all_with_boundary(operation, MAX_ENVELOPE_BYTES, checked_boundary)?;
             checked_boundary()?;
             Ok((bytes, logical_length))
         })
-        .map_err(map_inspection_read_error)
     }
 
     fn authenticate_checked_stream(
         &self,
         id: ContentId,
-        original: &crucible_store::owned_decode::DecodeBudget,
+        reads: &ArchiveInspectionRead<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<u64, CampaignRepositoryError> {
-        crucible_store::ram::with_store_operation_boundary(original, boundary, |checked_boundary| {
+        reads.with_store(boundary, |operation, checked_boundary| {
             let source = self
                 .blobs
-                .read_with_boundary(original, id, None, checked_boundary)?;
+                .read_with_boundary(operation, id, None, checked_boundary)?;
             let logical_length = source.logical_length();
-            source.authenticate_with_boundary(original, id, checked_boundary)?;
+            source.authenticate_with_boundary(operation, id, checked_boundary)?;
             checked_boundary()?;
             Ok(logical_length)
         })
-        .map_err(map_inspection_read_error)
+    }
+
+    fn authenticate_inspection_ram_root(
+        &self,
+        id: ContentId,
+        verify_contents: bool,
+        reads: &ArchiveInspectionRead<'_>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
+        let Some((saved, operation)) = reads.accounts() else {
+            return self.authenticate_ram_root(id, verify_contents, boundary);
+        };
+        let mut supervised = || poll_inspection_saved(saved, boundary);
+        self.authenticate_ram_root_under(id, verify_contents, operation, &mut supervised)?;
+        reads.poll(boundary)
+    }
+
+    fn read_inspection_snapshot(
+        &self,
+        id: ContentId,
+        reads: &ArchiveInspectionRead<'_>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<LoadedSnapshot, CampaignRepositoryError> {
+        if reads.accounts().is_none() {
+            return self.read_snapshot(id);
+        }
+        if id.kind() != ObjectKind::CampaignSnapshot {
+            return Err(integrity("snapshot-content-kind"));
+        }
+        let envelope =
+            self.read_archive_record(id, CampaignRecordKind::Snapshot, reads, boundary)?;
+        let snapshot = CampaignSnapshot::from_canonical_bytes(envelope.body())?;
+        if reads.accounts().is_none() {
+            if ObjectEnvelope::for_snapshot(&snapshot)? != envelope
+                || snapshot.id()?.content_id() != id
+            {
+                return Err(integrity("snapshot-child-table-mismatch"));
+            }
+        } else {
+            let canonical_envelope = ObjectEnvelope::for_snapshot(&snapshot)?;
+            reads.poll_checked(boundary)?;
+            if canonical_envelope != envelope {
+                return Err(integrity("snapshot-child-table-mismatch"));
+            }
+            let snapshot_id = snapshot.id()?.content_id();
+            reads.poll_checked(boundary)?;
+            if snapshot_id != id {
+                return Err(integrity("snapshot-child-table-mismatch"));
+            }
+        }
+        Ok(LoadedSnapshot { envelope, snapshot })
     }
 
     fn validate_archive_policy(
@@ -829,12 +1136,16 @@ impl CampaignRepository {
         selected: &[ArchiveObjectEntry],
         omitted: &[ArchiveObjectEntry],
         selected_children: &BTreeMap<ContentId, BTreeSet<ContentId>>,
+        reads: &ArchiveInspectionRead<'_>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<(), CampaignRepositoryError> {
-        let selected_ids = selected
-            .iter()
-            .map(|entry| entry.id())
-            .collect::<BTreeSet<_>>();
-        let source = self.read_snapshot(manifest.source_snapshot().content_id())?;
+        let selected_ids =
+            reads.collect_set_with_boundary(selected.iter().map(|entry| entry.id()), boundary)?;
+        let source = self.read_inspection_snapshot(
+            manifest.source_snapshot().content_id(),
+            reads,
+            boundary,
+        )?;
         if !selected_ids.contains(&manifest.source_snapshot().content_id()) {
             return Err(integrity(
                 "campaign-archive-source-snapshot-is-not-selected",
@@ -842,7 +1153,12 @@ impl CampaignRepository {
         }
 
         let finding_reachable = if manifest.policy() == CampaignArchivePolicy::Debug {
-            direct_reachable(selected_children, source.snapshot.roots().findings)
+            direct_reachable(
+                selected_children,
+                source.snapshot.roots().findings,
+                reads,
+                boundary,
+            )?
         } else {
             BTreeSet::new()
         };
@@ -852,27 +1168,51 @@ impl CampaignRepository {
                     "campaign-archive-policy-selected-object-mismatch",
                 ));
             }
+            reads.poll(boundary)?;
         }
         for entry in omitted {
             if archive_entry_selected(manifest.policy(), *entry, &finding_reachable) {
                 return Err(integrity("campaign-archive-policy-omitted-object-mismatch"));
             }
+            reads.poll(boundary)?;
         }
         if matches!(
             manifest.policy(),
             CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror
         ) {
             let mut expected = BTreeSet::new();
-            self.visit_pin_retention_roots_at(manifest.source_snapshot(), &mut |pin| {
-                if pin.retention() == crate::PinRetention::Exact {
-                    expected.insert((pin.request().change.configuration(), pin.fact()));
+            let mut allocation_error = None;
+            let mut visit = |pin: crate::CampaignPinRetentionRecord| {
+                if allocation_error.is_none()
+                    && pin.retention() == crate::PinRetention::Exact
+                    && let Err(source) = reads.insert_set(
+                        &mut expected,
+                        (pin.request().change.configuration(), pin.fact()),
+                    )
+                {
+                    allocation_error = Some(source);
                 }
-            })?;
-            let actual = manifest
-                .checkpoint_selections()
-                .iter()
-                .map(|selection| (selection.configuration(), selection.pin_fact()))
-                .collect::<BTreeSet<_>>();
+            };
+            if let Some((saved, operation)) = reads.accounts() {
+                let reader = crate::repository::closure::read::ClosureRead::from_operation(
+                    self, saved, operation,
+                );
+                reader
+                    .semantic(boundary)
+                    .visit_pin_retention_roots_at(manifest.source_snapshot(), &mut visit)?;
+            } else {
+                self.visit_pin_retention_roots_at(manifest.source_snapshot(), &mut visit)?;
+            }
+            if let Some(source) = allocation_error {
+                return Err(source);
+            }
+            let actual = reads.collect_set_with_boundary(
+                manifest
+                    .checkpoint_selections()
+                    .iter()
+                    .map(|selection| (selection.configuration(), selection.pin_fact())),
+                boundary,
+            )?;
             if actual.len() != manifest.checkpoint_selections().len() || actual != expected {
                 return Err(integrity(
                     "campaign-archive-exact-checkpoint-selection-mismatch",
@@ -899,18 +1239,23 @@ fn archive_entry_selected(
 fn direct_reachable(
     children: &BTreeMap<ContentId, BTreeSet<ContentId>>,
     root: ContentId,
-) -> BTreeSet<ContentId> {
-    let mut pending = vec![root];
+    reads: &ArchiveInspectionRead<'_>,
+    boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+) -> Result<BTreeSet<ContentId>, CampaignRepositoryError> {
+    let mut pending = reads.vec_with_capacity(1)?;
+    pending.push(root);
     let mut visited = BTreeSet::new();
     while let Some(id) = pending.pop() {
-        if !visited.insert(id) {
-            continue;
-        }
-        if let Some(next) = children.get(&id) {
+        if reads.insert_set(&mut visited, id)?
+            && let Some(next) = children.get(&id)
+        {
+            reads.reserve_growth(&mut pending, next.len())?;
             pending.extend(next.iter().copied());
         }
+        reads.poll(boundary)?;
     }
-    visited
+    reads.poll(boundary)?;
+    Ok(visited)
 }
 
 const fn is_archive_opaque_leaf(kind: ObjectKind) -> bool {

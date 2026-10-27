@@ -1,6 +1,7 @@
 //! Immutable objective-evaluation and survivor-decision publication.
 
 use super::*;
+use crate::repository::closure::read::{ClosureSemanticRead, with_compatibility_semantic};
 
 /// Maximum admission ordinals inspected by one objective-input scan page.
 pub const MAX_OBJECTIVE_EVALUATION_SCAN_PAGE_ITEMS: u32 = 10_000;
@@ -157,6 +158,96 @@ impl ObjectiveEvaluationInput {
     #[must_use]
     pub const fn scenario(&self) -> &ScenarioArtifact {
         &self.scenario
+    }
+}
+
+impl ClosureSemanticRead<'_, '_> {
+    fn validate_objective_evaluation_basis(
+        &mut self,
+        snapshot: &LoadedSnapshot,
+        evaluation: &ObjectiveEvaluation,
+    ) -> Result<(), CampaignRepositoryError> {
+        if evaluation.policy() != snapshot.snapshot.active_policy() {
+            return Err(integrity("objective-evaluation-active-policy-mismatch"));
+        }
+        let policy = self.read_policy(evaluation.policy().content_id())?;
+        let observation = self.decode_observation(evaluation.observation().content_id())?;
+        self.validate_observation_references_cached(
+            &observation,
+            &mut ChoiceValidationCache::default(),
+        )?;
+        if self.merkle_get(
+            snapshot.snapshot.roots().observations,
+            attempt_observation_key(observation.attempt()),
+        )? != Some(evaluation.observation().content_id())
+        {
+            return Err(integrity(
+                "objective-evaluation-observation-is-not-canonical",
+            ));
+        }
+        let properties_id = observation.properties().content_id();
+        let properties_envelope =
+            self.require_record_kind(properties_id, crate::CampaignRecordKind::PropertyVerdictSet)?;
+        let properties = self
+            .repository()
+            .decode_property_verdict_set_envelope(properties_id, &properties_envelope)?;
+        evaluation.validate_basis(&policy, &observation, &properties)?;
+        Ok(())
+    }
+
+    pub(in crate::repository) fn validate_objective_evaluation_successor(
+        &mut self,
+        parent: &LoadedSnapshot,
+        child: &LoadedSnapshot,
+        evaluation_id: ObjectiveEvaluationId,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        if child.snapshot.lineage() != parent.snapshot.lineage()
+            || child.snapshot.active_policy() != parent.snapshot.active_policy()
+        {
+            return Err(integrity(
+                "objective-evaluation-transition-changed-campaign-basis",
+            ));
+        }
+        let prior = parent.snapshot.roots();
+        let next = child.snapshot.roots();
+        if prior.graph != next.graph
+            || prior.exploration != next.exploration
+            || prior.corpus != next.corpus
+            || prior.coverage != next.coverage
+            || prior.findings != next.findings
+            || prior.pins != next.pins
+            || prior.accounting != next.accounting
+        {
+            return Err(integrity(
+                "objective-evaluation-transition-changed-unrelated-root",
+            ));
+        }
+
+        let evaluation =
+            self.read_objective_evaluation_cached(evaluation_id.content_id(), choice_cache)?;
+        self.validate_objective_evaluation_basis(parent, &evaluation)?;
+        let key = objective_evaluation_key(evaluation.policy(), evaluation.observation());
+        if self.merkle_get(prior.observations, key)?.is_some() {
+            return Err(integrity(
+                "objective-evaluation-transition-replaced-existing-basis",
+            ));
+        }
+        let mut upserts = BTreeMap::new();
+        self.insert_map(&mut upserts, key, evaluation_id.content_id())?;
+        if !self.merkle_equals_after_upserts(prior.observations, next.observations, &upserts)?
+            || next.observations == prior.observations
+        {
+            return Err(integrity(
+                "objective-evaluation-transition-observation-root",
+            ));
+        }
+        if !self.coordination_matches_parent_result(parent, next.coordination)? {
+            return Err(integrity(
+                "objective-evaluation-transition-coordination-root",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -558,78 +649,9 @@ impl CampaignRepository {
         snapshot: &LoadedSnapshot,
         evaluation: &ObjectiveEvaluation,
     ) -> Result<(), CampaignRepositoryError> {
-        if evaluation.policy() != snapshot.snapshot.active_policy() {
-            return Err(integrity("objective-evaluation-active-policy-mismatch"));
-        }
-        let policy = self.read_policy(evaluation.policy().content_id())?;
-        let observation = self.read_observation(evaluation.observation().content_id())?;
-        if self.merkle.get(
-            snapshot.snapshot.roots().observations,
-            attempt_observation_key(observation.attempt()),
-        )? != Some(evaluation.observation().content_id())
-        {
-            return Err(integrity(
-                "objective-evaluation-observation-is-not-canonical",
-            ));
-        }
-        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
-        evaluation.validate_basis(&policy, &observation, &properties)?;
-        Ok(())
-    }
-
-    pub(super) fn validate_objective_evaluation_successor(
-        &self,
-        parent: &LoadedSnapshot,
-        child: &LoadedSnapshot,
-        evaluation_id: ObjectiveEvaluationId,
-        choice_cache: &mut ChoiceValidationCache,
-    ) -> Result<(), CampaignRepositoryError> {
-        if child.snapshot.lineage() != parent.snapshot.lineage()
-            || child.snapshot.active_policy() != parent.snapshot.active_policy()
-        {
-            return Err(integrity(
-                "objective-evaluation-transition-changed-campaign-basis",
-            ));
-        }
-        let prior = parent.snapshot.roots();
-        let next = child.snapshot.roots();
-        if prior.graph != next.graph
-            || prior.exploration != next.exploration
-            || prior.corpus != next.corpus
-            || prior.coverage != next.coverage
-            || prior.findings != next.findings
-            || prior.pins != next.pins
-            || prior.accounting != next.accounting
-        {
-            return Err(integrity(
-                "objective-evaluation-transition-changed-unrelated-root",
-            ));
-        }
-
-        let evaluation =
-            self.read_objective_evaluation_cached(evaluation_id.content_id(), choice_cache)?;
-        self.validate_objective_evaluation_basis(parent, &evaluation)?;
-        let key = objective_evaluation_key(evaluation.policy(), evaluation.observation());
-        if self.merkle.get(prior.observations, key)?.is_some() {
-            return Err(integrity(
-                "objective-evaluation-transition-replaced-existing-basis",
-            ));
-        }
-        let expected = self.merkle.root_after_upserts(
-            prior.observations,
-            &BTreeMap::from([(key, evaluation_id.content_id())]),
-        )?;
-        if next.observations != expected || next.observations == prior.observations {
-            return Err(integrity(
-                "objective-evaluation-transition-observation-root",
-            ));
-        }
-        if !self.coordination_matches_parent_result(parent, next.coordination)? {
-            return Err(integrity(
-                "objective-evaluation-transition-coordination-root",
-            ));
-        }
-        Ok(())
+        with_compatibility_semantic(self, |read| {
+            read.validate_objective_evaluation_basis(snapshot, evaluation)
+        })
     }
 
     /// Publishes one complete deterministic survivor decision without advancing a campaign.

@@ -2,6 +2,374 @@
 
 use super::*;
 use crate::ObservationCondition;
+use crate::repository::closure::read::{ClosureSemanticRead, with_compatibility_semantic};
+
+impl ClosureSemanticRead<'_, '_> {
+    fn read_attempt_record(&mut self, id: ContentId) -> Result<Attempt, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Attempt)?;
+        let attempt = Attempt::from_canonical_bytes(envelope.body())?;
+        if attempt.id()?.content_id() != id {
+            return Err(integrity("attempt-envelope-shape"));
+        }
+        Ok(attempt)
+    }
+
+    pub(in crate::repository) fn read_attempt_cached(
+        &mut self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<Attempt, CampaignRepositoryError> {
+        if let Some(validated) = cache.validated_attempts.get(&id) {
+            return Ok(validated.attempt.clone_admitted()?);
+        }
+
+        let attempt = self.read_attempt_record(id)?;
+        let path = self.read_branch_path(attempt.path().content_id())?;
+        let mut current = Some(attempt.clone_admitted()?);
+        let mut current_id = id;
+        let mut visited = BTreeSet::new();
+        let mut pending = Vec::new();
+
+        loop {
+            crucible_store::owned_decode::charge_btree_set_entry::<ContentId>()
+                .map_err(CampaignCodecError::from)?;
+            if !visited.insert(current_id) {
+                return Err(integrity("attempt-continuation-origin-cycle"));
+            }
+
+            if let Some(validated) = cache.validated_attempts.get(&current_id) {
+                let validated = validated.clone_admitted()?;
+                if validated.path != attempt.path() {
+                    return Err(integrity("attempt-continuation-path-mismatch"));
+                }
+                return cache_attempt_continuation_prefix(cache, id, pending, validated);
+            }
+
+            let current = match current.take() {
+                Some(current) => current,
+                None => self.read_attempt_record(current_id)?,
+            };
+            if current.path() != attempt.path() {
+                return Err(integrity("attempt-continuation-path-mismatch"));
+            }
+
+            let validated = match current.start() {
+                AttemptStart::Discover { configuration } => {
+                    let configuration =
+                        self.read_configuration_artifact(configuration.content_id())?;
+                    ValidatedAttempt {
+                        attempt: current,
+                        path: attempt.path(),
+                        lineage: (configuration.scenario(), configuration.scenario_artifact()),
+                        origin_depth: 1,
+                    }
+                }
+                AttemptStart::Branch {
+                    edge,
+                    parent,
+                    selection,
+                } => {
+                    if path.edges().last() != Some(&edge) {
+                        return Err(integrity("attempt-branch-path-terminal-edge-mismatch"));
+                    }
+                    let parent = self.read_configuration_artifact(parent.content_id())?;
+                    let (selection, opportunity, domain) =
+                        self.read_resolved_selection(selection, cache)?;
+                    let branch_point = opportunity.branch_point_id(parent.configuration());
+                    selection.validate_branch_replay(&opportunity, &domain, branch_point)?;
+                    if let crate::SelectionOrigin::CampaignBranch {
+                        edge: selected_edge,
+                        ..
+                    } = selection.origin()
+                        && selected_edge != edge
+                    {
+                        return Err(integrity("attempt-branch-edge-mismatch"));
+                    }
+                    if path.segments().last().copied()
+                        != Some(crate::BranchPathSegment::new(branch_point, edge))
+                    {
+                        return Err(integrity("attempt-branch-path-terminal-scope-mismatch"));
+                    }
+                    ValidatedAttempt {
+                        attempt: current,
+                        path: attempt.path(),
+                        lineage: (parent.scenario(), parent.scenario_artifact()),
+                        origin_depth: 1,
+                    }
+                }
+                AttemptStart::AfterAttempt { origin, reached } => {
+                    let reached = self.read_configuration_artifact(reached.content_id())?;
+                    self.push(
+                        &mut pending,
+                        (
+                            current_id,
+                            current,
+                            (reached.scenario(), reached.scenario_artifact()),
+                        ),
+                    )?;
+                    if pending.len() >= MAX_AFTER_ATTEMPT_ORIGIN_DEPTH {
+                        return Err(integrity("attempt-continuation-origin-depth-exceeded"));
+                    }
+                    current_id = origin.content_id();
+                    continue;
+                }
+            };
+
+            crucible_store::owned_decode::charge_btree_entry::<ContentId, ValidatedAttempt>()
+                .map_err(CampaignCodecError::from)?;
+            cache
+                .validated_attempts
+                .insert(current_id, validated.clone_admitted()?);
+            return cache_attempt_continuation_prefix(cache, id, pending, validated);
+        }
+    }
+
+    pub(in crate::repository) fn decode_observation(
+        &mut self,
+        id: ContentId,
+    ) -> Result<Observation, CampaignRepositoryError> {
+        let envelope = self.require_record_kind(id, crate::CampaignRecordKind::Observation)?;
+        let observation = Observation::from_canonical_bytes(envelope.body())?;
+        if observation.id()?.content_id() != id {
+            return Err(integrity("observation-envelope-shape"));
+        }
+        Ok(observation)
+    }
+
+    pub(in crate::repository) fn validate_observation_references_cached(
+        &mut self,
+        observation: &Observation,
+        choice_cache: &mut ChoiceValidationCache,
+    ) -> Result<(), CampaignRepositoryError> {
+        let attempt = self.read_attempt_cached(observation.attempt().content_id(), choice_cache)?;
+        let child = self.read_configuration_artifact(observation.child_content().content_id())?;
+        if child.configuration() != observation.child()
+            || attempt.path() != observation.path()
+            || !observation
+                .stop()
+                .authenticates_requested_stop(attempt.stop())
+        {
+            return Err(integrity("observation-attempt-or-child-mismatch"));
+        }
+        self.require_record_kind(
+            observation.measurements().content_id(),
+            crate::CampaignRecordKind::MeasurementSet,
+        )?;
+        let properties_envelope = self.require_record_kind(
+            observation.properties().content_id(),
+            crate::CampaignRecordKind::PropertyVerdictSet,
+        )?;
+        let properties = self.repository().decode_property_verdict_set_envelope(
+            observation.properties().content_id(),
+            &properties_envelope,
+        )?;
+        self.require_record_kind(
+            observation.coverage().content_id(),
+            crate::CampaignRecordKind::CoverageProjection,
+        )?;
+        if let Some(trace) = observation.resolved_effect_trace() {
+            if trace.kind() != ObjectKind::Trace || trace.schema_version() != 1 {
+                return Err(integrity("observation-trace-kind-mismatch"));
+            }
+            self.authenticate_opaque(trace)?;
+        }
+        for choice in observation.discovered_choices() {
+            let choice = self.read_opportunity_cached(choice.content_id(), choice_cache)?;
+            if choice.scenario() != child.scenario() {
+                return Err(integrity("observation-choice-scenario-mismatch"));
+            }
+        }
+
+        let mut selected_opportunities = BTreeSet::new();
+        for selection in observation.produced_selections() {
+            let (selection, opportunity, _) =
+                self.read_resolved_selection(*selection, choice_cache)?;
+            if !observation
+                .discovered_choices()
+                .contains(&selection.opportunity())
+                || opportunity.scenario() != child.scenario()
+            {
+                return Err(integrity("observation-produced-selection-choice-mismatch"));
+            }
+            crucible_store::owned_decode::charge_btree_set_entry::<ChoiceOpportunityId>()
+                .map_err(CampaignCodecError::from)?;
+            if !selected_opportunities.insert(selection.opportunity()) {
+                return Err(integrity(
+                    "observation-produced-selection-opportunity-duplicate",
+                ));
+            }
+        }
+        if observation.stop().reached_next_choice()
+            && observation
+                .discovered_choices()
+                .iter()
+                .all(|opportunity| selected_opportunities.contains(opportunity))
+        {
+            return Err(integrity(
+                "next-choice-observation-has-no-unresolved-choice",
+            ));
+        }
+        if observation.stop().reached_next_choice() && observation.discovered_choices().is_empty() {
+            return Err(integrity("next-choice-observation-has-no-choice"));
+        }
+        if let StopOutcome::AssertionFailure(property) = observation.stop()
+            && properties
+                .properties()
+                .get(property)
+                .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
+        {
+            return Err(integrity("assertion-outcome-has-no-failed-property"));
+        }
+        if let StopOutcome::ObservationReached(proof) = observation.stop()
+            && let Some(property) = match proof.condition() {
+                ObservationCondition::AssertionViolationTransition(property) => {
+                    Some(property.as_str())
+                }
+                ObservationCondition::AnyAssertionViolationTransition => {
+                    proof.assertion_witness().map(|witness| witness.assertion())
+                }
+                _ => None,
+            }
+            && properties
+                .properties()
+                .get(property)
+                .is_none_or(|evidence| evidence.verdict() != PropertyVerdict::Failed)
+        {
+            return Err(integrity(
+                "assertion-observation-stop-has-no-failed-property",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(in crate::repository) fn read_objective_evaluation(
+        &mut self,
+        id: ContentId,
+    ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
+        self.read_objective_evaluation_cached(id, &mut ChoiceValidationCache::default())
+    }
+
+    pub(in crate::repository) fn read_objective_evaluation_cached(
+        &mut self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::ObjectiveEvaluation)?;
+        let evaluation = ObjectiveEvaluation::from_canonical_bytes(envelope.body())?;
+        if evaluation.id()?.content_id() != id {
+            return Err(integrity("objective-evaluation-envelope-shape"));
+        }
+        let policy = evaluation.policy();
+        let contract = if let Some(contract) = cache.objective_contract(policy) {
+            contract
+        } else {
+            let value = self.read_policy(policy.content_id())?;
+            let contract = value.objective_contract_hash();
+            cache.insert_objective_contract(policy, contract);
+            contract
+        };
+        let observation = self.decode_observation(evaluation.observation().content_id())?;
+        let properties_envelope = self.require_record_kind(
+            observation.properties().content_id(),
+            crate::CampaignRecordKind::PropertyVerdictSet,
+        )?;
+        let properties = self.repository().decode_property_verdict_set_envelope(
+            observation.properties().content_id(),
+            &properties_envelope,
+        )?;
+        evaluation.validate_compact_basis(policy, contract, &observation, &properties)?;
+        Ok(evaluation)
+    }
+
+    fn decode_ranking_explanation(
+        &mut self,
+        id: ContentId,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::RankingExplanation)?;
+        let explanation = RankingExplanation::from_canonical_bytes(envelope.body())?;
+        if explanation.id()?.content_id() != id {
+            return Err(integrity("ranking-explanation-envelope-shape"));
+        }
+        Ok(explanation)
+    }
+
+    pub(in crate::repository) fn read_ranking_explanation_cached(
+        &mut self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<RankingExplanation, CampaignRepositoryError> {
+        let explanation = self.decode_ranking_explanation(id)?;
+        self.read_objective_evaluation_cached(explanation.evaluation().content_id(), cache)?;
+        if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition() {
+            self.read_objective_evaluation_cached(dominator.content_id(), cache)?;
+        }
+        Ok(explanation)
+    }
+
+    pub(in crate::repository) fn read_survivor_selection_bundle_cached(
+        &mut self,
+        id: ContentId,
+        cache: &mut ChoiceValidationCache,
+    ) -> Result<SurvivorSelectionBundle, CampaignRepositoryError> {
+        let envelope =
+            self.require_record_kind(id, crate::CampaignRecordKind::SurvivorSelection)?;
+        let selection = SurvivorSelection::from_canonical_bytes(envelope.body())?;
+        if selection.id()?.content_id() != id {
+            return Err(integrity("survivor-selection-envelope-shape"));
+        }
+        let policy = self.read_policy(selection.policy().content_id())?;
+        cache.insert_objective_contract(selection.policy(), policy.objective_contract_hash());
+        let mut considered_evaluations = BTreeSet::new();
+        for evaluation in selection.considered().values().copied() {
+            crucible_store::owned_decode::charge_btree_set_entry::<ObjectiveEvaluationId>()
+                .map_err(CampaignCodecError::from)?;
+            considered_evaluations.insert(evaluation);
+        }
+        let mut candidates = Vec::new();
+        crucible_store::owned_decode::reserve_vec(&mut candidates, selection.considered().len())
+            .map_err(CampaignCodecError::from)?;
+        let mut evidence_bytes = 0;
+        for (configuration, evaluation_id) in selection.considered() {
+            let evaluation =
+                self.read_objective_evaluation_cached(evaluation_id.content_id(), cache)?;
+            crate::objective::charge_survivor_evidence_bytes(
+                &mut evidence_bytes,
+                evaluation.canonical_bytes().len(),
+            )?;
+            let explanation_id = selection
+                .explanations()
+                .get(configuration)
+                .ok_or_else(|| integrity("survivor-selection-explanation-missing"))?;
+            let explanation = self.decode_ranking_explanation(explanation_id.content_id())?;
+            crate::objective::charge_survivor_evidence_bytes(
+                &mut evidence_bytes,
+                explanation.canonical_bytes().len(),
+            )?;
+            if evaluation.configuration() != *configuration
+                || explanation.evaluation() != *evaluation_id
+            {
+                return Err(integrity("survivor-selection-candidate-basis-mismatch"));
+            }
+            if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition()
+                && !considered_evaluations.contains(dominator)
+            {
+                return Err(integrity("survivor-selection-dominator-is-not-considered"));
+            }
+            candidates.push(crate::RankingCandidate::new(
+                evaluation,
+                explanation.novelty_score(),
+                explanation.breadth_ordinal(),
+            ));
+        }
+        let replayed = crate::rank_survivors(&policy, selection.rule(), candidates)?;
+        if replayed.selection() != &selection {
+            return Err(integrity("survivor-selection-replay-mismatch"));
+        }
+        Ok(replayed)
+    }
+}
 
 impl CampaignRepository {
     /// Reads one bounded authenticated slice of a retained trace leaf.
@@ -46,6 +414,17 @@ impl CampaignRepository {
         id: ContentId,
     ) -> Result<MeasurementSet, CampaignRepositoryError> {
         let envelope = self.require_record_kind(id, crate::CampaignRecordKind::MeasurementSet)?;
+        self.decode_measurement_set_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn decode_measurement_set_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<MeasurementSet, CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::MeasurementSet {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
         let value = MeasurementSet::from_canonical_bytes(envelope.body())?;
         if value.id()?.content_id() != id {
             return Err(integrity("measurement-set-envelope-shape"));
@@ -59,6 +438,17 @@ impl CampaignRepository {
     ) -> Result<PropertyVerdictSet, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::PropertyVerdictSet)?;
+        self.decode_property_verdict_set_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn decode_property_verdict_set_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<PropertyVerdictSet, CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::PropertyVerdictSet {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
         let value = PropertyVerdictSet::from_canonical_bytes(envelope.body())?;
         if value.id()?.content_id() != id {
             return Err(integrity("property-verdict-set-envelope-shape"));
@@ -72,6 +462,17 @@ impl CampaignRepository {
     ) -> Result<CoverageProjection, CampaignRepositoryError> {
         let envelope =
             self.require_record_kind(id, crate::CampaignRecordKind::CoverageProjection)?;
+        self.decode_coverage_projection_envelope(id, &envelope)
+    }
+
+    pub(in crate::repository) fn decode_coverage_projection_envelope(
+        &self,
+        id: ContentId,
+        envelope: &ObjectEnvelope,
+    ) -> Result<CoverageProjection, CampaignRepositoryError> {
+        if envelope.record_kind() != crate::CampaignRecordKind::CoverageProjection {
+            return Err(integrity("campaign-child-record-kind-mismatch"));
+        }
         let value = CoverageProjection::from_canonical_bytes(envelope.body())?;
         if value.id()?.content_id() != id {
             return Err(integrity("coverage-projection-envelope-shape"));
@@ -112,25 +513,9 @@ impl CampaignRepository {
         id: ContentId,
         cache: &mut ChoiceValidationCache,
     ) -> Result<ObjectiveEvaluation, CampaignRepositoryError> {
-        let envelope =
-            self.require_record_kind(id, crate::CampaignRecordKind::ObjectiveEvaluation)?;
-        let evaluation = ObjectiveEvaluation::from_canonical_bytes(envelope.body())?;
-        if evaluation.id()?.content_id() != id {
-            return Err(integrity("objective-evaluation-envelope-shape"));
-        }
-        let policy = evaluation.policy();
-        let contract = if let Some(contract) = cache.objective_contract(policy) {
-            contract
-        } else {
-            let value = self.read_policy(policy.content_id())?;
-            let contract = value.objective_contract_hash();
-            cache.insert_objective_contract(policy, contract);
-            contract
-        };
-        let observation = self.decode_observation(evaluation.observation().content_id())?;
-        let properties = self.read_property_verdict_set(observation.properties().content_id())?;
-        evaluation.validate_compact_basis(policy, contract, &observation, &properties)?;
-        Ok(evaluation)
+        with_compatibility_semantic(self, |read| {
+            read.read_objective_evaluation_cached(id, cache)
+        })
     }
 
     pub(in crate::repository) fn read_ranking_explanation(
@@ -145,25 +530,7 @@ impl CampaignRepository {
         id: ContentId,
         cache: &mut ChoiceValidationCache,
     ) -> Result<RankingExplanation, CampaignRepositoryError> {
-        let explanation = self.decode_ranking_explanation(id)?;
-        self.read_objective_evaluation_cached(explanation.evaluation().content_id(), cache)?;
-        if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition() {
-            self.read_objective_evaluation_cached(dominator.content_id(), cache)?;
-        }
-        Ok(explanation)
-    }
-
-    pub(in crate::repository) fn decode_ranking_explanation(
-        &self,
-        id: ContentId,
-    ) -> Result<RankingExplanation, CampaignRepositoryError> {
-        let envelope =
-            self.require_record_kind(id, crate::CampaignRecordKind::RankingExplanation)?;
-        let explanation = RankingExplanation::from_canonical_bytes(envelope.body())?;
-        if explanation.id()?.content_id() != id {
-            return Err(integrity("ranking-explanation-envelope-shape"));
-        }
-        Ok(explanation)
+        with_compatibility_semantic(self, |read| read.read_ranking_explanation_cached(id, cache))
     }
 
     pub(in crate::repository) fn read_survivor_selection_bundle(
@@ -178,58 +545,9 @@ impl CampaignRepository {
         id: ContentId,
         cache: &mut ChoiceValidationCache,
     ) -> Result<SurvivorSelectionBundle, CampaignRepositoryError> {
-        let envelope =
-            self.require_record_kind(id, crate::CampaignRecordKind::SurvivorSelection)?;
-        let selection = SurvivorSelection::from_canonical_bytes(envelope.body())?;
-        if selection.id()?.content_id() != id {
-            return Err(integrity("survivor-selection-envelope-shape"));
-        }
-        let policy = self.read_policy(selection.policy().content_id())?;
-        cache.insert_objective_contract(selection.policy(), policy.objective_contract_hash());
-        let considered_evaluations = selection
-            .considered()
-            .values()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let mut candidates = Vec::with_capacity(selection.considered().len());
-        let mut evidence_bytes = 0;
-        for (configuration, evaluation_id) in selection.considered() {
-            let evaluation =
-                self.read_objective_evaluation_cached(evaluation_id.content_id(), cache)?;
-            crate::objective::charge_survivor_evidence_bytes(
-                &mut evidence_bytes,
-                evaluation.canonical_bytes().len(),
-            )?;
-            let explanation_id = selection
-                .explanations()
-                .get(configuration)
-                .ok_or_else(|| integrity("survivor-selection-explanation-missing"))?;
-            let explanation = self.decode_ranking_explanation(explanation_id.content_id())?;
-            crate::objective::charge_survivor_evidence_bytes(
-                &mut evidence_bytes,
-                explanation.canonical_bytes().len(),
-            )?;
-            if evaluation.configuration() != *configuration
-                || explanation.evaluation() != *evaluation_id
-            {
-                return Err(integrity("survivor-selection-candidate-basis-mismatch"));
-            }
-            if let crate::RankingDisposition::ParetoDominated(dominator) = explanation.disposition()
-                && !considered_evaluations.contains(dominator)
-            {
-                return Err(integrity("survivor-selection-dominator-is-not-considered"));
-            }
-            candidates.push(crate::RankingCandidate::new(
-                evaluation,
-                explanation.novelty_score(),
-                explanation.breadth_ordinal(),
-            ));
-        }
-        let replayed = crate::rank_survivors(&policy, selection.rule(), candidates)?;
-        if replayed.selection() != &selection {
-            return Err(integrity("survivor-selection-replay-mismatch"));
-        }
-        Ok(replayed)
+        with_compatibility_semantic(self, |read| {
+            read.read_survivor_selection_bundle_cached(id, cache)
+        })
     }
 
     pub(in crate::repository) fn validate_observation_references(

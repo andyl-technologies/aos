@@ -6,19 +6,11 @@ use super::*;
 pub(super) enum IssueProjectionMode {
     Preflight,
     Publish,
-    Validate {
-        target_exploration: ContentId,
-        target_accounting: ContentId,
-    },
 }
 
 impl IssueProjectionMode {
     pub(super) const fn publishes(self) -> bool {
         matches!(self, Self::Publish)
-    }
-
-    pub(super) const fn validates_import(self) -> bool {
-        matches!(self, Self::Validate { .. })
     }
 }
 

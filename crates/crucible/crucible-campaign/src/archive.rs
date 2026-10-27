@@ -19,6 +19,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crucible_store::content_store::{
     ContentId, ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass,
@@ -27,7 +28,7 @@ use crucible_store::content_store::{
 use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::{
     CampaignArchiveInventoryPageId, CampaignArchiveManifestId, CampaignCodecError, CampaignFactId,
-    CampaignHash, CampaignSnapshotId, ConfigurationId, ExactCheckpointId,
+    CampaignHash, CampaignSnapshotId, ConfigurationId, ExactCheckpointId, Finding,
 };
 
 /// Trusted resolver for live exact-pin materializations during archive planning.
@@ -415,6 +416,8 @@ impl CampaignArchiveManifest {
             .map_err(|_| invalid("archive selected count is unrepresentable"))?;
         let omitted_count = u64::try_from(basis.omitted.len())
             .map_err(|_| invalid("archive omitted count is unrepresentable"))?;
+        let selected_digest = inventory_digest_admitted(basis.selected)?;
+        let omitted_digest = inventory_digest_admitted(basis.omitted)?;
         let manifest = Self {
             schema_version: ARCHIVE_SCHEMA_VERSION,
             source_snapshot: basis.source_snapshot,
@@ -426,8 +429,8 @@ impl CampaignArchiveManifest {
             omitted_pages: basis.omitted_pages,
             selected_count,
             omitted_count,
-            selected_digest: inventory_digest(basis.selected),
-            omitted_digest: inventory_digest(basis.omitted),
+            selected_digest,
+            omitted_digest,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -680,9 +683,8 @@ impl CampaignArchiveReport {
     }
 }
 
-/// Fully validated direct inventory for one archive manifest.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CampaignArchiveInspection {
+#[derive(Debug, PartialEq, Eq)]
+struct CampaignArchiveInspectionData {
     manifest_id: CampaignArchiveManifestId,
     manifest: CampaignArchiveManifest,
     selected: Vec<ArchiveObjectEntry>,
@@ -693,47 +695,131 @@ pub struct CampaignArchiveInspection {
     omitted_inventory_verified: bool,
 }
 
+/// Fully validated direct inventory for one archive manifest.
+///
+/// Clones share the immutable decoded result and its original allocation
+/// custody. The data owner precedes custody so the final result allocation is
+/// freed before its resource credit returns.
+#[derive(Clone, Debug)]
+pub struct CampaignArchiveInspection {
+    data: Arc<CampaignArchiveInspectionData>,
+    _custody: Option<crucible_store::owned_decode::DecodeCustody>,
+}
+
+impl PartialEq for CampaignArchiveInspection {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
+impl Eq for CampaignArchiveInspection {}
+
+/// One checked archive finding whose decoded storage retains its prepaid custody.
+///
+/// Clones share the immutable finding and its custody. The data owner precedes
+/// custody so the final finding allocation is freed before its credit returns.
+#[derive(Clone, Debug)]
+pub struct CampaignArchivedFinding {
+    finding: Arc<Finding>,
+    _custody: crucible_store::owned_decode::DecodeCustody,
+}
+
+impl std::ops::Deref for CampaignArchivedFinding {
+    type Target = Finding;
+
+    fn deref(&self) -> &Self::Target {
+        &self.finding
+    }
+}
+
+impl AsRef<Finding> for CampaignArchivedFinding {
+    fn as_ref(&self) -> &Finding {
+        &self.finding
+    }
+}
+
+impl PartialEq for CampaignArchivedFinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.finding == other.finding
+    }
+}
+
+impl PartialEq<Finding> for CampaignArchivedFinding {
+    fn eq(&self, other: &Finding) -> bool {
+        self.finding.as_ref() == other
+    }
+}
+
+impl PartialEq<CampaignArchivedFinding> for Finding {
+    fn eq(&self, other: &CampaignArchivedFinding) -> bool {
+        self == other.finding.as_ref()
+    }
+}
+
+impl Eq for CampaignArchivedFinding {}
+
+impl CampaignArchivedFinding {
+    /// Places a decoded finding under the inspection operation's retained custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the operation cannot fund the shared
+    /// finding owner.
+    pub(crate) fn admitted(
+        finding: Finding,
+        operation: &crucible_store::owned_decode::DecodeBudget,
+    ) -> Result<Self, crucible_store::owned_decode::DecodeAdmissionError> {
+        operation.charge_bytes(
+            (std::mem::size_of::<Finding>() + 2 * std::mem::size_of::<usize>()) as u64,
+        )?;
+        Ok(Self {
+            finding: Arc::new(finding),
+            _custody: operation.custody(),
+        })
+    }
+}
+
 impl CampaignArchiveInspection {
     /// Returns the authenticated manifest identity.
     #[must_use]
-    pub const fn manifest_id(&self) -> CampaignArchiveManifestId {
-        self.manifest_id
+    pub fn manifest_id(&self) -> CampaignArchiveManifestId {
+        self.data.manifest_id
     }
 
     /// Returns the decoded archive manifest.
     #[must_use]
-    pub const fn manifest(&self) -> &CampaignArchiveManifest {
-        &self.manifest
+    pub fn manifest(&self) -> &CampaignArchiveManifest {
+        &self.data.manifest
     }
 
     /// Returns the direct selected inventory.
     #[must_use]
     pub fn selected(&self) -> &[ArchiveObjectEntry] {
-        &self.selected
+        &self.data.selected
     }
 
     /// Returns the explicitly omitted source inventory.
     #[must_use]
     pub fn omitted(&self) -> &[ArchiveObjectEntry] {
-        &self.omitted
+        &self.data.omitted
     }
 
     /// Returns manifest, page, and selected-object IDs retained by archive GC.
     #[must_use]
-    pub const fn retained_objects(&self) -> &BTreeSet<ContentId> {
-        &self.retained_objects
+    pub fn retained_objects(&self) -> &BTreeSet<ContentId> {
+        &self.data.retained_objects
     }
 
     /// Returns selected-object sensitivity and size totals.
     #[must_use]
-    pub const fn selected_report(&self) -> CampaignArchiveReport {
-        self.selected_report
+    pub fn selected_report(&self) -> CampaignArchiveReport {
+        self.data.selected_report
     }
 
     /// Returns declared omitted-object sensitivity and size totals.
     #[must_use]
-    pub const fn omitted_report(&self) -> CampaignArchiveReport {
-        self.omitted_report
+    pub fn omitted_report(&self) -> CampaignArchiveReport {
+        self.data.omitted_report
     }
 
     /// Returns whether every omitted object was available and independently profiled.
@@ -742,8 +828,8 @@ impl CampaignArchiveInspection {
     /// aggregate is an authenticated source declaration, while selected bytes
     /// remain independently authenticated at the destination.
     #[must_use]
-    pub const fn omitted_inventory_verified(&self) -> bool {
-        self.omitted_inventory_verified
+    pub fn omitted_inventory_verified(&self) -> bool {
+        self.data.omitted_inventory_verified
     }
 }
 
@@ -857,11 +943,46 @@ impl CampaignArchiveTransferReport {
     }
 }
 
+enum InventoryDigestEntries<'a> {
+    Borrowed(&'a [ArchiveObjectEntry]),
+    Owned(Vec<ArchiveObjectEntry>),
+}
+
+impl Canonical for InventoryDigestEntries<'_> {
+    fn encode(&self, encoder: &mut Encoder) {
+        let entries = match self {
+            Self::Borrowed(entries) => *entries,
+            Self::Owned(entries) => entries.as_slice(),
+        };
+        encoder.sequence(entries, |encoder, entry| entry.encode(encoder));
+    }
+
+    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
+        Ok(Self::Owned(decoder.sequence(ArchiveObjectEntry::decode)?))
+    }
+}
+
 pub(crate) fn inventory_digest(entries: &[ArchiveObjectEntry]) -> CampaignHash {
     CampaignHash::derive(
         "crucible.campaign.archive-inventory.v1",
-        &codec::encode(&entries.to_vec()),
+        &codec::encode(&InventoryDigestEntries::Borrowed(entries)),
     )
+}
+
+/// Computes an inventory digest and surfaces active decode-account refusal.
+///
+/// # Errors
+///
+/// Returns the saved original allocation refusal when canonical digest bytes
+/// cannot be admitted under the current operation account.
+pub(crate) fn inventory_digest_admitted(
+    entries: &[ArchiveObjectEntry],
+) -> Result<CampaignHash, CampaignCodecError> {
+    let digest = inventory_digest(entries);
+    if let Some(operation) = crucible_store::owned_decode::current_budget() {
+        operation.check()?;
+    }
+    Ok(digest)
 }
 
 pub(crate) fn build_inspection(
@@ -871,28 +992,39 @@ pub(crate) fn build_inspection(
     omitted: Vec<ArchiveObjectEntry>,
     page_ids: impl IntoIterator<Item = ContentId>,
     omitted_inventory_verified: bool,
+    operation: Option<&crucible_store::owned_decode::DecodeBudget>,
 ) -> Result<CampaignArchiveInspection, CampaignCodecError> {
     if manifest.selected_count != selected.len() as u64
         || manifest.omitted_count != omitted.len() as u64
-        || manifest.selected_digest != inventory_digest(&selected)
-        || manifest.omitted_digest != inventory_digest(&omitted)
     {
         return Err(invalid("archive inventory does not match its manifest"));
     }
-    if selected
-        .iter()
-        .map(|entry| entry.id)
-        .collect::<BTreeSet<_>>()
-        .intersection(&omitted.iter().map(|entry| entry.id).collect())
-        .next()
-        .is_some()
+    if manifest.selected_digest != inventory_digest_admitted(&selected)?
+        || manifest.omitted_digest != inventory_digest_admitted(&omitted)?
     {
+        return Err(invalid("archive inventory does not match its manifest"));
+    }
+    if selected.iter().any(|selected| {
+        omitted
+            .binary_search_by_key(&selected.id, |omitted| omitted.id)
+            .is_ok()
+    }) {
         return Err(invalid("archive selected and omitted inventories overlap"));
     }
 
-    let mut retained_objects = page_ids.into_iter().collect::<BTreeSet<_>>();
-    retained_objects.insert(manifest_id.content_id());
-    retained_objects.extend(selected.iter().map(|entry| entry.id));
+    let mut retained_objects = BTreeSet::new();
+    for id in page_ids
+        .into_iter()
+        .chain([manifest_id.content_id()])
+        .chain(selected.iter().map(|entry| entry.id))
+    {
+        if !retained_objects.contains(&id)
+            && let Some(operation) = operation
+        {
+            operation.charge_btree_entry::<ContentId, ()>()?;
+        }
+        retained_objects.insert(id);
+    }
 
     let mut selected_report = CampaignArchiveReport::default();
     for entry in &selected {
@@ -902,7 +1034,13 @@ pub(crate) fn build_inspection(
     for entry in &omitted {
         omitted_report.add(*entry)?;
     }
-    Ok(CampaignArchiveInspection {
+    if let Some(operation) = operation {
+        operation.charge_bytes(
+            (std::mem::size_of::<CampaignArchiveInspectionData>()
+                + 2 * std::mem::size_of::<usize>()) as u64,
+        )?;
+    }
+    let data = Arc::new(CampaignArchiveInspectionData {
         manifest_id,
         manifest,
         selected,
@@ -911,6 +1049,10 @@ pub(crate) fn build_inspection(
         selected_report,
         omitted_report,
         omitted_inventory_verified,
+    });
+    Ok(CampaignArchiveInspection {
+        data,
+        _custody: operation.map(|operation| operation.custody()),
     })
 }
 

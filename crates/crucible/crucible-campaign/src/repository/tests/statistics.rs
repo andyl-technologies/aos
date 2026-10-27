@@ -5,6 +5,7 @@ use crate::StatisticalProposalEvidence;
 use crate::repository::projection::{smc_weighted_categorical_draw, weighted_categorical_draw};
 use std::sync::Arc;
 
+mod checked_archive;
 mod smc;
 
 fn statistical_execution_with_proposal(

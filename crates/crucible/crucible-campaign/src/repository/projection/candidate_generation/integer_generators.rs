@@ -1,5 +1,7 @@
 //! Progressive and pseudorandom integer candidate generators.
 
+use std::cmp::Ordering;
+
 use super::*;
 
 pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
@@ -8,6 +10,7 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
     domain_semantic: crate::ChoiceDomainSemanticId,
     proposed: &BTreeSet<ChoiceValue>,
     feedback: CandidateFeedbackProjection<'_>,
+    poll: &mut impl FnMut() -> Result<(), CampaignRepositoryError>,
 ) -> Result<IntegerValue, CampaignRepositoryError> {
     let projection = feedback.projection;
     if projection.branch_point() != request.branch_point() || projection.policy() != feedback.policy
@@ -22,21 +25,35 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
 
     let mut selected = BTreeSet::new();
     for value in proposed {
+        poll()?;
         let ChoiceValue::Integer(value) = value else {
             return Err(integrity("candidate-generator-domain-family-mismatch"));
         };
-        selected.insert(integer_candidate_offset(domain, *value)?);
+        let offset = integer_candidate_offset(domain, *value)?;
+        if !selected.contains(&offset) {
+            crucible_store::owned_decode::charge_btree_set_entry::<u128>()
+                .map_err(CampaignCodecError::from)?;
+            selected.insert(offset);
+        }
     }
-    let gaps = progressive_refinement_gaps(domain.cardinality(), &selected)?;
-    let landmark_offsets = domain
-        .landmarks()
-        .iter()
-        .map(|landmark| integer_candidate_offset(domain, *landmark))
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let gaps = progressive_refinement_gaps(domain.cardinality(), &selected, poll)?;
+    let mut landmark_offsets = BTreeSet::new();
+    for landmark in domain.landmarks() {
+        poll()?;
+        let offset = integer_candidate_offset(domain, *landmark)?;
+        if !landmark_offsets.contains(&offset) {
+            crucible_store::owned_decode::charge_btree_set_entry::<u128>()
+                .map_err(CampaignCodecError::from)?;
+            landmark_offsets.insert(offset);
+        }
+    }
+    poll()?;
     let prospective_prior = projection.prospective_prior_basis(1)?;
+    poll()?;
     let mut endpoints = BTreeMap::<u128, FeedbackEndpoint>::new();
-    let mut scored = BinaryHeap::new();
+    let mut selected_gap: Option<FeedbackRefinementGap> = None;
     for gap in gaps {
+        poll()?;
         let lower_endpoint = selected.range(..gap.lower).next_back().copied();
         let upper_endpoint = selected
             .range((
@@ -63,7 +80,7 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
             upper_endpoint,
             &mut endpoints,
         )?;
-        scored.push(FeedbackRefinementGap {
+        let scored = FeedbackRefinementGap {
             gap,
             rarity_discontinuity: rarity_discontinuity(projection, lower.edge, upper.edge)?,
             finding_discontinuity: finding_discontinuity(projection, lower.edge, upper.edge)?,
@@ -71,11 +88,16 @@ pub(in crate::repository::projection) fn feedback_progressive_integer_candidate(
             objective_discontinuity: objective_discontinuity(projection, lower.edge, upper.edge)?,
             producer_landmarks: landmark_offsets.range(gap.lower..=gap.upper).count(),
             endpoint_score_delta: lower.score_micros.abs_diff(upper.score_micros),
-        });
+        };
+        if selected_gap
+            .as_ref()
+            .is_none_or(|selected| feedback_gap_order(&scored, selected).is_gt())
+        {
+            selected_gap = Some(scored);
+        }
     }
-    let selected = scored
-        .pop()
-        .ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?;
+    let selected =
+        selected_gap.ok_or_else(|| integrity("progressive-generator-refinement-is-empty"))?;
     let midpoint = selected
         .gap
         .lower
@@ -113,6 +135,9 @@ fn feedback_endpoint(
     }
     let value = ChoiceValue::Integer(integer_candidate_at_offset(domain, offset)?);
     let edge = crate::Selection::campaign_edge_id(request.branch_point(), domain_semantic, &value);
+    if let Some(budget) = crucible_store::owned_decode::current_budget() {
+        budget.check().map_err(CampaignCodecError::from)?;
+    }
     let raw_prior_weight = request
         .source()
         .prior_weight(&value)
@@ -122,18 +147,69 @@ fn feedback_endpoint(
             "progressive-generator-endpoint-prior-is-not-uniform",
         ));
     }
-    let evidence = if projection.edge_statistics().contains_key(&edge) {
-        projection.candidate_evidence_with_prior(edge, raw_prior_weight)?
+    let statistics = if let Some(statistics) = projection.edge_statistics().get(&edge).copied() {
+        statistics
     } else {
-        projection.candidate_evidence_with_prior_basis(edge, prospective_prior)?
+        projection
+            .candidate_evidence_with_prior_basis(edge, prospective_prior)?
+            .statistics
     };
     let endpoint = FeedbackEndpoint {
         edge: Some(edge),
-        score_micros: crate::PuctScore::derive(projection.puct(), evidence.statistics)?
-            .total_micros(),
+        score_micros: crate::PuctScore::derive(projection.puct(), statistics)?.total_micros(),
     };
+    crucible_store::owned_decode::charge_btree_entry::<u128, FeedbackEndpoint>()
+        .map_err(CampaignCodecError::from)?;
     cache.insert(offset, endpoint);
     Ok(endpoint)
+}
+
+fn feedback_gap_order(left: &FeedbackRefinementGap, right: &FeedbackRefinementGap) -> Ordering {
+    exact_fraction_order(left.rarity_discontinuity, right.rarity_discontinuity)
+        .then_with(|| exact_fraction_order(left.finding_discontinuity, right.finding_discontinuity))
+        .then_with(|| exact_fraction_order(left.novelty_discontinuity, right.novelty_discontinuity))
+        .then_with(|| {
+            exact_fraction_order(left.objective_discontinuity, right.objective_discontinuity)
+        })
+        .then_with(|| left.producer_landmarks.cmp(&right.producer_landmarks))
+        .then_with(|| left.endpoint_score_delta.cmp(&right.endpoint_score_delta))
+        .then_with(|| left.gap.len().cmp(&right.gap.len()))
+        .then_with(|| right.gap.lower.cmp(&left.gap.lower))
+}
+
+fn exact_fraction_order(left: ExactMeanDiscontinuity, right: ExactMeanDiscontinuity) -> Ordering {
+    let (mut left_numerator, mut left_denominator) = (left.numerator, left.denominator);
+    let (mut right_numerator, mut right_denominator) = (right.numerator, right.denominator);
+    let mut reverse = false;
+
+    loop {
+        let quotient_order =
+            (left_numerator / left_denominator).cmp(&(right_numerator / right_denominator));
+        if quotient_order != Ordering::Equal {
+            return if reverse {
+                quotient_order.reverse()
+            } else {
+                quotient_order
+            };
+        }
+
+        let left_remainder = left_numerator % left_denominator;
+        let right_remainder = right_numerator % right_denominator;
+        let remainder_order = left_remainder.cmp(&right_remainder);
+        if left_remainder == 0 || right_remainder == 0 {
+            return if reverse {
+                remainder_order.reverse()
+            } else {
+                remainder_order
+            };
+        }
+
+        left_numerator = left_denominator;
+        left_denominator = left_remainder;
+        right_numerator = right_denominator;
+        right_denominator = right_remainder;
+        reverse = !reverse;
+    }
 }
 
 fn objective_discontinuity(
@@ -337,30 +413,55 @@ fn integer_candidate_offset(
 fn progressive_refinement_gaps(
     cardinality: u128,
     selected: &BTreeSet<u128>,
+    poll: &mut impl FnMut() -> Result<(), CampaignRepositoryError>,
 ) -> Result<BinaryHeap<RefinementGap>, CampaignRepositoryError> {
     let maximum = cardinality
         .checked_sub(1)
         .ok_or_else(|| integrity("candidate-source-cardinality-overflow"))?;
-    let mut gaps = BinaryHeap::new();
+    let mut gaps = Vec::new();
     let mut prior = None;
     for offset in selected.iter().copied() {
+        poll()?;
         let lower = prior.map_or(0, |value: u128| value + 1);
         if lower < offset {
-            gaps.push(RefinementGap {
-                lower,
-                upper: offset - 1,
-            });
+            push_vec_admitted(
+                &mut gaps,
+                RefinementGap {
+                    lower,
+                    upper: offset - 1,
+                },
+            )?;
         }
         prior = Some(offset);
     }
     let lower = prior.map_or(0, |value| value + 1);
     if lower <= maximum {
-        gaps.push(RefinementGap {
-            lower,
-            upper: maximum,
-        });
+        push_vec_admitted(
+            &mut gaps,
+            RefinementGap {
+                lower,
+                upper: maximum,
+            },
+        )?;
     }
-    Ok(gaps)
+    Ok(BinaryHeap::from(gaps))
+}
+
+fn push_vec_admitted<T>(values: &mut Vec<T>, value: T) -> Result<(), CampaignRepositoryError> {
+    if values.len() == values.capacity() {
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .map(|capacity| capacity.max(8))
+            .ok_or_else(|| integrity("progressive-generator-work-allocation-overflow"))?;
+        let additional = capacity
+            .checked_sub(values.len())
+            .ok_or_else(|| integrity("progressive-generator-work-allocation-overflow"))?;
+        crucible_store::owned_decode::reserve_vec(values, additional)
+            .map_err(CampaignCodecError::from)?;
+    }
+    values.push(value);
+    Ok(())
 }
 
 pub(in crate::repository::projection) fn integer_candidate_at_offset(
@@ -444,4 +545,62 @@ pub(in crate::repository) fn modeled_uniform_integer_candidate(
         };
     }
     integer_candidate_at_offset(domain, u128::from(offset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use num_bigint::BigUint;
+
+    #[global_allocator]
+    static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
+
+    fn cross_product_order(
+        left: ExactMeanDiscontinuity,
+        right: ExactMeanDiscontinuity,
+    ) -> Ordering {
+        (BigUint::from(left.numerator) * BigUint::from(right.denominator))
+            .cmp(&(BigUint::from(right.numerator) * BigUint::from(left.denominator)))
+    }
+
+    #[test]
+    fn exact_fraction_order_matches_cross_products_without_allocating() {
+        let maximum = u128::MAX;
+        let cases = [
+            ((0, 1), (0, maximum)),
+            ((0, maximum), (1, maximum)),
+            ((maximum, maximum), (maximum - 1, maximum - 1)),
+            ((maximum, 1), (maximum - 1, 1)),
+            ((1, maximum), (1, maximum - 1)),
+            ((1, 3), (1, 2)),
+            ((3, 1), (2, 1)),
+            ((maximum, maximum - 1), (maximum - 1, maximum - 2)),
+            ((maximum - 1, maximum), (maximum - 2, maximum - 1)),
+            ((maximum, maximum - 2), (maximum - 1, maximum - 3)),
+        ];
+
+        for ((left_numerator, left_denominator), (right_numerator, right_denominator)) in cases {
+            let left = ExactMeanDiscontinuity {
+                numerator: left_numerator,
+                denominator: left_denominator,
+            };
+            let right = ExactMeanDiscontinuity {
+                numerator: right_numerator,
+                denominator: right_denominator,
+            };
+            let expected = cross_product_order(left, right);
+
+            let (actual, allocations) =
+                TestAllocationObserver::count(|| exact_fraction_order(left, right));
+
+            assert_eq!(
+                actual, expected,
+                "{left_numerator}/{left_denominator} versus {right_numerator}/{right_denominator}"
+            );
+            assert!(!allocations.overflow);
+            assert_eq!(allocations.allocations, 0);
+            assert_eq!(allocations.reallocations, 0);
+        }
+    }
 }

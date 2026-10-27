@@ -448,6 +448,7 @@ impl BranchPuctProjection {
     }
 
     /// Derives evidence for an offered edge with its authenticated raw weight.
+    #[cfg(test)]
     pub(crate) fn candidate_evidence_with_prior(
         &self,
         edge: BranchEdgeId,

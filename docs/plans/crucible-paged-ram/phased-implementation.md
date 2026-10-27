@@ -208,7 +208,12 @@ match; the corrected contracts also require saved-original liveness and custody.
 
 All seven changed Rust files are formatted. Coverage inventory passes with
 667 model, 25 format and nineteen native bindings; it qualifies and advertises
-no capability. No current-source application-target pass is recorded.
+no capability. Mandatory application-target compilation passes for frozen commit
+`d5c1441f0a` at `hk2axvv19wyc9id775r5qmdfbnqryfa9-aos-test-targets-0.1.0`:
+185 executable test artifacts from all 58 selected application packages. All
+7,944 input files, including 5,480 Rust, TOML and lockfile inputs, match the
+immutable build source. This build predates the checked closure implementation
+and does not validate those later changes.
 
 This component supervises inventory and selected-object I/O only. Closure
 expansion, policy/source-snapshot enumeration, finding proofs and ref I/O remain
@@ -265,8 +270,69 @@ returning the same typed refusal. Both genuine finite-account controls pass,
 as do the four existing adapter controls, six checked-reader controls,
 all-target store compilation and strict store library Clippy. The omitted-custody
 control fails against the preceding implementation because its returned error
-outlives the original credit. This correction has no passing application-target
-result yet and changes neither the distinct cleanup branch nor native qualification.
+outlives the original credit. The frozen `d5c1441f0a` application-target result
+above covers this correction; it changes neither the distinct cleanup branch nor
+native qualification.
+
+#### Campaign envelope identifier admission
+
+Commit `07c1d9034d` admits schema and child-role string storage before allocation
+under the active original account. Child tables admit their separate tree entries
+before insertion. Compatibility callers retain the same canonical bytes and
+identifier validation.
+
+The isolated five-file checkpoint passes campaign/store all-target compilation,
+strict library Clippy and all four generic-envelope tests. The finite-account
+string refusal control observes zero allocations or reallocations, preserves the
+original value and capacity, and retains the actual sticky admission cause.
+Current checked-closure and arithmetic work is separate; no full RFC or native
+qualification follows from this component result.
+
+#### Objective arithmetic admission
+
+Commit `2a72788541` replaces allocating rational comparisons with bounded,
+allocation-free limb products and fallible survivor ordering. Weighted objective
+arithmetic admits its input-derived scratch space before calculation. Comparison
+work is bounded separately from canonical byte size, and long comparisons poll
+the active original so revocation cannot become a successful ordering result.
+
+The isolated checkpoint passes all-target compilation, strict campaign library
+Clippy and all fifteen objective tests. Independent arbitrary-precision oracles,
+full-size distinct operands, zero-allocation observations, deterministic ordering
+and real-authority revocation during comparison cover this component. These
+results do not establish complete host allocation funding or native qualification.
+
+#### Checked campaign archive closure replay
+
+Checked campaign archive inspection now carries the saved original through
+transitive record decoding, ancestry and lifecycle replay, Merkle authentication,
+planner inputs and policy validation. Source-plan verification uses the same
+checked semantic readers. Canonical finite-expansion roots are recomputed without
+publishing temporary objects. Compatibility readers retain their ordinary
+backend dispatch.
+
+The five archive policies pass against real quota-backed Directory objects while
+the backend refuses ordinary reads and presence checks. Positive retained-request
+replay covers settled Beam survivor selection, PUCT guidance, finite statistical
+sampling and SMC; a separate finite-expansion projection passes with backend
+publication refused as well. Canonical forged planner inputs receive the same
+semantic refusal as compatibility replay. Inventory results share their immutable
+paid data and retain credit until the final clone closes; finite digest refusal
+retains its actual original custody.
+
+All 471 campaign library tests pass, including the million-continuation and
+10,000-transition controls. The six focused inspection controls and the large
+metadata-staging cancellation/retry control pass. Campaign/store all-target
+compilation, strict library Clippy, exact-file formatting and the engineering
+hygiene gate pass. A final formatter-only change to the closure facade is checked
+against the formatter output of the tested source; consumer compilation and the
+mandatory application-target build are tracked separately.
+
+The binding inventory has 243 requirements and 720 unique numbered-requirement
+cases: 680 model, 25 format and fifteen live-VM bindings. It still qualifies zero
+requirements and advertises no capabilities. Blocked-I/O deadlines, complete
+physical funding, source/destination handoff joins, native activation and physical
+resource return remain unfinished; these component results do not finish the RFC.
 
 #### Executor exact-candidate handoff retention
 
