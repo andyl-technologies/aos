@@ -763,6 +763,10 @@ in
           # not only in an unapplied patch or its isolated state-machine test.
           ${grep}/bin/grep -aFq 'aos_nix_offline_public_output_t' \
             "$out/lib/systemd/systemd-executor"
+          ${grep}/bin/grep -aFq 'aos_method46_controller_initial_output_t' \
+            "$out/lib/systemd/systemd-executor"
+          ${grep}/bin/grep -aFq 'aos_method46_storage_initial_output_t' \
+            "$out/lib/systemd/systemd-executor"
 
           # This target realizes the provider-neutral boot-integrity-failure
           # milestone for the selected systemd boot platform.

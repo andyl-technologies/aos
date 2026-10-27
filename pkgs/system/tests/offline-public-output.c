@@ -13,6 +13,7 @@
 enum { EXIT_SELINUX_CONTEXT = 229, LOG_DEBUG = 7 };
 
 static unsigned socket_calls;
+static const char *unit, *context;
 
 #if HAVE_SELINUX
 enum failure {
@@ -31,6 +32,7 @@ enum failure {
 static enum failure failure;
 static unsigned load_calls, read_calls, set_calls;
 static bool labelled;
+static const char *output;
 
 static int test_load(int level) {
         assert(level == LOG_DEBUG);
@@ -64,7 +66,7 @@ static int test_set(const char *label) {
         ++set_calls;
         if (label) {
                 assert(set_calls == 1 && read_calls == 1 && socket_calls == 0);
-                assert(strcmp(label, "system_u:object_r:aos_nix_offline_public_output_t") == 0);
+                assert(strcmp(label, output) == 0);
                 if (failure == SET) {
                         errno = EACCES;
                         return -1;
@@ -107,9 +109,6 @@ static int test_socket(int domain, int type, int protocol) {
 #include "aos-offline-public-output.h"
 #undef socket
 
-static const char unit[] = "aos-sandbox-nix-floor-provision.service";
-static const char context[] = "system_u:system_r:aos_nix_offline_prepare_t";
-
 static void expect_refusal(const char *selected_context, bool ignore) {
         pid_t child = fork();
         assert(child >= 0);
@@ -123,27 +122,21 @@ static void expect_refusal(const char *selected_context, bool ignore) {
         assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SELINUX_CONTEXT);
 }
 
-int main(void) {
-        const char *ordinary[] = {
-                NULL,
-                "other.service",
-                "aos-sandbox-nix-floor-provision@foreign.service",
-                "aos-sandbox-nix-floor-provision.service.extra",
-        };
-        for (size_t index = 0; index < sizeof(ordinary) / sizeof(ordinary[0]); ++index) {
-                assert(!aos_offline_public_output_selected(ordinary[index]));
-                assert(aos_offline_public_output_socket(ordinary[index], context, false) == 17);
-        }
-        assert(socket_calls == 4);
+static void check_purpose(void) {
         assert(aos_offline_public_output_selected(unit));
         socket_calls = 0;
 
         expect_refusal(NULL, false);
         expect_refusal("system_u:system_r:init_t", false);
         expect_refusal(context, true);
+        /* A valid initializer context cannot substitute for another purpose. */
+        expect_refusal(strcmp(unit, "aos-sandbox-controller-floor-initialize.service") == 0 ?
+                       "system_u:system_r:aos_method46_storage_initial_t" :
+                       "system_u:system_r:aos_method46_controller_initial_t", false);
 
 #if HAVE_SELINUX
-        assert(load_calls == 0 && read_calls == 0 && set_calls == 0);
+        load_calls = read_calls = set_calls = 0;
+        assert(!labelled);
         for (enum failure selected = LOAD; selected <= FOREIGN_RESTORED; ++selected) {
                 failure = selected;
                 expect_refusal(context, false);
@@ -156,5 +149,46 @@ int main(void) {
 #else
         expect_refusal(context, false);
 #endif
+}
+
+int main(void) {
+        const char *ordinary[] = {
+                NULL,
+                "other.service",
+                "aos-sandbox-nix-floor-provision@foreign.service",
+                "aos-sandbox-nix-floor-provision.service.extra",
+                "aos-sandbox-controller-floor-initialize@foreign.service",
+                "aos-sandbox-storage-floor-initialize.service.extra",
+                "aos-sandbox-controller-floor-initialize.socket",
+                "aos-sandbox-storage-floor-initialize.socket",
+                "aos-sandboxd.service",
+                "aos-storaged.service",
+        };
+        for (size_t index = 0; index < sizeof(ordinary) / sizeof(ordinary[0]); ++index) {
+                assert(!aos_offline_public_output_selected(ordinary[index]));
+                assert(aos_offline_public_output_socket(ordinary[index], NULL, false) == 17);
+        }
+        assert(socket_calls == sizeof(ordinary) / sizeof(ordinary[0]));
+
+        unit = "aos-sandbox-nix-floor-provision.service";
+        context = "system_u:system_r:aos_nix_offline_prepare_t";
+#if HAVE_SELINUX
+        output = "system_u:object_r:aos_nix_offline_public_output_t";
+#endif
+        check_purpose();
+
+        unit = "aos-sandbox-controller-floor-initialize.service";
+        context = "system_u:system_r:aos_method46_controller_initial_t";
+#if HAVE_SELINUX
+        output = "system_u:object_r:aos_method46_controller_initial_output_t";
+#endif
+        check_purpose();
+
+        unit = "aos-sandbox-storage-floor-initialize.service";
+        context = "system_u:system_r:aos_method46_storage_initial_t";
+#if HAVE_SELINUX
+        output = "system_u:object_r:aos_method46_storage_initial_output_t";
+#endif
+        check_purpose();
         return 0;
 }
