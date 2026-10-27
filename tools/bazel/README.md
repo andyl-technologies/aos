@@ -4256,3 +4256,43 @@ this conversion does not change application Rust or unrelated test behavior.
 The [gateway package receipt](tests/evidence/qemu-gateway-public-production-package.json)
 retains installed-package and release-test comparisons, source snapshots and
 equivalence checks against the original package and test constructors.
+
+## Controller production executables
+
+The controller installs three executables from separate Cargo invocations. Its
+Bazel compilation keeps those feature graphs separate: the ordinary CLI, the
+engine's debugger fixture generator, and the daemon's determinism scenario
+generator. The daemon example retains its existing development dependencies;
+the installed CLI uses its production features without the test backend.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A cli.build --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A debugger.build --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A scenario.build --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A artifact-parity --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A test-cargo --no-out-link
+```
+
+Each compilation exports one declared executable and checks its Apache license
+closure. Strict source inventories exclude Cargo manifests and lockfiles. The
+artifact check compares strict and broad source selections, compiled features,
+release profiles, captured compiler arguments, ELF identity and resolved runtime
+libraries against independently compiled Cargo artifacts. It also compares CLI
+parsing, canonical scenario serialization and the scenario generator's actual
+content-addressed store objects. Compiler argument audits retain their explicit
+limits and do not establish complete compiler or linker semantic equivalence.
+
+The [inventory preparation receipt](tests/evidence/crucible-controller-preparation.json)
+binds the checked inventories to actual Bazel analysis outputs. Existing
+dependent inventories retain their configured graphs and source selections.
+The separate `test-cargo` oracle captures the ordinary controller's combined
+18-package release-test compilation and Nextest case discovery, including
+`crucible-cli/test-double`. Dependency features unify across that complete
+selection; the three executable graphs do not establish test-graph parity.
+Discovery does not run the test cases or qualify their behavior.
+
+These are compilation and generator checks. Public controller integration still
+requires its mandatory suite tests, Clippy, documentation, doctests, installed
+metadata and closure checks, and the applicable ABI and license gates. Native
+serialization of an AArch64 scenario does not qualify an AArch64 executable or a
+live debugger. Cargo remains the public controller's build driver.

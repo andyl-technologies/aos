@@ -2,6 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:daemon_graph.bzl", "daemon_dependency_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -315,6 +316,35 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# This fixture is rebuilt independently from the installed controller CLI.
+# Cargo examples compile development dependencies even when they are unused.
+rust_binary(
+    name = "controller_debugger_fixture",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_debugger_live_fixture",
+    crate_root = "examples/crucible-debugger-live-fixture.rs",
+    srcs = ["examples/crucible-debugger-live-fixture.rs"],
+    crate_features = ["default"],
+    deps = [":lib"] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+)
+
+aos_package(
+    name = "controller_artifact",
+    testonly = True,
+    package = RUST_PACKAGE,
+    artifacts = {":controller_debugger_fixture": "bin/crucible-debugger-live-fixture"},
+    executables = ["bin/crucible-debugger-live-fixture"],
+)
+
+aos_license_check(
+    name = "controller_license_closure",
+    testonly = True,
+    roots = [":controller_debugger_fixture"],
+    license_domain = RUST_PACKAGE.license_domain,
 )
 
 # Daemon-selected features remain separate from this package's own test graph.

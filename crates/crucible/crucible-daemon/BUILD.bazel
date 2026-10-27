@@ -2,6 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies", "daemon_session_test_double_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -179,4 +180,20 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# The ordinary controller deliberately installs this development fixture.
+aos_package(
+    name = "controller_artifact",
+    testonly = True,
+    package = RUST_PACKAGE,
+    artifacts = {":crucible-e2e-determinism-scenario": "bin/crucible-e2e-determinism-scenario"},
+    executables = ["bin/crucible-e2e-determinism-scenario"],
+)
+
+aos_license_check(
+    name = "controller_license_closure",
+    testonly = True,
+    roots = [":crucible-e2e-determinism-scenario"],
+    license_domain = RUST_PACKAGE.license_domain,
 )

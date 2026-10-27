@@ -35654,7 +35654,7 @@
     "crates/crucible/crucible-control-server/BUILD.bazel": "1f43a480965023797f117d01e4ff84bfc70daa2a14c22ba63642b81cb552d23f",
     "crates/crucible/crucible-determinism/BUILD.bazel": "a78908ae84b086c9a35a3b0c0c136b9a8cd1c08d3e492a5463be1d7ab9917480",
     "crates/crucible/crucible-device/BUILD.bazel": "de960010d9860be56520a3d4e4d1bb8a43b1a012b6466182deff7d65e47a2eae",
-    "crates/crucible/crucible-engine/BUILD.bazel": "6a4113a477650c827339ba41b6fe27bdad82d732c91f47aac4ffc87305d2570c",
+    "crates/crucible/crucible-engine/BUILD.bazel": "a5f22d11135407169740421f90164ea7be06e869547a4b463647145f6aadc220",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
     "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "15bc5c10c980b44fe3cf72c041c9858a786c95853c2b15f75bb8e60c9b6380ee",
     "crates/crucible/crucible-session/BUILD.bazel": "97b89befc2b51e7c8081d11440ead375d616850db0dbe881ae66e9e1145a1bbd",
