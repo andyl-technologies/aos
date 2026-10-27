@@ -22,6 +22,24 @@ targets.
 Both registered Nix sources match all 8,397 captured Rust/Cargo inputs. Those
 snapshots include local user changes; they do not qualify a clean PR checkout.
 
+The current-model transfer checkpoint `4865c2e5e9` preserves decoded producer
+and reactive queues, grants, retired IDs and spare backing through a once-only
+fresh-socket transfer. Its construction DATA separates existing backing,
+validation, value moves and counter controls. Checkpoint `1031ee21fd` adds guarded
+readonly model construction quotes from the original Source's ticket-selected
+decoder collection. It authenticates original archive/member/reference custody
+without moving the model, starting the target or issuing native phase credit.
+
+Both checkpoints passed seven-package all-feature/all-target compilation, seven
+architecture gates and both SDK codec suites (2,385 passed and 20 ignored per
+codec). Engine suites passed 2,226 tests per codec at the model checkpoint and
+2,227 at the Source checkpoint, with 34 ignored. Their mandatory application
+builds each compiled 185 artifacts across 58 packages, including 76 integration
+targets, and match all 8,403 and 8,404 captured Rust/Cargo inputs respectively.
+These snapshots include local user changes. Whole-archive and decoder-bank
+custody transitions are implemented locally and still undergoing combined
+qualification; genuine complete Native18 installation remains unproven.
+
 These results establish original Source workers, private Birth, mapping custody,
 census, refusal and cleanup. They do not establish complete Recipe or Initial
 production or the full Native18 model and phase lifecycle. The native funding
