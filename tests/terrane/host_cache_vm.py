@@ -73,6 +73,10 @@ CASES = [
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
+# Each native ledger retains the eight allocation roots and both state children
+# per domain. Separate administrative partitions preserve the helper's fixed
+# 1,024-directory ceiling as the scenario inventory grows.
+CASES_PER_PARTITION = 1024 // (len(LABELS) + 2)
 # Append new cases so every previously qualified project assignment stays fixed.
 CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corrupt",
           "encoded-duplicate", "encoded-missing-dictionary", "encoded-unknown"]
@@ -157,6 +161,12 @@ def project(case):
     return 52001 + CASES.index(case)
 
 
+def partition_sockets(partition):
+    """Keeps the original endpoints for the first administrative partition."""
+    suffix = "" if partition == 0 else f"-{partition}"
+    return RUNTIME / f"quota{suffix}.sock", PUB_RUNTIME / f"publisher{suffix}.sock"
+
+
 def role_command(uid, arguments):
     """Executes a distinct role with all five capability sets empty."""
     groups = "844,845" if uid == 840 else "845"
@@ -180,10 +190,11 @@ def admin_command(caps, arguments):
 
 def actor_environment(case, uuid):
     """Supplies public fixed connection metadata, never a quota observation."""
+    quota_socket, publisher_socket = partition_sockets(CASES.index(case) // CASES_PER_PARTITION)
     return dict(os.environ, TERRANE_CACHE_ROOT=str(root(case)), TERRANE_CACHE_DOMAIN=domain(case),
                 TERRANE_CACHE_OWNER=owner(case), TERRANE_CACHE_PROJECT=str(project(case)),
-                TERRANE_CACHE_QUOTA_SOCKET=str(RUNTIME / "quota.sock"),
-                TERRANE_CACHE_PUBLISHER_SOCKET=str(PUB_RUNTIME / "publisher.sock"),
+                TERRANE_CACHE_QUOTA_SOCKET=str(quota_socket),
+                TERRANE_CACHE_PUBLISHER_SOCKET=str(publisher_socket),
                 TERRANE_CACHE_BUDGET=str(BUDGET), TERRANE_CACHE_UUID=uuid,
                 TERRANE_CLEANUP_FOREIGN_ROOT=str(root("source-cleanup-foreign")),
                 TERRANE_CLEANUP_FOREIGN_PROJECT=str(project("source-cleanup-foreign")))
@@ -259,19 +270,25 @@ def scaffold():
             metadata(directory, uid, gid, mode)
 
 
-def configurations():
+def configurations(cases=None, partition=0):
     """Writes separate privileged provisioning and readable configured CLI input."""
-    quota = [f"socket = {json.dumps(str(RUNTIME / 'quota.sock'))}", f'epoch = "{EPOCH}"',
+    cases = CASES if cases is None else cases
+    require(0 < len(cases) <= CASES_PER_PARTITION, "administrative partition exceeds native skeleton bound")
+    require(all(CASES.index(case) // CASES_PER_PARTITION == partition for case in cases),
+            "case assigned to a different administrative partition")
+    quota_socket, publisher_socket = partition_sockets(partition)
+    suffix = "" if partition == 0 else f"-{partition}"
+    quota = [f"socket = {json.dumps(str(quota_socket))}", f'epoch = "{EPOCH}"',
              f"tier_charge_budget_bytes = {BUDGET}"]
-    publisher = ['role = "publish"', 'store = ' + json.dumps('disk(' + str(root('empty')) + ')'), '[host_tier]',
-                 f"path = {json.dumps(str(root('empty')))}", f"size_bytes = {BUDGET}",
+    publisher = ['role = "publish"', 'store = ' + json.dumps('disk(' + str(root(cases[0])) + ')'), '[host_tier]',
+                 f"path = {json.dumps(str(root(cases[0])))}", f"size_bytes = {BUDGET}",
                  'reassembly = "never"', '[host_tier.publisher]',
-                 f"socket_path = {json.dumps(str(PUB_RUNTIME / 'publisher.sock'))}",
+                 f"socket_path = {json.dumps(str(publisher_socket))}",
                  "serve_uid = 840", "publish_uid = 841", "content_uid = 840", "content_gid = 845",
                  "max_connections = 32", "[host_tier.quota]",
-                 f"socket_path = {json.dumps(str(RUNTIME / 'quota.sock'))}",
+                 f"socket_path = {json.dumps(str(quota_socket))}",
                  f'configuration_epoch = "{EPOCH}"']
-    for case in CASES:
+    for case in cases:
         quota.extend(["[[owners]]", f"owner_id = {json.dumps(owner(case))}",
                       f"domain = {json.dumps(domain(case))}", f"project_id = {project(case)}",
                       f"hard_limit_bytes = {HARD}", "allowed_client_uids = [0, 840, 841]"])
@@ -284,10 +301,10 @@ def configurations():
                           f"quota_owner_id = {json.dumps(owner(case))}", f"[{table}.publisher]",
                           "retirement_grace_ms = 30000", 'chunk_profile = "cdc-1m"',
                           'chunk_seed = "' + "00" * 32 + '"'])
-    quota_path = ADMIN / "host.toml"
+    quota_path = ADMIN / f"host{suffix}.toml"
     quota_path.write_text("\n".join(quota) + "\n")
     metadata(quota_path, 0, 0, 0o600)
-    cli_path = RUNTIME / "publisher.toml"
+    cli_path = RUNTIME / f"publisher{suffix}.toml"
     cli_path.write_text("\n".join(publisher) + "\n")
     metadata(cli_path, 0, 0, 0o644)
     return quota_path, cli_path
@@ -1462,6 +1479,47 @@ def filesystem_unit_cases():
         shutil.rmtree(temporary_root)
 
 
+def start_native_partition(partition, cases, quota_config, publisher_config, ledger, uuid, children, logs):
+    """Starts the genuine quota broker and publisher for one disjoint partition."""
+    suffix = "" if partition == 0 else f"-{partition}"
+    helper_bin = IMAGE / "bin/aos-terrane-host"
+    helper_log = (RUNTIME / f"helper{suffix}.log").open("wb")
+    logs.append(helper_log)
+    helper = subprocess.Popen(admin_command(QUERY_CAPS, [helper_bin, "serve", "--config", quota_config, "--ledger", ledger]),
+                              stdout=helper_log, stderr=subprocess.STDOUT,
+                              preexec_fn=native_descriptor_budget)
+    children.append(helper)
+    deadline = time.monotonic() + 10
+    while True:
+        result = subprocess.run([str(helper_bin), "query", "--config", str(quota_config),
+                                 "--owner", owner(cases[0]), "--domain", domain(cases[0])],
+                                capture_output=True, timeout=6)
+        if result.returncode == 0:
+            break
+        require(helper.poll() is None and time.monotonic() < deadline, "actual quota helper failed readiness")
+        time.sleep(0.02)
+
+    publisher_log = (RUNTIME / f"publisher{suffix}.log").open("wb")
+    logs.append(publisher_log)
+    publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]),
+                                 stdout=publisher_log, stderr=subprocess.STDOUT,
+                                 preexec_fn=native_descriptor_budget)
+    children.append(publisher)
+    deadline = time.monotonic() + 15
+    while True:
+        result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", "prepare"]),
+                                env=actor_environment(cases[0], uuid), text=True, capture_output=True, timeout=12)
+        if result.returncode == 0:
+            require("PASS actual native preparation" in result.stdout, "no actual preparation witness")
+            print(result.stdout, end="", flush=True)
+            break
+        require(publisher.poll() is None and time.monotonic() < deadline,
+                "actual configured CLI publisher failed preparation: " + result.stderr)
+        time.sleep(0.02)
+    print(process_status(publisher, 841), flush=True)
+    return helper, publisher
+
+
 def main():
     """Runs actual helper, actual CLI publisher and isolated native controls."""
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
@@ -1479,11 +1537,26 @@ def main():
     administrative_preflight("before")
     scaffold()
     administrative_preflight("after")
-    quota_config, publisher_config = configurations()
-    ledger = ADMIN / "ledger.toml"
     helper_bin = IMAGE / "bin/aos-terrane-host"
-    run(admin_command(PROVISION_CAPS, [helper_bin, "provision", "--config", quota_config, "--ledger", ledger]),
-        preexec_fn=native_descriptor_budget)
+    partitions = []
+    for partition, offset in enumerate(range(0, len(CASES), CASES_PER_PARTITION)):
+        cases = CASES[offset:offset + CASES_PER_PARTITION]
+        quota_config, publisher_config = configurations(cases, partition)
+        suffix = "" if partition == 0 else f"-{partition}"
+        ledger = ADMIN / f"ledger{suffix}.toml"
+        run(admin_command(PROVISION_CAPS, [helper_bin, "provision", "--config", quota_config, "--ledger", ledger]),
+            preexec_fn=native_descriptor_budget)
+        actual = tomllib.loads(ledger.read_text())
+        require(actual["phase"] == "ready"
+                and len(actual["bindings"]) == len(cases) * (len(LABELS) + 2)
+                and {(row["owner_id"], row["domain"], row["project_id"]) for row in actual["bindings"]}
+                    == {(owner(case), domain(case), project(case)) for case in cases},
+                "native ledger omitted or reassigned a configured scaffold")
+        partitions.append((partition, cases, quota_config, publisher_config, ledger))
+    require([case for _, cases, *_ in partitions for case in cases] == CASES,
+            "administrative partitioning changed the original case inventory")
+    print(f"PASS all {len(CASES)} original domains provisioned in {len(partitions)} disjoint bounded native ledgers",
+          flush=True)
     cold_candidates()
     uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
@@ -1506,33 +1579,8 @@ def main():
     logs = []
     children = []
     try:
-        for name in ["helper", "publisher"]:
-            logs.append((RUNTIME / (name + ".log")).open("wb"))
-        helper = subprocess.Popen(admin_command(QUERY_CAPS, [helper_bin, "serve", "--config", quota_config, "--ledger", ledger]),
-                                  stdout=logs[0], stderr=subprocess.STDOUT,
-                                  preexec_fn=native_descriptor_budget)
-        children.append(helper)
-        deadline = time.monotonic() + 10
-        while True:
-            result = subprocess.run([str(helper_bin), "query", "--config", str(quota_config), "--owner", owner("empty"), "--domain", "public"], capture_output=True, timeout=6)
-            if result.returncode == 0:
-                break
-            require(helper.poll() is None and time.monotonic() < deadline, "actual quota helper failed readiness")
-            time.sleep(0.02)
-        publisher = subprocess.Popen(role_command(841, [IMAGE / "bin/terrane", "--config", publisher_config, "--role", "publish"]),
-                                     stdout=logs[1], stderr=subprocess.STDOUT,
-                                     preexec_fn=native_descriptor_budget)
-        children.append(publisher)
-        deadline = time.monotonic() + 15
-        while True:
-            result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", "prepare"]), env=actor_environment("empty", uuid), text=True, capture_output=True, timeout=12)
-            if result.returncode == 0:
-                require("PASS actual native preparation" in result.stdout, "no actual preparation witness")
-                print(result.stdout, end="", flush=True)
-                break
-            require(publisher.poll() is None and time.monotonic() < deadline, "actual configured CLI publisher failed preparation: " + result.stderr)
-            time.sleep(0.02)
-        print(process_status(publisher, 841), flush=True)
+        processes = [start_native_partition(*partition, uuid, children, logs) for partition in partitions]
+        helper, publisher = processes[0]
         for case in CASES:
             # These are the actual directories opened by the configured CLI,
             # after every native publisher worker has completed preparation.
@@ -1734,10 +1782,9 @@ def main():
                     child.wait(timeout=5)
         for log in logs:
             log.close()
-        for name in ["helper", "publisher"]:
-            path = RUNTIME / (name + ".log")
-            if path.exists():
-                print(name + " actual process log:\n" + path.read_text(errors="replace"), flush=True)
+        for log in logs:
+            path = pathlib.Path(log.name)
+            print(path.stem + " actual process log:\n" + path.read_text(errors="replace"), flush=True)
 
 
 if __name__ == "__main__":

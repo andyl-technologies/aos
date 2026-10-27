@@ -301,6 +301,31 @@ and seven original controller records are preserved before scratch cleanup.
 These results do not establish native runtime acceptance or qualify later
 dictionary changes.
 
+Frozen `66f2973540` and `ad3d279906` each pass prerequisite execution review,
+required application compilation (190 targets across 59 packages), complete
+comparison of 8,309 immutable source files and all four image artifact reviews.
+Each has 24 selected outputs rooted and seven original controller records
+preserved before its finished builder scratch is removed.
+
+The original combined native request at `ad3d279906` fails in 17.921 seconds.
+The all-feature eviction guest refuses initial provisioning with `pending
+directory skeleton bound exceeded`: the expanded 107-domain fixture requires
+1,070 retained scaffold directories, exceeding the helper's fixed 1,024 bound.
+This failure precedes recovery and supplies no evidence about the later SDK
+dictionary case. The outstanding original SDK aggregate is requested separately
+with its original source, selectors and resource limits; it remains pending.
+
+The corrected supervisor partitions its complete 109-domain inventory into
+disjoint real administrative ledgers with 1,020 and 70 scaffold directories.
+Each partition starts the actual quota broker and confined publisher, and every
+actor selects its partition's endpoints. The original process-stop controls
+retain the first partition's actual processes. The helper's limits, project
+assignments, case order, guest memory, CPUs and deadlines are preserved. Native
+ledger observations must cover every original owner/domain/project and scaffold
+before any candidate is seeded. Python compilation, complete source assignment
+checks and PLAN-2 ownership pass; corrected-source native qualification is still
+required. No trunk task is newly accepted.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |
