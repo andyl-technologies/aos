@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 709 bindings: 690 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 711 bindings: 692 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -169,9 +169,41 @@ yet. Its immutable source matches all 7,942 frozen input files, including 5,478
 Rust, TOML and lockfile inputs; the final assertion formatting changes only
 whitespace in the separately passing store test.
 
-Archive inspection still uses ordinary envelope reads between boundary polls.
+At this staging checkpoint, archive inspection still used ordinary envelope reads
+between boundary polls; the later inspection component below changes that path.
 Blocked-I/O deadlines, the outer paired GC guards and genuine native activation
 remain unqualified. This staging component does not qualify those requirements.
+
+#### Checked archive inventory and selected-object reads
+
+Explicitly bounded inspection requires the repository's saved original account.
+Manifest, inventory-page and campaign-envelope bodies use checked fixed prepaid
+reads. Generic exact manifests are decoded once, while opaque selected bodies
+stream through a prepaid 64-KiB buffer to authenticated EOF without a complete
+body copy. The original is checked around the callback before named-ref discovery
+and again before an inspection result escapes. Ordinary inspection, exact-finding
+inspection and archive/head publication retain their existing compatibility
+contracts and policy refusal order. Composite RAM boundary errors preserve their
+existing typed shape; ordinary store failures retain their classification.
+
+All-target campaign/daemon compilation and strict store/campaign library Clippy
+pass. All thirteen campaign transfer controls pass, including cancellation after
+observable checked progress inside a real inventory page larger than 64 KiB,
+retry authentication of a five-MiB opaque object, and revocation by a callback
+that returns success before named-ref discovery. The revocation control observes
+zero ref reads, and both controls verify resource return after error closure.
+Daemon transfer and policy/hygiene checks are running.
+
+All seven changed Rust files are formatted. Coverage inventory passes with
+667 model, 25 format and nineteen native bindings; it qualifies and advertises
+no capability. No current-source application-target pass is recorded.
+
+This component supervises inventory and selected-object I/O only. Closure
+expansion, policy/source-snapshot enumeration, finding proofs and ref I/O remain
+on ordinary read routes. Returned inspection allocations have no lifetime
+custody claim. Blocked-I/O deadlines, paired outer GC guards and native activation
+remain unqualified; the checked closure work must cover the transitive semantic
+and Merkle rereads before claiming complete archive supervision.
 
 #### Original revocation at shared store boundaries
 
@@ -190,6 +222,16 @@ bindings qualify no capability. Mandatory application compilation is running
 against an immutable source matching all 7,943 frozen inputs, including 5,479
 Rust, TOML and lockfile inputs. No passing application result or blocked-I/O
 deadline qualification is recorded for this component.
+
+A later direct-refusal correction (`f1a56e7aea`) rebuilds a matching admission
+error under the saved original instead of accepting provider-selected custody.
+The provider cannot omit that custody or substitute a foreign account while
+returning the same typed refusal. Both genuine finite-account controls pass,
+as do the four existing adapter controls, six checked-reader controls,
+all-target store compilation and strict store library Clippy. The omitted-custody
+control fails against the preceding implementation because its returned error
+outlives the original credit. This correction has no passing application-target
+result yet and changes neither the distinct cleanup branch nor native qualification.
 
 #### Executor exact-candidate handoff retention
 
@@ -225,8 +267,13 @@ restart, terminal claim retirement and failed handoff reclamation. Eight retenti
 controls, the marker-growth regression, six actor/failure/identity controls and
 seven existing recovery controls also pass against the final Rust source.
 All-target checking, ninety policy controls and five hygiene controls pass for
-that source; core evaluation also passes. The required application-target build
-for the current source is still running. The updated coverage inventory verifies
+that source; core evaluation also passes. Required application-target compilation
+now passes for the frozen `7fc1da5247` source at
+`c7plnqm98dj0981g5fwvwd3lc1h5pjpw-aos-test-targets-0.1.0`: 185 executable
+test artifacts from all 58 selected application packages. All 7,940 frozen input
+files match the immutable source. This build predates the later Clippy correction,
+object copying, metadata staging and store-boundary changes; it does not validate
+those later components. The updated coverage inventory verifies
 all thirteen normative source
 digests and counts 657 model, 25 format and nineteen native cases; it qualifies
 no capability. Native activation, physical return, paging and performance remain

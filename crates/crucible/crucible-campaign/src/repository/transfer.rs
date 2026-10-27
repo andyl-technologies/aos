@@ -275,7 +275,7 @@ impl CampaignRepository {
         expected: Option<CampaignArchiveManifestId>,
         plan: &CampaignArchivePlan,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
-        self.publish_campaign_archive_with_boundary(name, expected, plan, &mut || Ok(()))
+        self.publish_campaign_archive_under(name, expected, plan, false, &mut || Ok(()))
     }
 
     /// Publishes archive metadata while servicing the original operation owner.
@@ -290,6 +290,17 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
+        self.publish_campaign_archive_under(name, expected, plan, true, boundary)
+    }
+
+    fn publish_campaign_archive_under(
+        &self,
+        name: &str,
+        expected: Option<CampaignArchiveManifestId>,
+        plan: &CampaignArchivePlan,
+        checked_inspection: bool,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
         self.verify_ram_admission()?;
         let _mutation = self.lock_mutation()?;
         for envelope in &plan.page_envelopes {
@@ -301,7 +312,11 @@ impl CampaignRepository {
         if id != plan.manifest_id.content_id() {
             return Err(integrity("campaign-archive-manifest-publication-mismatch"));
         }
-        self.inspect_campaign_archive_with_boundary(plan.manifest_id, boundary)?;
+        if checked_inspection {
+            self.inspect_campaign_archive_with_boundary(plan.manifest_id, boundary)?;
+        } else {
+            self.inspect_campaign_archive(plan.manifest_id)?;
+        }
         let archive_ref = archive_ref(name)?;
         let expected = expected.map(CampaignArchiveManifestId::content_id);
         boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -343,7 +358,7 @@ impl CampaignRepository {
         if id != plan.manifest_id.content_id() {
             return Err(integrity("campaign-archive-manifest-staging-mismatch"));
         }
-        self.inspect_campaign_archive_with_boundary(plan.manifest_id, &mut || Ok(()))?;
+        self.inspect_campaign_archive(plan.manifest_id)?;
         Ok(plan.manifest_id)
     }
 
@@ -759,7 +774,7 @@ impl CampaignRepository {
         expected: Option<CampaignSnapshotId>,
         archive: CampaignArchiveManifestId,
     ) -> Result<CampaignSnapshotId, CampaignRepositoryError> {
-        self.publish_transferred_campaign_with_boundary(name, expected, archive, &mut || Ok(()))
+        self.publish_transferred_campaign_under(name, expected, archive, false, &mut || Ok(()))
     }
 
     /// Advances a complete imported campaign under its original supervisor.
@@ -775,8 +790,23 @@ impl CampaignRepository {
         archive: CampaignArchiveManifestId,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignSnapshotId, CampaignRepositoryError> {
+        self.publish_transferred_campaign_under(name, expected, archive, true, boundary)
+    }
+
+    fn publish_transferred_campaign_under(
+        &self,
+        name: &str,
+        expected: Option<CampaignSnapshotId>,
+        archive: CampaignArchiveManifestId,
+        checked_inspection: bool,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<CampaignSnapshotId, CampaignRepositoryError> {
         self.verify_ram_admission()?;
-        let inspection = self.inspect_campaign_archive_with_boundary(archive, boundary)?;
+        let inspection = if checked_inspection {
+            self.inspect_campaign_archive_with_boundary(archive, boundary)?
+        } else {
+            self.inspect_campaign_archive(archive)?
+        };
         if !matches!(
             inspection.manifest().policy(),
             CampaignArchivePolicy::Executable | CampaignArchivePolicy::Mirror

@@ -56,6 +56,35 @@ pub(crate) fn profile_authenticated_exact_leaf(
     profile_opaque(id.kind(), source.logical_length())
 }
 
+/// Profiles a fully authenticated canonical campaign envelope.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Corrupt`] when the envelope does not reproduce `id`.
+pub(crate) fn profile_authenticated_campaign_envelope(
+    id: ContentId,
+    envelope: &ObjectEnvelope,
+    logical_length: u64,
+) -> Result<ObjectProfile, StoreError> {
+    if envelope.content_id() != id {
+        return Err(StoreError::Corrupt { id });
+    }
+    Ok(profile_record(envelope.record_kind(), logical_length))
+}
+
+/// Profiles a caller-authenticated opaque object without reopening its body.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Incompatible`] when the object's kind has no opaque
+/// campaign profile.
+pub(crate) fn profile_authenticated_opaque(
+    id: ContentId,
+    logical_length: u64,
+) -> Result<ObjectProfile, StoreError> {
+    profile_opaque(id.kind(), logical_length)
+}
+
 fn is_campaign_envelope_kind(kind: ObjectKind) -> bool {
     matches!(
         kind,

@@ -12,6 +12,9 @@ mod no_ram;
 #[path = "transfer/metadata_staging.rs"]
 mod metadata_staging;
 
+#[path = "transfer/inspection_io.rs"]
+mod inspection_io;
+
 use crucible_store::content_envelope::ContentEnvelope;
 use crucible_store::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,

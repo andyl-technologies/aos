@@ -163,6 +163,14 @@ fn empty_archive_closure_is_authenticated_without_ram_dispatch() {
     assert!(inspection.manifest().ram_roots().is_empty());
     assert_eq!(observed.ram_calls.load(Ordering::SeqCst), 0);
 
+    assert!(matches!(
+        unavailable.inspect_campaign_archive_with_boundary(plan.manifest_id(), &mut || Ok(())),
+        Err(CampaignRepositoryError::Store(StoreError::Unsupported {
+            capability: "campaign-archive-inspection-admission"
+        }))
+    ));
+    assert_eq!(observed.ram_calls.load(Ordering::SeqCst), 0);
+
     let undeclared = ContentId::for_bytes(ObjectKind::ExactManifest, 1, b"undeclared RAM root");
     let mismatch = publish_declared_roots(&source, &plan, vec![undeclared]);
     assert!(matches!(

@@ -3,6 +3,7 @@
 //! The descriptor and resident counters are portable test entitlements. They
 //! certify neither installed filesystem quota nor native process admission.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible_store::content_store::{StoreError, StorePhysicalQuotaGuard};
@@ -11,6 +12,7 @@ pub(super) struct TransferResources {
     maximum_descriptors: u64,
     maximum_resident_bytes: u64,
     usage: Arc<Mutex<(u64, u64)>>,
+    revoked: AtomicBool,
 }
 
 impl TransferResources {
@@ -19,7 +21,16 @@ impl TransferResources {
             maximum_descriptors,
             maximum_resident_bytes,
             usage: Arc::new(Mutex::new((0, 0))),
+            revoked: AtomicBool::new(false),
         }
+    }
+
+    pub(super) fn usage(&self) -> (u64, u64) {
+        *self.usage.lock().expect("fixture resource usage")
+    }
+
+    pub(super) fn revoke(&self) {
+        self.revoked.store(true, Ordering::SeqCst);
     }
 }
 
@@ -33,6 +44,7 @@ impl StorePhysicalQuotaGuard for TransferResources {
         descriptors: u64,
         resident_bytes: u64,
     ) -> Result<crucible_store::owned_decode::ResourceLoan, StoreError> {
+        self.verify()?;
         let mut usage = self.usage.lock().map_err(|_| StoreError::Quota)?;
         let next_descriptors = usage
             .0
@@ -56,7 +68,11 @@ impl StorePhysicalQuotaGuard for TransferResources {
     }
 
     fn verify(&self) -> Result<(), StoreError> {
-        Ok(())
+        if self.revoked.load(Ordering::SeqCst) {
+            Err(StoreError::Unavailable)
+        } else {
+            Ok(())
+        }
     }
 }
 
