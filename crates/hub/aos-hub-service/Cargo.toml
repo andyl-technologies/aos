@@ -33,6 +33,8 @@ ed25519-dalek = { workspace = true }
 # `future::join*` instead of serially, so the Worker pays one SQL round-trip wave
 # rather than one per query. Pure and wasm-clean (the Worker already links it).
 futures-util = { workspace = true }
+# Cancellation-safe wakeups for portable, tenant-aware publication admission.
+futures-channel = "0.3"
 hex = { workspace = true }
 hmac = { workspace = true }
 humantime = { workspace = true }

@@ -954,32 +954,60 @@ impl RpcService {
                 "publication object requires bounded multipart upload".into(),
             ));
         }
-        let pack_validation = Arc::clone(&self.pack_validation);
         let validates_git_pack = keymap::is_git_pack_path(&object.object_key)
             || keymap::is_git_pack_index_path(&object.object_key);
-        let _pack_validation_guard = if validates_git_pack {
-            Some(pack_validation.lock().await)
-        } else {
-            None
-        };
-        let bytes = if validates_git_pack {
-            let collect = collect_exact_publication_body(body, expected_size);
-            let timeout = clock::sleep(std::time::Duration::from_secs(
-                REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
-            ));
-            futures_util::pin_mut!(collect, timeout);
-            match futures_util::future::select(collect, timeout).await {
-                futures_util::future::Either::Left((result, _)) => result?,
-                futures_util::future::Either::Right(((), _)) => {
-                    return Err(RpcError::Unavailable(
-                        "Git pack upload body timed out".into(),
-                    ));
-                }
-            }
-        } else {
-            collect_exact_publication_body(body, expected_size).await?
-        };
+        if validates_git_pack {
+            let tenant = registry.org_id.map_or_else(
+                || format!("registry:{}", registry.stable_id),
+                |id| format!("org:{id}"),
+            );
+            let operation = self.upload_registry_publication_git_object(
+                &tenant,
+                publication_id,
+                &object,
+                body,
+                uploads,
+                expected_size,
+            );
+            return pack_admission::run_with_deadline(
+                std::time::Duration::from_secs(
+                    REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
+                ),
+                operation,
+            )
+            .await;
+        }
+
+        let bytes = collect_exact_publication_body(body, expected_size).await?;
         verify_publication_bytes(&object, &bytes)?;
+        self.write_and_record_registry_publication_object(
+            publication_id,
+            &object,
+            &bytes,
+            &mut uploads,
+        )
+        .await
+    }
+
+    async fn upload_registry_publication_git_object(
+        &self,
+        tenant: &str,
+        publication_id: &str,
+        object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
+        body: axum::body::Body,
+        mut uploads: Vec<RegistryPublicationUploadPlacement>,
+        expected_size: usize,
+    ) -> Result<(), RpcError> {
+        // The body permit bounds retained request and companion bytes. The
+        // separate validation permit covers only CPU/memory-heavy parsing.
+        let _body_permit = self.pack_admission.admit_body(tenant).await?;
+        let bytes = collect_exact_publication_body(body, expected_size).await?;
+
+        {
+            let _validation_permit = self.pack_admission.admit_validation(tenant).await?;
+            verify_publication_bytes(object, &bytes)?;
+        }
+
         if keymap::is_git_pack_index_path(&object.object_key) {
             let companion =
                 aos_registry_format::pack_index::companion_pack_path(&object.object_key)
@@ -990,28 +1018,20 @@ impl RpcService {
                     .placement_fetcher(&upload.placement)
                     .await
                     .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-                let read = fetch.fetch_bounded(
-                    &companion,
-                    aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
-                );
-                let timeout = clock::sleep(std::time::Duration::from_secs(
-                    REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
-                ));
-                futures_util::pin_mut!(read, timeout);
-                let pack = match futures_util::future::select(read, timeout).await {
-                    futures_util::future::Either::Left((result, _)) => result
-                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                        .ok_or_else(|| {
-                            RpcError::FailedPrecondition(
-                                "pack index companion is absent from a required placement".into(),
-                            )
-                        })?,
-                    futures_util::future::Either::Right(((), _)) => {
-                        return Err(RpcError::Unavailable(
-                            "Git pack companion read timed out".into(),
-                        ));
-                    }
-                };
+                let pack = fetch
+                    .fetch_bounded(
+                        &companion,
+                        aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
+                    )
+                    .await
+                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                    .ok_or_else(|| {
+                        RpcError::FailedPrecondition(
+                            "pack index companion is absent from a required placement".into(),
+                        )
+                    })?;
+
+                let _validation_permit = self.pack_admission.admit_validation(tenant).await?;
                 aos_registry_format::pack_index::validate_against_pack(
                     &object.object_key,
                     &bytes,
@@ -1022,35 +1042,32 @@ impl RpcService {
                 })?;
             }
         }
-        for upload in &mut uploads {
-            if validates_git_pack {
-                let write = upload.writer.write(&object.object_key, &bytes);
-                let timeout = clock::sleep(std::time::Duration::from_secs(
-                    REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
-                ));
-                futures_util::pin_mut!(write, timeout);
-                match futures_util::future::select(write, timeout).await {
-                    futures_util::future::Either::Left((result, _)) => {
-                        result.map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-                    }
-                    futures_util::future::Either::Right(((), _)) => {
-                        return Err(RpcError::Unavailable(
-                            "Git pack publication write timed out".into(),
-                        ));
-                    }
-                }
-            } else {
-                upload
-                    .writer
-                    .write(&object.object_key, &bytes)
-                    .await
-                    .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-            }
-        }
-        drop(_pack_validation_guard);
-        drop(bytes);
 
-        for upload in &mut uploads {
+        self.write_and_record_registry_publication_object(
+            publication_id,
+            object,
+            &bytes,
+            &mut uploads,
+        )
+        .await
+    }
+
+    async fn write_and_record_registry_publication_object(
+        &self,
+        publication_id: &str,
+        object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
+        bytes: &[u8],
+        uploads: &mut [RegistryPublicationUploadPlacement],
+    ) -> Result<(), RpcError> {
+        for upload in uploads.iter_mut() {
+            upload
+                .writer
+                .write(&object.object_key, bytes)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+        }
+
+        for upload in uploads.iter_mut() {
             let fetch = self
                 .surface
                 .placement_fetcher(&upload.placement)

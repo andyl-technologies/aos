@@ -87,7 +87,7 @@ impl RpcService {
             route_reservation_keyring: None,
             maintenance_jobs: None,
             release_evidence: None,
-            pack_validation: pack_validation_gate(),
+            pack_admission: pack_admission(),
         }
     }
 

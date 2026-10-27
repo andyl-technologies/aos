@@ -32,6 +32,7 @@
 //! ```
 
 mod error;
+mod pack_admission;
 mod plan_inputs;
 mod reservation_keys;
 
@@ -1223,10 +1224,10 @@ const MAX_REGISTRY_PUBLICATION_MULTIPART_PARTS: u64 = 10_000;
 const REGISTRY_PUBLICATION_PART_CLAIM_SECS: i64 = 300;
 const REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS: u64 = 120;
 
-fn pack_validation_gate() -> Arc<futures_util::lock::Mutex<()>> {
-    static GATE: std::sync::OnceLock<Arc<futures_util::lock::Mutex<()>>> =
+fn pack_admission() -> Arc<pack_admission::PackAdmission> {
+    static ADMISSION: std::sync::OnceLock<Arc<pack_admission::PackAdmission>> =
         std::sync::OnceLock::new();
-    Arc::clone(GATE.get_or_init(|| Arc::new(futures_util::lock::Mutex::new(()))))
+    Arc::clone(ADMISSION.get_or_init(|| Arc::new(pack_admission::PackAdmission::production())))
 }
 
 fn multipart_next_part(
@@ -1602,8 +1603,8 @@ pub struct RpcService {
     pub maintenance_jobs: Option<Arc<dyn crate::jobs::Queue>>,
     /// Restricted deployment authority for release and channel evidence.
     pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
-    /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
-    pack_validation: Arc<futures_util::lock::Mutex<()>>,
+    /// Bounds buffered Git pack bodies and serializes their memory-heavy validation.
+    pack_admission: Arc<pack_admission::PackAdmission>,
 }
 
 macro_rules! reviewed_external_operation {
