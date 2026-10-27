@@ -5,7 +5,7 @@
 //! failure permanently rejects their shared publisher observation, so restoring
 //! bytes cannot revive an alias or substitute another pair for quarantine.
 
-use super::{AdmissionJob, Input, io as native, state};
+use super::{AdmissionJob, Input, read_member::ReadMember as Member, state};
 use crate::{
     host_cache::{
         NativeHostLayout,
@@ -14,7 +14,7 @@ use crate::{
             retention::{Custody, NativeOwnerExecutor},
         },
     },
-    host_quota::{NativeProject, synchronized_allocated_bytes},
+    host_quota::synchronized_allocated_bytes,
     publisher_local::client::EncodedReadObservation,
 };
 use rustix::fs::{self, Mode, OFlags};
@@ -56,14 +56,6 @@ struct ChunkRead {
     limits: HostReadLimits,
     max_entries: usize,
     length: usize,
-}
-
-struct Member {
-    file: File,
-    stamp: native::FileStamp,
-    inode: (u64, u64, u64),
-    expected: Arc<Vec<u8>>,
-    mode: u32,
 }
 
 impl AdmittedPackRead {
@@ -180,19 +172,7 @@ impl AdmittedPackRead {
                 let stamp = original
                     .read_stamp(owner)
                     .inspect_err(|_| observation.reject(1))?;
-                let file = original
-                    .readonly
-                    .as_ref()
-                    .ok_or_else(|| invalid("metadata read original descriptor absent"))?
-                    .try_clone()?;
-                let metadata = file.metadata()?;
-                Ok(Member {
-                    file,
-                    stamp,
-                    inode: (metadata.dev(), metadata.ino(), metadata.len()),
-                    expected: Arc::clone(expected),
-                    mode: metadata.mode() & 0o7777,
-                })
+                Member::bind(original, Arc::clone(expected), stamp)
             };
             let start = usize::try_from(entry.offset()).map_err(io::Error::other)?;
             let end = start
@@ -409,23 +389,8 @@ impl AdmittedPackRead {
     }
 
     fn check_bytes(&self) -> io::Result<()> {
-        let mut scratch = [0_u8; 8192];
         for member in &self.members {
-            for (position, expected) in member.expected.chunks(scratch.len()).enumerate() {
-                let offset = position
-                    .checked_mul(scratch.len())
-                    .and_then(|offset| u64::try_from(offset).ok())
-                    .ok_or_else(|| invalid("pack verification offset overflow"))?;
-                member
-                    .file
-                    .read_exact_at(&mut scratch[..expected.len()], offset)?;
-                if &scratch[..expected.len()] != expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "original pack pair bytes changed",
-                    ));
-                }
-            }
+            member.check_bytes()?;
         }
         Ok(())
     }
@@ -524,23 +489,7 @@ impl AdmittedPackRead {
         let checked = (|| {
             self.layout.recheck()?;
             for member in &self.members {
-                member.stamp.check(&member.file)?;
-                let metadata = member.file.metadata()?;
-                if member.inode.0 != self.layout.directory_binding("layout-root")?.0
-                    || (metadata.dev(), metadata.ino(), metadata.len()) != member.inode
-                    || usize::try_from(metadata.len()).ok() != Some(member.expected.len())
-                    || metadata.uid() != self.uid
-                    || metadata.gid() != self.gid
-                    || !metadata.is_file()
-                    || metadata.nlink() != 1
-                    || !matches!(member.mode, 0o640 | 0o660)
-                    || metadata.mode() & 0o7777 != member.mode
-                    || fs::fcntl_getfl(&member.file)?
-                        .intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
-                    || NativeProject::inspect(&member.file)?.project_id != self.project
-                {
-                    return Err(invalid("metadata consumer changed original native pair"));
-                }
+                member.check_native(&self.layout, self.project, self.uid, self.gid)?;
             }
             self.layout.recheck()
         })();

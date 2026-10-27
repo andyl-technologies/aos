@@ -20,6 +20,7 @@ pub(in crate::host_cache::owner) mod pack_reads;
 pub(in crate::host_cache::owner) mod packed_body;
 pub(in crate::host_cache::owner) mod pressure;
 pub(in crate::host_cache::owner) mod read_custody;
+mod read_member;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
 pub(in crate::host_cache::owner) mod recovery;
