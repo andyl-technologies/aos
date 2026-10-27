@@ -16,50 +16,101 @@ pub(super) fn begin(
     payload: usize,
     hashes: &[String],
 ) -> io::Result<super::super::snapshot::PreparedSnapshotWrite> {
-    owner.preparation.recheck()?;
-    // This funds simultaneous payload and old/new state snapshot overlap. It
-    // predicts neither allocation rounding nor directory/allocator metadata.
-    // Native hard quotas bound growth; excess actual charge faults completion
-    // without releasing the physical resources or this logical hold.
-    let hold = incoming_hold(owner, payload)?;
-    check_incoming(owner, hold)?;
-    let mut random = [0; 16];
-    File::open("/dev/urandom")?.read_exact(&mut random)?;
-    let token = hex(&random);
-    if owner.state.reservations.iter().any(|row| row.id == token) {
-        return Err(io::Error::other("admission token collision"));
+    begin_group(executor, owner, &mut [(job, payload, hashes)])
+}
+
+/// Funds every member in one state transition before any group member has effects.
+///
+/// A group keeps an independent reservation and pin owner for each admission.
+/// Combined quota and state bounds are checked before changing any job, so a
+/// rejected group cannot leave a partially funded prefix. This grants no read
+/// authority: original native verification and completion remain separate.
+///
+/// # Errors
+/// Refuses empty or repeated jobs, started admissions, overflowing combined
+/// holds, insufficient quota, exhausted state bounds or failed snapshot setup.
+pub(super) fn begin_group(
+    executor: &super::super::retention::NativeOwnerExecutor,
+    owner: &mut Custody,
+    members: &mut [(&mut AdmissionJob, usize, &[String])],
+) -> io::Result<super::super::snapshot::PreparedSnapshotWrite> {
+    if members.is_empty() || members.len() > owner.preparation.config.state.records {
+        return Err(io::Error::other(
+            "admission funding group exceeds its state bound",
+        ));
     }
-    let pin_owner = format!("admission:{token}");
+    owner.preparation.recheck()?;
+
+    let mut orders = BTreeSet::new();
+    let mut incoming = 0u64;
+    for (job, payload, _) in members.iter() {
+        if !std::sync::Arc::ptr_eq(&job.custody, executor.custody())
+            || !job.is_effect_free()
+            || !orders.insert(job.order)
+        {
+            return Err(io::Error::other(
+                "admission funding group has foreign, repeated or started custody",
+            ));
+        }
+        incoming = incoming
+            .checked_add(incoming_hold(owner, *payload)?)
+            .ok_or_else(|| io::Error::other("admission group hold overflow"))?;
+    }
+    check_incoming(owner, incoming)?;
+
+    // Each member funds simultaneous payload and old/new snapshot overlap.
+    // Native hard quotas still bound actual growth; a funded promise never
+    // substitutes for measuring physical allocations at completion.
     let mut next = owner.state.clone();
-    next.reservations.push(ReservationRecord {
-        id: token.clone(),
-        owner: owner.preparation.config.quota_owner.clone(),
-        bytes: hold,
-    });
-    next.leases.push(LeaseRecord {
-        owner: pin_owner.clone(),
-        expires: RETAINED_LEASE_DEADLINE,
-    });
-    for hash in hashes.iter().collect::<BTreeSet<_>>() {
-        next.pins.push(PinRecord {
+    let mut registrations = Vec::new();
+    registrations
+        .try_reserve_exact(members.len())
+        .map_err(io::Error::other)?;
+    let mut random_source = File::open("/dev/urandom")?;
+    for (_, payload, hashes) in members.iter() {
+        let hold = incoming_hold(owner, *payload)?;
+        let mut random = [0; 16];
+        random_source.read_exact(&mut random)?;
+        let token = hex(&random);
+        if next.reservations.iter().any(|row| row.id == token) {
+            return Err(io::Error::other("admission token collision"));
+        }
+        let pin_owner = format!("admission:{token}");
+        let hashes = hashes
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        next.reservations.push(ReservationRecord {
+            id: token.clone(),
+            owner: owner.preparation.config.quota_owner.clone(),
+            bytes: hold,
+        });
+        next.leases.push(LeaseRecord {
             owner: pin_owner.clone(),
-            hash: hash.clone(),
             expires: RETAINED_LEASE_DEADLINE,
         });
+        for hash in &hashes {
+            next.pins.push(PinRecord {
+                owner: pin_owner.clone(),
+                hash: hash.clone(),
+                expires: RETAINED_LEASE_DEADLINE,
+            });
+        }
+        registrations.push((token, hold, hashes));
     }
     next.encoded_len(owner.preparation.config.state)
         .map_err(io::Error::other)?;
-    job.token = token;
-    job.hold = hold;
-    job.hashes = hashes
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+
     owner.begin_mutation()?;
-    job.started
-        .store(true, std::sync::atomic::Ordering::Release);
+    for ((job, _, _), (token, hold, hashes)) in members.iter_mut().zip(registrations) {
+        job.token = token;
+        job.hold = hold;
+        job.hashes = hashes;
+        job.started
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     owner.faulted = true;
     owner.state = next;
     super::super::snapshot::prepare(executor, owner)

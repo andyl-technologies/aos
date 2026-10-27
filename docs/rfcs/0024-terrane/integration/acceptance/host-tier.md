@@ -474,6 +474,26 @@ All original exact encoding, request-count, corruption and recovery assertions
 remain. These diagnostics still require source compilation and native execution;
 they do not resolve or accept the remaining failure. Trunk acceptance is 28/64.
 
+## Coordinated admission funding preparation
+
+Admission funding now builds the complete candidate state for a bounded group
+before changing any member. It checks the sum of all incoming holds against
+fresh native quota and existing reservations, deduplicates each member's pins,
+checks random tokens against existing and newly planned reservations, and
+validates the combined serialized state bounds. Each member retains its own
+reservation, lease and exact pin closure. Only then does one owner mutation
+mark every member started and prepare a single snapshot for synchronization.
+A later snapshot failure retains all started jobs and promises.
+
+Existing individual admissions use the same path with one member. Group
+funding grants no dictionary read authority and marks no admission complete.
+The sequential cold importer still refuses cyclic allocation units. Selecting
+and independently verifying a complete group, retaining original sources
+without ownership cycles, completing all physical members and coordinating
+retirement remain required implementation work. Source compilation and
+exact-source application checks do not prove any multi-member native outcome;
+that evidence remains pending. No task is newly accepted; acceptance is 28/64.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |
