@@ -194,9 +194,11 @@ pub(super) fn start_envoy_campaign(
 #[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
 fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
-    // The pending-recovery proof captures an exact savepoint; grant that one
-    // campaign operation before the service loads its policy.
+    // The pending-recovery proof captures an exact savepoint, and the measured
+    // recovery is retained by a pin; grant those two campaign operations
+    // before the service loads its policy.
     super::single_guest::grant_savepoint_permission(&fixture)?;
+    grant_pin_permission(&fixture)?;
     let EnvoyCampaignFlight {
         generated,
         lineage,
@@ -456,6 +458,18 @@ fn require_hot_fork_root_row(
         return Ok(());
     }
     Err(format!("packaged QEMU did not report {head}... {outcome}; rows={rows:?}").into())
+}
+
+/// Grants this campaign's principal the pin operation its recovery step uses.
+fn grant_pin_permission(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+    let mut policy = fs::OpenOptions::new()
+        .append(true)
+        .open(&fixture.peer_policy)?;
+    writeln!(
+        policy,
+        "\n[[grants]]\nprincipal = {PRINCIPAL:?}\noperation = \"pin-campaign\"\ncampaign = {CAMPAIGN:?}"
+    )?;
+    Ok(())
 }
 
 fn retain_and_complete_product_campaign(
