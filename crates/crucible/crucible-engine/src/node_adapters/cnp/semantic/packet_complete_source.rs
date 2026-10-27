@@ -232,6 +232,7 @@ impl PacketCompleteSemanticSource {
     pub fn retained_requested_storage_precredit_scratch_data() -> usize {
         Self::original_report_startup_observer_scratch_data()
             + template18::MECHANISM_GATE_CONTROLS
+            + Self::original_complete_mechanism_capacity_counter_scratch_data()
             + Self::native_import18_birth_construction_counter_scratch_data()
             + Self::original_import18_capture_bank_counter_scratch_data()
             + import18_phase_bank::retained_counter_scratch_data()

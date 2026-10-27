@@ -17,7 +17,9 @@ impl PacketCompleteSemanticSource {
     /// allocation. The root inline payload contains private cells, keys, vectors,
     /// options and scalar selections; their dynamic backing is counted by the
     /// other source component observers. The actual producer or reactive Box
-    /// payload is a separate allocation. The coordinator Box payload is counted
+    /// payload is a separate allocation. A retained derivation mechanism adds
+    /// its actual shared payloads and selected direct buffers while preserving
+    /// its separate original deployment obligation. The coordinator Box is counted
     /// by the installation component, not again here.
     ///
     /// Receiver group backing, actual native/source-read shared owner, Host and
@@ -65,6 +67,7 @@ impl PacketCompleteSemanticSource {
         retained_values::sum_with_error::<E, _>(
             [
                 underlying,
+                self.original_complete_mechanism_storage_with_error::<E>(maximum)?,
                 self.effect_receiver
                     .as_ref()
                     .map_or(0, |receiver| receiver.retained_path_storage_data()),

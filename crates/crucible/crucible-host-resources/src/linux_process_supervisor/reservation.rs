@@ -203,6 +203,47 @@ pub struct DeploymentResourceLease {
 }
 
 impl DeploymentResourceLease {
+    /// Reports its actual fixed deployment Arc payload layout as DATA.
+    ///
+    /// The closed original owns only inline process, policy, supervisor, failure
+    /// and revocation fields. This neither reads kernel limits nor authenticates
+    /// or duplicates the reservation. The caller counts the shared header.
+    pub fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        let Original {
+            process: _,
+            policy: _,
+            installed: _,
+            supervisor,
+            failure: _,
+            revoked: _,
+        } = self.original.as_ref();
+        if let Some(supervisor) = supervisor {
+            // Keep the defining inline supervisor roster in this layout path.
+            supervisor.retained_payload_layout_data();
+        }
+        std::alloc::Layout::for_value(self.original.as_ref())
+    }
+
+    /// Names the original deployment and nested inline layout controls.
+    pub fn retained_capacity_counter_scratch_data() -> usize {
+        use std::{alloc::Layout, mem::size_of};
+
+        LinuxProcessSupervisor::retained_capacity_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&Original>()
+            + size_of::<(
+                &u32,
+                &LinuxProcessLimits,
+                &Option<LinuxProcessLimits>,
+                &Option<LinuxProcessSupervisor>,
+                &Option<LinuxProcessSupervisorError>,
+                &AtomicBool,
+            )>()
+            + size_of::<Option<&LinuxProcessSupervisor>>()
+            + size_of::<&LinuxProcessSupervisor>()
+            + size_of::<Layout>() * 2
+    }
+
     /// Authenticates the same original process and unchanged enforced envelope.
     ///
     /// # Errors

@@ -66,6 +66,9 @@ use std::{
 #[path = "installation/loader.rs"]
 mod loader;
 
+#[path = "installation/metadata.rs"]
+mod metadata;
+
 const MAXIMUM_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAXIMUM_MEASURED_BYTES: u64 = 4 * 1024 * 1024 * 1024;

@@ -21,6 +21,40 @@ pub struct LinuxProcessSupervisor {
     installation_attempted: bool,
 }
 
+impl LinuxProcessSupervisor {
+    /// Reports its compiled inline payload layout without checking kernel state.
+    ///
+    /// The closed roster contains only fixed process, thread, ceiling and once
+    /// fields. This DATA neither proves completion nor authorizes deployment.
+    pub fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        let Self {
+            process: _,
+            thread: _,
+            target: _,
+            original: _,
+            complete: _,
+            installation_attempted: _,
+        } = self;
+        std::alloc::Layout::for_value(self)
+    }
+
+    /// Names the fixed inline layout observer's concrete controls.
+    pub fn retained_capacity_counter_scratch_data() -> usize {
+        use std::{alloc::Layout, mem::size_of};
+
+        size_of::<&Self>()
+            + size_of::<Layout>()
+            + size_of::<(
+                &u32,
+                &ThreadId,
+                &LinuxProcessCeilingsData,
+                &LinuxProcessCeilingsData,
+                &bool,
+                &bool,
+            )>()
+    }
+}
+
 fn no_greater(current: Rlimit, requested: u64) -> Result<Rlimit, LinuxProcessSupervisorError> {
     if requested == 0 {
         return Err(LinuxProcessSupervisorError::ResourceLimit);

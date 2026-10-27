@@ -32,6 +32,11 @@ impl LinuxPureWorkerBufferCapacityData {
         use std::mem::size_of;
 
         size_of::<Self>()
+            + LinuxPureWorkerProgram::retained_capacity_counter_scratch_data()
+            + size_of::<[std::alloc::Layout; 3]>()
+            + size_of::<(&Arc<Roots>, &LinuxPureWorkerProgram, &Arc<AtomicBool>)>()
+            + size_of::<(&LinuxPureWorkerConfiguration, &OwnedFd, &OwnedFd)>()
+            + size_of::<(&PathBuf, &PathBuf, &u32, &u32, &u32)>()
             + size_of::<&LinuxPureWorkerFactory>()
             + size_of::<&LinuxPureWorkerAttempt>()
             + size_of::<&LinuxPureWorkerCompletion>()
@@ -173,6 +178,24 @@ fn observe_state<E>(
 }
 
 impl LinuxPureWorkerFactory {
+    /// Reports actual root, program and busy-flag Arc payload layouts as DATA.
+    ///
+    /// The order is fixed. Shared control headers, selected direct buffers and
+    /// opaque lease/runtime backing remain independent terms. This borrows each
+    /// original without cloning identities, reading atomics or checking liveness.
+    pub fn retained_shared_payload_layouts_data(&self) -> [std::alloc::Layout; 3] {
+        let Self {
+            roots,
+            program,
+            busy,
+        } = self;
+        [
+            roots.retained_payload_layout_data(),
+            program.retained_payload_layout_data(),
+            std::alloc::Layout::for_value(busy.as_ref()),
+        ]
+    }
+
     /// Observes each original direct buffer without aggregating its geometry.
     ///
     /// Shared views repeat their rows. Empty allocations retain zero capacity;

@@ -99,3 +99,35 @@ fn incomplete_prefix_and_foreign_process_reads_preserve_original_failure() {
     );
     assert!(owner.lease().is_err());
 }
+
+#[test]
+fn deployment_layout_data_preserves_incomplete_and_revoked_originals() {
+    let owner = incomplete();
+    let read = DeploymentResourceLease {
+        original: owner.original.clone(),
+    };
+    let references = Arc::strong_count(&read.original);
+
+    let layout = read.retained_payload_layout_data();
+
+    assert_eq!(layout.size(), std::mem::size_of::<Original>());
+    assert_eq!(layout.align(), std::mem::align_of::<Original>());
+    assert_eq!(Arc::strong_count(&read.original), references);
+    assert!(read.original.installed.is_none());
+    assert!(matches!(
+        owner.lease(),
+        Err(LinuxProcessSupervisorError::OutstandingObligations)
+    ));
+    assert_eq!(
+        owner.failure_data(),
+        Some(LinuxProcessSupervisorError::UnsupportedFacet)
+    );
+    drop(owner);
+
+    assert_eq!(read.retained_payload_layout_data(), layout);
+    assert!(read.original.revoked.load(Ordering::Acquire));
+    assert_eq!(
+        read.authenticate_current(),
+        Err(LinuxProcessSupervisorError::ForeignAuthority)
+    );
+}

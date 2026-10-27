@@ -91,6 +91,22 @@ fn same(directory: &OwnedFd, named: &OwnedFd) -> Result<(), LinuxPureWorkerError
 }
 
 impl Roots {
+    pub(super) fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        let Self {
+            configuration,
+            cgroup: _,
+            run: _,
+        } = self;
+        let LinuxPureWorkerConfiguration {
+            cgroup_root: _,
+            run_root: _,
+            project_id: _,
+            child_user_id: _,
+            child_group_id: _,
+        } = configuration;
+        std::alloc::Layout::for_value(self)
+    }
+
     pub(super) fn open(
         configuration: LinuxPureWorkerConfiguration,
     ) -> Result<Self, LinuxPureWorkerError> {

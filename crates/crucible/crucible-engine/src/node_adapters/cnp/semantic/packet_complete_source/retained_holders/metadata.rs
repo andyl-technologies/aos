@@ -1,8 +1,8 @@
-//! Preserves actual Source allocation headers and its own Unix path capacity.
+//! Preserves Source allocation headers, own path and retained mechanism views.
 //!
 //! The real Rc payload and independent producer/reactive Box are separate rows.
-//! Their nested dynamic owners belong to the other Source component walks. The
-//! receiver group's shared allocation and kernel resources remain external rows.
+//! Other nested owners belong to the remaining Source component walks. The
+//! receiver group and opaque native runtime remain external obligations.
 
 use super::*;
 use crate::node_contract::{
@@ -15,13 +15,14 @@ use crucible_node_transport::retained_metadata::{
 use std::mem::align_of_val;
 
 impl PacketCompleteSemanticSource {
-    /// Observes its actual Rc, independent Box and own path as capacity DATA.
+    /// Observes its Rc, independent Box, own path and known mechanism capacities.
     ///
     /// The caller admits the bank and
     /// [`Self::original_complete_holder_capacity_counter_scratch_data`] first.
     /// Rows append without clearing earlier components; refusal retains their
     /// initialized prefix and backing. Aliases receive no shared-view discount.
-    /// This does not traverse nested dynamic owners or authorize native actions.
+    /// Other nested owners and opaque native backing remain separate. These
+    /// facts do not authorize native actions or complete a Source footprint.
     ///
     /// # Errors
     /// Refuses a foreign creator, invalid or overflowing geometry, unready bank
@@ -77,13 +78,58 @@ impl PacketCompleteSemanticSource {
                 .map_err(E::runtime)?;
         }
 
+        self.record_mechanism_capacity_data(&mut census)
+            .map_err(E::runtime)?;
         self.storage_origin_with_error::<E>()?;
         Ok(census.finish())
+    }
+
+    fn record_mechanism_capacity_data(
+        &self,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(mechanism) = &self.native_import18_derivation_mechanism {
+            census.observe_shared_allocation_data(mechanism)?;
+            census.observe_component_capacity_data(|remaining, bank| {
+                mechanism.known_capacity_data(remaining, bank)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Prices the same mechanism population beneath a separately counted Source.
+    pub(super) fn original_complete_mechanism_storage_with_error<E: StorageError>(
+        &self,
+        maximum: usize,
+    ) -> Result<usize, E> {
+        self.storage_origin_with_error::<E>()?;
+        let mut census = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+        self.record_mechanism_capacity_data(&mut census)
+            .map_err(E::runtime)?;
+        self.storage_origin_with_error::<E>()?;
+        Self::complete_retained_metadata_storage_with_error::<E>(&census.finish(), maximum)
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn original_complete_mechanism_capacity_counter_scratch_data()
+    -> usize {
+        use crate::node_adapters::cnp::source_birth_derivation::installation::VerifiedSourceBirthMechanism;
+
+        OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + VerifiedSourceBirthMechanism::known_capacity_counter_scratch_data()
+            + size_of::<&Self>() * 2
+            + size_of::<Option<&Rc<VerifiedSourceBirthMechanism>>>()
+            + size_of::<&Rc<VerifiedSourceBirthMechanism>>() * 2
+            + size_of::<Option<&mut PacketRuntimeMetadataRecordBank>>()
+            + size_of::<RetainedProtocolMetadataFacts>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<usize>()
     }
 
     /// Names actual holder-census controls for the typed precredit walk.
     pub fn original_complete_holder_capacity_counter_scratch_data() -> usize {
         OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + Self::original_complete_mechanism_capacity_counter_scratch_data()
             + size_of::<&Rc<Self>>()
             + size_of::<&Self>()
             + size_of::<&CompletePacketOriginal>()

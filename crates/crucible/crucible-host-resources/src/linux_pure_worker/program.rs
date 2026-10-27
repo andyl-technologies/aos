@@ -195,11 +195,61 @@ impl LinuxPureWorkerProgram {
         Ok((paths, roster))
     }
 
-    pub(super) fn observe_direct_buffers<E>(
+    /// Reports the same original program Arc's compiled payload layout as DATA.
+    ///
+    /// The caller separately counts the Arc control header, direct buffers and
+    /// opaque acquired-lease notification backing. This performs no file query,
+    /// lease validation, identity clone or native operation.
+    pub fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        std::alloc::Layout::for_value(self.original.as_ref())
+    }
+
+    /// Observes this retained program view's actual path and root-vector buffers.
+    ///
+    /// Repeated strong views retain all rows. Descriptor payloads and acquired
+    /// lease notification backing remain separate from these selected buffers.
+    /// No file, descriptor, pointer or live program authority escapes.
+    ///
+    /// # Errors
+    /// Returns the observer's first refusal, preserving every original owner.
+    pub fn observe_direct_buffers<E>(
         &self,
         observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
     ) -> Result<(), E> {
-        observe_program_buffers(&self.original.worker_path, &self.original.roots, observe)
+        let OriginalProgram {
+            launcher: _,
+            launcher_measurement: _,
+            launcher_exec: _,
+            worker: _,
+            worker_measurement: _,
+            worker_path,
+            worker_digest: _,
+            algorithm_digest: _,
+            roots,
+            revoked: _,
+        } = self.original.as_ref();
+        observe_program_buffers(worker_path, roots, observe)
+    }
+
+    /// Names concrete program layout and direct-buffer observation controls.
+    pub fn retained_capacity_counter_scratch_data() -> usize {
+        use std::{alloc::Layout, mem::size_of};
+
+        size_of::<&Self>()
+            + size_of::<&OriginalProgram>()
+            + size_of::<Layout>()
+            + size_of::<(
+                &Mutex<LinuxReadLeaseFile>,
+                &File,
+                &OwnedFd,
+                &Mutex<LinuxReadLeaseFile>,
+                &File,
+                &PathBuf,
+                &[u8; 32],
+                &[u8; 32],
+                &Vec<(PathBuf, OwnedFd)>,
+                &AtomicBool,
+            )>()
     }
 
     pub(super) fn command(&self) -> Result<Command, LinuxPureWorkerError> {
@@ -318,3 +368,7 @@ fn check_loader_policy() -> Result<(), LinuxPureWorkerError> {
         _ => Err(LinuxPureWorkerError::HostControlsUnavailable),
     }
 }
+
+#[cfg(test)]
+#[path = "program/capacity_tests.rs"]
+mod capacity_tests;
