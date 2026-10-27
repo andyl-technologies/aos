@@ -284,6 +284,59 @@ impl CampaignRepository {
         Ok(id)
     }
 
+    /// Stages one canonical envelope through checked durable publication.
+    ///
+    /// # Errors
+    /// Returns original-account, boundary, identity, placement, readback, or
+    /// durable receipt failure while retaining the backend's cleanup outcome.
+    pub(in crate::repository) fn put_envelope_with_boundary(
+        &self,
+        envelope: &ObjectEnvelope,
+        original: &crucible_store::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<ContentId, StoreError> {
+        let id = envelope.content_id();
+        let bytes = envelope.canonical_bytes_with_boundary(original, boundary)?;
+        let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
+        let source = BlobHandle::from_owned_bytes(bytes)?;
+        let objects = [(id, source)];
+        let receipts = self
+            .blobs
+            .put_many_if_absent_with_boundary(original, &objects, boundary)?;
+        let [receipt] = &*receipts else {
+            return Err(StoreError::InvalidComposition {
+                reason: "single-envelope staging returned a non-singleton receipt",
+            });
+        };
+        if receipt.id != id
+            || receipt
+                .placements
+                .iter()
+                .any(|placement| placement.logical_length != logical_length)
+        {
+            return Err(StoreError::Corrupt { id });
+        }
+        if !receipt.is_durable() {
+            return Err(StoreError::DurabilityUnsatisfied {
+                id,
+                minimum_durable_placements: 1,
+                observed_durable_placements: 0,
+            });
+        }
+        let receipts = receipts.accept_with_boundary(boundary)?;
+
+        let persisted = self
+            .blobs
+            .read_with_boundary(original, id, None, boundary)?;
+        if persisted.logical_length() != logical_length {
+            return Err(StoreError::Corrupt { id });
+        }
+        persisted.authenticate_with_boundary(original, id, boundary)?;
+        check_original_boundary(original, boundary)?;
+        drop(receipts);
+        Ok(id)
+    }
+
     pub(in crate::repository) fn put_envelopes_batch(
         &self,
         envelopes: Vec<ObjectEnvelope>,
@@ -721,4 +774,27 @@ impl CampaignRepository {
         }
         Ok(())
     }
+}
+
+/// Checks the saved original on both sides of one final caller callback.
+///
+/// # Errors
+/// Returns sticky or live-authority refusal, or the callback's store failure.
+fn check_original_boundary(
+    original: &crucible_store::owned_decode::DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    original
+        .verify_live()
+        .map_err(|source| StoreError::DecodeAdmission {
+            source,
+            custody: Some(original.custody()),
+        })?;
+    boundary()?;
+    original
+        .verify_live()
+        .map_err(|source| StoreError::DecodeAdmission {
+            source,
+            custody: Some(original.custody()),
+        })
 }

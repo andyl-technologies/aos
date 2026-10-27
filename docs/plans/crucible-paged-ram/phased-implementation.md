@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 703 bindings: 684 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 705 bindings: 686 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -139,10 +139,39 @@ Mandatory application compilation is running. The inventory contains 659 model,
 25 format and nineteen native bindings,
 with no qualified or advertised capability.
 
-Blocked-I/O deadlines remain unqualified. Source metadata staging still polls
-between envelopes, and private export and finding-midpoint callers retain paired
-outer GC guards. Those callers need a destination publication handoff before their
-overlapping guards can be removed. This component does not close those gaps.
+Blocked-I/O deadlines remain unqualified. Private export and finding-midpoint
+callers retain paired outer GC guards. Those callers need a destination publication
+handoff before their overlapping guards can be removed. This component does not
+close those gaps.
+
+#### Checked source archive-metadata staging
+
+Explicitly bounded source metadata staging requires the repository's saved
+original account. Canonical inventory pages and manifests use prepaid fixed
+storage, emit pieces no larger than 64 KiB and recheck the original around caller
+callbacks. Each envelope uses checked private publication, durable receipt
+acceptance and authenticated persisted readback before releasing receipt custody.
+The compatibility method preserves ordinary staging for existing local callers.
+
+All-target compilation and strict store/campaign library Clippy pass. All ten
+envelope controls, eleven campaign transfer controls, twenty-two daemon transfer
+controls, ninety policy controls and five hygiene controls pass. The large-page
+regression cancels after observing at least 64 KiB of private staging, verifies
+typed cancellation with clean backend cleanup and no published page or manifest,
+then authenticates successful and idempotent retries. The finite original refusal
+control verifies that returned failure custody survives the budget handle and
+that final failure drop returns all credit.
+
+Formatting and coverage inventory pass: 661 model, 25 format and nineteen native
+bindings, with no qualified or advertised capability. Mandatory application-target
+compilation is running; no passing current-source application result is recorded
+yet. Its immutable source matches all 7,942 frozen input files, including 5,478
+Rust, TOML and lockfile inputs; the final assertion formatting changes only
+whitespace in the separately passing store test.
+
+Archive inspection still uses ordinary envelope reads between boundary polls.
+Blocked-I/O deadlines, the outer paired GC guards and genuine native activation
+remain unqualified. This staging component does not qualify those requirements.
 
 #### Executor exact-candidate handoff retention
 

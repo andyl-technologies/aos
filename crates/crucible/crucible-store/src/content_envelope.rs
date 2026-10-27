@@ -196,6 +196,9 @@ impl ContentEnvelope {
 
     /// Writes canonical bytes into an owner paid by the supplied original.
     ///
+    /// Emission polls the original and caller boundary between pieces no wider
+    /// than 64 KiB and exposes no partial image.
+    ///
     /// # Errors
     /// Returns framing-length, original admission, allocation or boundary
     /// failures before exposing a completed canonical image.
@@ -207,16 +210,18 @@ impl ContentEnvelope {
         let length = self
             .encoded_len()
             .map_err(|_| crate::content_store::StoreError::Quota)?;
-        crate::content_store::OwnedBlobBytes::write_with_boundary(
+        crate::content_store::OwnedBlobBytes::write_with_polled_boundary(
             original,
             length,
             boundary,
-            |bytes| {
+            |bytes, boundary| {
                 let mut position = 0;
-                self.emit_canonical(&mut |chunk| {
-                    bytes[position..position + chunk.len()].copy_from_slice(chunk);
-                    position += chunk.len();
-                });
+                self.try_emit_checked_canonical(&mut |piece| {
+                    boundary()?;
+                    bytes[position..position + piece.len()].copy_from_slice(piece);
+                    position += piece.len();
+                    Ok::<(), crate::content_store::StoreError>(())
+                })?;
                 Ok(position)
             },
         )

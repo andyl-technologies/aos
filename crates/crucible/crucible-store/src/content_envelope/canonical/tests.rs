@@ -4,7 +4,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use super::*;
-use crate::content_store::test_resources::FixtureResourceBudget;
+use crate::content_store::{StoreError, test_resources::FixtureResourceBudget};
 use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
 
 struct Authority(FixtureResourceBudget);
@@ -86,6 +86,41 @@ fn streamed_envelope_identity_preserves_independent_framing_and_digest()
     assert!(!envelope.matches_canonical_bytes(&changed));
     assert!(!envelope.matches_canonical_bytes(&expected[..expected.len() - 1]));
     assert!(!envelope.matches_canonical_bytes(&[expected.as_slice(), &[0]].concat()));
+    Ok(())
+}
+
+#[test]
+fn checked_canonical_emission_is_bounded_and_finite_refusal_stays_sticky()
+-> Result<(), Box<dyn Error>> {
+    let envelope = ContentEnvelope::new(
+        "example.checked-record",
+        1,
+        BTreeSet::new(),
+        vec![7; 3 * CHECKED_CANONICAL_CHUNK_BYTES],
+    )?;
+    let expected = independent_bytes(&envelope);
+    let mut emitted = Vec::new();
+    let mut largest_piece = 0;
+    envelope.try_emit_checked_canonical(&mut |piece| {
+        largest_piece = largest_piece.max(piece.len());
+        emitted.extend_from_slice(piece);
+        Ok::<(), StoreError>(())
+    })?;
+    assert_eq!(emitted, expected);
+    assert!(largest_piece <= CHECKED_CANONICAL_CHUNK_BYTES);
+
+    let authority = Arc::new(Authority(FixtureResourceBudget::new(0, 96 * 1024)));
+    let budget = DecodeBudget::new(authority.clone(), 96 * 1024)?;
+    let refused = envelope.canonical_bytes_with_boundary(&budget, &mut || Ok(()));
+    assert!(matches!(refused, Err(StoreError::DecodeAdmission { .. })));
+    assert!(budget.check().is_err(), "admission failure remains sticky");
+    drop(budget);
+    assert!(
+        authority.0.usage()?.1 > 0,
+        "refusal retains original custody"
+    );
+    drop(refused);
+    assert_eq!(authority.0.usage()?, (0, 0));
     Ok(())
 }
 

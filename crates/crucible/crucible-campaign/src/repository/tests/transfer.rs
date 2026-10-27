@@ -9,6 +9,9 @@ mod resources;
 #[path = "transfer/no_ram.rs"]
 mod no_ram;
 
+#[path = "transfer/metadata_staging.rs"]
+mod metadata_staging;
+
 use crucible_store::content_envelope::ContentEnvelope;
 use crucible_store::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,

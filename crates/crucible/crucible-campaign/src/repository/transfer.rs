@@ -334,31 +334,70 @@ impl CampaignRepository {
         &self,
         plan: &CampaignArchivePlan,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
-        self.stage_campaign_archive_metadata_with_boundary(plan, &mut || Ok(()))
+        self.verify_ram_admission()?;
+        self.verify_plan_against_source_with_boundary(plan, &mut || Ok(()))?;
+        for envelope in &plan.page_envelopes {
+            self.put_envelope(envelope.clone())?;
+        }
+        let id = self.put_envelope(plan.manifest_envelope.clone())?;
+        if id != plan.manifest_id.content_id() {
+            return Err(integrity("campaign-archive-manifest-staging-mismatch"));
+        }
+        self.inspect_campaign_archive_with_boundary(plan.manifest_id, &mut || Ok(()))?;
+        Ok(plan.manifest_id)
     }
 
-    /// Stages source archive metadata under the original operational boundary.
+    /// Stages source archive metadata under this repository's original boundary.
+    ///
+    /// Canonical page and manifest images are emitted in bounded pieces and
+    /// published through checked private staging. The compatibility method
+    /// preserves ordinary publication for callers without checked authority.
     ///
     /// # Errors
     ///
-    /// Returns an error for cancellation, invalid source closure, or storage.
+    /// Returns an error for missing original authority, cancellation, invalid
+    /// source closure, checked publication, receipt, or readback failure.
     pub fn stage_campaign_archive_metadata_with_boundary(
         &self,
         plan: &CampaignArchivePlan,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
         self.verify_ram_admission()?;
-        self.verify_plan_against_source_with_boundary(plan, boundary)?;
-        for envelope in &plan.page_envelopes {
-            boundary().map_err(CampaignRepositoryError::Ram)?;
-            self.put_envelope(envelope.clone())?;
+        let original = self
+            .ram_admission()
+            .original()
+            .ok_or(StoreError::Unsupported {
+                capability: "campaign-archive-source-metadata-admission",
+            })?;
+        self.verify_plan_against_source_under(plan, Some(Some(original)), boundary)?;
+        if plan.manifest_envelope.content_id() != plan.manifest_id.content_id() {
+            return Err(integrity("campaign-archive-manifest-staging-mismatch"));
         }
-        boundary().map_err(CampaignRepositoryError::Ram)?;
-        let id = self.put_envelope(plan.manifest_envelope.clone())?;
+        let id = crucible_store::ram::with_store_operation_boundary(
+            original,
+            boundary,
+            |checked_boundary| {
+                for envelope in &plan.page_envelopes {
+                    self.put_envelope_with_boundary(envelope, original, checked_boundary)?;
+                }
+                self.put_envelope_with_boundary(&plan.manifest_envelope, original, checked_boundary)
+            },
+        )
+        .map_err(|source| match source {
+            crucible_store::ram::RamStoreError::Store(source) => {
+                CampaignRepositoryError::Store(source)
+            }
+            source => CampaignRepositoryError::Ram(source),
+        })?;
         if id != plan.manifest_id.content_id() {
             return Err(integrity("campaign-archive-manifest-staging-mismatch"));
         }
         self.inspect_campaign_archive_with_boundary(plan.manifest_id, boundary)?;
+        original.verify_live().map_err(|source| {
+            CampaignRepositoryError::Ram(crucible_store::ram::RamStoreError::from_admission(
+                original, source,
+            ))
+        })?;
         Ok(plan.manifest_id)
     }
 

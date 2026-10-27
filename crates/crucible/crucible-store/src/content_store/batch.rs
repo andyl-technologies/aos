@@ -55,6 +55,30 @@ impl OwnedBlobBytes {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
         write: impl FnOnce(&mut [u8]) -> Result<usize, StoreError>,
     ) -> Result<Self, StoreError> {
+        Self::write_with_polled_boundary(original, length, boundary, |bytes, _boundary| {
+            write(bytes)
+        })
+    }
+
+    /// Writes one exactly sized buffer with access to its operational boundary.
+    ///
+    /// The writer can poll the same boundary between bounded pieces of its
+    /// work. It receives fixed storage and cannot grow its allocation. Its
+    /// returned byte count must match the admitted length.
+    ///
+    /// # Errors
+    /// Returns original refusal, allocation failure, writer failure, boundary
+    /// refusal or a mismatched completed length. No replacement account is
+    /// created.
+    pub(crate) fn write_with_polled_boundary(
+        original: &DecodeBudget,
+        length: usize,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        write: impl FnOnce(
+            &mut [u8],
+            &mut dyn FnMut() -> Result<(), StoreError>,
+        ) -> Result<usize, StoreError>,
+    ) -> Result<Self, StoreError> {
         super::checked_reader::check(original, boundary)?;
         let extent = length
             .checked_add(std::mem::size_of::<Self>())
@@ -68,7 +92,8 @@ impl OwnedBlobBytes {
             .map_err(|error| allocation_under(original, error))?;
         bytes.resize(length, 0);
 
-        let written = write(&mut bytes)?;
+        let mut checked_boundary = || super::checked_reader::check(original, boundary);
+        let written = write(&mut bytes, &mut checked_boundary)?;
         if written != length {
             return Err(StoreError::InvalidComposition {
                 reason: "prepaid writer did not complete its admitted length",

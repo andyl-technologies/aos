@@ -149,6 +149,14 @@ fn empty_archive_closure_is_authenticated_without_ram_dispatch() {
         .expect("archive metadata");
     let (unavailable, observed) = NoRamDispatch::repository(&source);
 
+    assert!(matches!(
+        unavailable.stage_campaign_archive_metadata_with_boundary(&plan, &mut || Ok(())),
+        Err(CampaignRepositoryError::Store(StoreError::Unsupported {
+            capability: "campaign-archive-source-metadata-admission"
+        }))
+    ));
+    assert_eq!(observed.ram_calls.load(Ordering::SeqCst), 0);
+
     let inspection = unavailable
         .inspect_campaign_archive(plan.manifest_id())
         .expect("closed no-RAM archive");
