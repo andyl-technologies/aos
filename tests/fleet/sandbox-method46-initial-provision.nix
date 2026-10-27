@@ -53,10 +53,12 @@
     operator = "/usr/lib/aos${operatorLauncher}";
   };
 in
-  assert initialCut == null || builtins.elem initialCut ["before-command" "after-response"]; {
+  assert initialCut == null || builtins.elem initialCut ["before-command" "after-response" "partial-publication"]; {
     name =
       if initialCut == null
       then "sandbox-method46-initial-provision"
+      else if initialCut == "partial-publication"
+      then "sandbox-method46-initial-partial-publication-restart"
       else "sandbox-method46-initial-${initialCut}-power-loss";
     timeout =
       if initialCut == null

@@ -31,6 +31,21 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- `checks.fleet.sandbox-method46-initial-partial-publication-restart` prepares
+  a separate resource-failure recovery case for both installed initializers.
+  After the real successful NV Extend, a host transport gate holds its response
+  while the administrative test operator lowers the actual producer's file-size
+  limit. The test requires a controlled failed exit, an exact 128-byte prefix
+  written by the producer, the unchanged main journal, an empty final sidecar
+  and the original signed intent. After a clean guest shutdown, it authenticates
+  the retained NV value, boots with the normal unit limits, and requires recovery
+  without a new approval peer. Full fleet derivation evaluation, generated
+  Python and embedded guest-script checks pass. An AOS Python host check also
+  confirms that the actual pidfd stop/resume and `prlimit` script produces a
+  128-byte short write. Installed execution is pending; this supplies no
+  short-write recovery receipt and does not qualify power loss during checkpoint
+  publication.
+
 - The host-only initial-Extend command gate passes its registered AOS Nix
   mechanics check at
   `/nix/store/sgxkf4f740yyc96h2nd4zf6fsr4a7z57-sandbox-method46-tpm-command-gate-check`

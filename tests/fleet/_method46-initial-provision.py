@@ -275,9 +275,72 @@ def install_command_gate(purpose, relays):
     # _launch reuses this same live backend and passes its real data descriptor
     # through the relay. No TPM state is cleared, replaced or restored.
     vm._ensure_swtpm()
+    edge = "after-response" if initial_cut == "partial-publication" else initial_cut
     return relays.enter_context(Method46TpmCommandGate(
-        vm.tpm_socket, 0x0180a046 + PURPOSES.index(purpose), initial_cut,
+        vm.tpm_socket, 0x0180a046 + PURPOSES.index(purpose), edge,
     ))
+
+
+def limit_checkpoint_write(purpose):
+    """Limits the real producer after its durable intent and actual NV Extend."""
+    properties = manual_properties(purpose)
+    assert properties["ActiveState"] == "active", properties
+    pid = int(properties["MainPID"])
+    assert pid > 0 and properties["ExecMainPID"] == str(pid), properties
+    script = f"""
+import os,pathlib,resource,select,signal,time
+pid={pid}
+descriptor=os.pidfd_open(pid)
+try:
+    signal.pidfd_send_signal(descriptor,signal.SIGSTOP)
+    try:
+        deadline=time.monotonic()+5
+        while True:
+            assert not select.select([descriptor],[],[],0)[0], 'producer exited'
+            status=pathlib.Path(f'/proc/{{pid}}/status').read_text().splitlines()
+            state=next(line for line in status if line.startswith('State:')).split()[1]
+            if state=='T':
+                break
+            assert time.monotonic()<deadline, 'producer did not stop'
+            time.sleep(0.01)
+        soft,hard=resource.prlimit(pid,resource.RLIMIT_FSIZE)
+        assert soft==resource.RLIM_INFINITY or soft>=429
+        assert hard==resource.RLIM_INFINITY or hard>=429
+        resource.prlimit(pid,resource.RLIMIT_FSIZE,(128,128))
+        assert resource.prlimit(pid,resource.RLIMIT_FSIZE)==(128,128)
+    finally:
+        signal.pidfd_send_signal(descriptor,signal.SIGCONT)
+finally:
+    os.close(descriptor)
+"""
+    vm.succeed(f"{tools['operator']} -c {shlex.quote(script)}")
+    return pid
+
+
+def require_partial_prefix(purpose, expectations):
+    path = "/var" + DIRECTORIES[purpose] + "/session-floor.journal.initial.pending"
+    script = f"import base64,pathlib; print(base64.b64encode(pathlib.Path({path!r}).read_bytes()).decode())"
+    observed = base64.b64decode(vm.succeed(f"{tools['operator']} -c {shlex.quote(script)}"))
+    expected = (expectations / f"{purpose}-sidecar").read_bytes()
+    assert len(expected) == 429 and observed == expected[:128], (purpose, len(observed))
+
+
+def finish_short_publication(purpose, gate, expectations):
+    pid = limit_checkpoint_write(purpose)
+    gate.release()
+
+    def failed():
+        properties = manual_properties(purpose)
+        if properties["ActiveState"] != "failed":
+            return False
+        assert properties["MainPID"] == "0" and properties["ExecMainPID"] == str(pid), properties
+        assert properties["Result"] == "exit-code", properties
+        assert properties["ExecMainCode"] == "1" and properties["ExecMainStatus"] == "1", properties
+        return True
+
+    wait_until(failed, time.monotonic() + 90, f"{purpose} short publication did not fail")
+    vm.succeed(f"touch /run/method46-qualification/{purpose}/release")
+    require_partial_prefix(purpose, expectations)
 
 
 def require_interrupted_files(purpose, transcript, native):
@@ -302,6 +365,9 @@ def recover_after_initial_cut(purpose, gate, transcript, prepared, expectations,
                               delivered, native, scratch, relays):
     gate.wait_reached(60)
     assert gate.forwarded_extends == (0 if initial_cut == "before-command" else 1)
+    if initial_cut == "partial-publication":
+        finish_short_publication(purpose, gate, expectations)
+        require_interrupted_files(purpose, transcript, native)
     before_cut = UUID(vm.succeed("cat /proc/sys/kernel/random/boot_id").strip())
     role = PURPOSES.index(purpose)
     next_gate = None
@@ -309,20 +375,28 @@ def recover_after_initial_cut(purpose, gate, transcript, prepared, expectations,
 
     def launch_after_observation():
         nonlocal next_gate
-        # power_cycle has already killed and reaped both owned processes.
+        # Both owned processes have been stopped and reaped by the harness.
         # Observe the actual retained TPM before any replacement QEMU boots.
         gate.close()
         with external_tpm(scratch) as endpoint:
             observe_floors(endpoint, prepared, expectations, scratch, {
-                purpose: initial_cut == "after-response",
+                purpose: initial_cut != "before-command",
             })
         if role + 1 < len(PURPOSES):
             next_gate = install_command_gate(PURPOSES[role + 1], relays)
         original_launch()
 
-    vm._launch = launch_after_observation
     try:
-        vm.power_cycle()
+        if initial_cut == "partial-publication":
+            # This case proves recovery after resource failure and a clean
+            # shutdown, separately from the two interrupted-Extend power cuts.
+            vm._stop_runtime_for_relaunch(120)
+            assert vm.qemu_proc.returncode == 0, "guest shutdown did not complete cleanly"
+            launch_after_observation()
+            vm.agent.wait_ready(time.monotonic() + 300)
+        else:
+            vm._launch = launch_after_observation
+            vm.power_cycle()
     finally:
         vm._launch = original_launch
         gate.close()
@@ -334,6 +408,8 @@ def recover_after_initial_cut(purpose, gate, transcript, prepared, expectations,
     # Let ext4 replay its own journal before observing the durable intent.
     # Reading raw inode tables before replay would not establish fsync loss.
     require_interrupted_files(purpose, transcript, native)
+    if initial_cut == "partial-publication":
+        require_partial_prefix(purpose, expectations)
     deliver_credentials(delivered)
     vm.succeed(f"test ! -e /run/method46-qualification/{purpose}")
     vm.execute(f"systemctl start aos-sandbox-{purpose}-floor-initialize.service")
