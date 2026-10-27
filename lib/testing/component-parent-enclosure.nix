@@ -125,6 +125,41 @@
   networkSelected = evaluate (profile // {networkReceiving = profile.fixedServices;}) [
     {aos.sandbox.networkBroker.enable = true;}
   ];
+  # Both manual roles must project their own subdivisions, independently of
+  # the enclosing F limit and each other. This only checks unit definitions;
+  # it neither materializes a bank nor claims that a programme fits its grant.
+  initialController = {
+    cpu-micros-per-period = 2000;
+    memory-bytes = 8192;
+    pids = 2;
+  };
+  initialStorage = {
+    cpu-micros-per-period = 3000;
+    memory-bytes = 12288;
+    pids = 3;
+  };
+  initialSelected = evaluate (profile
+    // {
+      fixedServices = {
+        cpu-micros-per-period = 10000;
+        memory-bytes = 65536;
+        pids = 16;
+      };
+      method46ControllerInitialReceiving = initialController;
+      method46ControllerInitialSender = {};
+      method46StorageInitialReceiving = initialStorage;
+      method46StorageInitialSender = {};
+    }) [];
+  controllerInitialOnly = evaluate (profile
+    // {
+      method46ControllerInitialReceiving = initialController;
+      method46ControllerInitialSender = {};
+    }) [];
+  storageInitialOnly = evaluate (profile
+    // {
+      method46StorageInitialReceiving = initialStorage;
+      method46StorageInitialSender = {};
+    }) [];
   invalid = evaluate (profile // {audit = auditBounds // {numLogs = 1;};}) [];
   invalidBounds = builtins.tryEval (builtins.deepSeq invalid.aos.security.audit.bounds true);
   boundsData = value: builtins.removeAttrs value ["_module"];
@@ -220,4 +255,34 @@ in
   == ["aos-journald-runtime-prep" "aos-netd" "audit-rules" "auditd" "systemd-journald"]
   && project sliceFields networkSelected.systemd.slices.aoscomponents-network.sliceConfig == expectedSlice
   && project (builtins.attrNames expectedSocket) networkSelected.systemd.sockets.aos-netd.socketConfig == expectedSocket
+  && project serviceFields initialSelected.systemd.services.aos-sandbox-controller-floor-initialize.serviceConfig
+  == {
+    CPUQuota = "2%";
+    MemoryMax = 8192;
+    TasksMax = 2;
+    LimitNOFILE = 1;
+  }
+  && project serviceFields initialSelected.systemd.services.aos-sandbox-storage-floor-initialize.serviceConfig
+  == {
+    CPUQuota = "3%";
+    MemoryMax = 12288;
+    TasksMax = 3;
+    LimitNOFILE = 1;
+  }
+  && project sliceFields initialSelected.systemd.slices.aoscomponents.sliceConfig
+  == {
+    CPUQuota = "10%";
+    MemoryMax = 65536;
+    TasksMax = 16;
+  }
+  && controllerInitialOnly.systemd.services ? aos-sandbox-controller-floor-initialize
+  && !(controllerInitialOnly.systemd.services ? aos-sandbox-storage-floor-initialize)
+  && storageInitialOnly.systemd.services ? aos-sandbox-storage-floor-initialize
+  && !(storageInitialOnly.systemd.services ? aos-sandbox-controller-floor-initialize)
+  && project serviceFields controllerInitialOnly.systemd.services.aos-sandbox-controller-floor-initialize.serviceConfig
+  == project serviceFields initialSelected.systemd.services.aos-sandbox-controller-floor-initialize.serviceConfig
+  && project serviceFields storageInitialOnly.systemd.services.aos-sandbox-storage-floor-initialize.serviceConfig
+  == project serviceFields initialSelected.systemd.services.aos-sandbox-storage-floor-initialize.serviceConfig
+  && initialSelected.systemd.services.aos-sandbox-controller-floor-initialize.serviceConfig.Slice == "aoscomponents.slice"
+  && initialSelected.systemd.services.aos-sandbox-storage-floor-initialize.serviceConfig.Slice == "aoscomponents.slice"
   && !invalidBounds.success

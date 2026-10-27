@@ -31,6 +31,15 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Selected manual initial-floor units now receive the CPU, memory and task
+  controls of their own explicit Parent06 receiving subdivisions. They no longer
+  inherit the enclosing fixed-services aggregate as their per-service limit.
+  The enclosing slice and existing per-process NOFILE ceiling retain their
+  original owners. Pure evaluation through the actual service schema checks
+  distinct Controller/Storage subdivisions, either role selected alone, default
+  absence and the separate aggregate slice. This is a unit projection correction,
+  not installed unit delivery, programme-fit or runtime qualification.
+
 - The Services crate now assembles two fixed manual initial-floor entrypoints.
   Each captures its genuine Source original before configuration, then joins
   profile, image/runtime, live-policy, unit, stopped-owner and credential

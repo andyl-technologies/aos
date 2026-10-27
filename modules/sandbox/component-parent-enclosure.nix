@@ -612,6 +612,10 @@ in {
           then cfg.mountReceiving
           else if name == "aos-netd"
           then cfg.networkReceiving
+          else if name == "aos-sandbox-controller-floor-initialize"
+          then cfg.method46ControllerInitialReceiving
+          else if name == "aos-sandbox-storage-floor-initialize"
+          then cfg.method46StorageInitialReceiving
           else cfg.fixedServices;
       in
         {
