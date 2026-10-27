@@ -15,8 +15,8 @@
     src = source;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-device-host-work-overlap-tests";
-      requests = ["crucible-qemu"];
-      targets = ["lib:crucible_qemu"];
+      requests = ["crucible-qemu-host"];
+      targets = ["lib:crucible_qemu_host"];
     };
   };
   taskList = builtins.concatStringsSep "," taskIds;

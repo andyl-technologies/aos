@@ -34,8 +34,8 @@
 ##! items and fixtures. The exceptions are the conflicts listed with the
 ##! extra selections. A unified build also compiles test targets whose
 ##! `required-features` a gate's own request would not enable, such as
-##! crucible's test-double gates; crucible-cargo skips those targets for that
-##! request, as Cargo does.
+##! crucible-engine's test-double gates; crucible-cargo skips those targets for
+##! that request, as Cargo does.
 ##!
 ##! Debug `cargo build` and `cargo run` requests are served from the test
 ##! profile, which inherits the development profile's debug assertions and
@@ -47,28 +47,31 @@
 {lib}: let
   # Apache host crates whose tests gates run in the debug profile.
   apacheDebugPackages = [
-    "aos-ability-crucible"
-    "crucible"
-    "crucible-api"
+    "aos-activation-crucible"
     "crucible-campaign"
-    "crucible-cas"
     "crucible-cli"
+    "crucible-control-api"
+    "crucible-control-client"
+    "crucible-control-server"
     "crucible-daemon"
+    "crucible-determinism"
     "crucible-device"
+    "crucible-engine"
     "crucible-guest"
-    "crucible-harness"
-    "crucible-protocol"
-    "crucible-qemu"
-    "crucible-s3-store"
+    "crucible-qemu-host"
+    "crucible-qemu-protocol"
+    "crucible-qemu-shmem"
     "crucible-session"
-    "crucible-shmem"
-    "crucible-sim"
+    "crucible-store"
+    "crucible-store-s3"
+    "crucible-test-support"
   ];
 
   # The dev-dependencies of those packages already enable test-support or
-  # test-double on crucible, crucible-api, crucible-cas, crucible-daemon,
-  # crucible-qemu, crucible-session, and crucible-shmem. Gates request the
-  # remaining two explicitly; neither has a feature-absent code path.
+  # test-double on crucible-control-server, crucible-daemon,
+  # crucible-engine, crucible-qemu-host, crucible-qemu-shmem,
+  # crucible-session, and crucible-store. Gates request the remaining two
+  # explicitly; neither has a feature-absent code path.
   apacheDebugFeatures = [
     "crucible-campaign/test-support"
     "crucible-session/test-double"
@@ -76,14 +79,13 @@
 
   # Release harnesses copied into VM flights and campaign-mode guests.
   apacheReleasePackages = [
-    "crucible"
-    "crucible-api"
     "crucible-campaign"
     "crucible-cli"
     "crucible-daemon"
-    "crucible-qemu"
+    "crucible-engine"
+    "crucible-qemu-host"
   ];
-  apacheReleaseFeatures = ["crucible/test-support"];
+  apacheReleaseFeatures = ["crucible-engine/test-support"];
   apacheReleaseTargets = [
     "--lib"
     "--test gate_basic_block_coverage"
@@ -97,11 +99,13 @@
   cliProcessTests = ["--test campaign_process" "--test campaign_store_process"];
 
   # Every kind except examples, for packages whose examples come from a
-  # selection without crucible-qemu's test support.
+  # selection without crucible-qemu-host's test support.
   nonExampleKinds = ["lib" "bin" "test" "bench"];
 
-  # Packages whose dev-dependencies enable crucible-qemu's test support.
-  qemuTestSupportPackages = ["crucible-api" "crucible-cli" "crucible-daemon"];
+  # Packages whose dev-dependencies enable crucible-qemu-host's test
+  # support: crucible-daemon directly, and crucible-cli through
+  # crucible-daemon's test support.
+  qemuTestSupportPackages = ["crucible-cli" "crucible-daemon"];
 in {
   # Apache host crates, debug test profile.
   apacheTests = [
@@ -133,36 +137,38 @@ in {
       doctests = true;
       serves = {
         test = [
-          "aos-ability-crucible"
-          "crucible"
-          "crucible[test-double]"
-          "crucible-api"
-          "crucible-api[test-support]"
+          "aos-activation-crucible"
           "crucible-campaign"
           "crucible-campaign[test-support]"
-          "crucible-cas"
-          "crucible-cas[test-support]"
           "crucible-cli"
+          "crucible-control-api"
+          "crucible-control-client"
+          "crucible-control-server"
+          "crucible-control-server[test-support]"
           "crucible-daemon"
           "crucible-daemon[test-support]"
+          "crucible-determinism"
           "crucible-device"
+          "crucible-engine"
+          "crucible-engine[test-double]"
           "crucible-guest"
-          "crucible-harness"
-          "crucible-protocol"
           {
-            request = "crucible-qemu";
+            request = "crucible-qemu-host";
             kinds = nonExampleKinds;
           }
-          "crucible-qemu[test-support]"
-          "crucible-s3-store"
+          "crucible-qemu-host[test-support]"
+          "crucible-qemu-protocol"
+          "crucible-qemu-shmem"
           "crucible-session"
-          "crucible-shmem"
-          "crucible-sim"
+          "crucible-store"
+          "crucible-store-s3"
+          "crucible-store[test-support]"
+          "crucible-test-support"
         ];
         build = [
-          "crucible"
+          "crucible-engine"
           "crucible-guest"
-          "crucible-shmem"
+          "crucible-qemu-shmem"
         ];
       };
     }
@@ -189,13 +195,13 @@ in {
     # Conflict: destructive-recovery-faults compiles fault-injection tests
     # that arm process-wide triggers and change store recovery paths. The
     # CLI feature enables it on crucible-daemon, crucible-campaign, and
-    # crucible-cas, so both gate requests share this one resolution. It
-    # changes crucible-cas, under nearly every Crucible crate, so the
+    # crucible-store, so both gate requests share this one resolution. It
+    # changes crucible-store, under nearly every Crucible crate, so the
     # selection names only the two requested packages: their lib and test
     # targets are all it compiles beyond the libraries.
     {
       id = "destructive-recovery-faults";
-      packages = ["crucible-cas" "crucible-cli"];
+      packages = ["crucible-cli" "crucible-store"];
       features = ["crucible-cli/destructive-recovery-faults"];
       invocations = [
         {
@@ -203,10 +209,10 @@ in {
           targets = ["--lib" "--test campaign_store_process"];
         }
       ];
-      collect = ["crucible-cas" "crucible-cli"];
+      collect = ["crucible-cli" "crucible-store"];
       serves.test = [
         {
-          request = "crucible-cas[destructive-recovery-faults]";
+          request = "crucible-store[destructive-recovery-faults]";
           kinds = ["lib"];
         }
         {
@@ -216,19 +222,20 @@ in {
       ];
     }
 
-    # Conflict: crucible-qemu's production examples take cfg(not(feature =
-    # "test-support")) paths, and their tests assert that behavior; the
-    # unified build enables test-support through the dev-dependencies of
-    # crucible-api, crucible-cli, and crucible-daemon. Leaving those three
-    # out, and enabling the session test support only crucible-api's
-    # dev-dependencies supplied, keeps every first-party feature as in the
-    # unified build. Cargo cannot enable the third-party features only
-    # those packages need (rustix termios, serde_core defaults), so
-    # crucible-campaign and crucible recompile here as well.
+    # Conflict: crucible-qemu-host's production examples take
+    # cfg(not(feature = "test-support")) paths, and their tests assert that
+    # behavior; the unified build enables test-support through the
+    # dev-dependencies of crucible-cli and crucible-daemon. Leaving those
+    # two out, and enabling the control-server test support only
+    # crucible-daemon's test support supplied, keeps every other
+    # first-party feature as in the unified build. Cargo cannot enable the
+    # third-party feature only crucible-cli needs (rustix termios), so every
+    # crate that links rustix recompiles here as well, crucible-store and the
+    # Crucible crates above it among them.
     {
       id = "qemu-production-examples";
       packages = lib.subtractLists qemuTestSupportPackages apacheDebugPackages;
-      features = apacheDebugFeatures ++ ["crucible-session/test-support"];
+      features = apacheDebugFeatures ++ ["crucible-control-server/test-support"];
       invocations = [
         {
           command = "test";
@@ -240,15 +247,15 @@ in {
           targets = ["--example crucible-qemu-live-block-realization"];
         }
       ];
-      collect = ["crucible-qemu"];
+      collect = ["crucible-qemu-host"];
       serves = {
         test = [
           {
-            request = "crucible-qemu";
+            request = "crucible-qemu-host";
             kinds = ["example"];
           }
         ];
-        build = ["crucible-qemu"];
+        build = ["crucible-qemu-host"];
       };
     }
   ];
@@ -257,7 +264,7 @@ in {
   gplTests = [
     {
       id = "tests";
-      packages = ["crucible-debug-gateway" "crucible-qemu-plugin"];
+      packages = ["crucible-qemu-debug-gateway" "crucible-qemu-plugin"];
       invocations = [
         {
           command = "test";
@@ -265,7 +272,7 @@ in {
         }
       ];
       doctests = true;
-      serves.test = ["crucible-debug-gateway" "crucible-qemu-plugin"];
+      serves.test = ["crucible-qemu-debug-gateway" "crucible-qemu-plugin"];
     }
 
     # Conflict: the plugin cdylib is the artifact QEMU loads. A plain build
@@ -295,8 +302,9 @@ in {
           command = "test";
           targets = apacheReleaseTargets;
         }
-        # The ack-poll experiments run these examples with crucible-qemu's
-        # test support, which this resolution already enables.
+        # The ack-poll experiments run these examples with
+        # crucible-qemu-host's test support, which this resolution already
+        # enables.
         {
           command = "build";
           targets = [
@@ -307,17 +315,17 @@ in {
       ];
       serves = {
         test = [
-          "crucible"
-          "crucible[test-support]"
-          "crucible-api+crucible-daemon+crucible-qemu"
           "crucible-campaign"
           "crucible-cli"
           "crucible-daemon"
-          "crucible-qemu"
+          "crucible-daemon+crucible-qemu-host"
+          "crucible-engine"
+          "crucible-engine[test-support]"
+          "crucible-qemu-host"
         ];
         build = [
           {
-            request = "crucible-qemu[test-support]";
+            request = "crucible-qemu-host[test-support]";
             kinds = ["example"];
           }
         ];
@@ -341,7 +349,7 @@ in {
     }
 
     # Conflict: the flights qualify the CLI as shipped. A plain build leaves
-    # out dev-dependencies, so crucible-api keeps its production checks,
+    # out dev-dependencies, so crucible-daemon keeps its production checks,
     # which test-support relaxes.
     {
       id = "cli";
@@ -373,11 +381,13 @@ in {
     # Conflict: the controller package ships these examples as `cargo build
     # --release -p <package> --example <name>` builds them. Each resolves
     # only its own package's dev-dependencies, so neither may unify with the
-    # other or with the test resolution; crucible-api's dev-dependencies,
-    # for example, enable crucible's test-double backend.
+    # other or with the test resolution; crucible-daemon's
+    # dev-dependencies, for example, enable crucible-engine's test-double
+    # backend, and the test resolution also enables crucible-daemon's own
+    # test support.
     {
       id = "controller-debugger-example";
-      packages = ["crucible"];
+      packages = ["crucible-engine"];
       invocations = [
         {
           command = "build";
@@ -386,14 +396,14 @@ in {
       ];
       serves.build = [
         {
-          request = "crucible";
+          request = "crucible-engine";
           kinds = ["example"];
         }
       ];
     }
     {
       id = "controller-scenario-example";
-      packages = ["crucible-api"];
+      packages = ["crucible-daemon"];
       invocations = [
         {
           command = "build";
@@ -402,25 +412,25 @@ in {
       ];
       serves.build = [
         {
-          request = "crucible-api";
+          request = "crucible-daemon";
           kinds = ["example"];
         }
       ];
     }
 
     # Conflict: the production examples take cfg(not(feature =
-    # "test-support")) paths in crucible-qemu, which the test resolution
-    # enables.
+    # "test-support")) paths in crucible-qemu-host, which the test
+    # resolution enables.
     {
       id = "production-examples";
-      packages = ["crucible-linux-resource" "crucible-qemu"];
+      packages = ["aos-linux-project-quota" "crucible-qemu-host"];
       invocations = [
         {
           command = "build";
           targets = ["--examples"];
         }
       ];
-      serves.build = ["crucible-linux-resource" "crucible-qemu"];
+      serves.build = ["aos-linux-project-quota" "crucible-qemu-host"];
     }
   ];
 

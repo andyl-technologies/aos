@@ -15,8 +15,8 @@
     src = source;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-qemu-host-parallel-tests";
-      requests = ["crucible"];
-      targets = ["lib:crucible"];
+      requests = ["crucible-engine"];
+      targets = ["lib:crucible_engine"];
     };
   };
   scheduler = builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop/host_concurrent.rs;

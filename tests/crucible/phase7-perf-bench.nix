@@ -49,7 +49,7 @@
     src = crucibleSrc;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-perf-bench-tests";
-      requests = ["crucible-harness"];
+      requests = ["crucible-test-support"];
       targets = ["test:gate_perf_bench"];
     };
   };

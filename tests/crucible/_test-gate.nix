@@ -138,10 +138,10 @@ in {
   # Copies the executables that serve the named test requests into a small
   # output with the family layout, for VM root filesystems that must not
   # retain whole families. `requests` uses crucible-cargo identities, such
-  # as "crucible-qemu" or "crucible[test-double]". `targets`, when given,
-  # keeps only those `kind:name` rows (for example "lib:crucible_qemu"), so
-  # a gate that runs `--lib` does not carry every integration-test
-  # executable.
+  # as "crucible-qemu-host" or "crucible-engine[test-double]". `targets`,
+  # when given, keeps only those `kind:name` rows (for example
+  # "lib:crucible_qemu_host"), so a gate that runs `--lib` does not carry
+  # every integration-test executable.
   mkCrucibleTestSubset = {
     pname,
     builds ? debugBuilds,

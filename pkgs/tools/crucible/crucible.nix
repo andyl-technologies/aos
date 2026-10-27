@@ -283,7 +283,7 @@
     cargo_nextest_open_files_limit=4096
     cargo_doc=warning-free
     cargo_doctest=hermetic
-    gate_license_boundary=crucible-harness/gate_license_boundary
+    gate_license_boundary=crucible-test-support/gate_license_boundary
     rustdocflags=-D warnings -D missing_docs
     qemu_package=none
     plugin_package=none
@@ -570,7 +570,7 @@
           install_release crucible-debugger-live-fixture \
             -p crucible-engine --example crucible-debugger-live-fixture
           install_release crucible-e2e-determinism-scenario \
-            -p crucible-control-api --example crucible-e2e-determinism-scenario
+            -p crucible-daemon --example crucible-e2e-determinism-scenario
           test -x "$out/bin/crucible"
           ${controllerInstallChecks}
         '';
