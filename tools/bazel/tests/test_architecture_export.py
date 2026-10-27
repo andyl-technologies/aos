@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "metadata"))
-from export_architecture import attribute_values, export, repository_packages
+from export_architecture import attribute_values, export, repository_packages, string_list_selection
 
 
 def attribute(name, kind, value):
@@ -19,8 +19,12 @@ def attribute(name, kind, value):
 
 def record(label, kind, *attrs):
     attrs = list(attrs)
-    if kind in {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library"}:
-        defaults = [attribute("crate_root", "LABEL", label.partition(":")[0] + ":src/lib.rs"),
+    if kind in {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library", "rust_test"}:
+        root = label.partition(":")[0] + ":src/lib.rs"
+        if kind == "rust_test":
+            root = "" if any(row["name"] == "crate" for row in attrs) else label.partition(":")[0] + ":tests/fixture.rs"
+        defaults = [attribute("crate_root", "LABEL", root) if root else {"name": "crate_root", "type": "LABEL"},
+                    attribute("srcs", "LABEL_LIST", []),
                     attribute("crate_name", "STRING", label.partition(":")[2]),
                     attribute("crate_features", "STRING_LIST", []),
                     attribute("tags", "STRING_LIST", [])]
@@ -107,6 +111,96 @@ class ArchitectureExportTests(unittest.TestCase):
         self.assertEqual(app["production_dependencies"], [])
         self.assertEqual(app["production_targets"], ["//crates/app:lib"])
         self.assertNotIn("//crates/app:integration", result["compilation_targets"])
+
+    def test_test_metadata_binds_runnable_wrapper_to_owned_compilation(self):
+        records = [source("app"), compilation("app"),
+                   record("//crates/app:gate_binary", "rust_test", attribute("testonly", "BOOLEAN", True),
+                          attribute("crate_root", "LABEL", "//crates/app:tests/gate.rs"),
+                          attribute("crate_features", "STRING_LIST", ["test-double"])),
+                   record("//crates/app:gate", "_libtest_test", attribute("testonly", "BOOLEAN", True),
+                          attribute("package_name", "STRING", "app"),
+                          attribute("binary", "LABEL", "//crates/app:gate_binary"),
+                          attribute("tags", "STRING_LIST", ["manual"]),
+                          attribute("args", "STRING_LIST", ["--exact", "contract"]))]
+        result = export(records, {})
+        self.assertEqual(result["test_compilation_count"], 1)
+        self.assertEqual(result["test_execution_count"], 1)
+        self.assertEqual(result["test_compilation_targets"]["//crates/app:gate_binary"]["crate_roots"], ["tests/gate.rs"])
+        self.assertEqual(result["test_execution_targets"]["//crates/app:gate"], {
+            "package": "app", "binary": "//crates/app:gate_binary", "tags": ["manual"],
+            "argument_selection": {"type": "STRING_LIST", "values": ["--exact", "contract"]},
+            "test_only": True,
+        })
+
+    def test_list_selections_preserve_concatenation_and_branch_conditions(self):
+        arguments = ["z_selector", "--exact", "z_selector"]
+        self.assertEqual(string_list_selection(attribute("args", "STRING_LIST", arguments)),
+                         {"type": "STRING_LIST", "values": arguments})
+        value = selected("crate_features", "STRING_LIST",
+                         {"//conditions:default": ["base"], "//features:double": ["test-double"]},
+                         {"//conditions:default": [], "//platform:other": ["platform"]})
+        self.assertEqual(string_list_selection(value), {"type": "SELECTOR_LIST", "elements": [
+            [{"condition": "//conditions:default", "values": ["base"]},
+             {"condition": "//features:double", "values": ["test-double"]}],
+            [{"condition": "//conditions:default", "values": []},
+             {"condition": "//platform:other", "values": ["platform"]}],
+        ]})
+        for malformed in [selected("crate_features", "STRING_LIST", {}),
+                          selected("crate_features", "LABEL", {"//conditions:default": "//crates/app:lib"})]:
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                string_list_selection(malformed)
+
+    def test_unit_test_roots_follow_crate_aliases_but_features_remain_the_tests_own(self):
+        records = [source("app"), compilation("app"),
+                   record("//crates/app:other", "rust_library", attribute("testonly", "BOOLEAN", False),
+                          attribute("crate_root", "LABEL", "//crates/app:src/other.rs"),
+                          attribute("crate_features", "STRING_LIST", ["library-only"])),
+                   record("//crates/app:selected", "alias", selected("actual", "LABEL", {
+                       "//conditions:default": "//crates/app:lib", "//profiles:other": "//crates/app:other"})),
+                   record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                          attribute("crate", "LABEL", "//crates/app:selected"),
+                          selected("crate_features", "STRING_LIST", {
+                              "//conditions:default": ["default"], "//features:double": ["test-double"]}))]
+        result = export(records, {})
+        test = result["test_compilation_targets"]["//crates/app:unit"]
+        self.assertEqual(test["crate_roots"], ["src/lib.rs", "src/other.rs"])
+        self.assertEqual(test["crate_targets"], ["//crates/app:lib", "//crates/app:other"])
+        self.assertEqual(test["features"], ["default", "test-double"])
+        self.assertEqual(test["feature_selection"], {"type": "SELECTOR_LIST", "elements": [[
+            {"condition": "//conditions:default", "values": ["default"]},
+            {"condition": "//features:double", "values": ["test-double"]},
+        ]]})
+
+    def test_test_compilation_rejects_foreign_roots_cycles_and_conflicting_inputs(self):
+        base = [source("app"), compilation("app"), source("other"), compilation("other")]
+        variants = [
+            [record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                    attribute("crate", "LABEL", "//crates/other:lib"))],
+            [record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                    attribute("crate", "LABEL", "//crates/app:unit"))],
+            [record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                    attribute("crate", "LABEL", "//crates/app:lib"),
+                    attribute("crate_root", "LABEL", "//crates/app:src/lib.rs"))],
+            [record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                    attribute("crate_root", "LABEL", "//crates/other:tests/gate.rs"))],
+        ]
+        for variant in variants:
+            with self.subTest(variant=variant), self.assertRaises(ValueError):
+                export(base + variant, {})
+
+    def test_wrapper_rejects_unknown_or_foreign_binary_and_wrong_owner(self):
+        base = [source("app"), compilation("app"), source("other"), compilation("other"),
+                record("//crates/app:gate_binary", "rust_test", attribute("testonly", "BOOLEAN", True)),
+                record("//crates/other:gate_binary", "rust_test", attribute("testonly", "BOOLEAN", True))]
+        for package, binary, testonly in [("other", "//crates/app:gate_binary", True),
+                                          ("app", "//crates/other:gate_binary", True),
+                                          ("app", "//crates/app:absent", True),
+                                          ("app", "//crates/app:gate_binary", False)]:
+            wrapper = record("//crates/app:gate", "_libtest_test", attribute("package_name", "STRING", package),
+                             attribute("binary", "LABEL", binary), attribute("testonly", "BOOLEAN", testonly),
+                             attribute("tags", "STRING_LIST", []), attribute("args", "STRING_LIST", []))
+            with self.subTest(package=package, binary=binary, testonly=testonly), self.assertRaises(ValueError):
+                export(base + [wrapper], {})
 
     def test_test_only_dependency_aliases_union_every_profile_and_use_sdk_names(self):
         records = [source("app"), compilation("app"), record(

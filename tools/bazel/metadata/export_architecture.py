@@ -6,6 +6,8 @@ runfiles, generators' tool inputs, and implicit toolchains are excluded.
 Uncompiled source packages remain explicitly unmodeled. A separate dependency
 view retains test and build-script compilation edges for repository audits;
 those edges never contribute to the production package graph.
+Test compilation and execution records separately retain source roots, feature
+selectors, and wrapper-to-binary bindings for gate discovery without Cargo.
 """
 
 import argparse
@@ -111,6 +113,115 @@ def repository_packages(directory):
     return result, manifests
 
 
+def string_list_selection(attribute):
+    """Retains alternatives without turning their union into a guarantee."""
+    if attribute["type"] == "STRING_LIST":
+        return {"type": "STRING_LIST", "values": attribute_values(attribute, "STRING_LIST")}
+    attribute_values(attribute, "STRING_LIST")
+    elements = []
+    for element in attribute["selectorList"]["elements"]:
+        entries = element["entries"]
+        if not entries or len({entry["label"] for entry in entries}) != len(entries):
+            raise ValueError("string-list selector requires distinct nonempty branches")
+        elements.append(sorted([
+            {"condition": entry["label"], "values": entry.get("stringListValue", [])}
+            for entry in entries
+        ], key=lambda entry: entry["condition"]))
+    if not elements:
+        raise ValueError("string-list selector has no elements")
+    return {"type": "SELECTOR_LIST", "elements": elements}
+
+
+def test_metadata(rules, catalog, compilations):
+    """Exports libtest sources and runnable wrappers as separate owned records.
+
+    Unit tests reuse their crate's roots, while their feature selection comes
+    from the test rule, matching the pinned rules_rust implementation. Alias
+    branches retain every possible crate root and must stay inside the owner.
+    """
+    tests = {}
+
+    def roots(label, owner, active=()):
+        if label in active:
+            raise ValueError("test crate alias cycle")
+        if label not in rules:
+            raise ValueError("test crate is absent from query: " + label)
+        rule = rules[label]
+        attrs = attributes(rule)
+        if rule["ruleClass"] == "alias":
+            actual = attribute_values(attrs["actual"], "LABEL")
+            if not actual:
+                raise ValueError("test crate alias has no branches")
+            result = [roots(value, owner, (*active, label)) for value in actual]
+            return set().union(*(row[0] for row in result)), set().union(*(row[1] for row in result))
+        if label in compilations:
+            compilation = compilations[label]
+        elif rule["ruleClass"] == "rust_test":
+            compilation = test(label, (*active, label))
+        else:
+            raise ValueError("test crate is not a Rust compilation: " + label)
+        if compilation["package"] != owner["name"]:
+            raise ValueError("test crate escapes its source owner: " + label)
+        return set(compilation["crate_roots"]), {label}
+
+    def test(label, active=()):
+        if label in tests:
+            return tests[label]
+        rule = rules[label]
+        attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("test compilation has no declared source package")
+        if attrs["testonly"]["type"] != "BOOLEAN" or not attrs["testonly"].get("booleanValue", False):
+            raise ValueError("test compilation must remain test-only")
+        crates = attribute_values(attrs["crate"], "LABEL") if "crate" in attrs else []
+        crate_targets = set()
+        if crates:
+            if attribute_values(attrs["crate_root"], "LABEL") or attribute_values(attrs["srcs"], "LABEL_LIST"):
+                raise ValueError("test crate cannot also declare source roots")
+            inherited = [roots(value, owner, active) for value in crates]
+            crate_roots = set().union(*(row[0] for row in inherited))
+            crate_targets = set().union(*(row[1] for row in inherited))
+        else:
+            crate_roots = set(compilation_target(label, rule, owner)["crate_roots"])
+        tests[label] = {
+            "package": owner["name"], "crate_roots": sorted(crate_roots),
+            "crate_targets": sorted(crate_targets),
+            "features": sorted(set(attribute_values(attrs["crate_features"], "STRING_LIST"))),
+            "feature_selection": string_list_selection(attrs["crate_features"]),
+            "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+            "test_only": True,
+        }
+        return tests[label]
+
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] == "rust_test":
+            test(label, (label,))
+
+    executions = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] != "_libtest_test":
+            continue
+        attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("test wrapper has no declared source package")
+        if attribute_values(attrs["package_name"], "STRING") != [owner["name"]]:
+            raise ValueError("test wrapper package disagrees with source ownership")
+        binaries = attribute_values(attrs["binary"], "LABEL")
+        if len(binaries) != 1 or binaries[0] not in tests or tests[binaries[0]]["package"] != owner["name"]:
+            raise ValueError("test wrapper must select one owned test compilation")
+        if attrs["testonly"]["type"] != "BOOLEAN" or not attrs["testonly"].get("booleanValue", False):
+            raise ValueError("test wrapper must remain test-only")
+        executions[label] = {
+            "package": owner["name"], "binary": binaries[0],
+            "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+            "argument_selection": string_list_selection(attrs["args"]),
+            "test_only": True,
+        }
+    return dict(sorted(tests.items())), executions
+
+
 def export(records, repositories):
     """Retains source ownership and unions production package edges across profiles."""
     rules = {}
@@ -121,7 +232,7 @@ def export(records, repositories):
         label = rule["name"]
         if label in rules:
             raise ValueError("duplicate architecture query rule: " + label)
-        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias"}:
+        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias", "_libtest_test"}:
             raise ValueError("unexpected architecture query rule class")
         rules[label] = rule
     catalog = {}
@@ -238,6 +349,7 @@ def export(records, repositories):
             "test_only": attrs["testonly"].get("booleanValue", False),
             "dependencies": edges,
         }
+    test_compilations, test_executions = test_metadata(rules, catalog, compilations)
     return {
         "schema_version": 1,
         "selection": "union of all declared production platform/feature branches",
@@ -251,6 +363,11 @@ def export(records, repositories):
         "dependency_target_selection": "union of all declared Rust production, test, build-script, documentation, and lint branches",
         "dependency_target_count": len(dependency_targets),
         "dependency_targets": dependency_targets,
+        "test_target_selection": "all declared Rust test compilations and libtest execution wrappers; feature selectors retained",
+        "test_compilation_count": len(test_compilations),
+        "test_compilation_targets": test_compilations,
+        "test_execution_count": len(test_executions),
+        "test_execution_targets": test_executions,
         "unavailable_profile_targets": dict(sorted(unavailable.items())),
         "native_dependencies": production_native,
     }

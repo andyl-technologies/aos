@@ -4354,6 +4354,19 @@ contracts. The shared reader also passes the existing structural and license
 audit parity checks. This does not qualify the remaining controller runtime
 or production-cutover gates.
 
+The architecture export also keeps test compilations and runnable libtest
+wrappers in separate records. Unit compilations inherit their crate's source
+roots; test features come from the test rule. Feature selectors retain every
+element, condition, and alternative, so the feature union cannot stand in for
+a required-feature guarantee. Wrapper records bind an owned binary to its
+tags and exact argument selection, preserving argument order and repetitions.
+The [test metadata receipt](tests/evidence/crucible-test-target-metadata.json)
+retains 1,249 compilations, 1,250 wrappers, 172 unit compilations with inherited
+roots, and 70 feature selections. It verifies unchanged production and dependency fields,
+all declared test root bytes, and compatibility with the structural, license,
+and dependency audit readers. Gate mapping and campaign traceability still
+need their consumers converted to these records.
+
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture-parity --no-out-link
