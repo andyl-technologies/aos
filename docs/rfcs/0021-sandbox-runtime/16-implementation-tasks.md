@@ -55,8 +55,12 @@ Recent committed startup fixes close narrower prerequisites:
   independent service/helper roles and fixed executable labels, still missing.
   The earlier checkpoint-publication full-target build and initializer package
   now pass with exact output derivations independently verified. The current
-  corrected-source package and full-target builds are running on audited
-  803-/833-derivation closures without production policy. Enforcing startup,
+  corrected-source initializer package also passes, with its exact output
+  derivation independently verified. The final actual-module regression passes
+  after fresh evaluation, including the fixed descriptor roster and three-owner
+  socket comparison. Its audited closure excludes production policy. The
+  corrected-source full-target build is still running on its audited
+  833-derivation closure without production policy. Enforcing startup,
   positive original Source provisioning, both journal hooks and complete
   lifecycle/crash/power-loss qualification remain open; admission stays closed.
 
@@ -110,9 +114,10 @@ Recent committed startup fixes close narrower prerequisites:
   Non-test online Security compilation, 430 Broker, 146 focused Source, three
   existing floor-geometry, 431 ordinary Security and 440 online-Nix Security
   tests pass; one Broker case and two cases in each Security suite remain
-  ignored. Full application target compilation is running on the audited
-  86-source snapshot, with both deleted modules absent and
-  production policy excluded from its 833-derivation closure. This closes the
+  ignored. Full application target compilation now passes on the audited
+  86-source snapshot, with its exact output derivation independently verified,
+  both deleted modules absent and production policy excluded from its
+  833-derivation closure. This closes the
   source-level cold pending-artifact gap, not installed provisioning or recovery
   qualification. Admission remains closed.
 
