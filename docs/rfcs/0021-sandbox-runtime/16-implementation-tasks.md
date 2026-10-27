@@ -31,12 +31,16 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
-- The Storage package selected by the current provisioning and fault VMs passes
-  its full package check: 457 tests passed and two were skipped. Its registered
-  output is `/nix/store/d23sjbrz5xi7fj4db1vzhaz2ylyip2ld-aos-storaged-0.1.0`
-  (NAR hash `sha256-fFvMiCTH8gu1hYQGV9pLyXCD975GkFdQsyNy0O9V5UI=`), with the
-  selected systemd output in its runtime references. This proves package
-  verification, not installed normal journal-hook or lifecycle execution.
+- The Controller and Storage packages selected by the current provisioning and
+  fault VMs pass their full package checks. Controller's isolated role checks
+  pass at `/nix/store/9mka2nvfdfwqwb4zwk462ckls1drpkgm-aos-sandboxd-0.1.0`
+  (NAR hash `sha256-lfF232FSNspouXRF3gUmjUQMZTUBjV48kvD4c/Dk8J8=`).
+  Storage's 457 tests pass with two skipped at
+  `/nix/store/d23sjbrz5xi7fj4db1vzhaz2ylyip2ld-aos-storaged-0.1.0`
+  (NAR hash `sha256-fFvMiCTH8gu1hYQGV9pLyXCD975GkFdQsyNy0O9V5UI=`).
+  Both registered outputs retain the selected systemd runtime reference. These
+  receipts prove package verification, not installed initial floor, normal
+  journal-hook or lifecycle execution.
 
 - `checks.fleet.sandbox-method46-initial-partial-publication-restart` prepares
   a separate resource-failure recovery case for both installed initializers.
