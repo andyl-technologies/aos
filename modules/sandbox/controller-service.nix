@@ -9,6 +9,7 @@
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.controllerService;
+  normalCommand = (import ./_normal-floor-service-commands.nix {inherit config lib;}).controller;
   controller = config.aos.sandbox.controller;
   selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   brokers = config.aos.sandbox;
@@ -776,18 +777,7 @@ in {
           else "notify";
         SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_controller_t";
         NotifyAccess = "main";
-        ExecStart =
-          "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
-          + lib.optionalString cfg.publicApi.enable " --public-api"
-          + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
-          + lib.optionalString cfg.createQ04PolicySubgate.enable " --create-q04-policy-subgate"
-          + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
-          + lib.optionalString coverageSelected " --git-upload-coverage"
-          + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
-          + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor"
-          + lib.optionalString cfg.operatorRecoveryOnly.enable " --operator-recover-only"
-          + lib.optionalString onlineNix.enable " --nix-start-admission"
-          + lib.optionalString onlineNix.storageGenerationPrepare.enable " --nix-storage-generation-prepare";
+        ExecStart = normalCommand.execStart;
         # The selected flag uses the existing paired initial-table capture.
         # It does not activate methods51/52 or complete a Start operation.
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";

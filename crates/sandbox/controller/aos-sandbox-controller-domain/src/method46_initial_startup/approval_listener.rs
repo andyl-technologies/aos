@@ -105,10 +105,10 @@ impl InitialApprovalListenerOriginalV1 {
 fn fixed_path(role: Method46InitialServiceRoleV1) -> &'static Path {
     Path::new(match role {
         Method46InitialServiceRoleV1::ControllerStorageClient => {
-            "/run/aos/sandbox-method46/controller-initial-approval.sock"
+            "/run/aos/sandbox/method46-controller-initial.sock"
         }
         Method46InitialServiceRoleV1::StorageBroker => {
-            "/run/aos/sandbox-method46/storage-initial-approval.sock"
+            "/run/aos/sandbox/method46-storage-initial.sock"
         }
     })
 }

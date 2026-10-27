@@ -1433,6 +1433,10 @@
         message = "nullable parent enclosure preserves absence and typed selected audit bounds";
       }
       {
+        ok = (import ./method46-initial-installation.nix {inherit lib mkSystem;}).incompleteAssertions;
+        message = "manual initial floors reject missing Parent06, original public deliveries and confined policy roles";
+      }
+      {
         ok =
           (import ./controller-recovery-installation.nix {
             inherit pkgs lib mkSystem;

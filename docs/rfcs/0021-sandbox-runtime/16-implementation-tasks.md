@@ -31,6 +31,35 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The image modules now declare separately selected manual Controller/Storage
+  initializer services and approval sockets, with no boot activation links.
+  Both explicit Parent06 subdivisions must be selected with each definition;
+  a reserved role cannot silently become an empty service. Each unit borrows its
+  own normal endpoint's provisioning/auth sources and the exact public sources
+  delivered to normal Controller, Root, Host and optional Nix owners. No normal
+  private signing key enters the roster. The immutable self-normalized profile
+  binds the complete selected unit and the actual normal per-unit fragment,
+  using the same materializer without a dependency on the aggregate manager.
+  Normal daemon ExecStart and profile argv now use one shared command recipe.
+  Source's approval paths are corrected to the existing PID1 paths. The actual
+  module regression compares both purposes across Nix socket declarations,
+  Rust Source selection and the manager patch, and rejects missing Parent,
+  credentials and confined-policy selection. Native initializer compilation,
+  actual standalone refusal, 430 Broker, 146 Source, 430 ordinary Security and
+  439 online-Nix Security tests pass; one Broker and two cases in each Security
+  suite remain ignored. A funded configuration projection with real normal
+  delivery options selects 28 credentials per role and preserves distinct
+  receiving controls; it still rejects the missing initial MAC roles/labels.
+  This is definition/profile composition, not a positive installed execution.
+  Enabling the units requires an explicit production-policy selection for their
+  independent service/helper roles and fixed executable labels, still missing.
+  The earlier checkpoint-publication full-target build and initializer package
+  now pass with exact output derivations independently verified. The current
+  corrected-source package and full-target builds are running on audited
+  803-/833-derivation closures without production policy. Enforcing startup,
+  positive original Source provisioning, both journal hooks and complete
+  lifecycle/crash/power-loss qualification remain open; admission stays closed.
+
 - Selected manual initial-floor units now receive the CPU, memory and task
   controls of their own explicit Parent06 receiving subdivisions. They no longer
   inherit the enclosing fixed-services aggregate as their per-service limit.

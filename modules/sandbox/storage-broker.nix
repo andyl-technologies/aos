@@ -8,6 +8,7 @@
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.storageBroker;
+  normalCommand = (import ./_normal-floor-service-commands.nix {inherit config lib;}).storage;
   controller = config.aos.sandbox.controller;
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
   storageReceiving =
@@ -527,32 +528,7 @@ in {
         # seccomp filter; Storage retains no mode-changing syscall.
         ExecStartPre = lib.optionals (!cfg.method46TpmFloor.required) brokerSessionConfiguration.installCommands;
         BindReadOnlyPaths = lib.optionals cfg.method46TpmFloor.required brokerSessionConfiguration.readOnlyBinds;
-        ExecStart = ''
-          ${cfg.package}/bin/aos-storaged \
-            ${toString controller.uid} \
-            ${toString controller.gid} \
-            ${toString cfg.identityPoolStart} \
-            ${toString cfg.identityPoolSize} \
-            ${cfg.zfsPackage}/sbin/zfs \
-            ${cfg.authorityDirectory} \
-            ${cfg.bootstrapDirectory} \
-            ${lib.escapeShellArg (
-            if cfg.resolverPolicyDirectory == null
-            then "-"
-            else cfg.resolverPolicyDirectory
-          )} \
-            ${cfg.guestRootTemplate} \
-            ${
-            if cfg.zfsHoldSigningKey == null
-            then "-"
-            else "zfs-hold-key-v1"
-          } \
-            ${lib.escapeShellArg (
-            if cfg.executionOutputKey == null
-            then "-"
-            else cfg.executionOutputKey
-          )}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}${lib.optionalString cfg.nixGenerationPrepare.enable " --nix-storage-generation-prepare"}
-        '';
+        ExecStart = normalCommand.execStart;
         LoadCredential =
           brokerSessionConfiguration.loadCredentials
           ++ coverageLoadCredentials
