@@ -114,72 +114,82 @@
       )
       BUILD
     '';
-  workspace = pkgs.mkAosBazelWorkspace {
-    root = ../..;
-    inherit sourceInventory toolchains;
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
-      "BUILD.bazel"
-      "AGENTS.md"
-      "CONTRIBUTING.md"
-      "README.md"
-      "LICENSES"
-      "default.nix"
-      "crates"
-      "tools/bazel"
-      "third_party/rust"
-      "docs"
-      "tests/crucible"
-      "tests/build/BUILD.bazel"
-      "tests/build/_bazel-guest.nix"
-      "docs/rfcs/0014-signal-driven-fault-model"
-      "docs/users/crucible"
-      "modules/base/build.nix"
-      "modules/profiles/ability-crucible.nix"
-      "pkgs/kernel/linux-crucible.nix"
-      "pkgs/kernel/linux.nix"
-      "pkgs/tools/aos-ability-crucible.nix"
-      "pkgs/tools/crucible-fixtures.nix"
-      "pkgs/tools/crucible-fleet-store.nix"
-      "pkgs/tools/crucible-guest.nix"
-      "pkgs/tools/crucible/_cargo-source.nix"
-      "pkgs/tools/crucible/_packages.nix"
-      "pkgs/tools/crucible/_release-manifest.nix"
-      "pkgs/tools/crucible/_source.nix"
-      "pkgs/tools/crucible/crucible.nix"
-      "stdenv/phases.nix"
-      "tests/build/_bazel-crucible-controller-tests.nix"
-      "tools/bazel/launcher.py"
-      "pkgs/default.nix"
-      "pkgs/emulation/qemu.nix"
-      "pkgs/emulation/qemu-patches"
-      "pkgs/emulation/crucible-qemu-plugin.nix"
-      "pkgs/emulation/_crucible-qemu-bazel-installed.nix"
-      "pkgs/tools/crucible/_debug-gateway.nix"
-    ];
-    dependencyProfile = "controller-tests";
-    cargoProfile = "release";
-    rustcFlags = [
-      "-Copt-level=3"
-      "-Cdebuginfo=0"
-      "-Cdebug-assertions=no"
-      "-Coverflow-checks=no"
-      "-Cstrip=debuginfo"
-      "-Lnative=${pkgs.gccUnwrapped}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gccUnwrapped.version}"
-    ];
-    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
-    repositories =
-      pkgs.aosBazelRepositories
-      // pkgs.aosBazelRustRepositories.controller-tests
-      // {
-        aos_native = nativeLibraries;
-        aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
-        aos_controller_features = import ./_bazel-crucible-controller-feature-evidence.nix {inherit pkgs;};
-        aos_architecture = import ./_bazel-crucible-controller-audit-inputs.nix {inherit pkgs;};
-      };
-    analysisTargets = targets ++ testTargets ++ clippyTargets;
-  };
+  workspaceFor = developmentLint:
+    pkgs.mkAosBazelWorkspace {
+      root = ../..;
+      inherit sourceInventory toolchains;
+      sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
+        "BUILD.bazel"
+        "AGENTS.md"
+        "CONTRIBUTING.md"
+        "README.md"
+        "LICENSES"
+        "default.nix"
+        "crates"
+        "tools/bazel"
+        "third_party/rust"
+        "docs"
+        "tests/crucible"
+        "tests/build/BUILD.bazel"
+        "tests/build/_bazel-guest.nix"
+        "docs/rfcs/0014-signal-driven-fault-model"
+        "docs/users/crucible"
+        "modules/base/build.nix"
+        "modules/profiles/ability-crucible.nix"
+        "pkgs/kernel/linux-crucible.nix"
+        "pkgs/kernel/linux.nix"
+        "pkgs/tools/aos-ability-crucible.nix"
+        "pkgs/tools/crucible-fixtures.nix"
+        "pkgs/tools/crucible-fleet-store.nix"
+        "pkgs/tools/crucible-guest.nix"
+        "pkgs/tools/crucible/_cargo-source.nix"
+        "pkgs/tools/crucible/_packages.nix"
+        "pkgs/tools/crucible/_release-manifest.nix"
+        "pkgs/tools/crucible/_source.nix"
+        "pkgs/tools/crucible/crucible.nix"
+        "stdenv/phases.nix"
+        "tests/build/_bazel-crucible-controller-tests.nix"
+        "tools/bazel/launcher.py"
+        "pkgs/default.nix"
+        "pkgs/emulation/qemu.nix"
+        "pkgs/emulation/qemu-patches"
+        "pkgs/emulation/crucible-qemu-plugin.nix"
+        "pkgs/emulation/_crucible-qemu-bazel-installed.nix"
+        "pkgs/tools/crucible/_debug-gateway.nix"
+      ];
+      dependencyProfile = "controller-tests";
+      cargoProfile =
+        if developmentLint
+        then "debug"
+        else "release";
+      # Cargo Clippy uses the development profile. Debug-only integration
+      # helpers must remain visible without enabling extra crate features.
+      rustcFlags =
+        (
+          if developmentLint
+          then ["-Copt-level=0" "-Cdebuginfo=2" "-Cdebug-assertions=yes" "-Coverflow-checks=yes" "-Cstrip=none"]
+          else ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Cstrip=debuginfo"]
+        )
+        ++ ["-Lnative=${pkgs.gccUnwrapped}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gccUnwrapped.version}"];
+      execRustcFlags =
+        if developmentLint
+        then ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"]
+        else ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
+      repositories =
+        pkgs.aosBazelRepositories
+        // pkgs.aosBazelRustRepositories.controller-tests
+        // {
+          aos_native = nativeLibraries;
+          aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
+          aos_controller_features = import ./_bazel-crucible-controller-feature-evidence.nix {inherit pkgs;};
+          aos_architecture = import ./_bazel-crucible-controller-audit-inputs.nix {inherit pkgs;};
+        };
+      analysisTargets = targets ++ testTargets ++ clippyTargets;
+    };
+  workspace = workspaceFor false;
+  lintWorkspace = workspaceFor true;
 in {
-  inherit packages targets testTargets licenseTargets clippyTargets workspace;
+  inherit packages targets testTargets licenseTargets clippyTargets workspace lintWorkspace;
   inventory =
     (pkgs.mkAosBazelBuild {
       pname = "aos-bazel-crucible-controller-test-inventory";
@@ -224,7 +234,7 @@ in {
   };
   lint = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-crucible-controller-clippy";
-    inherit workspace;
+    workspace = lintWorkspace;
     targets = clippyTargets;
     retainActionGraph = true;
     sharedBuildCache = false;

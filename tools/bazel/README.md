@@ -4513,6 +4513,9 @@ examples, and test compilations. The controller lint also retains the quota
 package's existing complete Clippy root; GPL components keep their separate
 build and qualification profiles.
 
+The lint workspace uses Cargo's development profile so debug-only integration
+helpers remain available. Release-test compilation retains its separate profile.
+
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-harness-lint-parity --no-out-link
 nix-build tools/bazel/tests/crucible-controller.nix -A lint --no-out-link
