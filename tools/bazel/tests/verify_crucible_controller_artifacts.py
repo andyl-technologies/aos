@@ -88,7 +88,7 @@ def fixture_parity(programs):
     cases = {}
     cli = programs["cli"]
     cases["cli"] = []
-    for arguments, status in [(["--help"], 0), (["selftest", "--help"], 0), (["--invalid-controller-option"], 2)]:
+    for arguments, status in [(["--help"], 0), (["selftest", "--help"], 0), (["--invalid-controller-option"], 64)]:
         record, output = run_pair(cli, "crucible", arguments, status)
         if arguments == ["selftest", "--help"] and b"--with-qemu" in output:
             raise ValueError("production controller exposes the test-double backend")
