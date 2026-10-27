@@ -8,6 +8,7 @@ delivery exceptions grant no owner state access or preparation authority.
 import view_policy
 import recovery_policy
 import method46_policy
+import method46_initial_policy
 
 
 ENVIRONMENT_PROVISION = False
@@ -20,6 +21,7 @@ HELPER_DOMAINS = tuple(f"aos_method46_{role}_helper_t" for role in HELPERS)
 # ELF text mappings use the new role after exec's credential transition.
 # These closed pairs grant no execute_no_trans or additional process entry.
 FIXED_ELF_ENTRIES = (
+    *method46_initial_policy.FIXED_ELF_ENTRIES,
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
     ("aos_sandbox_network_publisher_t", "aos_sandbox_network_publisher_exec_t"),
     ("aos_sandbox_network_lifecycle_worker_t", "aos_sandbox_network_lifecycle_worker_exec_t"),
@@ -93,8 +95,8 @@ RESOURCE_BANK_KNOWN_RECIPIENTS = (
 RESOURCE_BANK_RECIPIENTS = ()
 ONLINE_NIX_HELPERS = ONLINE_NIX_DOMAINS[1:3]
 ONLINE_NIX_IMAGE_IOCTL_CELLS = (("aos_sandbox_nix_t", "aos_nix_online_store_t"),)
-ENFORCING = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS)
-NO_DEFAULT_ENTRY = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1], *RUNTIME_DOMAINS[:1])
+ENFORCING = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS, *method46_initial_policy.DOMAINS)
+NO_DEFAULT_ENTRY = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1], *RUNTIME_DOMAINS[:1], *method46_initial_policy.SERVICES)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -807,8 +809,20 @@ def matrix(Access, Transition, accesses, ordinary_domains):
                 if root_controller_reader:
                     positive.extend(accesses(other, lock, "file", file_read))
                 denied_lock = file_mutate if root_controller_reader else ("open", "read", *file_mutate)
+                permitted_lock = ()
+                permitted_floor = ()
+                if role in method46_policy.INITIAL_PURPOSES:
+                    if other == method46_policy.initial_service(role):
+                        permitted_lock = method46_initial_policy.SERVICE_LOCK
+                        permitted_floor = method46_initial_policy.SERVICE_FLOOR
+                    elif other == method46_policy.initial_helper(role):
+                        permitted_lock = method46_initial_policy.HELPER_LOCK
+                denied_lock = tuple(permission for permission in denied_lock if permission not in permitted_lock)
                 negative.extend(accesses(other, lock, "file", denied_lock))
-                negative.extend(accesses(other, floor, "file", ("open", "read", *file_mutate)))
+                negative.extend(accesses(other, floor, "file", tuple(
+                    permission for permission in ("open", "read", *file_mutate)
+                    if permission not in permitted_floor
+                )))
         for foreign_role in HELPERS:
             if foreign_role != role:
                 negative.append(Access(helper, f"aos_sandbox_{foreign_role}_t", "fd", "use"))
@@ -907,6 +921,12 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend(main_positive)
     negative.extend(main_negative)
     transitions.extend(main_transitions)
+    initial_positive, initial_negative, initial_transitions = method46_initial_policy.matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(initial_positive)
+    negative.extend(initial_negative)
+    transitions.extend(initial_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
 
 

@@ -121,6 +121,9 @@ class FakePolicy:
         for target in ("aos_sandbox_source_signer_t", "aos_sandbox_policy_authority_t", "init_t"):
             access = effective_policy.Access("aos_sandbox_source_signer_t", target, "file", "ioctl")
             self.xperms[access] = [FakeXpermRule("fixed Source peer GET_INFO", perms=frozenset({0xff0b}))]
+        for source, target in effective_policy.owner_policy.method46_initial_policy.PIDFD_CELLS:
+            access = effective_policy.Access(source, target, "file", "ioctl")
+            self.xperms[access] = [FakeXpermRule("fixed initial peer GET_INFO", perms=frozenset({0xff0b}))]
         state = effective_policy.Access(
             "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE, "file", "ioctl",
         )
@@ -130,6 +133,10 @@ class FakePolicy:
         )]
 
     def lookup_type(self, domain: str) -> FakeType:
+        initial = effective_policy.owner_policy.method46_initial_policy
+        if (domain in (*initial.KNOWN_DOMAINS, *initial.KNOWN_OBJECT_TYPES)
+                and domain not in (*initial.DOMAINS, *initial.OBJECT_TYPES)):
+            raise FakeInvalidType(domain)
         if domain in (*effective_policy.owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
                       "aos_nix_online_store_t", "aos_nix_online_gcroots_t"):
             raise FakeInvalidType(domain)
@@ -198,6 +205,16 @@ class FakeQuery:
                     ))
 
             return matches
+
+        if "default" not in self.criteria and "source" not in self.criteria:
+            target = str(self.criteria["target"])
+            return [
+                rule
+                for transition, rules in self.policy.transitions.items()
+                if transition.object_class == str(self.criteria["tclass"][0])
+                for rule in rules
+                if target in rule.target.expand()
+            ]
 
         if "default" in self.criteria:
             if "source" not in self.criteria:

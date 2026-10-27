@@ -76,6 +76,7 @@ in
           ${native.python3}/bin/python3 -B method46_policy_test.py
           export AOS_METHOD46_INITIAL_POLICY_CASES=${initialCases}
           export AOS_METHOD46_CHECKMODULE=${native.checkpolicy}/bin/checkmodule
+          export AOS_METHOD46_CHECKPOLICY=${native.checkpolicy}/bin/checkpolicy
           ${native.python3}/bin/python3 -B method46_initial_policy_test.py
 
           mkdir -p "$out"

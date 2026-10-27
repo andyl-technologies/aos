@@ -51,8 +51,32 @@
       socketContract purpose
       && rejects (parentMessage purpose) incomplete
       && rejects (credentialMessage purpose) incomplete
-      && rejects (policyMessage purpose) incomplete)
+      && builtins.any (check: check.message == policyMessage purpose && check.assertion) incomplete.config.assertions)
     purposes;
+
+  # Policy definition is now independently selectable. This proves module and
+  # package composition only: missing funding/credentials still reject the same
+  # incomplete configuration, and no native Source entry is manufactured.
+  policySelectionAssertions = builtins.all (selected: let
+    evaluated = incomplete.extendModules {
+      modules = [
+        {
+          aos.sandbox.method46InitialFloors = lib.genAttrs purposes (purpose: {
+            enable = lib.mkForce (builtins.elem purpose selected);
+          });
+        }
+      ];
+    };
+    policy = evaluated.config.aos.security.selinux._productionPolicy;
+  in
+    policy.passthru.method46InitialPurposes
+    == selected
+    && builtins.all (purpose:
+      builtins.any (check: check.message == policyMessage purpose && check.assertion) evaluated.config.assertions
+      && rejects (parentMessage purpose) evaluated
+      && rejects (credentialMessage purpose) evaluated)
+    selected)
+  [[] ["controller"] ["storage"] purposes];
 
   # Exercise the listener assertion independently of the unavailable installed
   # policy and funding. Each override must invalidate an otherwise valid
@@ -141,5 +165,5 @@
     units = lib.genAttrs selected projection;
   };
 in {
-  inherit incompleteAssertions listenerAssertions forConfigurationModules;
+  inherit incompleteAssertions policySelectionAssertions listenerAssertions forConfigurationModules;
 }

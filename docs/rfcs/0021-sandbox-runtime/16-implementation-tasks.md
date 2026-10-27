@@ -31,22 +31,36 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
-- Closed initial-role rendering now describes Controller and Storage separately,
-  including fixed service/helper entrypoints, own floor/lock access, immutable
-  credential delivery, approval transport and public output. The renderer
-  accepts only canonical selections and exact evaluated initializer/helper
-  package roots. Only the 36 aliases recognized by the actual startup consumer
-  receive readable credential labels and named creation transitions; other
-  deliveries retain the generic label. Neither-role selection emits no policy
-  or contexts and requires no package inputs. All four selections pass real
-  source-built libselinux lookup checks, and all three nonempty rendered modules
-  compile against the selected kernel's permission names. Eight new rendering
-  tests and the ten existing custody checks pass on an audited 546-derivation
-  closure without production policy. Python bytecode caches are excluded from
-  this check's frozen source. These are unselected policy inputs: the production
-  recipe does not import them yet. Expanded permission/custody checks, production
-  selection, linked-policy validation and genuine installed Source provisioning
-  remain required before enabling either initializer. Admission stays closed.
+- Closed initial-role selection now follows the actual manual Controller and
+  Storage service options. The production recipe composes each selected role's
+  fixed entrypoints, contexts and immutable checker DATA together, and installs
+  that same checker for profile readback. The existing expanded query engine
+  rejects foreign and disabled grants on credentials, executables, profiles,
+  approval/output sockets and private process channels. It requires enforcing
+  fixed roles, exact PIDFD GET_INFO selectors and literal credential promotion;
+  no broad object attribute or foreign/default helper entry can substitute.
+  Initializers can acquire only their own existing main and intent; normal
+  writers and both helper families retain their intent exclusions. Helpers get
+  inherited own-lock access, no floor/main/credential access and no capability.
+  File, directory, socket-file, stream-socket and all four capability checks
+  cover the selected kernel's complete permission sets. The default selects
+  neither role and emits no new
+  policy or contexts. Exact package roots and all 36 actual credential aliases
+  remain pinned. Ten custody tests, ten rendering/selection tests and four fresh
+  eight-test selected suites pass on an audited 546-derivation closure without
+  production policy, including actual compiled miniature policies containing
+  the rendered TE. The broader working-tree checker passes all 179 regressions.
+  Actual module evaluation retains missing Parent06/credential rejection and
+  the 32 listener/output mutations; pure evaluation verifies all four production
+  selections and their matching checker routes. The earlier full application
+  compile through fixed output delivery now passes; the newer intent-label
+  source gate is still running. Linked production policy, genuine funded Source
+  entry and installed journal/lifecycle/crash/power-loss qualification remain
+  open while the prior networkd approval is pending. Admission stays closed.
+
+The older checkpoints below retain their original narrower status. Their
+references to missing initial roles are superseded by the selection above;
+none of their component receipts establishes installed provisioning.
 
 - Initial-intent final and pending files now have separate per-endpoint object
   labels. Normal writers' exact-name creation transitions select those labels,

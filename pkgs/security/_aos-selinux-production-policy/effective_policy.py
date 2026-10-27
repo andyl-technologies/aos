@@ -55,6 +55,7 @@ NO_CONTEXT_TRANSLATION_DOMAINS = (
     *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
     *owner_policy.ONLINE_NIX_DOMAINS[1:],
     *owner_policy.RUNTIME_DOMAINS[1:],
+    *owner_policy.method46_initial_policy.DOMAINS,
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
@@ -68,6 +69,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
         *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
         *owner_policy.ONLINE_NIX_DOMAINS,
         *owner_policy.RUNTIME_DOMAINS,
+        *owner_policy.method46_initial_policy.DOMAINS,
     )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
@@ -137,6 +139,7 @@ GUARDED_OBJECT_TYPES = (
     owner_policy.ROOT_NO_APPLY_SIGNING_CREDENTIAL,
     owner_policy.HOST_NO_APPLY_CREDENTIAL,
     *owner_policy.method46_policy.PROTECTED_TYPES,
+    *owner_policy.method46_initial_policy.OBJECT_TYPES,
     *(("aos_runtime_deployment_credential_t",
        "aos_runtime_deployment_state_t",
        "aos_runtime_deployment_lock_t") if owner_policy.RUNTIME_DOMAINS else ()),
@@ -1617,6 +1620,71 @@ def _check_original_ioctls(
     return evidence
 
 
+def _check_method46_initial_policy(setools: Any, policy: Any) -> list[str]:
+    """Checks selected initial custody with the existing expanded query engine."""
+
+    initial = owner_policy.method46_initial_policy
+    selected = {*initial.DOMAINS, *initial.OBJECT_TYPES}
+    for name in (*initial.KNOWN_DOMAINS, *initial.KNOWN_OBJECT_TYPES):
+        if name in selected:
+            continue
+        try:
+            policy.lookup_type(name)
+        except setools.exception.InvalidType:
+            continue
+        raise ValueError(f"unselected method46 initial type present: {name}")
+    evidence = []
+    for target, object_class, permission, permitted in (*initial.object_custody(), *initial.private_custody()):
+        for rule in allow_rules(setools, policy, Access("*", target, object_class, permission)):
+            sources = {str(member) for member in rule.source.expand()}
+            if not sources or sources - permitted:
+                raise ValueError(f"foreign method46 initial custody grant exists: {target} {object_class} {permission}: {rule}")
+        evidence.append(f"deny-foreign-method46-initial\t{target}\t{object_class}\t{permission}")
+
+    for role in initial.PURPOSES:
+        service = owner_policy.method46_policy.initial_service(role)
+        helper = owner_policy.method46_policy.initial_helper(role)
+        helper_exec = f"aos_method46_initial_{role}_helper_exec_t"
+        candidates = setools.TERuleQuery(
+            policy, ruletype=[setools.TERuletype.type_transition],
+            source_indirect=True, target_indirect=True, tclass=["process"], default=helper,
+        )
+        for rule in candidates.results():
+            if ({str(member) for member in rule.source.expand()} != {service}
+                    or {str(member) for member in rule.target.expand()} != {helper_exec}
+                    or not _transition_filename_rules(setools, [rule], Transition.UNNAMED)):
+                raise ValueError(f"foreign method46 initial helper transition: {rule}")
+        credential = initial.object_type(role, "credential")
+        # Both incoming promotion and every default below this directory are
+        # closed, including expanded and disabled alternatives.
+        candidates = setools.TERuleQuery(
+            policy, ruletype=[setools.TERuletype.type_transition],
+            source_indirect=True, target_indirect=True, tclass=["file"], target=credential,
+        )
+        promoted = setools.TERuleQuery(
+            policy, ruletype=[setools.TERuletype.type_transition],
+            source_indirect=True, target_indirect=True, tclass=["file"], default=credential,
+        )
+        for rule in (*candidates.results(), *promoted.results()):
+            try:
+                name = rule.filename
+            except setools.exception.TERuleNoFilename:
+                name = None
+            allowed = (str(rule.default) == "init_tmpfs_t" and name is None
+                       or str(rule.default) == credential
+                       and name in owner_policy.method46_policy.INITIAL_CREDENTIAL_NAMES)
+            if (not allowed or {str(member) for member in rule.source.expand()} != {"init_t"}
+                    or {str(member) for member in rule.target.expand()} != {credential}):
+                raise ValueError(f"foreign method46 initial credential transition: {rule}")
+        evidence.append(f"exclusive-method46-initial-credential-transitions\t{credential}")
+
+    for source, target in initial.PIDFD_CELLS:
+        evidence.extend(_check_original_ioctls(
+            setools, policy, (source,), target, 0xff0b, "pidfs", owner="method46 initial",
+        ))
+    return evidence
+
+
 def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
@@ -1722,7 +1790,7 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
     # Scan foreign and disabled grants with the same expanded query engine.
     main_policy = owner_policy.method46_policy
     for role, family, object_type, names in main_policy.CUSTODY_OBJECTS:
-        owner = f"aos_sandbox_{role}_t"
+        permitted_creators = main_policy.transition_sources(role, family)
         floor = f"aos_method46_{role}_floor_t"
         candidates = setools.TERuleQuery(
             policy,
@@ -1739,7 +1807,7 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
                 filename = rule.filename
             except setools.exception.TERuleNoFilename:
                 filename = None
-            if sources != {owner} or targets != {floor} or filename not in names:
+            if not sources or sources - permitted_creators or targets != {floor} or filename not in names:
                 raise ValueError(f"foreign method46 {family} label transition exists: {rule}")
         evidence.append(f"exclusive-method46-{family}-transitions\t{object_type}")
 
@@ -1749,6 +1817,8 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
                 if {str(member) for member in rule.source.expand()} - permitted_sources:
                     raise ValueError(f"foreign method46 {family} custody grant exists: {rule}")
             evidence.append(f"deny-foreign-method46-{family}\t{object_type}\t{permission}")
+
+    evidence.extend(_check_method46_initial_policy(setools, policy))
 
     # Scan all sources, including attributes and domains not named by AOS.
     # A finite AOS role list cannot establish the Root nondelegation boundary.
@@ -1820,7 +1890,8 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
             evidence.append(f"member-attribute\t{domain}\tdomain")
 
     file_types = attribute_members(setools, policy, "file_type")
-    for object_type in owner_policy.method46_policy.PROTECTED_TYPES:
+    for object_type in (*owner_policy.method46_policy.PROTECTED_TYPES,
+                        *owner_policy.method46_initial_policy.OBJECT_TYPES):
         if object_type in domains:
             raise ValueError(f"method46 object inherited domain: {object_type}")
         evidence.append(f"deny-attribute\t{object_type}\tdomain")

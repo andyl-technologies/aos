@@ -15,6 +15,10 @@
   protectedSandboxNetworkRoots = cfg.protectedSandboxNetworkRoots.enable;
   selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
   selectedOnlineNix = config.aos.sandbox.nixBroker.enable;
+  selectedInitialPurposes =
+    lib.filter
+    (purpose: config.aos.sandbox.method46InitialFloors.${purpose}.enable)
+    ["controller" "storage"];
   policyName = cfg.policy;
   viewPreparers = [
     {
@@ -53,6 +57,11 @@
       runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
       resourceBankEnrollment = config.aos.sandbox.resourceBank.policy != null;
       hostComponentControl = config.aos.sandbox.hostBroker.componentControl;
+      method46InitialPurposes = selectedInitialPurposes;
+    }
+    // lib.optionalAttrs (selectedInitialPurposes != []) {
+      aos-method46-floor-initializers = config.aos.sandbox.method46InitialFloors.package;
+      aos-method46-initial-tpm-helpers = pkgs.aos-method46-initial-tpm-helpers;
     }
     // lib.optionalAttrs selectedOnlineNix {
       onlineNix = true;

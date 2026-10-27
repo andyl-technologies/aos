@@ -7,7 +7,9 @@ policy permissions, funded Source entry, or installed MAC qualification.
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,6 +50,21 @@ class InitialPolicyRenderingTest(unittest.TestCase):
         self.assertEqual(len(set(names)), 36)
         for case in self.inputs["cases"]:
             self.assertEqual(case["credentials"], names)
+
+    def test_each_selected_data_module_passes_in_a_fresh_interpreter(self):
+        support = Path(__file__).parent
+        for case in self.inputs["cases"]:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for source in support.glob("*.py"):
+                    shutil.copyfile(source, root / source.name)
+                (root / "method46_policy.py").write_text(case["method46Data"])
+                result = subprocess.run(
+                    [sys.executable, "-B", str(root / "method46_initial_selected_test.py")],
+                    capture_output=True, text=True, check=False, timeout=600,
+                )
+                self.assertEqual(result.returncode, 0, f'{case["purposes"]}: {result.stdout}\n{result.stderr}')
+                print(f'Initial policy selection {case["purposes"]}:\n{result.stderr}', end="")
 
     def test_selected_roles_use_the_actual_unit_and_helper_contexts(self):
         for case in self.inputs["cases"][1:]:
@@ -173,6 +190,14 @@ class InitialPolicyRenderingTest(unittest.TestCase):
                             self.assertIsNone(resolver.lookup(path, kind))
                         for suffix in ("0", ".foreign", "/child"):
                             self.assertIsNone(resolver.lookup(path + suffix, InodeKind.socket))
+
+    def test_compiled_map_expectations_use_the_same_exact_selected_paths(self):
+        for case in self.inputs["cases"][1:]:
+            with tempfile.TemporaryDirectory() as temporary:
+                with self.resolver(Path(temporary), case) as resolver:
+                    self.assertEqual(len(case["contextExpectations"]), 44 * len(case["purposes"]))
+                    for entry in case["contextExpectations"]:
+                        self.assertEqual(resolver.lookup(entry["path"], InodeKind[entry["kind"]]), entry["context"])
 
     def test_profile_label_is_limited_to_the_versioned_delivered_files(self):
         context = "system_u:object_r:aos_method46_initial_profile_t"

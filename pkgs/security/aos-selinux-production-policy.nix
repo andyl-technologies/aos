@@ -28,11 +28,25 @@
   runtimeDeploymentPublisher ? false,
   resourceBankEnrollment ? false,
   hostComponentControl ? false,
+  method46InitialPurposes ? [],
+  aos-method46-floor-initializers ? null,
+  aos-method46-initial-tpm-helpers ? null,
   aos-nix-runtime-tpm-helpers ? null,
   aos-nix-online-store-reader ? null,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
+  initialPolicy = import (policySupport + "/method46-initial.nix") {
+    purposes = method46InitialPurposes;
+    initialPackage = aos-method46-floor-initializers;
+    helperPackage = aos-method46-initial-tpm-helpers;
+  };
+  selectedChecker = sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null || method46InitialPurposes != [];
+  selectedMethod46Data = builtins.toFile "aos-selected-method46-policy.py" initialPolicy.method46Data;
+  initialContextExpectations = builtins.toFile "aos-method46-initial-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries = initialPolicy.contextExpectations;
+  });
   gitReadCheckerArgument =
     if gitReadDelegation
     then "--git-read-delegation"
@@ -192,7 +206,7 @@
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
   checkerScript =
-    if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+    if selectedChecker
     then "selected-policy-checker/effective_policy.py"
     else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
@@ -278,6 +292,8 @@
     + builtins.readFile (policySupport + "/view_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/recovery_confinement.te")
+    + "\n"
+    + initialPolicy.moduleText
     + (
       if environmentProvision != null
       then "\n" + builtins.readFile (policySupport + "/environment_confinement.te")
@@ -504,6 +520,7 @@
         )
         + onlineFileContexts
         + environmentFileContexts
+        + initialPolicy.fileContexts
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
@@ -550,13 +567,15 @@ in
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
           ${
-            if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+            if selectedChecker
             then ''
               mkdir selected-policy-checker
               cp -R ${policySupport}/. selected-policy-checker/
               chmod u+w selected-policy-checker
               chmod u+w selected-policy-checker/owner_policy.py
               install -m 0444 ${selectedOwnerData} selected-policy-checker/owner_policy.py
+              chmod u+w selected-policy-checker/method46_policy.py
+              install -m 0444 ${selectedMethod46Data} selected-policy-checker/method46_policy.py
               ${
                 if hostComponentControl
                 then ''
@@ -828,6 +847,10 @@ in
           ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
             --file-contexts file_contexts.bin \
             --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${initialContextExpectations}
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
             --expected ${moduleContextExpectations}
           ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
             --file-contexts file_contexts.bin \
@@ -905,7 +928,7 @@ in
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
           ${
-            if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+            if selectedChecker
             then ''
               # Adjacent modules and rendered expectation DATA are the same
               # inputs used above; the relative passthru has no output cycle.
@@ -935,6 +958,7 @@ in
       {
         # Profile producers rerun this policy's exact selected checks.
         effectivePolicyCheckerArguments = gitReadCheckerArgument;
+        method46InitialPurposes = initialPolicy.purposes;
         evidenceSources = [
           policySupport
           refpolicy-production.src
@@ -942,7 +966,7 @@ in
         ];
       }
       // (
-        if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+        if selectedChecker
         then {
           effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
         }

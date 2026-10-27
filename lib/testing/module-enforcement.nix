@@ -1436,7 +1436,7 @@
         ok = let
           initialInstallation = import ./method46-initial-installation.nix {inherit lib mkSystem;};
         in
-          initialInstallation.incompleteAssertions && initialInstallation.listenerAssertions;
+          initialInstallation.incompleteAssertions && initialInstallation.policySelectionAssertions && initialInstallation.listenerAssertions;
         message = "manual initial floors reject missing authority and altered approval listener identity or delivery";
       }
       {

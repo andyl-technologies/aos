@@ -1,11 +1,36 @@
 """Closed method-46 journal and initial-intent custody DATA.
 
-Dedicated main labels keep future manual initializers from inheriting access
+Dedicated main labels keep selected manual initializers from inheriting access
 to unrelated Controller history or generic floor files. These expectations
-grant no runtime authority and do not select initial provisioning roles.
+grant no runtime authority; the closed build recipe selects matching roles.
 """
 
 ROLES = ("controller", "storage")
+# Only the closed Nix renderer replaces these immutable initializers. Policy
+# observations, runtime flags and mere type presence never select a purpose.
+INITIAL_PURPOSES = ()
+INITIAL_CREDENTIAL_NAMES = ()
+if (INITIAL_PURPOSES != tuple(role for role in ROLES if role in INITIAL_PURPOSES)
+        or (INITIAL_PURPOSES and (len(INITIAL_CREDENTIAL_NAMES) != 36
+                                or len(set(INITIAL_CREDENTIAL_NAMES)) != 36))
+        or (not INITIAL_PURPOSES and INITIAL_CREDENTIAL_NAMES)):
+    raise ValueError("invalid closed method46 initial-purpose DATA")
+
+
+def initial_service(role):
+    """Returns the fixed manual service type for one endpoint."""
+
+    return f"aos_method46_{role}_initial_t"
+
+
+def initial_helper(role):
+    """Returns the fixed private helper type for one endpoint."""
+
+    return f"aos_method46_initial_{role}_helper_t"
+
+
+INITIAL_SERVICES = tuple(initial_service(role) for role in INITIAL_PURPOSES)
+INITIAL_HELPERS = tuple(initial_helper(role) for role in INITIAL_PURPOSES)
 MAIN_TYPES = tuple(f"aos_method46_{role}_main_t" for role in ROLES)
 MAIN_NAMES = ("session.journal", "session.journal.compact.tmp")
 INTENT_TYPES = tuple(f"aos_method46_{role}_initial_intent_t" for role in ROLES)
@@ -38,6 +63,8 @@ def main_sources(role, permission):
             permitted.add("aos_sandbox_policy_authority_t")
         if permission == "getattr":
             permitted.add("aos_sandbox_cache_view_preparer_t")
+    if role in INITIAL_PURPOSES and permission in (*READ, "write"):
+        permitted.add(initial_service(role))
     return frozenset(permitted)
 
 
@@ -47,8 +74,19 @@ def custody_sources(role, family, permission):
     if family == "main":
         return main_sources(role, permission)
     if family == "initial-intent":
+        if role in INITIAL_PURPOSES and permission in (*READ, "create", "rename", "write"):
+            return frozenset({initial_service(role)})
         return frozenset()
     raise ValueError(f"unknown method46 object family: {family}")
+
+
+def transition_sources(role, family):
+    """Returns the closed creators of one family under literal reserved names."""
+
+    sources = {f"aos_sandbox_{role}_t"}
+    if family == "initial-intent" and role in INITIAL_PURPOSES:
+        sources.add(initial_service(role))
+    return frozenset(sources)
 
 
 def matrix(Access, Transition, accesses, actors):
@@ -58,11 +96,11 @@ def matrix(Access, Transition, accesses, actors):
     negative = []
     transitions = []
     for role, family, object_type, names in CUSTODY_OBJECTS:
-        owner = f"aos_sandbox_{role}_t"
         floor = f"aos_method46_{role}_floor_t"
         positive.append(Access(object_type, "fs_t", "filesystem", "associate"))
         transitions.extend(
-            Transition(owner, floor, "file", object_type, filename=name)
+            Transition(source, floor, "file", object_type, filename=name)
+            for source in sorted(transition_sources(role, family))
             for name in names
         )
 

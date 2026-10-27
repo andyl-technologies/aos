@@ -11,6 +11,22 @@
   storeRoots = "/(nix|nix\\.lower|usr/lib/aos/nix)/store";
   credentials = builtins.fromJSON (builtins.readFile ./method46_initial_credentials.json);
   join = builtins.concatStringsSep "\n";
+  method46Source = builtins.readFile ./method46_policy.py;
+  replaceInitializer = pattern: literal: replacement: source:
+    if builtins.length (builtins.split pattern source) != 3
+    then throw "method46 initial DATA requires one fixed initializer"
+    else builtins.replaceStrings [literal] [replacement] source;
+  method46Data =
+    if selected == []
+    then method46Source
+    else
+      replaceInitializer "INITIAL_CREDENTIAL_NAMES = \\(\\)"
+      "INITIAL_CREDENTIAL_NAMES = ()"
+      "INITIAL_CREDENTIAL_NAMES = tuple(${builtins.toJSON credentials})"
+      (replaceInitializer "INITIAL_PURPOSES = \\(\\)"
+        "INITIAL_PURPOSES = ()"
+        "INITIAL_PURPOSES = tuple(${builtins.toJSON selected})"
+        method46Source);
 
   # Discard references only after validating an actual store root. Policy must
   # not depend on the executable or on its policy-dependent startup profile.
@@ -24,6 +40,20 @@
     else builtins.replaceStrings ["."] ["\\."] basename;
   initialRoot = packageRoot "aos-method46-floor-initializers-0.1.0" initialPackage;
   helperRoot = packageRoot "aos-method46-initial-tpm-helpers-1" helperPackage;
+  entry = path: kind: type: {
+    inherit path kind;
+    context = "system_u:object_r:${type}";
+  };
+  storePaths = package: suffix: type:
+    map
+    (root:
+      entry
+      (builtins.replaceStrings ["/nix/store/"] ["${root}/store/"]
+        (builtins.unsafeDiscardStringContext (toString package))
+        + "/${suffix}")
+      "regular"
+      type)
+    ["/nix" "/nix.lower" "/usr/lib/aos/nix"];
 
   roleInputs = role: let
     service = "aos-sandbox-${role}-floor-initialize";
@@ -36,6 +66,14 @@
       credentials);
   in {
     inherit role service domain helper credential;
+    contextExpectations =
+      storePaths initialPackage "bin/${service}" "aos_method46_${role}_initial_exec_t"
+      ++ storePaths helperPackage "libexec/aos-method46-initial-${role}-tpm-helper" "aos_method46_initial_${role}_helper_exec_t"
+      ++ [
+        (entry "/run/credentials/${service}.service" "directory" credential)
+        (entry "/run/aos/sandbox/method46-${role}-initial.sock" "socket" "aos_method46_${role}_initial_approval_t")
+      ]
+      ++ map (name: entry "/run/credentials/${service}.service/${name}" "regular" credential) credentials;
     moduleText =
       builtins.replaceStrings
       ["@ROLE@" "@CREDENTIAL_TRANSITIONS@"]
@@ -61,7 +99,8 @@ in
   if !validSelection
   then throw "method46 initial purposes must be a canonical subset of controller, storage"
   else {
-    inherit credentials purposes roles;
+    inherit credentials purposes roles method46Data;
+    contextExpectations = builtins.concatLists (map (role: role.contextExpectations) roles);
     moduleText =
       if selected == []
       then ""
