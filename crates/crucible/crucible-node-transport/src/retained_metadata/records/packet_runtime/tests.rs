@@ -455,3 +455,65 @@ fn hello_capacity_data_appends_physical_rows_and_preserves_short_bank_history() 
     assert!(unallocated.rows().is_empty());
     assert!(!journal.attempted());
 }
+
+#[test]
+fn original_native_launch_appends_defining_rows_and_keeps_refused_prefixes() {
+    use crate::reference_packet::service::PacketNative5SourceLaunch;
+    use crate::retained_metadata::{
+        observe_retained_native_launch, record_retained_native_launch_data,
+    };
+    use crucible_node_format::Bytes;
+    use serde_json::json;
+
+    let (_, _, selection, coordinator) =
+        crate::reference_packet::coordinator::original_canonical_ack_controller_scope();
+    // Geometry-only DATA does not assert validated launch or native completion.
+    let mut launch: PacketNative5SourceLaunch = serde_json::from_value(json!({
+        "schema_version":5,"selection":selection,
+        "program":{"kind":"producer","program":{"schema":"source-owned.packet-program.v1","events":[]}},
+        "controller_pid":"1","controller_uid":"0","controller_executable":coordinator.reference,
+        "admission_token":Bytes::new(vec![7;32]),"initial_coordinator":coordinator,
+        "limits":{"frame_bytes":"65536","nesting":"64","requests":"256","journal_entries":"4096","blob_chunk_bytes":"1024"},
+        "storage":{"snapshot_bytes":"16384","control_snapshot_bytes":"8192","protocol_snapshot_bytes":"65536","frame_bank_bytes":"65536","frames_per_direction":"256","hello_bytes":"131080","settlement_bytes":"65536"},
+        "effects":"private-unopened-launch-census-control"
+    })).unwrap();
+    let mut token = Vec::with_capacity(173);
+    token.extend_from_slice(launch.admission_token.as_slice());
+    launch.admission_token = Bytes::new(token);
+    let original = launch.admission_token.as_slice().as_ptr();
+    let expected = observe_retained_native_launch(&launch).unwrap();
+    let prefix = row(MetadataRecordKind::Vector, 17, 1, 1);
+    let mut complete = bank(expected.capacity_records * 2 + 1);
+    complete.reserve_retained_data().unwrap();
+    complete.append_capacity_record_data(prefix).unwrap();
+    let allocated = complete.allocated_bytes();
+
+    assert_eq!(
+        record_retained_native_launch_data(&launch, &mut complete).unwrap(),
+        expected
+    );
+    let first = complete.rows()[1..].to_vec();
+    assert_eq!(
+        record_retained_native_launch_data(&launch, &mut complete).unwrap(),
+        expected
+    );
+
+    assert_eq!(complete.rows()[0], prefix);
+    assert_eq!(&complete.rows()[1..first.len() + 1], first);
+    assert_eq!(&complete.rows()[first.len() + 1..], first);
+    assert_eq!(complete.allocated_bytes(), allocated);
+    assert_eq!(launch.admission_token.as_slice().as_ptr(), original);
+    assert!(first.contains(&row(MetadataRecordKind::Vector, 173, 1, 1)));
+
+    let mut short = bank(expected.capacity_records);
+    short.reserve_retained_data().unwrap();
+    short.append_capacity_record_data(prefix).unwrap();
+    assert!(record_retained_native_launch_data(&launch, &mut short).is_err());
+    assert_eq!(short.rows().len(), expected.capacity_records);
+    assert_eq!(short.rows()[0], prefix);
+    assert_eq!(&short.rows()[1..], &first[..first.len() - 1]);
+
+    let mut unallocated = bank(expected.capacity_records);
+    assert!(record_retained_native_launch_data(&launch, &mut unallocated).is_err());
+    assert!(unallocated.rows().is_empty());
+}

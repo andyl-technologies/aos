@@ -69,6 +69,24 @@ pub fn observe_retained_native_launch(
     Ok(observer.finish())
 }
 
+/// Appends one original launch's actual child capacities to an admitted bank.
+///
+/// The defining walk is shared with [`observe_retained_native_launch`]. Existing
+/// rows and refused prefixes remain retained. The enclosing tuple allocation and
+/// creator authentication belong to the caller; this DATA grants no launch right.
+///
+/// # Errors
+/// Refuses unavailable bank backing, exhausted rows, checked arithmetic overflow
+/// or the unchanged ordinary component traversal and depth restrictions.
+pub fn record_retained_native_launch_data(
+    original: &crate::reference_packet::service::PacketNative5SourceLaunch,
+    bank: &mut records::PacketRuntimeMetadataRecordBank,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    let mut observer = MetadataObserver::appending(bank.recording_bank_data()?);
+    observe_native_launch_into(original, &mut observer)?;
+    Ok(observer.finish())
+}
+
 /// Walks the same exhaustive launch roster in its caller's retained population scope.
 pub(super) fn observe_native_launch_into(
     original: &crate::reference_packet::service::PacketNative5SourceLaunch,
@@ -353,6 +371,8 @@ pub fn retained_native_launch_counter_scratch_data() -> usize {
 
     size_of::<&PacketNative5SourceLaunch>()
         + size_of::<MetadataObserver<'static>>()
+        + size_of::<&mut records::PacketRuntimeMetadataRecordBank>()
+        + size_of::<Result<&mut records::MetadataRecordBank, ProviderError>>()
         + size_of::<&mut MetadataObserver<'static>>()
         + size_of::<&PacketNative5SourceLaunch>()
         + size_of::<Result<(), ProviderError>>()

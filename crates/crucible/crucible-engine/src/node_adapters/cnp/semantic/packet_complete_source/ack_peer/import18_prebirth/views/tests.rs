@@ -360,3 +360,92 @@ mod derivation;
 
 #[path = "original_launch_custody.rs"]
 mod original_launch_custody;
+
+#[test]
+fn original_launch_tuple_census_preserves_every_moved_bank_and_selected_view() {
+    use crate::node_adapters::cnp::semantic::PacketCompleteSemanticSource;
+    use crate::node_adapters::cnp::source_birth_derivation::original_launch::OriginalSourceBirthLaunches;
+    use crate::node_contract::restored_owner_history::merge_capacity_metadata_data;
+    use crucible_node_transport::retained_metadata::observe_retained_native_launch;
+
+    let mut launches = [launch(false).0, launch(true).0, launch(true).0];
+    for (index, launch) in launches.iter_mut().enumerate() {
+        let mut token = Vec::with_capacity(173 + index * 31);
+        token.extend_from_slice(launch.admission_token.as_slice());
+        launch.admission_token = Bytes::new(token);
+    }
+    let original_banks = launches.each_ref().map(|launch| {
+        (
+            launch.admission_token.as_slice().as_ptr(),
+            launch.admission_token.allocation_capacity(),
+            launch.initial_coordinator.bytes.as_slice().as_ptr(),
+            launch.initial_coordinator.bytes.allocation_capacity(),
+        )
+    });
+    let mut children = Default::default();
+    for launch in &launches {
+        merge_capacity_metadata_data(
+            &mut children,
+            &observe_retained_native_launch(launch).unwrap(),
+        )
+        .unwrap();
+    }
+    let mut input = Some(launches);
+    let mut retained = None;
+    OriginalSourceBirthLaunches::retain_into(&mut input, &mut retained).unwrap();
+    let retained = retained.unwrap();
+    let selected = retained.selected(1).unwrap();
+    let repeated = retained.selected(1).unwrap();
+
+    let actual = retained
+        .retained_capacity_metadata_data(usize::MAX, None)
+        .unwrap();
+    let bytes = PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+        &actual,
+        usize::MAX,
+    )
+    .unwrap();
+
+    assert!(input.is_none());
+    assert_eq!(actual.capacity_records, children.capacity_records + 1);
+    assert_eq!(
+        actual.shared_backing_views,
+        children.shared_backing_views + 1
+    );
+    assert_eq!(actual.string_capacity_bytes, children.string_capacity_bytes);
+    assert_eq!(actual.vector_capacity_bytes, children.vector_capacity_bytes);
+    assert_eq!(actual.observed_nodes, children.observed_nodes + 2);
+    assert_eq!(retained.retained_requested_storage_data(bytes), Ok(bytes));
+    assert_eq!(
+        retained.retained_requested_storage_data(bytes - 1),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(selected.known_backing_data(), Ok(bytes));
+    assert!(selected.same_original(&repeated));
+    assert!(std::ptr::eq(selected.original(), &retained.originals()[1]));
+    for (launch, (token, token_capacity, coordinator, coordinator_capacity)) in
+        retained.originals().iter().zip(original_banks)
+    {
+        assert_eq!(launch.admission_token.as_slice().as_ptr(), token);
+        assert_eq!(launch.admission_token.allocation_capacity(), token_capacity);
+        assert_eq!(
+            launch.initial_coordinator.bytes.as_slice().as_ptr(),
+            coordinator
+        );
+        assert_eq!(
+            launch.initial_coordinator.bytes.allocation_capacity(),
+            coordinator_capacity
+        );
+    }
+    assert_eq!(
+        retained.retained_capacity_metadata_data(actual.capacity_records, None),
+        Ok(actual)
+    );
+    assert_eq!(
+        retained.retained_capacity_metadata_data(actual.capacity_records - 1, None),
+        Err(RuntimeError::ResourceLimit)
+    );
+    drop(retained);
+    assert_eq!(selected.known_backing_data(), Ok(bytes));
+    assert_eq!(repeated.known_backing_data(), Ok(bytes));
+}

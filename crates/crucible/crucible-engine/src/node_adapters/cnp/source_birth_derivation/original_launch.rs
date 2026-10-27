@@ -4,9 +4,12 @@
 //! or public address substitutes for this actor-local strong ownership. These
 //! owners carry no Source, native member, deployment grant or accepted result.
 
+use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
 use crate::node_contract::{NodeRuntime, RuntimeError};
 use crucible_node_transport::reference_packet::service::PacketNative5SourceLaunch;
-use crucible_node_transport::retained_metadata::observe_retained_native_launch;
+use crucible_node_transport::retained_metadata::{
+    RetainedProtocolMetadataFacts, records::PacketRuntimeMetadataRecordBank,
+};
 use std::{
     mem::{align_of, size_of},
     rc::Rc,
@@ -115,6 +118,23 @@ impl OriginalSourceBirthLaunches {
         Ok(bytes)
     }
 
+    /// Reports the original shared tuple and all three launch child allocations.
+    ///
+    /// An optional admitted bank receives the same defining rows without being
+    /// cleared. Repeated views receive no alias discount. These are allocation
+    /// and traversal DATA, separate from the deployment's external obligations.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody before touching the bank, unavailable bank
+    /// backing, traversal or row limits, or checked layout arithmetic overflow.
+    pub fn retained_capacity_metadata_data(
+        &self,
+        maximum_rows: usize,
+        bank: Option<&mut PacketRuntimeMetadataRecordBank>,
+    ) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
+        capacity_metadata(&self.original, maximum_rows, bank)
+    }
+
     fn authenticate(&self) -> Result<(), RuntimeError> {
         authenticate(&self.original)
     }
@@ -122,6 +142,9 @@ impl OriginalSourceBirthLaunches {
     /// Names only this concrete move/holder/loan family's fixed headers.
     pub fn counter_scratch_data() -> usize {
         crucible_node_transport::retained_metadata::retained_native_launch_counter_scratch_data()
+            + OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + size_of::<Option<&mut PacketRuntimeMetadataRecordBank>>()
+            + size_of::<Result<RetainedProtocolMetadataFacts, RuntimeError>>()
             + size_of::<OriginalTuple>() * 2
             + size_of::<Option<[PacketNative5SourceLaunch; 3]>>()
             + size_of::<&mut Option<[PacketNative5SourceLaunch; 3]>>()
@@ -161,19 +184,36 @@ impl OriginalSourceBirthLaunch {
     }
 }
 
-fn known_backing(original: &OriginalTuple) -> Result<usize, RuntimeError> {
-    let mut bytes = OriginalSourceBirthLaunches::allocation_storage_data(usize::MAX)?;
-    // Conservatively repeat the complete actual tuple per owning view;
-    // no content hash or detached total earns an alias subtraction.
-    for launch in &original.launches {
-        let facts =
-            observe_retained_native_launch(launch).map_err(|_| RuntimeError::ResourceLimit)?;
-        let children = super::super::PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(&facts, usize::MAX)?;
-        bytes = bytes
-            .checked_add(children)
-            .ok_or(RuntimeError::ResourceLimit)?;
+fn known_backing(original: &Rc<OriginalTuple>) -> Result<usize, RuntimeError> {
+    let facts = capacity_metadata(original, usize::MAX, None)?;
+    super::super::PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+        &facts,
+        usize::MAX,
+    )
+}
+
+fn capacity_metadata(
+    original: &Rc<OriginalTuple>,
+    maximum_rows: usize,
+    bank: Option<&mut PacketRuntimeMetadataRecordBank>,
+) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
+    authenticate(original)?;
+    let OriginalTuple {
+        launches,
+        process,
+        thread,
+    } = original.as_ref();
+    let mut census = OriginalOwnerCapacityMetadataData::new(maximum_rows, bank);
+    census.observe_shared_allocation_data(original)?;
+    census.observe_inline_data(process)?;
+    census.observe_inline_data(thread)?;
+
+    // Every owning view keeps the complete tuple alive, including unselected
+    // members. No content hash or detached total earns an alias subtraction.
+    for launch in launches {
+        census.observe_native_launch_data(launch)?;
     }
-    Ok(bytes)
+    Ok(census.finish())
 }
 
 fn authenticate(original: &OriginalTuple) -> Result<(), RuntimeError> {
