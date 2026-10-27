@@ -209,18 +209,18 @@ fn native18_installation_refuses_an_equal_foreign_control_identity() -> Result<(
 }
 
 #[test]
-fn native18_installation_refuses_a_different_locally_valid_coordinator() -> Result<(), ProviderError>
-{
+fn native18_installation_derives_the_whole_original_coordinator() -> Result<(), ProviderError> {
     let actual = super::super::super::native5::current_control17_fixture_data(false)?;
     let coordinator = actual.complete_coordinator.as_ref().ok_or_else(refused18)?;
     let original = canonical::canonical_json(&serde_json::to_value(coordinator).unwrap())?;
-    Native18ModelInstallation::authenticate_coordinator_data(coordinator, &original)?;
 
     let mut foreign = coordinator.clone();
     foreign.participants[2].prepared_token = Id::new("different-original-preparation")?;
     foreign.validate(&actual.selection)?;
 
-    assert!(Native18ModelInstallation::authenticate_coordinator_data(&foreign, &original).is_err());
+    let derived = PacketNative5CoordinatorInstallation::decode(&original, &actual.selection)?;
+    assert_eq!(derived, *coordinator);
+    assert_ne!(derived, foreign);
     assert_eq!(foreign.participants[0], actual.selection);
     assert_ne!(foreign, *coordinator);
     Ok(())

@@ -1927,6 +1927,10 @@ impl std::io::Write for Extent {
 }
 
 mod restore_model;
+pub use restore_model::native18::{
+    native_import18_target_construction_counter_scratch_data,
+    native_import18_target_construction_data,
+};
 pub(crate) use restore_model::{PacketCompleteRestorePhysicalHold, PacketPreparedCompleteModel};
 mod restore_fresh;
 pub(crate) use restore_fresh::{

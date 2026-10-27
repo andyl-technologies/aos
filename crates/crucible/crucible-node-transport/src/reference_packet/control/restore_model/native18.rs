@@ -20,6 +20,11 @@ use crate::reference_packet::{
 };
 
 mod storage;
+mod target_construction;
+pub use target_construction::{
+    native_import18_target_construction_counter_scratch_data,
+    native_import18_target_construction_data,
+};
 
 /// Retains the archive and fresh socket before any installing validation.
 pub(crate) struct Native18ModelInstallationInputs {
@@ -112,15 +117,6 @@ impl Native18ModelInstallation {
                 .as_slice(),
             target.selection.as_ref().ok_or_else(refused18)?,
         )?);
-        Self::authenticate_coordinator_data(
-            target.coordinator.as_ref().ok_or_else(refused18)?,
-            owner
-                .policy
-                .launch_data()
-                .initial_coordinator
-                .bytes
-                .as_slice(),
-        )?;
         owner.boundary = Some(
             inputs
                 .archive
@@ -199,17 +195,6 @@ impl Native18ModelInstallation {
         control.immediate = false;
         control.restoration_activation_required = true;
         control
-    }
-
-    fn authenticate_coordinator_data(
-        coordinator: &PacketNative5CoordinatorInstallation,
-        original_bytes: &[u8],
-    ) -> Result<(), ProviderError> {
-        let value = serde_json::to_value(coordinator).map_err(ContractError::from)?;
-        if canonical::canonical_json(&value)? != original_bytes {
-            return Err(refused18());
-        }
-        Ok(())
     }
 
     fn preparing_hold(
