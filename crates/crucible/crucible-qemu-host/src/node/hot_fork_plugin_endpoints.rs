@@ -1,5 +1,6 @@
 //! Branch-private plugin control and wake endpoint staging.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -159,6 +160,19 @@ impl QemuHotForkPluginHostEndpoint {
 }
 
 impl QemuPluginIpcControlChannel for QemuHotForkPluginHostEndpoint {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.control
+            .host_send_quit_with_writer(|stream, frame| {
+                crate::plugin_control::write_supervised_control_frame(stream, frame, guard)
+            })
+            .map_err(|source| {
+                QemuNodeChannelError::new("send supervised hot-fork Quit", source.to_string())
+            })
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.control.host_send_quit().map_err(|source| {
             QemuNodeChannelError::new("send hot-fork plugin control Quit", source.to_string())
@@ -705,7 +719,7 @@ impl QemuNode {
     }
 }
 
-fn endpoint_rejected(message: impl Into<String>) -> QemuHotForkPluginEndpointStageError {
+fn endpoint_rejected(message: impl Into<Cow<'static, str>>) -> QemuHotForkPluginEndpointStageError {
     endpoint_rejected_source(QemuNodeChannelError::new(
         "stage hot-fork plugin endpoints",
         message,

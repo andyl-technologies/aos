@@ -1,8 +1,8 @@
 //! QEMU VM realization branch coordination.
 //!
-//! This module owns the RFC-0010 T-QEMU-6 single `instantiate` path. Lifecycle
+//! This module owns the single validated `instantiate` path. Lifecycle
 //! owners derive the exact requested configuration before calling it. It selects
-//! between version-nine exact-checkpoint restore, ancestor replay, and baked-genesis load in
+//! between authenticated paged exact-checkpoint restore, ancestor replay, and baked-genesis load in
 //! the required priority order while keeping the true cold boot inside `bake`.
 
 use crucible_engine::{
@@ -24,7 +24,8 @@ pub(crate) use node_executor::{QemuHotForkTemplateIdentity, QemuHotForkTemplateP
 #[cfg(target_os = "linux")]
 pub use node_executor::{
     QemuReplayOracleThinObservation, QemuReplayValidationExactAdmission,
-    QemuReplayValidationExecutor, QemuReplayValidationThinAdmission,
+    QemuReplayValidationExecutor, QemuReplayValidationRegistrationPreparation,
+    QemuReplayValidationThinAdmission,
 };
 
 /// An exact QEMU VM snapshot cached for one configuration.
@@ -173,6 +174,25 @@ impl QemuVmSnapshot {
             live_capture: true,
             identity,
         })
+    }
+
+    /// Compares the complete Apache node and device continuation of two captures.
+    ///
+    /// Both continuations must retain their own authenticated capture binding.
+    /// Only those bindings are excluded from equality; all modeled fields stay
+    /// exact. Native CPU/device state, physical RAM, enclosing World/scheduler
+    /// state and observed ownership require separate comparison evidence.
+    #[must_use]
+    pub fn same_host_continuation(&self, other: &Self) -> bool {
+        let own_bindings_valid = self.host_io.execution_binding() == self.checkpoint.id
+            && self.node.execution_binding() == self.checkpoint.id;
+        let peer_bindings_valid = other.host_io.execution_binding() == other.checkpoint.id
+            && other.node.execution_binding() == other.checkpoint.id;
+
+        own_bindings_valid
+            && peer_bindings_valid
+            && self.host_io.same_device_continuation(&other.host_io)
+            && self.node.same_scheduler_continuation(&other.node)
     }
 
     /// Returns the materialized scheduler checkpoint paired with this snapshot.
@@ -330,7 +350,7 @@ impl<'a> QemuBakedGenesisRestoreAdmission<'a> {
         Ok(Self { snapshot })
     }
 
-    /// Returns the checkpoint whose version-nine descriptors may be restored.
+    /// Returns the checkpoint whose authenticated paged descriptors may be restored.
     #[must_use]
     pub(crate) const fn checkpoint(self) -> &'a Checkpoint {
         &self.snapshot.checkpoint
@@ -544,9 +564,126 @@ fn validate_baked_genesis_node_set(
     Ok(())
 }
 
+/// Preserves independent dispatcher and native-pool retirement refusals.
+///
+/// The production return path moves both actual errors without issuing a new
+/// native claim. The containing factory retains its existing physical owners
+/// and the original worker-panic payload. This finite report has no recursive
+/// realization error, new allocation, or authority-bearing scalar.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct QemuTargetDispatcherRetirementError {
+    dispatcher: Option<crate::LinuxQemuTargetDispatcherError>,
+    pool: Option<crate::OriginalAccountRetirementError>,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuTargetDispatcherRetirementError {
+    pub(crate) fn combine(
+        dispatcher: Result<(), crate::LinuxQemuTargetDispatcherError>,
+        pool: Result<(), crate::OriginalAccountRetirementError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        let dispatcher = dispatcher.err();
+        let pool = pool.err();
+        if dispatcher.is_none() && pool.is_none() {
+            return Ok(());
+        }
+        Err(QemuVmRealizationError::TargetDispatcherRetirement {
+            source: Self { dispatcher, pool },
+        })
+    }
+
+    /// Borrows the original dispatcher error without exposing raw cgroup control.
+    #[must_use]
+    pub fn dispatcher_error(&self) -> Option<&crate::LinuxQemuTargetDispatcherError> {
+        self.dispatcher.as_ref()
+    }
+
+    /// Borrows the independent actual native-pool return refusal.
+    #[must_use]
+    pub fn pool_error(&self) -> Option<&crate::OriginalAccountRetirementError> {
+        self.pool.as_ref()
+    }
+
+    /// Reports the existing retryable category of actual retirement failures.
+    ///
+    /// Dispatcher maintenance produces only I/O reports; pool-only refusals
+    /// retain their prior retryable model-copy category. This classification
+    /// issues no retry authority or new Cleanup interval.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Display for QemuTargetDispatcherRetirementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Main Target retirement refused: dispatcher={:?}; pool={:?}",
+            self.dispatcher, self.pool
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::error::Error for QemuTargetDispatcherRetirementError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(dispatcher) = self.dispatcher_error() {
+            return Some(dispatcher);
+        }
+        match &self.pool {
+            Some(pool) => Some(pool),
+            None => None,
+        }
+    }
+}
+
 /// Errors returned by QEMU VM realization coordination.
 #[derive(Debug, Error)]
 pub enum QemuVmRealizationError {
+    /// Cleanup transferred ownership to quarantine without proving its return.
+    ///
+    /// The actual owner and initiating cause remain retained separately. This
+    /// allocation-free observation supplies no cancellation or retry authority.
+    #[error("{operation} retains unresolved cleanup ownership")]
+    CleanupRetained {
+        /// Cleanup operation whose retained ownership prevents completion.
+        operation: &'static str,
+    },
+    /// Preserves actual native return work and the same saved Cleanup's postcut.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    NativePoolReturn {
+        /// Actual moved errors, without a late diagnostic allocation.
+        source: crucible_host_resources::host_services::process_birth::NativePoolReturnError,
+    },
+    /// Retains independent physical-return reports without replacing either.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    TargetDispatcherRetirement {
+        /// Moved dispatcher and pool errors; physical custody remains elsewhere.
+        source: QemuTargetDispatcherRetirementError,
+    },
+    /// Actual kernel event counters recorded a contained family OOM kill.
+    ///
+    /// The associated physical process owner already completed empty-group
+    /// cleanup. This diagnostic does not attribute an exit signal to a child.
+    #[cfg(target_os = "linux")]
+    #[error("contained QEMU process family exceeded its kernel memory envelope: {failure}")]
+    HostMemoryLimit {
+        /// Original same-cgroup counter baseline and closure observation.
+        #[source]
+        failure: crate::LinuxQemuMemoryLimitFailure,
+    },
+    /// An original-owner metadata reservation refused a launch-model copy.
+    #[error("QEMU launch-model copy admission failed: {source}")]
+    ModelCopy {
+        /// Original typed allocation or resource refusal.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// A QEMU runtime operation is temporarily unavailable.
     #[error("{operation} executor operation is temporarily unavailable: {message}")]
     ExecutorUnavailable {

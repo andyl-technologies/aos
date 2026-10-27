@@ -52,6 +52,7 @@ impl ReplayFixture {
         let repository = CampaignRepository::with_component_authorities(
             blobs.clone(),
             refs.clone(),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             planner_authority.clone(),
             debugger_authority.clone(),
         )?;
@@ -146,6 +147,7 @@ impl ReplayFixture {
         CampaignRepository::with_component_authorities(
             self.blobs.clone(),
             self.refs.clone(),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             self.planner_authority.clone(),
             self.debugger_authority.clone(),
         )

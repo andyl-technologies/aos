@@ -4,15 +4,19 @@
     system = baseSystem.extendModules {
       modules = [
         {
-          aos.services.crucibleCampaign = {
+          aos.crucibleCampaign = {
             enable = enabled;
+            processResources =
+              if enabled
+              then import ./campaign-process-resources-fixture.nix
+              else null;
           };
         }
       ];
     };
   in {
     inherit mode system;
-    configurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+    configurationIdentity = system.config.aos.crucibleCampaign._runtimeIdentity;
     toplevel = system.config.system.build.toplevel;
   };
 in {

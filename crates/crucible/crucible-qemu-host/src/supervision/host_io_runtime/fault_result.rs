@@ -1,13 +1,14 @@
 //! Bounded polling for the dedicated QEMU fault-result transport.
 
+use super::action_scope::{ControlActionScope, SourceControlAction};
 use super::control::PendingControlBoundary;
-use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged};
-use crate::{QemuAsyncDriverRuntimeError, supervision::HostSupervisionDeadline};
+use super::{QemuLiveHostIoRuntime, control_boundary_request_is_acknowledged, region_missing};
+use crate::QemuAsyncDriverRuntimeError;
 use crucible_qemu_shmem::{
     BufferedFaultResultPoll, DequeuedFaultResult, FaultTransportError, dequeue_fault_event,
     dequeue_fault_result_with_buffer, fault_event_pending,
 };
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 pub(super) fn admit_fault_preparation_result(
     requested: usize,
@@ -28,37 +29,56 @@ impl QemuLiveHostIoRuntime {
     ) -> Result<(u64, u64), QemuAsyncDriverRuntimeError> {
         let transport = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .fault_event_transport_mut(self.vm_slot)
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("map fault-event transport", source.to_string())
+                QemuAsyncDriverRuntimeError::mapped_region_access(
+                    "map fault-event transport",
+                    source,
+                )
             })?;
         Ok((transport.ring.read_index(), transport.ring.write_index()))
     }
 
-    pub(super) fn drain_fault_events_for_pump(
+    pub(super) fn drain_fault_events_for_operation(
         &mut self,
         maximum_event_records: usize,
-        deadline: &HostSupervisionDeadline,
+        deadline: &super::OperationPollBudget<'_>,
         timeout: Duration,
         operation: &'static str,
+    ) -> Result<usize, QemuAsyncDriverRuntimeError> {
+        self.drain_fault_events_with_budget(maximum_event_records, timeout, operation, || {
+            Ok(deadline.remaining(operation)?.is_some())
+        })
+    }
+
+    fn drain_fault_events_with_budget(
+        &mut self,
+        maximum_event_records: usize,
+        timeout: Duration,
+        operation: &'static str,
+        has_time_remaining: impl Fn() -> Result<bool, QemuAsyncDriverRuntimeError>,
     ) -> Result<usize, QemuAsyncDriverRuntimeError> {
         let mut drained = 0;
         loop {
             let (pending, read_index, write_index, arena_read, arena_write) = {
                 let transport = self
                     .region
+                    .as_mut()
+                    .ok_or_else(region_missing)?
                     .fault_event_transport_mut(self.vm_slot)
                     .map_err(|source| {
-                        QemuAsyncDriverRuntimeError::new(
+                        QemuAsyncDriverRuntimeError::mapped_region_access(
                             "map fault-event transport",
-                            source.to_string(),
+                            source,
                         )
                     })?;
                 let pending =
                     fault_event_pending(transport.ring, transport.slots).map_err(|source| {
-                        QemuAsyncDriverRuntimeError::new(
+                        QemuAsyncDriverRuntimeError::fault_transport(
                             "inspect fault-event transport",
-                            source.to_string(),
+                            source,
                         )
                     })?;
                 (
@@ -72,7 +92,7 @@ impl QemuLiveHostIoRuntime {
             if !pending {
                 return Ok(drained);
             }
-            if !deadline.has_time_remaining() {
+            if !has_time_remaining()? {
                 return Err(QemuAsyncDriverRuntimeError::new(
                     operation,
                     format!(
@@ -106,11 +126,13 @@ impl QemuLiveHostIoRuntime {
             })?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_event_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-event transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let event = dequeue_fault_event(
@@ -121,7 +143,7 @@ impl QemuLiveHostIoRuntime {
                 transport.arena_region_offset,
             )
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault event", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_event("dequeue fault event", source)
             })?;
             let Some(event) = event else {
                 return Ok(drained);
@@ -143,11 +165,16 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         request: PendingControlBoundary,
         timeout: Duration,
-        deadline: &HostSupervisionDeadline,
+        deadline: &super::OperationPollBudget<'_>,
         maximum_event_records: usize,
+        loan: bool,
+        actions: &mut impl ControlActionScope,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {
-            self.drain_fault_events_for_pump(
+            if loan {
+                actions.refresh(self)?;
+            }
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
                 deadline,
                 timeout,
@@ -156,17 +183,25 @@ impl QemuLiveHostIoRuntime {
             self.service_console_output()?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(super::map_slot_error)?
                 .snapshot();
-            if control_boundary_request_is_acknowledged(request, &snapshot) {
+            if control_boundary_request_is_acknowledged(request, &snapshot)
+                && (!loan || actions.finish(self)?)
+            {
+                deadline.complete("await fault result publication fence")?;
                 return Ok(());
             }
-            if !deadline.has_time_remaining() {
+            if deadline
+                .remaining("await fault result publication fence")?
+                .is_none()
+            {
                 break snapshot.control_boundary_ack;
             }
             self.write_wake_doorbell()?;
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault result publication fence")?;
         };
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result publication fence",
@@ -181,31 +216,71 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn poll_fault_result(
         &mut self,
         timeout: Duration,
-        mut payload_buffer: Vec<u8>,
+        payload_buffer: Vec<u8>,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
+        self.settle_previous_action()?;
+        let deadline = super::OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            crucible_host_resources::host_supervision::HostOperationClass::Preparation,
+            timeout,
+            "await fault result",
+        )?;
+        self.poll_fault_result_with_actions(
+            timeout,
+            payload_buffer,
+            maximum_event_records,
+            &deadline,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn poll_fault_result_with_actions(
+        &mut self,
+        timeout: Duration,
+        mut payload_buffer: Vec<u8>,
+        maximum_event_records: usize,
+        deadline: &super::OperationPollBudget<'_>,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        let loan = actions.lend(self, deadline, None)?;
+        if deadline.remaining("publish fault action")?.is_none() {
             return Err(QemuAsyncDriverRuntimeError::new(
-                "await fault result",
-                "fault-result timeout is zero",
+                "publish fault action",
+                "producing operation expired before wake",
             ));
         }
-        let deadline = HostSupervisionDeadline::start(timeout);
+        let request = self.signal_wake(None)?;
+        actions.validate(request)?;
+        let mut repeat_wake = false;
         loop {
-            let request = self.signal_wake(None)?;
-            self.drain_fault_events_for_pump(
+            if loan {
+                actions.refresh(self)?;
+            }
+            // Reuse the immutable request. Republishing after its ACK would
+            // mint another token while the same action still owns the frontier.
+            if deadline.remaining("continue fault action")?.is_none() {
+                break;
+            }
+            if repeat_wake {
+                self.write_wake_doorbell()?;
+            }
+            repeat_wake = true;
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
-                &deadline,
+                deadline,
                 timeout,
                 "await fault result",
             )?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-result transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let result = dequeue_fault_result_with_buffer(
@@ -217,7 +292,7 @@ impl QemuLiveHostIoRuntime {
                 payload_buffer,
             )
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault result", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_transport("dequeue fault result", source)
             })?;
             match result {
                 BufferedFaultResultPoll::Pending(buffer) => payload_buffer = buffer,
@@ -225,16 +300,18 @@ impl QemuLiveHostIoRuntime {
                     self.await_fault_pump_completion(
                         request,
                         timeout,
-                        &deadline,
+                        deadline,
                         maximum_event_records,
+                        loan,
+                        actions,
                     )?;
                     return Ok(result);
                 }
             }
-            if !deadline.has_time_remaining() {
+            if deadline.remaining("await fault result")?.is_none() {
                 break;
             }
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault result")?;
         }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result",
@@ -249,29 +326,69 @@ impl QemuLiveHostIoRuntime {
         maximum_payload_bytes: usize,
         maximum_event_records: usize,
     ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
+        self.settle_previous_action()?;
+        let deadline = super::OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            crucible_host_resources::host_supervision::HostOperationClass::Preparation,
+            timeout,
+            "await fault preparation result",
+        )?;
+        self.poll_fault_preparation_result_with_actions(
+            timeout,
+            maximum_payload_bytes,
+            maximum_event_records,
+            &deadline,
+            &mut SourceControlAction::default(),
+        )
+    }
+
+    pub(super) fn poll_fault_preparation_result_with_actions(
+        &mut self,
+        timeout: Duration,
+        maximum_payload_bytes: usize,
+        maximum_event_records: usize,
+        deadline: &super::OperationPollBudget<'_>,
+        actions: &mut impl ControlActionScope,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        let mut payload_buffer = Vec::new();
+        let loan = actions.lend(self, deadline, None)?;
+        if deadline.remaining("publish fault action")?.is_none() {
             return Err(QemuAsyncDriverRuntimeError::new(
-                "await fault preparation result",
-                "fault-result timeout is zero",
+                "publish fault action",
+                "producing operation expired before wake",
             ));
         }
-        let deadline = HostSupervisionDeadline::start(timeout);
-        let mut payload_buffer = Vec::new();
+        let request = self.signal_wake(None)?;
+        actions.validate(request)?;
+        let mut repeat_wake = false;
         loop {
-            let request = self.signal_wake(None)?;
-            self.drain_fault_events_for_pump(
+            if loan {
+                actions.refresh(self)?;
+            }
+            // Reuse the immutable request. Republishing after its ACK would
+            // mint another token while the same action still owns the frontier.
+            if deadline.remaining("continue fault action")?.is_none() {
+                break;
+            }
+            if repeat_wake {
+                self.write_wake_doorbell()?;
+            }
+            repeat_wake = true;
+            self.drain_fault_events_for_operation(
                 maximum_event_records,
-                &deadline,
+                deadline,
                 timeout,
                 "await fault preparation result",
             )?;
             let transport = self
                 .region
+                .as_mut()
+                .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-result transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let result = match dequeue_fault_result_with_buffer(
@@ -303,7 +420,7 @@ impl QemuLiveHostIoRuntime {
                 other => other,
             }
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault result", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_transport("dequeue fault result", source)
             })?;
             match result {
                 BufferedFaultResultPoll::Pending(buffer) => payload_buffer = buffer,
@@ -311,16 +428,21 @@ impl QemuLiveHostIoRuntime {
                     self.await_fault_pump_completion(
                         request,
                         timeout,
-                        &deadline,
+                        deadline,
                         maximum_event_records,
+                        loan,
+                        actions,
                     )?;
                     return Ok(result);
                 }
             }
-            if !deadline.has_time_remaining() {
+            if deadline
+                .remaining("await fault preparation result")?
+                .is_none()
+            {
                 break;
             }
-            thread::sleep(self.poll_interval);
+            deadline.wait(self.poll_interval, "await fault preparation result")?;
         }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault preparation result",

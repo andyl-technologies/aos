@@ -215,6 +215,19 @@ where
 {
     type Guard = QemuHotForkWorldAuxiliaryResourceGuard<F::Guard>;
 
+    #[cfg(target_os = "linux")]
+    fn begin_fork_target(
+        &mut self,
+        permit: crucible_qemu_host::LinuxQemuForkTargetPermit,
+        resources: AttemptResourceLimits,
+        cancellation: ExecutionCancellation,
+    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
+    {
+        self.fresh
+            .begin_fork_target(permit, resources, cancellation)
+            .map(QemuHotForkWorldAuxiliaryResourceGuard::Fresh)
+    }
+
     fn begin(
         &mut self,
         resources: AttemptResourceLimits,
@@ -249,7 +262,7 @@ where
     let mut registry = state
         .lock()
         .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-    if registry.terminal {
+    if registry.retirement != WorldResourceRetirement::Active {
         return Err(world_resource_error(
             registry
                 .terminal_failure
@@ -289,7 +302,7 @@ where
         resources,
         cancellation,
         process_contract,
-        finished: false,
+        retirement: WorldMemberRetirement::Active,
     })
 }
 
@@ -310,7 +323,7 @@ where
     resources: AttemptResourceLimits,
     cancellation: ExecutionCancellation,
     process_contract: QemuChildProcessContract,
-    finished: bool,
+    retirement: WorldMemberRetirement,
 }
 
 impl<G> fmt::Debug for QemuHotForkWorldAuxiliaryGuard<G>
@@ -321,7 +334,7 @@ where
         formatter
             .debug_struct("QemuHotForkWorldAuxiliaryGuard")
             .field("resources", &self.resources)
-            .field("finished", &self.finished)
+            .field("retirement", &self.retirement)
             .finish_non_exhaustive()
     }
 }
@@ -343,7 +356,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle is not operational",
             ));
@@ -356,7 +372,10 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle is not operational",
             ));
@@ -369,31 +388,34 @@ impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
-        if self.finished {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
+        if self.retirement.already_returned().map_err(|status| {
+            crate::QemuAttemptResourceGuardCleanupFailure::member_status(status).after_quarantine()
+        })? {
             return Ok(());
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if state.terminal || !state.auxiliary_lifecycle_active {
-            return Err(world_resource_error(
+        let mut state = self.state.lock().map_err(|_| {
+            QemuWorldMemberCleanupStatus::registry("hot-fork world resource registry is poisoned")
+        })?;
+        if state.retirement != WorldResourceRetirement::Active || !state.auxiliary_lifecycle_active
+        {
+            return Err((QemuWorldMemberCleanupStatus::registry(
                 state
                     .terminal_failure
                     .as_deref()
                     .unwrap_or("hot-fork world auxiliary lifecycle is not active"),
-            ));
+            ))
+            .into());
         }
         state.auxiliary_lifecycle_active = false;
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Returned;
         Ok(())
     }
 
     fn quarantine(&mut self) {
-        if !self.finished {
+        if self.retirement == WorldMemberRetirement::Active {
             quarantine_world_state(&self.state);
-            self.finished = true;
+            self.retirement = WorldMemberRetirement::Quarantined;
         }
     }
 }
@@ -402,12 +424,154 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu_host::ram_control::RamControlRegistration,
+        supervisor: &crucible_host_resources::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu_host::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
+            return Err(world_resource_error(
+                "target RAM keeper launcher is terminal",
+            ));
+        }
+        state.guard.bind_fork_target_ram_custody(
+            contract,
+            registration,
+            supervisor,
+            guest_ram_bytes,
+            custody,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        self.state
+            .lock()
+            .map_or(true, |state| state.guard.fork_target_is_owned())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target(
+        &mut self,
+    ) -> Result<crucible_qemu_host::QemuForkTargetPreparation, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
+            return Err(world_resource_error(
+                "auxiliary source launcher is terminal",
+            ));
+        }
+        state.guard.prepare_fork_target()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
+            return Err(world_resource_error(
+                "auxiliary source launcher is terminal",
+            ));
+        }
+        state
+            .guard
+            .prepare_fork_target_run_directory(target_contract, requirements)
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu_host::InstalledNodeLaunchIssuer, crucible_qemu_host::QemuLiveNodeStepGateError>
+    {
+        let state = self.state.lock().map_err(|_| {
+            crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crucible_qemu_host::OriginalActorAccountError::Unavailable,
+            }
+        })?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
+            return Err(
+                crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crucible_qemu_host::OriginalActorAccountError::Unavailable,
+                },
+            );
+        }
+        state.guard.installed_node_issuer()
+    }
+
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu_host::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu_host::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu_host::QemuNode, crucible_qemu_host::QemuLiveNodeStepGateError> {
+        self.installed_node_issuer()?
+            .launch_fresh_node(config, admission)
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu_host::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu_host::QemuProductionExactRestoreLaunch,
+        crucible_qemu_host::QemuLiveNodeStepGateError,
+    > {
+        self.installed_node_issuer()?.launch_exact_node(request)
+    }
+
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu_host::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
+            return Err(world_resource_error(
+                "native resource controller owner is not operational",
+            ));
+        }
+        state.guard.native_resource_controller()
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         let state = self
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle cannot lend its process contract",
             ));
@@ -424,12 +588,15 @@ where
             .state
             .lock()
             .map_err(|_| world_resource_error("hot-fork world resource registry is poisoned"))?;
-        if self.finished || state.terminal || !state.auxiliary_lifecycle_active {
+        if self.retirement != WorldMemberRetirement::Active
+            || state.retirement != WorldResourceRetirement::Active
+            || !state.auxiliary_lifecycle_active
+        {
             return Err(world_resource_error(
                 "hot-fork world auxiliary lifecycle cannot prepare a generation directory",
             ));
         }
-        state.guard.prepare_generation_run_directory(requirements)
+        state.prepare_generation_run_directory(&self.process_contract, requirements)
     }
 
     fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
@@ -437,22 +604,24 @@ where
             Ok(mut state) => {
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world auxiliary lifecycle retained an unreaped launch child",
-                ));
+                state.retirement = WorldResourceRetirement::Retained;
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from(
+                        "hot-fork world auxiliary lifecycle retained an unreaped launch child",
+                    )
+                });
             }
             Err(poisoned) => {
                 let mut state = poisoned.into_inner();
                 state.guard.retain_failed_launch_child(child);
                 state.guard.quarantine();
-                state.terminal = true;
-                state.terminal_failure = Some(String::from(
-                    "hot-fork world auxiliary resource registry was poisoned",
-                ));
+                state.retirement = WorldResourceRetirement::Retained;
+                state.terminal_failure.get_or_insert_with(|| {
+                    String::from("hot-fork world auxiliary resource registry was poisoned")
+                });
             }
         }
-        self.finished = true;
+        self.retirement = WorldMemberRetirement::Quarantined;
     }
 }
 
@@ -502,7 +671,7 @@ impl<G> QemuAttemptResourceGuard for QemuHotForkWorldAuxiliaryResourceGuard<G>
 where
     G: QemuAttemptProcessResourceGuard,
 {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         match self {
             Self::Fresh(guard) => guard.finish(),
             Self::Retained(guard) => guard.finish(),
@@ -521,6 +690,111 @@ impl<G> QemuAttemptProcessResourceGuard for QemuHotForkWorldAuxiliaryResourceGua
 where
     G: QemuAttemptProcessResourceGuard,
 {
+    #[cfg(target_os = "linux")]
+    fn bind_fork_target_ram_custody(
+        &mut self,
+        contract: &QemuChildProcessContract,
+        registration: &crucible_qemu_host::ram_control::RamControlRegistration,
+        supervisor: &crucible_host_resources::host_supervision::HostOperationSupervisor,
+        guest_ram_bytes: u64,
+        custody: &crucible_qemu_host::QemuRamLaunchCustody,
+    ) -> Result<(), QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.bind_fork_target_ram_custody(
+                contract,
+                registration,
+                supervisor,
+                guest_ram_bytes,
+                custody,
+            ),
+            Self::Retained(guard) => guard.bind_fork_target_ram_custody(
+                contract,
+                registration,
+                supervisor,
+                guest_ram_bytes,
+                custody,
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fork_target_is_owned(&self) -> bool {
+        match self {
+            Self::Fresh(guard) => guard.fork_target_is_owned(),
+            Self::Retained(guard) => guard.fork_target_is_owned(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target(
+        &mut self,
+    ) -> Result<crucible_qemu_host::QemuForkTargetPreparation, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => guard.prepare_fork_target(),
+            Self::Retained(guard) => guard.prepare_fork_target(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_fork_target_run_directory(
+        &mut self,
+        target_contract: &QemuChildProcessContract,
+        requirements: QemuLaunchResourceRequirements,
+    ) -> Result<QemuPreparedRunDirectory, QemuVmRealizationError> {
+        match self {
+            Self::Fresh(guard) => {
+                guard.prepare_fork_target_run_directory(target_contract, requirements)
+            }
+            Self::Retained(guard) => {
+                guard.prepare_fork_target_run_directory(target_contract, requirements)
+            }
+        }
+    }
+
+    fn installed_node_issuer(
+        &self,
+    ) -> Result<crucible_qemu_host::InstalledNodeLaunchIssuer, crucible_qemu_host::QemuLiveNodeStepGateError>
+    {
+        match self {
+            Self::Fresh(guard) => guard.installed_node_issuer(),
+            Self::Retained(guard) => guard.installed_node_issuer(),
+        }
+    }
+
+    fn launch_exact_node(
+        &self,
+        request: crucible_qemu_host::QemuProductionExactRestoreRequest,
+    ) -> Result<
+        crucible_qemu_host::QemuProductionExactRestoreLaunch,
+        crucible_qemu_host::QemuLiveNodeStepGateError,
+    > {
+        match self {
+            Self::Fresh(guard) => guard.launch_exact_node(request),
+            Self::Retained(guard) => guard.launch_exact_node(request),
+        }
+    }
+
+    fn native_resource_controller(
+        &mut self,
+    ) -> Result<Option<crucible_qemu_host::LinuxQemuNativeResourceController>, QemuVmRealizationError>
+    {
+        match self {
+            Self::Fresh(guard) => guard.native_resource_controller(),
+            Self::Retained(guard) => guard.native_resource_controller(),
+        }
+    }
+
+    fn launch_fresh_node(
+        &self,
+        config: &crucible_qemu_host::QemuLiveNodeStepGateConfig,
+        admission: crucible_qemu_host::QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<crucible_qemu_host::QemuNode, crucible_qemu_host::QemuLiveNodeStepGateError> {
+        match self {
+            Self::Fresh(guard) => guard.launch_fresh_node(config, admission),
+            Self::Retained(guard) => guard.launch_fresh_node(config, admission),
+        }
+    }
+
     fn child_process_contract(&self) -> Result<&QemuChildProcessContract, QemuVmRealizationError> {
         match self {
             Self::Fresh(guard) => guard.child_process_contract(),

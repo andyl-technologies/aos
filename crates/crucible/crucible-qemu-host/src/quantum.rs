@@ -1,13 +1,14 @@
 //! QEMU per-quantum shared-memory hot path.
 //!
-//! RFC-0010 T-QEMU-12 requires the QEMU node step to be a shared-memory-only
+//! The QEMU node step is a shared-memory-only
 //! cycle: observe the plugin-published node report, publish the scheduler's
-//! ceiling, wake the parked plugin through the node-slot futex word, observe a
-//! a plugin report at the authorized boundary in the same shared-memory slot,
-//! and move frame records through SPSC rings. This module encodes that host-side data flow over
-//! caller-supplied shared-memory ABI objects; it does not allocate private
+//! ceiling, wake the parked plugin through the node-slot futex word, observe
+//! its report at the authorized boundary in the same slot, and move frame
+//! records through SPSC rings. This module encodes that host-side data flow
+//! over caller-supplied shared-memory ABI objects; it does not allocate private
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use crucible_engine::{
@@ -32,6 +33,8 @@ use crate::{
 };
 
 mod channel;
+mod publication;
+pub use publication::QemuQuantumPublication;
 mod support;
 
 pub use support::QemuQuantumError;
@@ -267,6 +270,42 @@ impl QemuQuantumOperation {
     }
 }
 
+// Mapped observations create a temporary view and record exactly one event.
+// Keep that event inline; longer-lived adapters retain every event after spill.
+enum QemuQuantumOperationLog {
+    Inline(Option<QemuQuantumOperation>),
+    Spilled(Vec<QemuQuantumOperation>),
+}
+
+impl QemuQuantumOperationLog {
+    const fn new() -> Self {
+        Self::Inline(None)
+    }
+
+    fn as_slice(&self) -> &[QemuQuantumOperation] {
+        match self {
+            Self::Inline(Some(operation)) => std::slice::from_ref(operation),
+            Self::Inline(None) => &[],
+            Self::Spilled(operations) => operations,
+        }
+    }
+
+    fn push(&mut self, operation: QemuQuantumOperation) {
+        match self {
+            Self::Inline(first) => match first.take() {
+                None => *first = Some(operation),
+                Some(first) => {
+                    let mut operations = Vec::with_capacity(4);
+                    operations.push(first);
+                    operations.push(operation);
+                    *self = Self::Spilled(operations);
+                }
+            },
+            Self::Spilled(operations) => operations.push(operation),
+        }
+    }
+}
+
 /// A published quantum that is waiting for an authorized boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuPendingQuantum {
@@ -351,9 +390,9 @@ pub struct QemuQuantumReport {
 
 /// Host-side QEMU shared-memory hot-path adapter.
 pub struct QemuQuantumShmemHotPath<'a> {
-    config: QemuQuantumShmemConfig,
+    config: Cow<'a, QemuQuantumShmemConfig>,
     view: QemuQuantumShmemView<'a>,
-    operation_log: Vec<QemuQuantumOperation>,
+    operation_log: QemuQuantumOperationLog,
     next_router_inbound_sequence: u64,
     inbound_delivery_ledger: QemuInboundDeliveryLedger<'a>,
     send_authorizer: &'a dyn SchedulerSendAuthorizer,
@@ -373,25 +412,27 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<Self, QemuQuantumError> {
         let inbound_delivery_ledger = inbound_delivery_ledger_from_view(&view)?;
         Ok(Self {
-            config,
+            config: Cow::Owned(config),
             view,
-            operation_log: Vec::new(),
+            operation_log: QemuQuantumOperationLog::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Owned(inbound_delivery_ledger),
             send_authorizer,
         })
     }
 
+    /// Borrows the mapped channel's existing identities and delivery ledger.
+    /// The temporary view cannot outlive either containing owner.
     pub(crate) fn new_with_inbound_delivery_ledger(
-        config: QemuQuantumShmemConfig,
+        config: &'a QemuQuantumShmemConfig,
         view: QemuQuantumShmemView<'a>,
         inbound_delivery_ledger: &'a mut VecDeque<FrameDeliveryKey>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
         Ok(Self {
-            config,
+            config: Cow::Borrowed(config),
             view,
-            operation_log: Vec::new(),
+            operation_log: QemuQuantumOperationLog::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Borrowed(inbound_delivery_ledger),
             send_authorizer,
@@ -426,7 +467,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     /// Returns the recorded operation log.
     #[must_use]
     pub fn operation_log(&self) -> &[QemuQuantumOperation] {
-        &self.operation_log
+        self.operation_log.as_slice()
     }
 
     /// Enqueues a deterministic inbound frame through the shared-memory ring.
@@ -490,9 +531,26 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         horizon: ExecutionHorizon,
         stop_condition: QemuQuantumStopCondition,
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
-        let operation_start = self.operation_log.len();
+        self.start_quantum_with_publication(horizon, stop_condition, None)
+    }
+
+    pub(crate) fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: QemuQuantumStopCondition,
+        mut publisher: Option<QemuQuantumPublication<'_>>,
+    ) -> Result<QemuPendingQuantum, QemuQuantumError> {
+        let operation_start = self.operation_log.as_slice().len();
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let initial_snapshot = self.view.node_slot.snapshot();
+        let observation = self
+            .view
+            .node_slot
+            .observe_scheduler_advance()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "observe initial scheduler command coordinates",
+                source,
+            })?;
+        let initial_snapshot = observation.snapshot();
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
         let inbound_consumption = self.snapshot_inbound_consumption()?;
@@ -512,23 +570,55 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         )
         .map_err(|source| QemuQuantumError::Lookahead { source })?;
 
-        self.record(QemuQuantumOperation::StoreSchedulerCeiling);
-        self.record(QemuQuantumOperation::FutexWake);
-        self.view
-            .node_slot
-            .publish_scheduler_inbox_and_advance(
-                self.config.vm_slot,
-                self.config.router_slot,
-                self.view.inbound_ring,
-                self.view.inbound_entries,
-                &[],
-                ceiling,
-                stop_condition,
-            )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish scheduler inbox and ceiling",
+        let publication = observation
+            .reserve()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "reserve observed scheduler command generation",
                 source,
             })?;
+        let binding = publisher
+            .as_mut()
+            .map(|publisher| {
+                publisher.retain(
+                    self.view.node_slot,
+                    &publication,
+                    effective_ceiling,
+                    stop_condition,
+                )
+            })
+            .transpose()?;
+        self.record(QemuQuantumOperation::StoreSchedulerCeiling);
+        self.record(QemuQuantumOperation::FutexWake);
+        if let Some((publisher, binding)) = publisher.as_mut().zip(binding) {
+            let committed = publication
+                .commit(ceiling, stop_condition)
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "commit actual Quantum scheduler tuple",
+                    source,
+                })?;
+            publisher.publish(binding, self.view.node_slot, &committed)?;
+            committed
+                .wake()
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "wake actual Quantum scheduler tuple",
+                    source,
+                })?;
+        } else {
+            publication
+                .publish_inbox_and_advance(
+                    self.config.vm_slot,
+                    self.config.router_slot,
+                    self.view.inbound_ring,
+                    self.view.inbound_entries,
+                    &[],
+                    ceiling,
+                    stop_condition,
+                )
+                .map_err(|source| QemuQuantumError::SchedulerWakePublication {
+                    operation: "publish scheduler inbox and ceiling",
+                    source,
+                })?;
+        }
 
         Ok(QemuPendingQuantum {
             initial_state,
@@ -577,7 +667,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         pending: &QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
-        let final_snapshot = self.view.node_slot.snapshot();
+        let final_snapshot = self.observe_node_slot("observe quantum completion")?;
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
         let mut final_state = idle_state_from_snapshot(final_snapshot);
         if completed_clamp
@@ -630,7 +720,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         } else {
             quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?
         };
-        let operations = self.operation_log[pending.operation_start..].to_vec();
+        let operations = self.operation_log.as_slice()[pending.operation_start..].to_vec();
         assert_qemu_quantum_hot_path_is_shmem_only(&operations)?;
 
         Ok(QemuQuantumReport {
@@ -663,6 +753,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         let pending = self.start_quantum(horizon, QemuQuantumStopCondition::Ceiling)?;
         self.finish_quantum(pending)
+    }
+
+    fn observe_node_slot(
+        &self,
+        operation: &'static str,
+    ) -> Result<NodeSlotSnapshot, QemuQuantumError> {
+        self.view
+            .node_slot
+            .try_snapshot()
+            .map_err(|source| QemuQuantumError::NodeSlot { operation, source })
     }
 
     fn current_icount_from_slot(&self) -> Icount {

@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let base = fresh_runner_input();
     let CrucibleResolvedAttemptStart::Discover {
         configuration: parent,
@@ -69,6 +71,8 @@ fn fresh_runner_replays_authenticated_signal_fault_plan_before_driver() {
 
 #[test]
 fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let node = NodeId {
         name: String::from("router-a"),
     };
@@ -160,6 +164,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
             1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository
         .publish_choice_domain(discovery.domain())
@@ -397,6 +402,8 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
 
 #[test]
 fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -442,6 +449,8 @@ fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
 
 #[test]
 fn fresh_runner_replay_honors_cancellation_before_first_quantum() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -479,6 +488,8 @@ fn fresh_runner_replay_honors_cancellation_before_first_quantum() {
 
 #[test]
 fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -519,6 +530,8 @@ fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
 
 #[test]
 fn attempt_start_verifier_seals_the_prefix_before_final_drain() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -535,7 +548,7 @@ fn attempt_start_verifier_seals_the_prefix_before_final_drain() {
     let input = non_genesis_fresh_runner_input();
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"ordinary-attempt-start-proof",
     ))
     .expect("resume checkpoint");
@@ -557,6 +570,8 @@ fn attempt_start_verifier_seals_the_prefix_before_final_drain() {
 
 #[test]
 fn attempt_start_verifier_rejects_unsupported_override_before_factory() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -584,7 +599,7 @@ fn attempt_start_verifier_rejects_unsupported_override_before_factory() {
     let expected = input.start().configuration().id();
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"unsupported-override-start",
     ))
     .expect("resume checkpoint");
@@ -608,6 +623,8 @@ fn attempt_start_verifier_rejects_unsupported_override_before_factory() {
 
 #[test]
 fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -638,6 +655,8 @@ fn fresh_runner_cleans_up_and_preserves_driver_failure_classification() {
 
 #[test]
 fn fresh_runner_cleans_up_after_terminal_fingerprint_capture_failure() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let failing = FingerprintFailingFreshLifecycleFactory {
         inner: FakeFreshLifecycleFactory {
@@ -681,6 +700,8 @@ fn fresh_runner_cleans_up_after_terminal_fingerprint_capture_failure() {
 
 #[test]
 fn cleanup_failure_overrides_terminal_fingerprint_capture_failure() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let failing = FingerprintFailingFreshLifecycleFactory {
         inner: FakeFreshLifecycleFactory {
@@ -733,6 +754,8 @@ fn cleanup_failure_overrides_terminal_fingerprint_capture_failure() {
 
 #[test]
 fn fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -772,6 +795,8 @@ fn fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics() {
 
 #[test]
 fn fresh_cleanup_failure_bounds_the_original_driver_message() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let error = QemuFreshExecutionRunnerError::<&str, String>::CleanupAfterDriver {
         driver: "guest-output".repeat(200),
         driver_diagnostic: super::super::bounded_driver_failure(&"guest-output".repeat(200)),
@@ -790,6 +815,8 @@ fn fresh_cleanup_failure_bounds_the_original_driver_message() {
 
 #[test]
 fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let unavailable = classify_production_lifecycle_failure(
         QemuAttemptProductionVmLifecycleError::ResourceInstallation(
             QemuVmRealizationError::ExecutorUnavailable {
@@ -817,6 +844,8 @@ fn production_lifecycle_resource_admission_keeps_retry_and_cancel_classes() {
 
 #[test]
 fn production_continuation_plan_consumes_the_authenticated_reseed() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = fresh_runner_input();
     let source = accepted_step(
         input.start().configuration(),

@@ -12,23 +12,19 @@
   campaignServiceModuleContract,
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  nativeGcIntegration = import ./phase5-cli-native-gc-integration.nix {inherit pkgs lib;};
 in
   pkgs.mkDerivation {
     pname = "crucible-phase9-campaign-operational-continuity";
     version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
+    src = null;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.findutils
         pkgs.grep
-        pkgs.rust
-        pkgs.sed
+        nativeGcIntegration
         campaignStoreEquivalence
         campaignStoreComposition
         campaignColdContinuity
@@ -36,43 +32,14 @@ in
         campaignStorageRecovery
         campaignMidpointDebug
         campaignServiceModuleContract
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        '';
-      }
-      {
         name = "run-operational-continuity";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-
           require_result_line() {
             result="$1"
             line="$2"
@@ -254,49 +221,35 @@ in
             "evidence_manifest_sha256=$midpoint_manifest_digest"
           sha256sum -c "$midpoint_manifest"
 
-          target="$TMPDIR/crucible-campaign-operational-continuity-target"
-          run_exact_process_test() {
+          # These exact process tests run under the installed source/catalog
+          # quotas in GC14. Retain its immutable source/artifact-bound receipt
+          # and UART output instead of opening an unconfigured second owner.
+          require_result_line ${nativeGcIntegration}/result PASS
+          require_result_line ${nativeGcIntegration}/result gate=gate:cli-native-gc-integration
+          require_result_line ${nativeGcIntegration}/result cli_native_gc_executions=14
+          require_result_line ${nativeGcIntegration}/result \
+            cli_native_gc_build_graph=${nativeGcIntegration.passthru.buildGraph}
+          retain_exact_process_evidence() {
             selector="$1"
             evidence_name="$2"
-            listing_file="$out/evidence/$evidence_name.listing"
-            output_file="$out/evidence/$evidence_name.output"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-cli \
-              --test campaign_store_process \
-              "$selector" \
-              -- --exact --list > "$listing_file"
-            grep -Fqx "$selector: test" "$listing_file"
-
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-cli \
-              --test campaign_store_process \
-              "$selector" \
-              -- --exact --test-threads=1 --nocapture > "$output_file" 2>&1
-            cat "$output_file"
-            grep -Fq \
-              'test result: ok. 1 passed; 0 failed; 0 ignored;' \
-              "$output_file"
+            receipt="cli_native_gc_selector_pass=campaign_store_process:$selector"
+            require_result_line ${nativeGcIntegration}/result "$receipt"
+            require_result_line ${nativeGcIntegration}/serial.log "$receipt"
+            cp ${nativeGcIntegration}/result "$out/evidence/$evidence_name.receipt"
+            cp ${nativeGcIntegration}/serial.log "$out/evidence/$evidence_name.output"
           }
 
           mkdir -p "$out/evidence"
-          run_exact_process_test \
+          retain_exact_process_evidence \
             public_checkpoint_pause_survives_stopped_service_gc_and_cold_resume \
             checkpoint-pause-cold-resume
-          run_exact_process_test \
+          retain_exact_process_evidence \
             public_composed_store_flight_evicts_cache_and_flushes_write_back \
             composed-store-maintenance
           grep -Fq \
             'composed_store_derived_refs_after_gc_restart=2' \
             "$out/evidence/composed-store-maintenance.output"
-          run_exact_process_test \
+          retain_exact_process_evidence \
             archive_transfer::public_offline_archive_transfer_reports_and_authenticates_sensitive_closure \
             directory-archive-transfer
           grep -Fq \
@@ -305,7 +258,7 @@ in
           grep -Fq \
             'archive_transfer_imported_campaign_authenticated=true' \
             "$out/evidence/directory-archive-transfer.output"
-          run_exact_process_test \
+          retain_exact_process_evidence \
             archive_transfer::public_archive_transfer_is_backend_neutral_across_compressed_stores \
             compressed-archive-transfer
           grep -Fq \

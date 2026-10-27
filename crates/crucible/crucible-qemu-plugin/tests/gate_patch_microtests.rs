@@ -80,11 +80,29 @@ fn gate_patch_microtests_covers_atomic_qemu_artifact() -> Result<(), Box<dyn Err
         "apply_commit_tree_verified=true",
         "bundle_matches_patch_commit=true",
         "atomic_patch_regenerated_exactly=true",
-        "atomic_patch_live_checkpoint_delta_gate_passed=true",
+        "atomic_patch_live_paged_checkpoint_gate_passed=true",
         "stock_qemu_lacks_atomic_exports=true",
         "qemu_inert_depends_on_patch_microtests=true",
     ] {
         assert_contains(&aggregate, evidence);
+    }
+    assert_contains(
+        &aggregate,
+        "checkpointFlight = import ./phase2-qemu-checkpoint-delta-flight.nix",
+    );
+    let restore_gate = read(
+        &root,
+        "tests/crucible/phase2-qemu-checkpoint-delta-flight.nix",
+    )?;
+    for evidence in [
+        "nativeGate = import ./ram-native-flight.nix",
+        "production_lazy_restore_first_cold_quantum_matches_resident_oracle",
+        "managed_lazy_restore_first_quantum_identity=true",
+        "managed_lazy_restore_published_ram_root_identity=true",
+        "managed_lazy_restore_cleanup_before_discharge=true",
+        "managed_lazy_restore_missing_installs",
+    ] {
+        assert_contains(&restore_gate, evidence);
     }
     Ok(())
 }

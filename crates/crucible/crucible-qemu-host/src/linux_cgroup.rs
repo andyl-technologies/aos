@@ -25,7 +25,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{
-    AtFlags, FlockOperation, Mode, OFlags, flock, fstat, fstatfs, mkdirat, open, openat, unlinkat,
+    AtFlags, FlockOperation, Mode, OFlags, flock, fstatfs, mkdirat, open, openat, unlinkat,
 };
 use thiserror::Error;
 
@@ -33,6 +33,20 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+mod control_check;
+mod dispatcher_error;
+pub use dispatcher_error::LinuxQemuTargetDispatcherError;
+#[cfg(feature = "private-measurement-domain")]
+pub(crate) mod measurement_domain;
+mod memory_control;
+mod memory_events;
+mod target_dispatcher;
+pub(crate) use memory_control::tighten_process_envelope;
+pub use memory_events::LinuxQemuMemoryLimitFailure;
+pub(crate) use target_dispatcher::TargetDispatcher;
+mod original_finish;
+/// Opaque pinned memory authority confined to the physical owner boundary.
+pub(crate) type LinuxQemuCgroupMemoryControl = memory_control::LinuxQemuCgroupMemoryControl;
 mod quarantine;
 
 pub(crate) use attempt_owner::{
@@ -102,6 +116,10 @@ impl LinuxQemuCgroupLimits {
 
     pub(crate) const fn maximum_resident_bytes(self) -> u64 {
         self.maximum_resident_bytes
+    }
+
+    pub(crate) const fn maximum_tasks(self) -> u32 {
+        self.maximum_tasks
     }
 }
 
@@ -179,6 +197,14 @@ pub enum LinuxQemuCgroupError {
         /// Value read back from the kernel.
         actual: String,
     },
+    /// The actual kernel memory event record could not be authenticated.
+    #[error("QEMU memory events are invalid for {path}: {reason}")]
+    MemoryEvents {
+        /// Pinned control's diagnostic path.
+        path: PathBuf,
+        /// Static parse failure preserving the actual first read cause.
+        reason: &'static str,
+    },
     /// The cgroup event file was not canonical or complete.
     #[error("QEMU cgroup events are invalid for {path}: {message}")]
     InvalidEvents {
@@ -218,7 +244,7 @@ impl LinuxQemuCgroupCreateError {
 
     /// Returns the setup failure without consuming retained cleanup authority.
     #[must_use]
-    pub const fn source_error(&self) -> &LinuxQemuCgroupError {
+    pub(crate) const fn source_error(&self) -> &LinuxQemuCgroupError {
         &self.source
     }
 
@@ -237,6 +263,7 @@ pub struct LinuxQemuCgroupCleanupAuthority {
     parent_directory: OwnedFd,
     name: String,
     directory: Option<OwnedFd>,
+    original_removed: bool,
 }
 
 impl LinuxQemuCgroupCleanupAuthority {
@@ -397,7 +424,7 @@ impl LinuxQemuCgroupControl {
     ///
     /// Returns [`LinuxQemuCgroupError`] when `cgroup.events` cannot be read or
     /// contains a noncanonical `populated` field.
-    pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
+    fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
         read_populated(&mut self.cgroup_events, &self.path)
     }
 }
@@ -408,8 +435,58 @@ impl LinuxQemuCgroupControl {
 pub struct LinuxQemuCgroupWatcher {
     cancellation_event: OwnedFd,
     watcher_state: Arc<AtomicU8>,
-    join: Option<JoinHandle<LinuxQemuCgroupControl>>,
+    join: Option<WatcherCompletion>,
     path: PathBuf,
+}
+
+#[derive(Debug)]
+enum WatcherCompletion {
+    Ordinary(JoinHandle<LinuxQemuCgroupControl>),
+    Target(target_dispatcher::TargetWatchJob),
+}
+
+enum WatcherReturnedControl {
+    Ordinary(LinuxQemuCgroupControl),
+    Target(target_dispatcher::TargetReturnedControl),
+}
+
+impl WatcherReturnedControl {
+    fn close(self) {
+        match self {
+            Self::Ordinary(control) => drop(control),
+            Self::Target(control) => drop(control),
+        }
+    }
+}
+
+enum WatcherCompletionError {
+    ThreadPanicked,
+    Target {
+        job: target_dispatcher::TargetWatchJob,
+        source: LinuxQemuTargetDispatcherError,
+    },
+}
+
+impl WatcherCompletion {
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Ordinary(worker) => worker.is_finished(),
+            Self::Target(job) => job.is_finished(),
+        }
+    }
+
+    fn join(self) -> Result<WatcherReturnedControl, WatcherCompletionError> {
+        match self {
+            Self::Ordinary(worker) => worker
+                .join()
+                .map(WatcherReturnedControl::Ordinary)
+                .map_err(|_| WatcherCompletionError::ThreadPanicked),
+            Self::Target(job) => job
+                .retire()
+                .map(WatcherReturnedControl::Target)
+                .map_err(|(job, source)| WatcherCompletionError::Target { job, source }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -420,6 +497,64 @@ enum LinuxQemuCgroupWatcherAttempt {
 }
 
 impl LinuxQemuCgroupWatcher {
+    fn start_target(
+        control: LinuxQemuCgroupControl,
+        dispatcher: &mut target_dispatcher::TargetDispatcher,
+        original: crate::linux_attempt_host::TargetWatcherOriginal,
+    ) -> Result<Self, (Option<Self>, control_check::ControlCheckError)> {
+        let path = control.path.clone();
+        if control
+            .watcher_state
+            .compare_exchange(
+                WATCHER_NOT_STARTED,
+                WATCHER_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err((
+                None,
+                control_check::ControlCheckError::watcher_already_started(path),
+            ));
+        }
+        let watcher_state = Arc::clone(&control.watcher_state);
+        let cancellation_event = match control_check::retain_target_cancellation(
+            control.cancellation_event.as_raw_fd(),
+            &path,
+        ) {
+            Ok(fd) => fd,
+            Err(source) => {
+                watcher_state.store(WATCHER_NOT_STARTED, Ordering::Release);
+                return Err((None, source));
+            }
+        };
+        match dispatcher.submit(control, original) {
+            Ok(job) => Ok(Self {
+                cancellation_event,
+                watcher_state,
+                join: Some(WatcherCompletion::Target(job)),
+                path,
+            }),
+            Err(target_dispatcher::TargetJobSubmitError::Unsubmitted { control, source }) => {
+                control
+                    .watcher_state
+                    .store(WATCHER_NOT_STARTED, Ordering::Release);
+                drop(control);
+                Err((None, source))
+            }
+            Err(target_dispatcher::TargetJobSubmitError::Staged { job, source }) => Err((
+                Some(Self {
+                    cancellation_event,
+                    watcher_state,
+                    join: Some(WatcherCompletion::Target(job)),
+                    path,
+                }),
+                source,
+            )),
+        }
+    }
+
     fn start(mut control: LinuxQemuCgroupControl) -> Result<Self, LinuxQemuCgroupError> {
         let path = control.path.clone();
         control
@@ -502,7 +637,7 @@ impl LinuxQemuCgroupWatcher {
         Ok(Self {
             cancellation_event,
             watcher_state,
-            join: Some(join),
+            join: Some(WatcherCompletion::Ordinary(join)),
             path,
         })
     }
@@ -520,6 +655,110 @@ impl LinuxQemuCgroupWatcher {
     /// signal failure or timeout, or a terminal watcher error after exit.
     pub fn finish_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
         self.close_and_wait(timeout)
+    }
+
+    /// Joins the existing watcher within the Parent's retained absolute end.
+    ///
+    /// No new clock, watcher or cleanup allowance is created. A refusing wait
+    /// returns the same watcher to the caller; its original clock cause remains
+    /// in the externally retained process owner.
+    ///
+    /// # Errors
+    /// Retains the watcher on original refusal, signaling or wait failure.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn finish_under_original_parent(
+        mut self,
+        original: &crucible_host_resources::host_services::process_birth::OriginalParentAttempt,
+    ) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
+        if original.check_original().is_err() {
+            return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                watcher: Box::new(self),
+            });
+        }
+        let signal = signal_terminal(&self.watcher_state, self.cancellation_event.as_raw_fd());
+        let post = original.check_original();
+        if let Err(source) = signal {
+            return Err(LinuxQemuCgroupWatcherWaitError::Signal {
+                watcher: Box::new(self),
+                source,
+            });
+        }
+        if post.is_err() {
+            return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                watcher: Box::new(self),
+            });
+        }
+        loop {
+            let remaining = match original.remaining() {
+                Ok(remaining) => remaining,
+                Err(_) => {
+                    return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                        watcher: Box::new(self),
+                    });
+                }
+            };
+            let Some(join) = self.join.as_ref() else {
+                return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                });
+            };
+            if join.is_finished() {
+                break;
+            }
+            let interval = WATCHER_WAIT_POLL_INTERVAL.min(remaining);
+            let mut descriptors = [];
+            let wait = rustix::event::poll(
+                &mut descriptors,
+                Some(&rustix::time::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: i64::from(interval.subsec_nanos()),
+                }),
+            );
+            let post = original.check_original();
+            if let Err(source) = wait {
+                return Err(LinuxQemuCgroupWatcherWaitError::OriginalWait {
+                    watcher: Box::new(self),
+                    source: source.into(),
+                });
+            }
+            if post.is_err() {
+                return Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                    watcher: Box::new(self),
+                });
+            }
+        }
+        let Some(join) = self.join.take() else {
+            return Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                path: self.path.clone(),
+            });
+        };
+        let joined = join.join();
+        match joined {
+            Ok(authority) => {
+                authority.close();
+                if original.check_original().is_err() {
+                    Err(LinuxQemuCgroupWatcherWaitError::Timeout {
+                        watcher: Box::new(self),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            Err(WatcherCompletionError::Target { job, source }) => {
+                self.join = Some(WatcherCompletion::Target(job));
+                let _original_after = original.check_original();
+                Err(LinuxQemuCgroupWatcherWaitError::TargetJob {
+                    watcher: Box::new(self),
+                    source: source.into(),
+                })
+            }
+            Err(WatcherCompletionError::ThreadPanicked) => {
+                let _ = original.check_original();
+                Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                })
+            }
+        }
     }
 
     fn close_and_wait(self, timeout: Duration) -> Result<(), LinuxQemuCgroupWatcherWaitError> {
@@ -574,12 +813,21 @@ impl LinuxQemuCgroupWatcher {
         };
         match join.join() {
             Ok(authority) => {
-                drop(authority);
+                authority.close();
                 Ok(())
             }
-            Err(_) => Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
-                path: self.path.clone(),
-            }),
+            Err(WatcherCompletionError::Target { job, source }) => {
+                self.join = Some(WatcherCompletion::Target(job));
+                Err(LinuxQemuCgroupWatcherWaitError::TargetJob {
+                    watcher: Box::new(self),
+                    source: source.into(),
+                })
+            }
+            Err(WatcherCompletionError::ThreadPanicked) => {
+                Err(LinuxQemuCgroupWatcherWaitError::DetachedThreadPanicked {
+                    path: self.path.clone(),
+                })
+            }
         }
     }
 
@@ -599,13 +847,21 @@ impl LinuxQemuCgroupWatcher {
         let Some(join) = self.join.take() else {
             return Ok(());
         };
-        join.join()
-            .map(|_| ())
-            .map_err(|_| LinuxQemuCgroupError::Io {
+        match join.join() {
+            Ok(control) => {
+                control.close();
+                Ok(())
+            }
+            Err(WatcherCompletionError::Target { job, source }) => {
+                self.join = Some(WatcherCompletion::Target(job));
+                Err(source.into())
+            }
+            Err(WatcherCompletionError::ThreadPanicked) => Err(LinuxQemuCgroupError::Io {
                 operation: "join QEMU cgroup cancellation watcher",
                 path: self.path.clone(),
                 source: io::Error::other("watcher thread panicked outside its guarded body"),
-            })
+            }),
+        }
     }
 }
 
@@ -628,11 +884,28 @@ pub enum LinuxQemuCgroupWatcherWaitError {
         /// Underlying eventfd failure.
         source: io::Error,
     },
+    /// The original Parent's finite poll failed while its watcher stayed owned.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("failed to wait for original Parent watcher: {source}")]
+    OriginalWait {
+        /// Watcher retained in the original process owner.
+        watcher: Box<LinuxQemuCgroupWatcher>,
+        /// Actual kernel polling failure.
+        source: io::Error,
+    },
     /// The bounded wait expired while the watcher remained live.
     #[error("timed out waiting for QEMU cgroup watcher")]
     Timeout {
         /// Watcher retained for retry or quarantine.
         watcher: Box<LinuxQemuCgroupWatcher>,
+    },
+    /// The pooled Target job retains its exact unreturned control authority.
+    #[error("Target watcher job retirement refused: {source}")]
+    TargetJob {
+        /// The same job owner retained for bounded retry or quarantine.
+        watcher: Box<LinuxQemuCgroupWatcher>,
+        /// The actual control-return failure.
+        source: LinuxQemuCgroupError,
     },
     /// The worker panicked outside the guarded worker body.
     #[error("QEMU cgroup watcher thread detached during panic for {path}")]
@@ -647,7 +920,11 @@ impl LinuxQemuCgroupWatcherWaitError {
     #[must_use]
     pub fn into_watcher(self) -> Option<LinuxQemuCgroupWatcher> {
         match self {
-            Self::Signal { watcher, .. } | Self::Timeout { watcher } => Some(*watcher),
+            Self::Signal { watcher, .. }
+            | Self::Timeout { watcher }
+            | Self::TargetJob { watcher, .. } => Some(*watcher),
+            #[cfg(feature = "private-measurement-domain")]
+            Self::OriginalWait { watcher, .. } => Some(*watcher),
             Self::DetachedThreadPanicked { .. } => None,
         }
     }
@@ -721,6 +998,32 @@ pub struct LinuxQemuCgroupRoot {
 }
 
 impl LinuxQemuCgroupRoot {
+    /// Checks the actual pinned workload and normal host membership.
+    ///
+    /// # Errors
+    /// Refuses a foreign workload, changed family controls or expired custody.
+    pub(crate) fn verify_normal_family(
+        &self,
+        family: &crucible_host_resources::host_services::process_birth::AuthenticatedServiceFamily,
+    ) -> Result<(), crucible_host_resources::host_services::process_birth::ServiceBirthError> {
+        family.verify_workload_directory(&self.directory)
+    }
+
+    /// Verifies this pinned namespace against the same authenticated actor family.
+    ///
+    /// No path or descriptor escapes this borrow. Verification precedes
+    /// attempt creation, watcher birth and any native child execution.
+    ///
+    /// # Errors
+    /// Refuses changed actor membership, controls or a different workload root.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn verify_original_actor_family(
+        &self,
+        family: &crucible_host_resources::measurement_origin::AuthenticatedActorFamily,
+    ) -> Result<(), crucible_host_resources::measurement_origin::MeasurementOriginError> {
+        family.verify_workload_directory(&self.directory)
+    }
+
     /// Opens, validates, and exclusively locks a delegated cgroup-v2 root.
     ///
     /// Every conforming supervisor that can mutate the delegated namespace
@@ -787,6 +1090,7 @@ impl LinuxQemuCgroupRoot {
             parent_directory,
             name,
             directory: None,
+            original_removed: false,
         };
         let directory =
             match open_directory_at(&cleanup.parent_directory, &cleanup.name, &cleanup.path) {
@@ -814,6 +1118,7 @@ pub struct LinuxQemuCgroup {
     name: String,
     limits: LinuxQemuCgroupLimits,
     control: LinuxQemuCgroupControl,
+    memory_oom_kill_baseline: Option<u64>,
 }
 
 impl LinuxQemuCgroup {
@@ -844,6 +1149,7 @@ impl LinuxQemuCgroup {
                 "pids.max",
                 format!("{}\n", limits.maximum_tasks).as_bytes(),
             )?;
+            let memory_oom_kill_baseline = Some(memory_events::read_oom_kills(directory, &path)?);
             let cgroup_events =
                 open_control(directory, &path, "cgroup.events", ControlAccess::Read)?;
             let cgroup_kill = open_control(directory, &path, "cgroup.kill", ControlAccess::Write)?;
@@ -858,13 +1164,19 @@ impl LinuxQemuCgroup {
                 cgroup_kill,
                 cancellation_event,
                 control_parent_directory,
+                memory_oom_kill_baseline,
             ))
         })();
-        let (cgroup_events, cgroup_kill, cancellation_event, control_parent_directory) =
-            match configured {
-                Ok(configured) => configured,
-                Err(source) => return Err((source, Box::new(cleanup))),
-            };
+        let (
+            cgroup_events,
+            cgroup_kill,
+            cancellation_event,
+            control_parent_directory,
+            _memory_oom_kill_baseline,
+        ) = match configured {
+            Ok(configured) => configured,
+            Err(source) => return Err((source, Box::new(cleanup))),
+        };
         let directory = match cleanup.directory.take() {
             Some(directory) => directory,
             None => {
@@ -882,6 +1194,7 @@ impl LinuxQemuCgroup {
             parent_directory: cleanup.parent_directory,
             name: name.clone(),
             limits,
+            memory_oom_kill_baseline: _memory_oom_kill_baseline,
             control: LinuxQemuCgroupControl {
                 parent_directory: control_parent_directory,
                 name,
@@ -935,9 +1248,11 @@ impl LinuxQemuCgroup {
     /// Returns [`LinuxQemuCgroupError`] when the watcher is not running, the
     /// child credentials overlap the supervisor, descriptors cannot be
     /// duplicated, or the sealed contract rejects their provenance.
-    pub(crate) fn child_process_contract(
+    fn child_process_contract(
         &self,
         maximum_writable_bytes: u64,
+        maximum_file_descriptors: u64,
+        maximum_locked_bytes: u64,
         child_user_id: libc::uid_t,
         child_group_id: libc::gid_t,
         exact_checkpoint_root: Option<crucible_engine::ContentHash>,
@@ -964,7 +1279,10 @@ impl LinuxQemuCgroup {
                 LinuxQemuCgroupError::Io {
                     operation: "validate QEMU child credentials",
                     path: self.path.clone(),
-                    source: io::Error::new(io::ErrorKind::InvalidInput, source),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        crate::QemuSpawnError::from(source),
+                    ),
                 }
             })?;
         if self.control.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {
@@ -981,7 +1299,11 @@ impl LinuxQemuCgroup {
             cgroup_procs,
             cancellation_event,
             self.limits,
-            maximum_writable_bytes,
+            crate::spawn::QemuChildFileLimits {
+                writable_bytes: maximum_writable_bytes,
+                descriptors: maximum_file_descriptors,
+                locked_bytes: maximum_locked_bytes,
+            },
             credentials,
             exact_checkpoint_root,
         )
@@ -1054,7 +1376,7 @@ impl LinuxQemuCgroup {
     ///
     /// Returns [`LinuxQemuCgroupError`] when `cgroup.events` cannot be read or
     /// contains a noncanonical `populated` field.
-    pub fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
+    fn is_populated(&mut self) -> Result<bool, LinuxQemuCgroupError> {
         self.control.is_populated()
     }
 
@@ -1136,23 +1458,7 @@ fn verify_directory_identity(
     expected: &OwnedFd,
     path: &Path,
 ) -> Result<(), LinuxQemuCgroupError> {
-    let named = open_directory_at(parent, name, path)?;
-    let expected = fstat(expected).map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "identify pinned QEMU attempt cgroup",
-        path: path.to_owned(),
-        source: source.into(),
-    })?;
-    let actual = fstat(&named).map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "identify named QEMU attempt cgroup",
-        path: path.to_owned(),
-        source: source.into(),
-    })?;
-    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
-        return Err(LinuxQemuCgroupError::DirectoryIdentity {
-            path: path.to_owned(),
-        });
-    }
-    Ok(())
+    control_check::verify_directory_identity(parent, name, expected, path).map_err(Into::into)
 }
 
 fn validate_cgroup_name(name: &str) -> Result<(), LinuxQemuCgroupError> {
@@ -1312,17 +1618,7 @@ fn open_directory_at(
     name: &str,
     path: &Path,
 ) -> Result<OwnedFd, LinuxQemuCgroupError> {
-    openat(
-        parent,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "pin QEMU attempt cgroup directory",
-        path: path.to_owned(),
-        source: source.into(),
-    })
+    control_check::open_directory_at(parent, name, path).map_err(Into::into)
 }
 
 fn create_cancellation_eventfd(path: &Path) -> Result<OwnedFd, LinuxQemuCgroupError> {
@@ -1348,16 +1644,20 @@ fn duplicate_fd(
     operation: &'static str,
     path: &Path,
 ) -> Result<OwnedFd, LinuxQemuCgroupError> {
+    duplicate_descriptor(descriptor).map_err(|source| LinuxQemuCgroupError::Io {
+        operation,
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn duplicate_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
     let duplicated = unsafe {
         // SAFETY: fcntl reads a live fd and returns a fresh descriptor.
         libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 0)
     };
     if duplicated < 0 {
-        return Err(LinuxQemuCgroupError::Io {
-            operation,
-            path: path.to_owned(),
-            source: io::Error::last_os_error(),
-        });
+        return Err(io::Error::last_os_error());
     }
     Ok(unsafe {
         // SAFETY: successful F_DUPFD_CLOEXEC returned unique ownership.
@@ -1602,7 +1902,7 @@ mod tests {
         }
     }
 
-    fn watcher_control_fixture(
+    pub(super) fn watcher_control_fixture(
         path: &Path,
         populated: bool,
     ) -> Result<(LinuxQemuCgroupControl, OwnedFd), LinuxQemuCgroupError> {
@@ -1683,6 +1983,55 @@ mod tests {
             lock_namespace(&second, directory.path()),
             Err(LinuxQemuCgroupError::NamespaceLocked { .. })
         ));
+        Ok(())
+    }
+
+    #[cfg(feature = "private-measurement-domain")]
+    #[test]
+    fn parent_partial_group_failure_remains_owned_through_postcheck_panic()
+    -> Result<(), LinuxQemuCgroupError> {
+        let directory = tempfile::tempdir().map_err(|source| LinuxQemuCgroupError::Io {
+            operation: "create Parent partial setup fixture",
+            path: PathBuf::from("fixture"),
+            source,
+        })?;
+        let fd = open_directory(directory.path(), "open Parent partial setup fixture")?;
+        lock_namespace(&fd, directory.path())?;
+        let mut root = LinuxQemuCgroupRoot {
+            path: directory.path().to_owned(),
+            directory: fd,
+        };
+        let mut saved = crate::linux_attempt_host::OriginalParentSetup::empty();
+        let created = root.create("parent-partial", LinuxQemuCgroupLimits::new(1, 4096, 16)?);
+        let error = created.expect_err("ordinary directory must refuse missing cgroup controls");
+        assert!(
+            error.cleanup.is_some(),
+            "actual mkdir must return its pinned partial owner"
+        );
+        saved.retain_group_failure(error);
+        drop(root);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("original postcheck uncertainty after partial publication");
+            }))
+            .is_err()
+        );
+
+        assert!(
+            saved
+                .group_failure
+                .as_ref()
+                .is_some_and(|error| error.cleanup.is_some())
+        );
+        let contender = open_directory(directory.path(), "open Parent partial setup contender")?;
+        assert!(matches!(
+            lock_namespace(&contender, directory.path()),
+            Err(LinuxQemuCgroupError::NamespaceLocked { .. })
+        ));
+        assert!(directory.path().join("parent-partial").is_dir());
+        // This synthetic filesystem proves retained real descriptors and the
+        // existing lock only, never cgroup-v2 enforcement or a Parent grant.
+        drop(saved);
         Ok(())
     }
 
@@ -2001,11 +2350,12 @@ mod tests {
             parent_directory: open_directory(directory.path(), "open watcher parent fixture")?,
             name: String::from("watcher-fixture"),
             limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
+            memory_oom_kill_baseline: None,
             control,
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         let watcher = group.start_watcher()?;
@@ -2054,11 +2404,12 @@ mod tests {
             parent_directory: open_directory(directory.path(), "open closed parent fixture")?,
             name: String::from("closed"),
             limits: LinuxQemuCgroupLimits::new(1, 4096, 1)?,
+            memory_oom_kill_baseline: None,
             control,
         };
 
         assert!(matches!(
-            group.child_process_contract(4096, 65_533, 65_532, None),
+            group.child_process_contract(4096, 1024, 0, 65_533, 65_532, None),
             Err(LinuxQemuCgroupError::WatcherNotRunning { .. })
         ));
         Ok(())
@@ -2159,6 +2510,7 @@ mod tests {
             )?,
             name: String::from("attempt"),
             limits: LinuxQemuCgroupLimits::new(1, 4096, 16)?,
+            memory_oom_kill_baseline: None,
             control: LinuxQemuCgroupControl {
                 parent_directory,
                 name: String::from("attempt"),

@@ -473,6 +473,8 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
             acknowledged_commands,
             reproduction_commands: Vec::new(),
             watch_statuses,
+            input_custody: crucible_session::engine::owned_decode::current_custody(),
+            output_custody: Vec::new(),
         },
         source_checkpoint,
         resumed_configuration,

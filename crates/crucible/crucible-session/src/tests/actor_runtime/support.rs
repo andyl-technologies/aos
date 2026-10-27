@@ -219,6 +219,7 @@ impl QuantumLoop for StubLoop {
             event_log_segment_hash: None,
             event_log_offset: Default::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }
@@ -266,6 +267,7 @@ impl QuantumLoop for CountingLoop {
             event_log_segment_hash: None,
             event_log_offset: Default::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }
@@ -288,6 +290,8 @@ impl RecordingLoop {
 
 impl QuantumLoop for RecordingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = fixture_metadata_scope();
+
         let control_batch = request
             .control
             .iter()
@@ -317,6 +321,8 @@ impl QuantumLoop for RecordingLoop {
                 self.quanta,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 
@@ -368,6 +374,8 @@ impl ControlSensitiveLoop {
 
 impl QuantumLoop for ControlSensitiveLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = fixture_metadata_scope();
+
         self.apply_control_batch(&request.control);
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.decision_seed());
@@ -389,6 +397,8 @@ impl QuantumLoop for ControlSensitiveLoop {
                 self.quanta,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 
@@ -431,6 +441,7 @@ impl QuantumLoop for ShutdownLoop {
             event_log_segment_hash: None,
             event_log_offset: Default::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 
@@ -477,6 +488,7 @@ impl ScriptedStepLoop {
 
 impl QuantumLoop for ScriptedStepLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _scope = fixture_metadata_scope();
         self.quanta = self.quanta.saturating_add(1);
         let at = VirtualTime { ticks: self.quanta };
         let entries = if let Some(payloads) = self.payloads_by_quantum.remove(&self.quanta) {
@@ -489,6 +501,7 @@ impl QuantumLoop for ScriptedStepLoop {
                         at,
                         payload,
                     )
+                    .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"))
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -497,7 +510,8 @@ impl QuantumLoop for ScriptedStepLoop {
                     self.event_log_entries,
                     at,
                     crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-                ),
+                )
+                .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
             ]
         };
         self.event_log_entries = self
@@ -522,6 +536,8 @@ impl QuantumLoop for ScriptedStepLoop {
                 self.event_log_entries,
             ),
             scheduler_quiescence: self.scheduler_quiescence.clone(),
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }
@@ -545,6 +561,7 @@ impl QuantumLoop for NoEventQuiescenceLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::default(),
             scheduler_quiescence: Some(self.quiescence.clone()),
+            event_log_custody: Default::default(),
         })
     }
 }
@@ -556,6 +573,7 @@ pub(in crate::tests) struct PriorEventThenNoEventQuiescenceLoop {
 
 impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _scope = fixture_metadata_scope();
         self.quanta = self.quanta.saturating_add(1);
         let at = VirtualTime { ticks: self.quanta };
         let entries = if self.quanta == 1 {
@@ -564,7 +582,8 @@ impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
                     0,
                     at,
                     crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-                ),
+                )
+                .unwrap_or_else(|error| panic!("finite fixture event identity: {error}")),
             ]
         } else {
             Vec::new()
@@ -584,6 +603,8 @@ impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, 1),
             scheduler_quiescence: Some(self.quiescence.clone()),
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }
@@ -622,6 +643,7 @@ impl QuantumLoop for InvalidEventLogLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, 1),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }
@@ -633,6 +655,8 @@ pub(in crate::tests) struct RegressingEventLogLoop {
 
 impl QuantumLoop for RegressingEventLogLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = fixture_metadata_scope();
+
         self.quanta = self.quanta.saturating_add(1);
         let (entries, offset) = if self.quanta == 1 {
             (
@@ -655,12 +679,16 @@ impl QuantumLoop for RegressingEventLogLoop {
             event_log_segment_hash: None,
             event_log_offset: offset,
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }
 
 impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let _quantum_scope = fixture_metadata_scope();
+
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
         let configuration = accepted_step(&request.configuration, decision.clone());
@@ -681,6 +709,8 @@ impl QuantumLoop for AppendingLoop {
                 self.quanta,
             ),
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()
+                .unwrap_or_else(|error| panic!("finite fixture output custody: {error}")),
         })
     }
 }
@@ -792,6 +822,7 @@ pub(in crate::tests) fn generated_scenario(seed: u64) -> ScenarioDef {
 pub(in crate::tests) fn test_event_log_entry(
     sequence: u64,
 ) -> crucible_engine::SchedulerEventLogEntry {
+    let _scope = fixture_metadata_scope();
     crucible_engine::test_support::condition_boundary_entry_for_test(
         sequence,
         VirtualTime {
@@ -799,6 +830,7 @@ pub(in crate::tests) fn test_event_log_entry(
         },
         crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite fixture event identity: {error}"))
 }
 
 pub(in crate::tests) fn resolved_backend_input_payload(seed: u64) -> SchedulerEventLogPayload {
@@ -831,6 +863,7 @@ pub(in crate::tests) fn trigger_fired_payload(
     event: EventId,
     predicate: Predicate,
 ) -> SchedulerEventLogPayload {
+    let _scope = fixture_metadata_scope();
     let graph = EventGraph::new(vec![Event::once(
         event.clone(),
         Some(predicate),
@@ -842,10 +875,13 @@ pub(in crate::tests) fn trigger_fired_payload(
     .unwrap_or_else(|error| panic!("trigger-fired event graph should build: {error}"));
     let mut graph_state = EventGraphState::new();
     let mut pass = ConditionEvaluationPass::from_log_prefix(
-        crucible_engine::test_support::condition_prefix_at_quantum_boundary_for_test(sequence),
+        crucible_engine::test_support::condition_prefix_at_quantum_boundary_for_test(sequence)
+            .unwrap_or_else(|error| panic!("finite fixture condition prefix: {error}")),
         NoLeaves,
     );
-    let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut graph_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     let Some(firing) = firings
         .iter()
         .find(|firing| firing.event() == &event)
@@ -857,6 +893,7 @@ pub(in crate::tests) fn trigger_fired_payload(
 }
 
 pub(in crate::tests) fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {
+    let _scope = fixture_metadata_scope();
     let timer = TimerId {
         name: String::from("session-step-timer"),
     };
@@ -880,11 +917,14 @@ pub(in crate::tests) fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPa
     let mut timer_fires = std::collections::BTreeMap::new();
     timer_fires.insert(timer, VirtualTime { ticks: sequence });
     let mut pass = ConditionEvaluationPass::from_log_prefix(
-        crucible_engine::test_support::condition_prefix_at_quantum_boundary_for_test(sequence),
+        crucible_engine::test_support::condition_prefix_at_quantum_boundary_for_test(sequence)
+            .unwrap_or_else(|error| panic!("finite fixture condition prefix: {error}")),
         NoLeaves,
     )
     .with_timer_fires(timer_fires);
-    let firings = pass.evaluate_event_graph(&graph, &mut graph_state);
+    let firings = pass
+        .evaluate_event_graph(&graph, &mut graph_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     let Some(firing) = firings
         .iter()
         .find(|firing| condition_summary_is_timer_fire(firing.condition_summary()))

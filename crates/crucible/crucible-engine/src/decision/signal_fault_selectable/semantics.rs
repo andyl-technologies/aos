@@ -1,8 +1,8 @@
-//! Typed campaign domains for RFC-0014 signal-fault search choices.
+//! Typed campaign domains for signal-fault search choices.
 //!
 //! This module owns the lossless conversion between runtime candidate tags and
 //! campaign Boolean or discrete values. Index-only candidate tags have no
-//! reconstructable RFC-0014 meaning and are rejected at this boundary.
+//! reconstructable signal-fault meaning and are rejected at this boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 

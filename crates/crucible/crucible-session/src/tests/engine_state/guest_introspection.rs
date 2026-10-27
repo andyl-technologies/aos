@@ -224,7 +224,7 @@ async fn guest_channel_owns_scheduler_run_until_terminal_response() {
         .unwrap_or_else(|error| panic!("guest exec must open: {error}"));
     assert_eq!(receive_reply(open_receiver).await, None);
     assert!(matches!(engine.state(), EngineState::Running));
-    assert!(engine.quantum_loop.scheduler_run_active);
+    assert!(engine.quantum_loop.get().unwrap().scheduler_run_active);
     assert!(engine.guest_channels.contains(&(node.clone(), 7)));
 
     let (poll_reply, poll_receiver) = CommandReply::channel();
@@ -238,7 +238,7 @@ async fn guest_channel_owns_scheduler_run_until_terminal_response() {
         .unwrap_or_else(|error| panic!("guest response must poll: {error}"));
     assert_eq!(receive_reply(poll_receiver).await, Some(exit));
     assert!(matches!(engine.state(), EngineState::Paused { .. }));
-    assert!(!engine.quantum_loop.scheduler_run_active);
+    assert!(!engine.quantum_loop.get().unwrap().scheduler_run_active);
     assert!(engine.guest_channels.is_empty());
 }
 
@@ -283,17 +283,17 @@ fn terminal_guest_response_survives_scheduler_lease_release_failure() {
         Some(&exit),
         "the terminal response must remain durable across release failure"
     );
-    assert_eq!(engine.quantum_loop.release_attempts, 1);
+    assert_eq!(engine.quantum_loop.get().unwrap().release_attempts, 1);
 
-    engine.quantum_loop.fail_release = false;
+    engine.quantum_loop.get_mut().unwrap().fail_release = false;
     assert_eq!(
         engine
             .receive_guest_channel_response(&node, 9)
             .unwrap_or_else(|error| panic!("terminal response retry must release: {error}")),
         Some(exit)
     );
-    assert_eq!(engine.quantum_loop.release_attempts, 2);
-    assert!(!engine.quantum_loop.scheduler_run_active);
+    assert_eq!(engine.quantum_loop.get().unwrap().release_attempts, 2);
+    assert!(!engine.quantum_loop.get().unwrap().scheduler_run_active);
 }
 
 #[test]
@@ -332,8 +332,8 @@ fn continuous_quiescence_terminalizes_active_guest_channels() {
         }
     ));
     assert!(engine.guest_channels.is_empty());
-    assert!(!engine.quantum_loop.scheduler_run_active);
-    assert_eq!(engine.quantum_loop.release_attempts, 1);
+    assert!(!engine.quantum_loop.get().unwrap().scheduler_run_active);
+    assert_eq!(engine.quantum_loop.get().unwrap().release_attempts, 1);
     assert!(matches!(
         engine
             .guest_responses
@@ -349,66 +349,69 @@ fn continuous_quiescence_terminalizes_active_guest_channels() {
 
 #[tokio::test]
 async fn operator_stop_resolves_pending_guest_activation() {
-    let (_root, _first, current, graph) = debug_time_travel_fixture();
-    let node = node_id("guest-a");
-    let mut engine = Engine::new(
-        current.clone(),
-        graph,
-        PendingActivationLoop {
-            scheduler_run_active: false,
-            release_attempts: 0,
-        },
-    )
-    .with_white_box_policies([(node.clone(), WhiteBoxPolicy::Enabled)]);
-    engine
-        .apply_command(SessionCommand::Start)
-        .unwrap_or_else(|error| panic!("debug fixture must instantiate: {error}"));
-    let (attach_reply, attach_receiver) = CommandReply::channel();
-    engine
-        .apply_command(SessionCommand::AttachGdb {
-            node: node.clone(),
-            listen: gdb_listen("127.0.0.1:9000"),
-            debug_genesis: None,
-            reply: attach_reply,
-        })
-        .unwrap_or_else(|error| panic!("attach-gdb must succeed: {error}"));
-    let _attach = receive_reply(attach_receiver).await;
+    admitted_fixture(async {
+        let (_root, _first, current, graph) = debug_time_travel_fixture();
+        let node = node_id("guest-a");
+        let mut engine = Engine::new(
+            current.clone(),
+            graph,
+            PendingActivationLoop {
+                scheduler_run_active: false,
+                release_attempts: 0,
+            },
+        )
+        .with_white_box_policies([(node.clone(), WhiteBoxPolicy::Enabled)]);
+        engine
+            .apply_command(SessionCommand::Start)
+            .unwrap_or_else(|error| panic!("debug fixture must instantiate: {error}"));
+        let (attach_reply, attach_receiver) = CommandReply::channel();
+        engine
+            .apply_command(SessionCommand::AttachGdb {
+                node: node.clone(),
+                listen: gdb_listen("127.0.0.1:9000"),
+                debug_genesis: None,
+                reply: attach_reply,
+            })
+            .unwrap_or_else(|error| panic!("attach-gdb must succeed: {error}"));
+        let _attach = receive_reply(attach_receiver).await;
 
-    let request = DebugNonCanonicalBranchRequest::new(
-        current,
-        engine.frontier(),
-        DebugNonCanonicalBranchTrigger::GuestIntrospection,
-    )
-    .with_action(DebugNonCanonicalBranchAction::guest_introspection(
-        node.clone(),
-    ));
-    let (branch_reply, branch_receiver) = CommandReply::channel();
-    engine
-        .apply_command(SessionCommand::DebugForkNonCanonical {
-            request,
-            reply: branch_reply,
-        })
-        .unwrap_or_else(|error| panic!("guest activation fork must start: {error}"));
-    assert!(matches!(engine.state(), EngineState::Running));
-    assert!(engine.quantum_loop.scheduler_run_active);
+        let request = DebugNonCanonicalBranchRequest::new(
+            current,
+            engine.frontier(),
+            DebugNonCanonicalBranchTrigger::GuestIntrospection,
+        )
+        .with_action(DebugNonCanonicalBranchAction::guest_introspection(
+            node.clone(),
+        ));
+        let (branch_reply, branch_receiver) = CommandReply::channel();
+        engine
+            .apply_command(SessionCommand::DebugForkNonCanonical {
+                request,
+                reply: branch_reply,
+            })
+            .unwrap_or_else(|error| panic!("guest activation fork must start: {error}"));
+        assert!(matches!(engine.state(), EngineState::Running));
+        assert!(engine.quantum_loop.get().unwrap().scheduler_run_active);
 
-    engine
-        .apply_command(SessionCommand::Stop)
-        .unwrap_or_else(|error| panic!("operator stop must terminalize: {error}"));
-    let report = receive_reply(branch_receiver).await;
+        engine
+            .apply_command(SessionCommand::Stop)
+            .unwrap_or_else(|error| panic!("operator stop must terminalize: {error}"));
+        let report = receive_reply(branch_receiver).await;
 
-    assert!(matches!(
-        engine.state(),
-        EngineState::Stopped {
-            outcome: Outcome::Stopped
-        }
-    ));
-    assert!(
-        report
-            .guest_introspection_activation_failure
-            .as_deref()
-            .is_some_and(|reason| reason.contains("session terminated"))
-    );
-    assert!(!engine.quantum_loop.scheduler_run_active);
-    assert_eq!(engine.quantum_loop.release_attempts, 1);
+        assert!(matches!(
+            engine.state(),
+            EngineState::Stopped {
+                outcome: Outcome::Stopped
+            }
+        ));
+        assert!(
+            report
+                .guest_introspection_activation_failure
+                .as_deref()
+                .is_some_and(|reason| reason.contains("session terminated"))
+        );
+        assert!(!engine.quantum_loop.get().unwrap().scheduler_run_active);
+        assert_eq!(engine.quantum_loop.get().unwrap().release_attempts, 1);
+    })
+    .await;
 }

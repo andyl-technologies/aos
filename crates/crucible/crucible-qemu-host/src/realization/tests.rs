@@ -73,3 +73,123 @@ fn native_baked_genesis_uses_exact_vm_clock_set_without_modeled_blob_refs() {
     let foreign = baked_snapshot(&world, &["vm-a", "foreign"]);
     assert!(QemuBakedGenesisRestoreAdmission::new(&foreign, &world).is_err());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dispatcher_retirement_preserves_both_actual_leaf_errors_and_first_source() {
+    use crate::LinuxQemuTargetDispatcherError;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let preparation = supervisor.begin(HostOperationClass::Preparation).unwrap();
+    supervisor.cancel().unwrap();
+    let original = preparation.wait_slice().unwrap_err();
+    let dispatcher = LinuxQemuTargetDispatcherError::new(
+        std::path::PathBuf::from("retained-dispatcher"),
+        std::io::Error::from_raw_os_error(libc::EIO),
+    );
+
+    let error = super::QemuTargetDispatcherRetirementError::combine(
+        Err(dispatcher),
+        Err(crate::OriginalAccountRetirementError::Supervision(original)),
+    )
+    .unwrap_err();
+
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = error else {
+        panic!("both leaf errors must remain typed");
+    };
+    let dispatcher = source.dispatcher_error().unwrap();
+    assert_eq!(dispatcher.io_error().raw_os_error(), Some(libc::EIO));
+    assert_eq!(
+        dispatcher.path(),
+        std::path::Path::new("retained-dispatcher")
+    );
+    assert!(
+        matches!(source.pool_error(), Some(crate::OriginalAccountRetirementError::Supervision(actual)) if *actual == original)
+    );
+    assert!(std::ptr::eq(
+        std::error::Error::source(&source)
+            .unwrap()
+            .downcast_ref::<LinuxQemuTargetDispatcherError>()
+            .unwrap(),
+        dispatcher
+    ));
+    assert!(source.is_retryable());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dispatcher_retirement_keeps_single_failure_class_and_success_distinct() {
+    use crate::LinuxQemuTargetDispatcherError;
+    assert!(super::QemuTargetDispatcherRetirementError::combine(Ok(()), Ok(())).is_ok());
+    let pool_only = super::QemuTargetDispatcherRetirementError::combine(
+        Ok(()),
+        Err(crate::OriginalAccountRetirementError::Unavailable),
+    )
+    .unwrap_err();
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = pool_only else {
+        panic!("typed pool report");
+    };
+    assert!(source.dispatcher_error().is_none());
+    assert!(source.pool_error().is_some());
+    assert!(source.is_retryable());
+
+    let both = super::QemuTargetDispatcherRetirementError::combine(
+        Err(LinuxQemuTargetDispatcherError::new(
+            std::path::PathBuf::from("retained-dispatcher"),
+            std::io::Error::from_raw_os_error(libc::EIO),
+        )),
+        Err(crate::OriginalAccountRetirementError::Unavailable),
+    )
+    .unwrap_err();
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = both else {
+        panic!("typed independent report");
+    };
+    assert!(source.is_retryable());
+    assert!(source.dispatcher_error().is_some());
+    assert!(source.pool_error().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dispatcher_retirement_adapter_preserves_cause_without_allocating() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let cause = std::io::Error::other(std::io::Error::from_raw_os_error(libc::EIO));
+    let payload = cause.get_ref().unwrap() as *const _;
+    let error = crate::LinuxQemuTargetDispatcherError::new(
+        std::path::PathBuf::from("retained-dispatcher"),
+        cause,
+    );
+    let path = error.path().as_os_str().as_encoded_bytes().as_ptr();
+    let display = error.to_string();
+
+    let (general, counts) =
+        TestAllocationObserver::count(|| crate::LinuxQemuCgroupError::from(error));
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(general.to_string(), display);
+    let crate::LinuxQemuCgroupError::Io {
+        operation,
+        path: actual_path,
+        source,
+    } = general
+    else {
+        panic!("retirement must retain the actual maintenance I/O category");
+    };
+    assert_eq!(operation, "maintain actual Target dispatcher");
+    assert_eq!(actual_path.as_os_str().as_encoded_bytes().as_ptr(), path);
+    assert!(std::ptr::eq(source.get_ref().unwrap(), payload));
+    assert_eq!(
+        source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO)
+    );
+}

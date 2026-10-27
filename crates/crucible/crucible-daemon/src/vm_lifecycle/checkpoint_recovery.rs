@@ -15,21 +15,26 @@ pub(super) fn recover_published_checkpoint_states(
     run_state_root: &Path,
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
+    provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>, LifecycleApiError>
 {
-    checkpoint_store::recover_published_checkpoint_catalog(run_state_root, scenario, source).map(
-        |catalog| {
-            catalog
-                .into_iter()
-                .map(|(configuration, identity)| {
-                    (
-                        configuration,
-                        quantum_loop::ExactCheckpointPublicationState::Published(identity),
-                    )
-                })
-                .collect()
-        },
+    checkpoint_store::recover_published_checkpoint_catalog(
+        run_state_root,
+        scenario,
+        source,
+        provider,
     )
+    .map(|catalog| {
+        catalog
+            .into_iter()
+            .map(|(configuration, identity)| {
+                (
+                    configuration,
+                    quantum_loop::ExactCheckpointPublicationState::Published(identity),
+                )
+            })
+            .collect()
+    })
 }
 
 /// Preserves typed resource coordinates from durable run-state operations.

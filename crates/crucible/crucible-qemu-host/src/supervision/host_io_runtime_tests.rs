@@ -1,4 +1,4 @@
-//! Unit tests for the production host-I/O checkpoint boundary.
+//! Mapped host-control components and unchanged production-refusal boundaries.
 
 use super::control::PendingControlBoundary;
 use super::*;
@@ -8,10 +8,74 @@ use super::*;
 mod block_coordinator;
 #[path = "host_io_runtime_tests/network_output.rs"]
 mod network_output;
+#[path = "host_io_runtime_tests/original_fingerprint.rs"]
+mod original_fingerprint;
+#[path = "host_io_runtime_tests/original_quiescence.rs"]
+mod original_quiescence;
+
+#[test]
+fn hot_fork_network_rejects_duplicate_source_ring() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixStream;
+
+    let allocation =
+        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let layout = allocation.layout();
+    let mut source = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    source.write_all(&allocation.setup_region_bytes()?)?;
+    let (wake, _peer) = UnixStream::pair()?;
+    let runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(source.as_fd(), wake.as_fd(), layout.region_size, 0)?;
+    let duplicate = source.try_clone()?;
+
+    assert!(runtime.private_hot_fork_ring_alias(duplicate.as_fd())?);
+    assert!(
+        runtime
+            .validate_private_hot_fork_ring(duplicate.as_fd())
+            .is_err()
+    );
+
+    let private = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    runtime.validate_private_hot_fork_ring(private.as_fd())?;
+    Ok(())
+}
 
 #[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
 -> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(CaptureOwner::Fixture)
+}
+
+#[test]
+fn supervised_fingerprint_wait_ignores_obsolete_static_timeout()
+-> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(CaptureOwner::Ambient)
+}
+
+#[test]
+fn original_fingerprint_capture_replaces_same_icount_sample_without_completing_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(CaptureOwner::Original)
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+#[test]
+fn paired_fingerprint_capture_replaces_same_icount_sample_without_completing_either_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    fingerprint_capture_ack_fixture(CaptureOwner::Paired)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureOwner {
+    Fixture,
+    Ambient,
+    Original,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    Paired,
+}
+
+fn fingerprint_capture_ack_fixture(owner: CaptureOwner) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read, Write};
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
@@ -33,9 +97,88 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
         Duration::from_millis(1),
     )?;
     drop(wake);
-
+    if owner != CaptureOwner::Fixture {
+        runtime = runtime.with_host_operation_supervisor(
+            crucible_host_resources::host_supervision::HostOperationSupervisor::new(
+                crucible_host_resources::host_supervision::HostOperationBudgets::default(),
+                Some(Duration::from_secs(2)),
+            )?,
+        );
+    }
+    let timeout = if owner != CaptureOwner::Fixture {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(1)
+    };
+    // A previously valid same-icount sample must not short-circuit capture.
+    let stale = crucible_qemu_shmem::FingerprintSample {
+        ram_digest: [0x11; 32],
+        ..Default::default()
+    };
+    plugin.fingerprint_sample(0)?.publish(&stale)?;
+    let original_supervisor =
+        crucible_host_resources::host_supervision::HostOperationSupervisor::new(
+            crucible_host_resources::host_supervision::HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )?;
+    let original = original_supervisor
+        .begin(crucible_host_resources::host_supervision::HostOperationClass::Preparation)?;
+    let (mut runtime, physical_return) = runtime.into_control_component()?;
     let host = std::thread::spawn(move || {
-        runtime.publish_current_execution_fingerprint(Duration::from_secs(1))
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if owner == CaptureOwner::Paired {
+            let pair = original_fingerprint::CapturePair::new().map_err(|source| {
+                QemuAsyncDriverRuntimeError::new(
+                    "create paired capture fixture",
+                    source.to_string(),
+                )
+            })?;
+            runtime
+                .publish_current_execution_fingerprint_under_originals(&pair.actor, &pair.family)?;
+            for guard in [&pair.actor, &pair.family] {
+                let status = guard.status().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "paired original remains live",
+                        source,
+                    )
+                })?;
+                assert_eq!(status.completed_work_units, 0);
+                guard
+                    .check_original_quiescence_cancellation()
+                    .map_err(|source| {
+                        QemuAsyncDriverRuntimeError::operational_supervision(
+                            "paired subscription remains live",
+                            source,
+                        )
+                    })?;
+                guard.wait_slice().map_err(|source| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        "paired original remains live",
+                        source,
+                    )
+                })?;
+            }
+            return Ok(());
+        }
+        if owner == CaptureOwner::Original {
+            runtime.publish_current_execution_fingerprint_under_original(&original)?;
+            let status = original.status().map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "original after component capture",
+                    source,
+                )
+            })?;
+            assert_eq!(status.completed_work_units, 0);
+            original.wait_slice().map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "original remains live",
+                    source,
+                )
+            })?;
+            Ok(())
+        } else {
+            runtime.publish_current_execution_fingerprint(timeout)
+        }
     });
     let mut wake_notification = [0_u8; std::mem::size_of::<u64>()];
     wake_notifications.read_exact(&mut wake_notification)?;
@@ -55,16 +198,28 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
     wake_notifications.read_exact(&mut wake_notification)?;
     assert_eq!(u64::from_ne_bytes(wake_notification), 1);
 
-    plugin
-        .fingerprint_sample(0)?
-        .publish(&crucible_qemu_shmem::FingerprintSample::default())?;
+    let fresh = crucible_qemu_shmem::FingerprintSample {
+        ram_digest: [0x22; 32],
+        ..Default::default()
+    };
+    assert_eq!(stale.sample_icount, fresh.sample_icount);
+    plugin.fingerprint_sample(0)?.publish(&fresh)?;
     assert!(
         plugin
             .fingerprint_sample(0)?
             .acknowledge_capture_v1(request)
     );
+    // Both mapped ACKs are already visible. Withhold the separate modeled
+    // return until the same shared loop has reached that cut and is still pending.
+    let return_ticket = physical_return.wait_until_awaited(Duration::from_secs(1))?;
+    assert!(
+        !host.is_finished(),
+        "ACKs cannot return the component action"
+    );
+    physical_return.return_action(return_ticket)?;
     host.join()
         .map_err(|_panic| "fingerprint host thread panicked")??;
+    assert_eq!(plugin.fingerprint_sample(0)?.snapshot(), Some(fresh));
     assert_eq!(
         plugin.fingerprint_sample(0)?.capture_request_generation(),
         request.wrapping_add(1)
@@ -110,9 +265,9 @@ pub(crate) fn staged_fault_event_runtime(
     )?;
     let timeout = Duration::from_secs(1);
 
-    let rejected = runtime.drain_fault_events_for_pump(
+    let rejected = runtime.drain_fault_events_for_operation(
         0,
-        &HostSupervisionDeadline::start(timeout),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(timeout)),
         timeout,
         "test rejected host fault-event drain",
     );
@@ -125,9 +280,9 @@ pub(crate) fn staged_fault_event_runtime(
     );
     assert!(runtime.staged_fault_events.is_empty());
 
-    runtime.drain_fault_events_for_pump(
+    runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(timeout),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(timeout)),
         timeout,
         "test admitted host fault-event drain",
     )?;
@@ -238,9 +393,9 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
         Duration::from_millis(1),
     )?;
 
-    runtime.drain_fault_events_for_pump(
+    runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(Duration::ZERO),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(Duration::ZERO)),
         Duration::ZERO,
         "test empty fault-event drain",
     )?;
@@ -275,9 +430,9 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
         },
         b"x",
     )?;
-    let rejected = runtime.drain_fault_events_for_pump(
+    let rejected = runtime.drain_fault_events_for_operation(
         1,
-        &HostSupervisionDeadline::start(Duration::ZERO),
+        &OperationPollBudget::Fixture(HostSupervisionDeadline::start(Duration::ZERO)),
         Duration::ZERO,
         "test pending fault-event drain",
     );
@@ -480,20 +635,34 @@ fn advance_accepts_its_control_acknowledgement_and_later_serials() {
 }
 
 #[test]
-fn control_acknowledgement_order_wraps_without_accepting_stale_serials() {
+fn control_acknowledgement_never_interprets_counter_wrap_as_progress() {
     let mut snapshot = crucible_qemu_shmem::NodeSlot::new(crucible_qemu_shmem::KIND_VM).snapshot();
-    let request = PendingControlBoundary {
-        generation: 0,
-        fault_command_frontier: 0,
-        fingerprint_capture_request: None,
-    };
-    snapshot.control_boundary_ack = 1;
-    assert!(control_boundary_request_is_acknowledged(request, &snapshot));
+    for (generation, acknowledged, expected) in [
+        (0, 1, false),
+        (0, u32::MAX, false),
+        (u32::MAX - 1, u32::MAX, true),
+        (u32::MAX - 1, 1, false),
+        (u32::MAX - 1, u32::MAX - 2, false),
+        (2, 3, true),
+        (2, 5, true),
+        (2, u32::MAX, true),
+        (2, 1, false),
+        (2, 2, false),
+        (3, 5, false),
+    ] {
+        let request = PendingControlBoundary {
+            generation,
+            fault_command_frontier: 0,
+            fingerprint_capture_request: None,
+        };
+        snapshot.control_boundary_ack = acknowledged;
 
-    snapshot.control_boundary_ack = u32::MAX;
-    assert!(!control_boundary_request_is_acknowledged(
-        request, &snapshot
-    ));
+        assert_eq!(
+            control_boundary_request_is_acknowledged(request, &snapshot),
+            expected,
+            "request {generation}, observed acknowledgement {acknowledged}",
+        );
+    }
 }
 
 #[test]
@@ -796,7 +965,12 @@ fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dy
         region_len,
         0,
     )?;
-    let request = source.region.fingerprint_sample(0)?.request_capture_v1();
+    let request = source
+        .region
+        .as_ref()
+        .ok_or_else(region_missing)?
+        .fingerprint_sample(0)?
+        .request_capture_v1();
 
     let error = match source.clone_hot_fork_host_io_continuation(
         ContentHash::from_bytes(b"pending-fingerprint-request"),

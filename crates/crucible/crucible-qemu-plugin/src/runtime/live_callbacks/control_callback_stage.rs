@@ -243,8 +243,37 @@ impl super::ControlCallbackWitness {
     }
 }
 
+// The actual typed callback owns this unwind observer. A panic ends that real
+// local dispatch; it does not certify worker/material closure or Native return.
+struct SemanticDispatch<'a> {
+    reader: &'a super::control_facts::ProtectedReader,
+    entered: bool,
+}
+
+impl SemanticDispatch<'_> {
+    fn finish(mut self, first: i32) -> Result<(), i32> {
+        let entered = std::mem::replace(&mut self.entered, false);
+        if entered {
+            self.reader.finish_semantic_dispatch(first)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for SemanticDispatch<'_> {
+    fn drop(&mut self) {
+        if self.entered {
+            // Failure to acquire/validate the real journal remains unknown debt;
+            // no canonical holder is consumed by this unwind observation.
+            let _ = self.reader.finish_semantic_dispatch(-libc::EFAULT);
+        }
+    }
+}
+
 impl LiveVcpuTimeCallbackState {
     /// Copies original mapping identity before callback registration.
+    #[cfg(test)]
     pub(in crate::runtime) fn attach_control_stage_identity(
         mut self,
         backing: crucible_qemu_shmem::SetupRegionBackingIdentity,
@@ -282,6 +311,32 @@ impl LiveVcpuTimeCallbackState {
 
     // The original admitted control work remains here in its original order.
     pub(super) fn on_control_boundary_with_stages(
+        &self,
+        raw_icount: u64,
+        callback: Option<u64>,
+        emit: &mut impl FnMut(StageRecord),
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let request = self.slot.get().snapshot();
+        let capture = match request.control_boundary_capture_request {
+            0 => None,
+            capture => Some(capture),
+        };
+        let entered = self
+            .slot
+            .request_reader
+            .begin_semantic_dispatch(request.control_boundary_ack, capture)
+            .map_err(|status| LiveVcpuTimeCallbackError::FingerprintSemanticAction { status })?;
+        let dispatch = SemanticDispatch {
+            reader: &self.slot.request_reader,
+            entered,
+        };
+        let result = self.run_control_boundary_with_stages(raw_icount, callback, emit);
+        let post = dispatch.finish(if result.is_ok() { 0 } else { -libc::EIO });
+        result?;
+        post.map_err(|status| LiveVcpuTimeCallbackError::FingerprintSemanticAction { status })
+    }
+
+    fn run_control_boundary_with_stages(
         &self,
         raw_icount: u64,
         callback: Option<u64>,

@@ -32,6 +32,7 @@ pub use block_barrier::{
     QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding,
     QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+    QmpHotForkRamBorrowInventory,
 };
 pub(crate) use block_seal::parse_hot_fork_block_seal_state;
 pub use block_seal::{
@@ -123,7 +124,7 @@ pub const QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND: &str = "crucible-hot-fork-plugin-
 /// Version of the QEMU-owned plugin-resource inventory contract.
 pub const QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// Version of the QEMU-owned plugin callback-and-ring barrier contract.
-pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 6;
+pub const QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION: u32 = 7;
 /// Version of the QEMU-owned child-runtime observation contract.
 pub const QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION: u32 = 4;
 /// Proof bitmap retained by template preparation before child-only proofs run.

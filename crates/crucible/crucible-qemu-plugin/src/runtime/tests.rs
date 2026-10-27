@@ -3,7 +3,6 @@
 use super::*;
 
 use std::cell::Cell;
-use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
@@ -11,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize};
 
 use crucible_qemu_protocol::{
     HostMsg, PluginHandshakeConfig, SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED,
-    SetupDescriptorFds, control_encode_host_msg, read_control_frame,
+    control_encode_host_msg, read_control_frame,
 };
 use crucible_qemu_shmem::{
     KIND_VM, NodeSlot, RegionConfig, RegionHeader, RegionLayout, STATUS_DONE,
@@ -39,6 +38,8 @@ fn eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow() -> std::io:
 }
 
 mod coverage_cases;
+mod original_retention_cases;
+mod parent_park_cases;
 mod reservation_cases;
 
 struct PanickingPostRegistrationFatalPolicy;
@@ -73,41 +74,47 @@ extern "C" fn record_control_worker_shutdown(failure: i32) {
 }
 
 #[test]
-fn callback_teardown_route_moves_to_the_replacement_child_worker() {
-    let (template_sender, template_receiver) = mpsc::channel();
-    let router = LiveRuntimeTeardownRouter::new(template_sender);
-    let callback_route = Arc::clone(&router);
+fn callback_teardown_routes_keep_independent_parent_and_child_latches() {
+    let (parent_router, parent_consumer) = LiveRuntimeTeardownRouter::owned();
+    let callback_route = Arc::clone(&parent_router);
 
     callback_route
         .send(LiveRuntimeTeardownTrigger::RunControlFault {
             diagnostic: String::from("template"),
         })
-        .unwrap_or_else(|()| panic!("template route should remain connected"));
+        .unwrap_or_else(|()| panic!("parent route should remain connected"));
     assert!(matches!(
-        template_receiver.recv(),
+        parent_consumer.receive_trigger(),
         Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
             if diagnostic == "template"
     ));
 
-    let (child_sender, child_receiver) = mpsc::channel();
-    router
-        .replace(child_sender)
-        .unwrap_or_else(|()| panic!("quiescent route replacement should succeed"));
-    assert!(matches!(
-        template_receiver.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
-    ));
+    // Independent worker custody requires its own latch. These local owners
+    // do not reconstruct or retarget the parent's registered child callbacks.
+    let (child_router, child_consumer) = LiveRuntimeTeardownRouter::owned();
+    let child_callback_route = Arc::clone(&child_router);
 
-    callback_route
+    child_callback_route
         .send(LiveRuntimeTeardownTrigger::RunControlFault {
             diagnostic: String::from("child"),
         })
-        .unwrap_or_else(|()| panic!("retained callback route should reach child worker"));
+        .unwrap_or_else(|()| panic!("child route should reach its own consumer"));
     assert!(matches!(
-        child_receiver.recv(),
+        child_consumer.receive_trigger(),
         Ok(LiveRuntimeTeardownTrigger::RunControlFault { diagnostic })
             if diagnostic == "child"
     ));
+    assert!(parent_consumer.receive_trigger().is_err());
+    assert!(child_consumer.receive_trigger().is_err());
+
+    drop(parent_consumer);
+    assert!(
+        callback_route
+            .send(LiveRuntimeTeardownTrigger::RunControlFault {
+                diagnostic: String::from("closed parent"),
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -144,7 +151,7 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
     CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -416,7 +423,7 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .unwrap_or_else(|error| panic!("plugin lifecycle should connect: {error}"));
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: 3,
+        proto_version: crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION,
         abi_version: 25,
         slot_index: 0,
         node_count: 1,
@@ -424,29 +431,15 @@ fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStre
     .unwrap_or_else(|error| panic!("HelloAck should write: {error}"));
     plugin
         .plugin_start_handshake(PluginHandshakeConfig {
-            proto_version: 3,
+            proto_version: crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION,
             abi_version: 25,
         })
         .unwrap_or_else(|error| panic!("plugin handshake should complete: {error}"));
     let _hello = read_control_frame(&mut host)
         .unwrap_or_else(|error| panic!("plugin Hello should read: {error}"));
-    let shmem = File::open("/dev/null")
-        .unwrap_or_else(|error| panic!("shmem fixture should open: {error}"));
-    let wake =
-        File::open("/dev/null").unwrap_or_else(|error| panic!("wake fixture should open: {error}"));
-    crucible_qemu_protocol::send_setup_with_descriptors(
-        host.as_raw_fd(),
-        4096,
-        SetupDescriptorFds {
-            shmem_fd: shmem.as_raw_fd(),
-            wake_fd: wake.as_raw_fd(),
-            plugin_setup_plan_fd: shmem.as_raw_fd(),
-        },
-    )
-    .unwrap_or_else(|error| panic!("setup descriptors should send: {error}"));
-    let _setup = plugin
-        .plugin_recv_setup_with_descriptors()
-        .unwrap_or_else(|error| panic!("setup descriptors should receive: {error}"));
+    plugin
+        .plugin_commit_preexec_setup()
+        .unwrap_or_else(|error| panic!("preaccepted setup should commit: {error}"));
     plugin
         .plugin_send_ready_setup_ack()
         .unwrap_or_else(|error| panic!("ready setup ack should send: {error}"));
@@ -508,6 +501,7 @@ fn install_expecting_post_registration_fatal<R>(
 where
     R: OwnedCallbackRegistrar,
 {
+    reservation.startup_source_model = Some(fixture.startup_model());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         install_live_runtime_with_fatal_policy(
             plugin_id,
@@ -969,6 +963,82 @@ impl OwnedCallbackRegistrar for PartiallyPanickingCallbackRegistrar {
     }
 }
 
+fn assert_source_refusal_before_registration(
+    model: Option<crate::startup_source::test_support::InstallerStartupSourceModel>,
+    expected: crate::StartupSourceError,
+) {
+    let _runtime_state = isolate_runtime_state_for_test();
+    reset_capability_call_counts();
+    let fixture = LiveInstallFixture::new();
+    let registrar = RecordingSuccessfulCallbackRegistrar::new();
+    let mut reservation = reserve_runtime()
+        .unwrap_or_else(|error| panic!("fixture runtime reservation failed: {error:?}"));
+    let modeled = model.is_some();
+    reservation.startup_source_model = model.map(|model| model.with_setup(fixture.model_setup()));
+
+    let error = install_live_runtime(
+        73,
+        fixture.args(),
+        test_capabilities(),
+        &registrar,
+        &mut reservation,
+    )
+    .err()
+    .unwrap_or_else(|| panic!("Source refusal must prevent installation"));
+
+    assert!(matches!(
+        error,
+        PluginRuntimeInstallError::StartupSource { source } if source == expected
+    ));
+    assert_eq!(registrar.state_address.get(), 0);
+    assert_eq!(wake_registration_count(), 0);
+    assert!(reservation.startup_source_model.is_none());
+    fixture.assert_control_silent();
+    if !modeled {
+        assert!(reservation.startup_source.is_none());
+        drop(reservation);
+        assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_VACANT);
+        return;
+    }
+    let original = reservation
+        .startup_source
+        .as_ref()
+        .unwrap_or_else(|| panic!("Source refusal must retain the original fixture owner"));
+    assert!(original.acquire_was_attempted_for_test());
+    let descriptor = original
+        .retained_model_plan_fd_for_test()
+        .unwrap_or_else(|| panic!("Source refusal lost its retained fixture plan owner"));
+    // SAFETY: this inspects the exact retained fixture plan owner after refusal.
+    assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    fixture.assert_control_silent();
+
+    drop(reservation);
+    // SAFETY: these explicit fixture paths have no native borrower. The same
+    // retained descriptor was not closed by failed-owner containment.
+    assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_FAILED);
+}
+
+#[test]
+fn modeled_source_refusal_precedes_wake_and_callback_registration() {
+    assert_source_refusal_before_registration(
+        Some(
+            crate::startup_source::test_support::InstallerStartupSourceModel::refused_acquisition(),
+        ),
+        crate::StartupSourceError::NativeStatus { status: -229 },
+    );
+}
+
+#[test]
+fn unselected_install_refuses_before_control_io_or_source_acquisition() {
+    assert_source_refusal_before_registration(
+        None,
+        crate::StartupSourceError::Ownership {
+            reason: "current native setup carrier is required",
+        },
+    );
+}
+
 #[test]
 fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let _runtime_state = isolate_runtime_state_for_test();
@@ -977,6 +1047,8 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let runtime = install_live_runtime(
         41,
         fixture.args(),
@@ -988,7 +1060,7 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
 
     assert_eq!(runtime.plugin_id(), 41);
     assert_eq!(runtime.args().slot(), 0);
-    assert!(runtime._retained_control.is_some());
+    assert!(runtime.resources._retained_control.is_some());
     let manifest = registered_resource_manifest()
         .unwrap_or_else(|| panic!("plugin resource manifest should be sealed before readiness"));
     let (device, inode, length, node_count, control_fd, _sender_wake_fd) =
@@ -1036,9 +1108,15 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
-    let source_mapping_start =
-        u64::try_from(runtime._callbacks.setup().mapped_region().mapping_start())
-            .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
+    let source_mapping_start = u64::try_from(
+        runtime
+            .resources()
+            ._callbacks
+            .setup()
+            .mapped_region()
+            .mapping_start(),
+    )
+    .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
     let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
         shmem_length: length,
         source_mapping_start,
@@ -1049,28 +1127,28 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     };
     assert!(hot_fork_child_mapping_basis_matches(
         &exact_mapping_plan,
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_start: source_mapping_start + 4096,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_length: super::host_mapping_extent(length) - 1,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     assert!(!hot_fork_child_mapping_basis_matches(
         &crate::QemuPluginHotForkChildPlan {
             source_mapping_offset: 4096,
             ..exact_mapping_plan
         },
-        runtime._callbacks.setup(),
+        runtime.resources()._callbacks.setup(),
     ));
     let exact_generation_plan = crate::QemuPluginHotForkChildPlan {
         parent_process_generation: 1,
@@ -1123,11 +1201,11 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
-        152
+        200
     );
     assert_eq!(
         std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
-        136
+        184
     );
     assert_eq!(
         std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, parent_process_generation),
@@ -1252,19 +1330,20 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
     assert_eq!(released.pending_worker_mask, 0);
     assert_eq!(released.worker_operations_in_flight, 0);
     let teardown_handle = runtime
+        .resources
         ._callbacks
         .control_teardown_handle(0)
         .unwrap_or_else(|error| panic!("control teardown handle should validate: {error}"));
     assert!(!teardown_handle.quiescence.is_closed());
     (test_capabilities().request_shutdown)(0);
-    let callback_state_address = runtime._callbacks.state_address_for_test();
+    let callback_state_address = runtime.resources()._callbacks.state_address_for_test();
     let runtime = (runtime,);
     assert_eq!(
-        runtime.0._callbacks.state_address_for_test(),
+        runtime.0.resources()._callbacks.state_address_for_test(),
         callback_state_address
     );
     assert_eq!(
-        runtime.0._callbacks.registration_mask().bits(),
+        runtime.0.resources()._callbacks.registration_mask().bits(),
         OwnedCallbackRegistrationMask::BASE_REQUIRED
     );
     reservation.publish(runtime.0);
@@ -1280,6 +1359,8 @@ fn live_install_seals_the_optional_fingerprint_worker() {
     let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let runtime = install_live_runtime(
         42,
         fixture.fingerprint_args(),
@@ -1354,10 +1435,15 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },
-        ),
+        )
+        // This fixture observes I/O callback registration without native RAM.
+        // The RAM capture tests supply their own complete native page stream.
+        .with_test_ram_observer_installer(|| Ok(())),
     };
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let runtime = install_live_runtime(
         51,
         fixture.args(),
@@ -1383,7 +1469,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
     );
     assert_eq!(LIVE_NETWORK_TX_REGISTRATIONS.load(Ordering::SeqCst), 1);
     assert_eq!(
-        runtime._callbacks.registration_mask(),
+        runtime.resources()._callbacks.registration_mask(),
         OwnedCallbackRegistrationMask::required_for(&fixture.args())
     );
 
@@ -1616,13 +1702,27 @@ fn enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_ef
     .unwrap_or_else(|| panic!("missing white-box ABI must fail preflight"));
 
     assert!(matches!(
-        error,
+        &error,
         PluginRuntimeInstallError::OwnedCallbacks {
             source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                source: LiveVcpuTimeCallbackError::WhiteboxCallback { .. },
+                source: LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    source: live_whitebox::LiveWhiteboxError::CapabilityUnavailable {
+                        symbol: "qemu_plugin_register_vcpu_tb_trans_cb",
+                    },
+                },
             },
         }
     ));
+    let cause = std::error::Error::source(&error)
+        .and_then(|error| error.source())
+        .and_then(|error| error.source())
+        .and_then(|error| error.downcast_ref::<live_whitebox::LiveWhiteboxError>())
+        .expect("the installation error retains the original typed capability refusal");
+    assert_eq!(
+        cause.to_string(),
+        "required live white-box capability `qemu_plugin_register_vcpu_tb_trans_cb` is unavailable"
+    );
+
     fixture.assert_control_silent();
     assert_eq!(live_registration_counts(), registrations_before);
     assert_eq!(time_control_request_count(), 0);
@@ -1651,14 +1751,20 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     capabilities.register_block = Some(capture_block_registration);
     capabilities.register_block_wait = Some(capture_block_wait_registration);
     capabilities.register_ninep = Some(capture_ninep_registration);
-    let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
+    let mut callback_registrar = FailClosedOwnedCallbackRegistrar::production(
         54,
         execution_model,
         crate::QemuPluginTargetArchitecture::X86_64,
         &capabilities,
     );
+    // This I/O registration fixture has no native guest RAM image.
+    callback_registrar.live_vcpu_time = callback_registrar
+        .live_vcpu_time
+        .with_test_ram_observer_installer(|| Ok(()));
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
+
+    reservation.startup_source_model = Some(fixture.startup_model());
 
     let runtime = install_live_runtime(
         54,
@@ -1670,7 +1776,7 @@ fn production_registrar_installs_default_block_ninep_and_network_families() {
     .unwrap_or_else(|error| panic!("default production callbacks should install: {error}"));
 
     assert_eq!(
-        runtime._callbacks.registration_mask(),
+        runtime.resources()._callbacks.registration_mask(),
         OwnedCallbackRegistrationMask::base_required()
     );
     let registrations_after = live_registration_counts();
@@ -1819,6 +1925,8 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
     let mut reservation =
         reserve_runtime().unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
 
+    reservation.startup_source_model = Some(fixture.startup_model());
+
     let error = install_live_runtime(
         48,
         fixture.args(),
@@ -1840,4 +1948,128 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
         Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
     ));
     join_host(host);
+}
+
+#[test]
+fn device_workspace_private_layout_preserves_prefix_and_appends_fixed_fields() {
+    println!(
+        "QemuPluginHotForkChildPlan={}",
+        std::mem::size_of::<crate::QemuPluginHotForkChildPlan>()
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildPlan>(),
+        200
+    );
+
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, account_generation),
+        152
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_generation),
+        160
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_device),
+        168
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_inode),
+        176
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_length),
+        184
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_fd),
+        192
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildPlan, workspace_reserved),
+        196
+    );
+
+    println!(
+        "QemuPluginHotForkChildStatus={}",
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>()
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::QemuPluginHotForkChildStatus>(),
+        184
+    );
+
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, account_generation),
+        136
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_generation),
+        144
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_device),
+        152
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_inode),
+        160
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_length),
+        168
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_fd),
+        176
+    );
+    assert_eq!(
+        std::mem::offset_of!(crate::QemuPluginHotForkChildStatus, workspace_reserved),
+        180
+    );
+}
+
+#[test]
+fn held_reader_remains_owned_after_socket_interruption_until_actual_return() {
+    let (host, plugin) = running_plugin_control_pair();
+    let (sender, receiver) = mpsc::channel();
+    let workers = LiveWorkerQuiescence::new(WORKER_REQUIRED);
+    let held = workers.hold();
+    assert!(held.held);
+    let reader_workers = Arc::clone(&workers);
+    let mut reader = Some(std::thread::spawn(move || {
+        let _delivered = run_control_reader(plugin, sender, reader_workers);
+    }));
+
+    host.shutdown(std::net::Shutdown::Both).unwrap();
+    let mut parked = false;
+    for _attempt in 0..100_000 {
+        if workers.snapshot().parked_mask & WORKER_RUN_CONTROL != 0 {
+            parked = true;
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(parked, "same reader must park at its still-held barrier");
+
+    join_finished_worker(&mut reader);
+    assert!(reader.is_some(), "an unreturned worker must remain owned");
+    assert!(!reader.as_ref().unwrap().is_finished());
+    assert!(receiver.try_recv().is_err());
+
+    // Fixture cleanup releases its own reversible hold; production Drop does
+    // not release or clear a barrier to invent completion or retirement.
+    workers.release();
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    for _attempt in 0..100_000 {
+        if reader.as_ref().unwrap().is_finished() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(reader.as_ref().unwrap().is_finished());
+    join_finished_worker(&mut reader);
+    assert!(reader.is_none());
 }

@@ -297,11 +297,23 @@ fn whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount() {
             point: String::from("mark"),
         })
     );
-    assert_eq!(sink.markers, vec![marker]);
+    assert_eq!(sink.markers.as_slice(), std::slice::from_ref(&marker));
+
+    let WhiteboxMarkerPayload::Coverage(borrowed) = marker.decoded_payload() else {
+        panic!("the observed marker must retain its decoded coverage payload");
+    };
+    let original_address = borrowed.point.as_ptr();
+    let WhiteboxMarkerPayload::Coverage(owned) = marker.into_decoded_payload() else {
+        panic!("consuming a marker must preserve its decoded payload kind");
+    };
+    assert_eq!(owned.point, "mark");
+    assert_eq!(owned.point.as_ptr(), original_address);
 }
 
 #[test]
 fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
+    let _origin = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)
+        .expect("component marker sink requires original metadata authority");
     let doorbell = PluginWhiteboxDoorbell::new(
         PluginSwitch::On,
         WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
@@ -355,7 +367,11 @@ fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
         entry.event_payload().string("assertion"),
         Some("guest.ready")
     );
-    assert!(crucible_engine::event_log_causal_projection(&sink.entries).is_empty());
+    assert!(
+        crucible_engine::event_log_causal_projection(&sink.entries)
+            .expect("admitted causal projection")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -374,7 +390,7 @@ fn whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount() {
     );
     let event = WhiteboxDoorbellTrapEvent::from_shared_page(3, 1234, range);
     let mut reader =
-        MutatingSnapshotGuestMemoryReader::new(trap_snapshot, later_guest_memory.clone());
+        MutatingSnapshotGuestMemoryReader::new(trap_snapshot.clone(), later_guest_memory.clone());
     let mut sink = RecordingMarkerSink::default();
 
     let marker = match handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event) {
@@ -391,7 +407,16 @@ fn whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount() {
         marker.decoded_payload(),
         WhiteboxMarkerPayload::Coverage(body) if body.point == "trap-snapshot"
     ));
-    assert_eq!(sink.markers, vec![marker]);
+    assert_eq!(sink.markers, vec![marker.clone()]);
+
+    let mut snapshot_sink = RecordingMarkerSink::default();
+    let retained = doorbell
+        .service_trap_snapshot(&mut snapshot_sink, event, &trap_snapshot)
+        .unwrap();
+    assert_eq!(retained, marker);
+    assert_eq!(snapshot_sink.markers, vec![retained]);
+    assert_eq!(reader.calls, vec![(3, 1234, range)]);
+    assert_eq!(reader.memory_after_read, later_guest_memory);
 }
 
 #[test]
@@ -416,6 +441,20 @@ fn whitebox_doorbell_rejects_malformed_frame_without_marker() {
             },
         })
     );
+    let mut snapshot_sink = RecordingMarkerSink::default();
+    assert_eq!(
+        doorbell.service_trap_snapshot(&mut snapshot_sink, event, b"mark"),
+        Err(WhiteboxDoorbellError::DoorbellFrameDecode {
+            marker_icount: 777,
+            source: WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+                len: 4,
+                minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+            },
+        }),
+    );
+    assert!(snapshot_sink.markers.is_empty());
+    assert_eq!(snapshot_sink.diagnostics, sink.diagnostics);
+
     assert_eq!(reader.calls, vec![(2, 777, range)]);
     assert!(sink.markers.is_empty());
     assert_eq!(
@@ -611,12 +650,12 @@ fn whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolu
         Err(error) => panic!("random-request frame should decode: {error:?}"),
     };
     let virtual_request =
-        match AppRandomDoorbellRequest::from_frame("node-a", virtual_event, frame.clone()) {
+        match AppRandomDoorbellRequest::from_frame("node-a", virtual_event, frame.as_view()) {
             Ok(request) => request,
             Err(error) => panic!("virtual random request should decode: {error:?}"),
         };
     let physical_request =
-        match AppRandomDoorbellRequest::from_frame("node-a", physical_event, frame) {
+        match AppRandomDoorbellRequest::from_frame("node-a", physical_event, frame.as_view()) {
             Ok(request) => request,
             Err(error) => panic!("physical random request should decode: {error:?}"),
         };
@@ -982,6 +1021,49 @@ fn whitebox_app_random_serves_random_request_records_decision_and_replies_at_tra
             vec![0xef, 0xbe],
         )]
     );
+
+    for width_bytes in 1..=WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES {
+        let width_bits = width_bytes * 8;
+        let maximum_value = u64::MAX >> (64 - u32::from(width_bits));
+        let payload = random_request_frame(7, width_bytes, "workload");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x8000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 99, range);
+        let record =
+            BackendRngEvidenceRecord::new("node-a", "workload", 7, width_bits, maximum_value);
+        let mut decisions = RecordingAppRandomSource::with_record(record.clone());
+        let mut writer = RecordingGuestInputWriter::default();
+
+        let outcome = handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        )
+        .unwrap();
+        let AppRandomDoorbellOutcome::Served(service) = outcome else {
+            panic!("valid {width_bytes}-byte request must be served");
+        };
+
+        assert_eq!(service.decision(), &record);
+        assert_eq!(service.injection.delivery_icount(), 99);
+        assert_eq!(service.injection.payload_len(), usize::from(width_bytes));
+        assert_eq!(decisions.requests.len(), 1);
+        assert_eq!(
+            writer.writes,
+            vec![(
+                99,
+                GuestMemoryRange::new(
+                    GuestMemoryAddressSpace::Virtual,
+                    0x8000,
+                    usize::from(width_bytes)
+                ),
+                vec![0xff; usize::from(width_bytes)],
+            )]
+        );
+    }
 }
 
 #[test]
@@ -1068,7 +1150,7 @@ fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
         Err(error) => panic!("wrong-kind frame header should decode: {error:?}"),
     };
     assert_eq!(
-        AppRandomDoorbellRequest::from_frame("node-a", event, wrong_kind),
+        AppRandomDoorbellRequest::from_frame("node-a", event, wrong_kind.as_view()),
         Err(AppRandomDecodeDiagnostic::new(
             AppRandomDecodeDiagnosticKind::UnexpectedKind {
                 expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
@@ -1087,7 +1169,7 @@ fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
         Err(error) => panic!("invalid-utf8 frame header should decode: {error:?}"),
     };
     assert_eq!(
-        AppRandomDoorbellRequest::from_frame("node-a", event, invalid_utf8),
+        AppRandomDoorbellRequest::from_frame("node-a", event, invalid_utf8.as_view()),
         Err(AppRandomDecodeDiagnostic::new(
             AppRandomDecodeDiagnosticKind::InvalidUtf8StreamTag,
         ))
@@ -1160,7 +1242,7 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
         let capability = guest_input_capability(&doorbell);
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
-        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload.clone());
         let mut decisions = RecordingAppRandomSource::with_record(BackendRngEvidenceRecord::new(
             "node-a", name, 0, 8, 0,
         ));
@@ -1179,6 +1261,18 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
             Err(error) => panic!("malformed app-random case `{name}` should drop: {error}"),
         };
 
+        let borrowed_outcome = handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        )
+        .unwrap();
+        assert_eq!(borrowed_outcome, outcome);
+
         assert_eq!(
             outcome,
             AppRandomDoorbellOutcome::Dropped {
@@ -1196,6 +1290,80 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
             "malformed app-random case `{name}` must not write a reply"
         );
     }
+
+    let doorbell = PluginWhiteboxDoorbell::new(
+        PluginSwitch::On,
+        WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+        128,
+    );
+    let capability = guest_input_capability(&doorbell);
+    let mut decisions = RecordingAppRandomSource::with_record(BackendRngEvidenceRecord::new(
+        "node-a", "workload", 7, 8, 0xff,
+    ));
+    let mut writer = RecordingGuestInputWriter::default();
+    let payload = random_request_frame(7, 1, "workload");
+    let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, payload.len() + 1);
+    let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
+
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: payload.len() + 1,
+                actual_len: payload.len(),
+            },
+        )),
+    );
+
+    let oversized = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, 129);
+    let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, oversized);
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::PayloadTooLarge {
+                len: 129,
+                max_payload_len: 128
+            },
+        )),
+    );
+
+    let disabled = PluginWhiteboxDoorbell::new(
+        PluginSwitch::Off,
+        WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+        128,
+    );
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &disabled,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::TrapWhileDisabled
+        )),
+    );
+    assert!(decisions.requests.is_empty());
+    assert!(writer.writes.is_empty());
 }
 
 #[test]
@@ -1507,7 +1675,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let entry =
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
+            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event)
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let append = self
             .event_log
             .append_entries(vec![entry])
@@ -1535,7 +1704,8 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
             .next_sequence(0)
             .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let entry =
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
+            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event)
+                .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
         let append = self
             .event_log
             .append_entries(vec![entry])
@@ -1589,5 +1759,59 @@ impl BackendRngEvidenceSource for RecordingAppRandomSource {
     ) -> Result<BackendRngEvidenceRecord, BackendRngEvidenceError> {
         self.requests.push(request.clone());
         self.result.clone()
+    }
+}
+
+#[test]
+fn marker_sink_diagnostics_borrow_fixed_text_and_retain_owned_storage() {
+    let fixed = WhiteboxMarkerSinkError::from_static("fixed marker refusal");
+    assert_eq!(fixed.message(), "fixed marker refusal");
+    assert_eq!(fixed.clone().message().as_ptr(), fixed.message().as_ptr());
+    assert!(fixed.entry_validation_source().is_none());
+
+    let message = String::from("owned backend marker refusal");
+    let address = message.as_ptr();
+    let owned = WhiteboxMarkerSinkError::new(message);
+    assert!(owned.entry_validation_source().is_none());
+    assert_eq!(owned.message().as_ptr(), address);
+    assert_eq!(owned.message(), "owned backend marker refusal");
+    assert_eq!(
+        owned.to_string(),
+        "white-box marker sink failed: owned backend marker refusal"
+    );
+}
+
+#[test]
+fn marker_entry_diagnostics_retain_typed_causes_and_exact_coordinates() {
+    use crucible_qemu_shmem::WhiteboxMarkerEntryError;
+    use std::error::Error;
+
+    let causes = [
+        WhiteboxMarkerEntryError::PayloadLengthExceedsCapacity {
+            len: usize::MAX,
+            capacity: crucible_qemu_shmem::MAX_FRAME_DATA,
+        },
+        WhiteboxMarkerEntryError::NonzeroPayloadTail,
+        WhiteboxMarkerEntryError::NonzeroReservedBytes,
+    ];
+
+    for cause in causes {
+        let error = WhiteboxMarkerSinkError::from_entry_validation(cause.clone());
+        let copied = error.clone();
+
+        assert_eq!(copied, error);
+        assert_eq!(error.message(), "");
+        assert_eq!(error.entry_validation_source(), Some(&cause));
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<WhiteboxMarkerEntryError>()),
+            Some(&cause),
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("white-box marker sink failed: {cause}")
+        );
+        assert_eq!(copied.to_string(), error.to_string());
     }
 }

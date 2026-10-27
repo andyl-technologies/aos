@@ -15,6 +15,31 @@
   crucibleCargo = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   qemuCargo = builtins.readFile ../../crates/crucible/crucible-qemu-host/Cargo.toml;
   daemonCargo = builtins.readFile ../../crates/crucible/crucible-daemon/Cargo.toml;
+  devDependencies = manifest: let
+    section =
+      lib.foldl' (
+        state: line:
+          if line == "[dev-dependencies]"
+          then
+            state
+            // {
+              active = true;
+              count = state.count + 1;
+            }
+          else if lib.hasPrefix "[" line
+          then state // {active = false;}
+          else if state.active
+          then state // {lines = state.lines ++ [line];}
+          else state
+      ) {
+        active = false;
+        count = 0;
+        lines = [];
+      } (lib.splitString "\n" manifest);
+  in
+    if section.count != 1
+    then ""
+    else lib.concatStringsSep "\n" section.lines;
   crucibleShmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs
@@ -191,18 +216,16 @@
         needle = ''test-double = ["dep:crucible-qemu-shmem"]'';
       }
     ]
-    ++ failuresFor "crates/crucible/crucible-qemu-host/Cargo.toml" qemuCargo [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/Cargo.toml dev-dependencies" (devDependencies qemuCargo) [
       {
         label = "QEMU tests enable the mock only as a dev dependency";
-        needle = ''          [dev-dependencies]
-          crucible-engine = { path = "../crucible-engine", features = ["test-double"] }'';
+        needle = ''crucible-engine = { path = "../crucible-engine", features = ["test-double"] }'';
       }
     ]
-    ++ failuresFor "crates/crucible/crucible-daemon/Cargo.toml" daemonCargo [
+    ++ failuresFor "crates/crucible/crucible-daemon/Cargo.toml dev-dependencies" (devDependencies daemonCargo) [
       {
-        label = "daemon tests enable the mock and checkpoint fixtures only as dev dependencies";
-        needle = ''          [dev-dependencies]
-          crucible-engine = { path = "../crucible-engine", features = ["test-double", "test-support"] }'';
+        label = "daemon tests enable the mock and checkpoint fixtures only as a dev dependency";
+        needle = ''crucible-engine = { path = "../crucible-engine", features = ["test-double", "test-support"] }'';
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackendLib [

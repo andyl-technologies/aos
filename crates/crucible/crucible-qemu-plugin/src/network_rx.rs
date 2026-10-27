@@ -986,6 +986,8 @@ mod tests {
         }
 
         let setup = control_encode_host_msg(&HostMsg::Setup {
+            process_generation: 1,
+            device_digest_workspace: None,
             region_len: double.shmem_layout().region_size,
         });
         match double.accept_host_control_frame(&setup) {

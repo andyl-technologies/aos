@@ -216,12 +216,12 @@ pub(crate) fn emit_memory_evidence_c_header(out: &mut String) {
             MEMORY_DIRTY_RANGE_PAGE_SIZE_OFFSET as u64,
         ),
         (
-            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_V1",
-            MEMORY_MUTATION_EVIDENCE_VERSION_V1 as u64,
+            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_V2",
+            MEMORY_MUTATION_EVIDENCE_VERSION_V2 as u64,
         ),
         (
-            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES",
-            MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES as u64,
+            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES",
+            MEMORY_MUTATION_EVIDENCE_HEADER_V2_BYTES as u64,
         ),
         (
             "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_OFFSET",
@@ -328,8 +328,8 @@ pub(crate) fn emit_memory_evidence_c_header(out: &mut String) {
             MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED as u64,
         ),
         (
-            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAGS_V1_MASK",
-            MEMORY_MUTATION_EVIDENCE_FLAGS_V1_MASK as u64,
+            "CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAGS_V2_MASK",
+            MEMORY_MUTATION_EVIDENCE_FLAGS_V2_MASK as u64,
         ),
     ];
     out.push_str("#define CRUCIBLE_MEMORY_TRANSLATION_SHA256_DOMAIN_V1 \"crucible.memory-translation.v1\\0\"\n");
@@ -346,11 +346,42 @@ pub(crate) fn emit_memory_evidence_c_header(out: &mut String) {
         "#define CRUCIBLE_MEMORY_DIRTY_SHA256_DOMAIN_V1 \"crucible.memory-dirty-pages.v1\\0\"\n",
     );
     out.push_str("#define CRUCIBLE_MEMORY_DIRTY_SHA256_DOMAIN_V1_BYTES 31\n");
-    out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1 \"crucible.memory-boundary-fingerprint.v1\\0\"\n");
-    out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1_BYTES 40\n");
-    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1 \"crucible.memory-mutation-precondition.v1\\0\"\n");
-    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V1_BYTES 41\n");
-    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAGIC_V1 \"CRUCMER1\"\n");
+    out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V2 \"crucible.memory-boundary-fingerprint.v2\\0\"\n");
+    out.push_str("#define CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V2_BYTES 40\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V2 \"crucible.memory-mutation-precondition.v2\\0\"\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PRECONDITION_SHA256_DOMAIN_V2_BYTES 41\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAGIC_V2 \"CRUCMER2\"\n");
+    for (name, value) in [
+        (
+            "BEFORE_RAM_BLAKE3",
+            MEMORY_MUTATION_EVIDENCE_BEFORE_RAM_BLAKE3_OFFSET,
+        ),
+        (
+            "AFTER_RAM_BLAKE3",
+            MEMORY_MUTATION_EVIDENCE_AFTER_RAM_BLAKE3_OFFSET,
+        ),
+        (
+            "BEFORE_RAM_BYTES",
+            MEMORY_MUTATION_EVIDENCE_BEFORE_RAM_BYTES_OFFSET,
+        ),
+        (
+            "AFTER_RAM_BYTES",
+            MEMORY_MUTATION_EVIDENCE_AFTER_RAM_BYTES_OFFSET,
+        ),
+        (
+            "RAM_LOGICAL_EDITION",
+            MEMORY_MUTATION_EVIDENCE_RAM_LOGICAL_EDITION_OFFSET,
+        ),
+        (
+            "RAM_ROOT_SCOPE",
+            MEMORY_MUTATION_EVIDENCE_RAM_ROOT_SCOPE_OFFSET,
+        ),
+    ] {
+        let _ = writeln!(
+            out,
+            "#define CRUCIBLE_MEMORY_MUTATION_EVIDENCE_{name}_OFFSET {value}"
+        );
+    }
     for (name, value) in values {
         let _ = writeln!(out, "#define {name} {value}");
     }

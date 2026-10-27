@@ -12,7 +12,11 @@
   pluginArgs = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/args.rs;
   pluginHandshake = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/handshake.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
-  protocol = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  protocol = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
+  ]);
   shmem = import ./_crucible-shmem-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -73,7 +77,7 @@
     ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
-        needle = "pub const ABI_VERSION: u32 = 30;";
+        needle = "pub const ABI_VERSION: u32 = 33;";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/args.rs" pluginArgs [

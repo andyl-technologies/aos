@@ -1,9 +1,8 @@
-//! Canonical v9 checkpoint envelope, manifest, and shape verification.
+//! Canonical v10 checkpoint envelope, manifest, and shape verification.
 
 use super::*;
 
 const FINAL_RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
-const FINAL_RAM_FRONTIER_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
 
 pub(super) fn final_ram_identity(
     configuration: ContentHash,
@@ -25,15 +24,9 @@ pub(super) fn final_ram_identity(
         ),
     );
 
-    let scheduler_bytes = scheduler
-        .canonical_bytes()
+    let final_frontier = scheduler
+        .exact_ram_frontier_identity()
         .map_err(|_| ExactCheckpointRelationError::TargetManifestMismatch)?;
-    let scheduler_hex = scheduler_bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let final_frontier =
-        ContentHash::from_canonical_material(FINAL_RAM_FRONTIER_DOMAIN, &scheduler_hex);
 
     Ok(ExactCheckpointIdentity {
         checkpoint,
@@ -61,12 +54,21 @@ pub(super) fn authenticate_repository_manifest(
             .all(|(closure, repository)| {
                 (closure.identity, closure.length) == (repository.identity, repository.length)
             });
+    let ram_roots = closure
+        .targets
+        .iter()
+        .map(|target| {
+            ContentId::parse(&target.exact_ram.paged.root_object)
+                .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     if repository.production_identity != production_identity
         || repository.scenario != closure.scenario
         || repository.configuration != closure.configuration
         || repository.manifest_id != manifest_id
         || repository.manifest_bytes != u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX)
         || !inventory_matches
+        || ram_roots != repository.ram_roots
     {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
@@ -88,6 +90,7 @@ pub(super) struct RepositoryRootBody {
 pub(super) struct RepositoryRootChildren {
     pub(super) manifest: ContentId,
     pub(super) indexes: Vec<ContentId>,
+    pub(super) ram_roots: Vec<ContentId>,
 }
 
 pub(super) fn decode_root_body(
@@ -122,8 +125,7 @@ pub(super) fn decode_root_children(
 ) -> Result<RepositoryRootChildren, ExactCheckpointRelationError> {
     let count = usize::try_from(index_count)
         .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
-    if !matches!(envelope.children().len(), length if length == count.saturating_add(2) || length == count.saturating_add(4))
-    {
+    if count > envelope.children().len() {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
     let mut manifest = None;
@@ -131,6 +133,7 @@ pub(super) fn decode_root_children(
     let mut promotion_evidence = None;
     let mut choice_closure = None;
     let mut indexes = vec![None; count];
+    let mut ram_roots = BTreeMap::new();
     for child in envelope.children() {
         match child.role() {
             MANIFEST_ROLE => {
@@ -165,6 +168,19 @@ pub(super) fn decode_root_children(
                 }
             }
             role => {
+                if let Some(suffix) = role.strip_prefix(RAM_ROOT_ROLE_PREFIX) {
+                    let ordinal = usize::from_str_radix(suffix, 16)
+                        .map_err(|_| ExactCheckpointRelationError::RepositoryRootMismatch)?;
+                    if suffix.len() != 8
+                        || format!("{RAM_ROOT_ROLE_PREFIX}{ordinal:08x}") != role
+                        || child.id().kind() != ObjectKind::ExactManifest
+                        || child.id().schema_version() != 1
+                        || ram_roots.insert(ordinal, child.id()).is_some()
+                    {
+                        return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+                    }
+                    continue;
+                }
                 let suffix = role
                     .strip_prefix(INDEX_ROLE_PREFIX)
                     .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?;
@@ -188,12 +204,16 @@ pub(super) fn decode_root_children(
     if promotion_source.is_some() != promotion_evidence.is_some() || choice_closure.is_none() {
         return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
     }
+    if !ram_roots.keys().copied().eq(0..ram_roots.len()) {
+        return Err(ExactCheckpointRelationError::RepositoryRootMismatch);
+    }
     Ok(RepositoryRootChildren {
         manifest: manifest.ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?,
         indexes: indexes
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or(ExactCheckpointRelationError::RepositoryRootMismatch)?,
+        ram_roots: ram_roots.into_values().collect(),
     })
 }
 
@@ -323,6 +343,8 @@ struct BoundedManifestWriter {
 
 impl BoundedManifestWriter {
     fn new(limit: usize) -> Result<Self, ExactCheckpointRelationError> {
+        crate::owned_decode::charge_array::<u8>(limit)
+            .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(limit)
@@ -403,75 +425,63 @@ impl std::io::Write for ManifestLengthWriter {
     }
 }
 
+struct HashHex(ContentHash);
+
+impl std::fmt::Display for HashHex {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0.bytes {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn exact_checkpoint_target_manifest_identity(
     configuration: ContentHash,
     fault_checkpoint: ContentHash,
     target: &ExactCheckpointTargetRecord,
-) -> ContentHash {
-    let base = ContentHash::from_canonical_material(
-        TARGET_DOMAIN,
-        &format!(
-            "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
-            configuration.to_hex(),
-            target.immutable_backing.to_hex(),
-            target.node,
-            target.counter,
-            target.scheduler_time,
-            target.snapshot.to_hex(),
-            fault_checkpoint.to_hex(),
-            target.overlay.identity.to_hex(),
-            target.exact_ram.device.identity.to_hex(),
-        ),
-    );
-    let mut material = format!(
-        "target={}\nparent_closure={}\ndevice_sha256={}",
-        base.to_hex(),
-        target
-            .exact_ram
-            .parent_closure
-            .map_or_else(String::new, ContentHash::to_hex),
-        target.exact_ram.device_content_sha256.to_hex(),
-    );
-    for (index, layer) in target.exact_ram.layers.iter().enumerate() {
-        let parent = layer.parent.map_or_else(String::new, |identity| {
-            format!(
-                "{}/{}/{}",
-                identity.checkpoint.to_hex(),
-                identity.target.to_hex(),
-                identity.frontier.to_hex(),
-            )
-        });
-        let _ = write!(
-            material,
-            "\nlayer.{index}.kind={}\nlayer.{index}.checkpoint={}\nlayer.{index}.target={}\nlayer.{index}.frontier={}\nlayer.{index}.parent={}\nlayer.{index}.topology={}\nlayer.{index}.regions={}\nlayer.{index}.records={}\nlayer.{index}.sha256={}\nlayer.{index}.artifact={}\nlayer.{index}.length={}",
-            match layer.kind {
-                ExactCheckpointRamKind::Direct => "direct",
-                ExactCheckpointRamKind::Delta => "delta",
-            },
-            layer.identity.checkpoint.to_hex(),
-            layer.identity.target.to_hex(),
-            layer.identity.frontier.to_hex(),
-            parent,
-            layer.topology.to_hex(),
-            layer.ram_regions,
-            layer.ram_records,
-            layer.content_sha256.to_hex(),
-            layer.artifact.identity.to_hex(),
-            layer.artifact.length,
-        );
+) -> Result<ContentHash, ExactCheckpointRelationError> {
+    let material = crate::owned_decode::display_string(&format_args!(
+        "configuration={}\nimmutable_backing={}\nnode={}\ncounter={}\nscheduler_time={}\nsnapshot={}\nfault={}\noverlay={}\ndevice_state={}",
+        HashHex(configuration), HashHex(target.immutable_backing), target.node,
+        target.counter, target.scheduler_time, HashHex(target.snapshot),
+        HashHex(fault_checkpoint), HashHex(target.overlay.identity),
+        HashHex(target.exact_ram.device.identity),
+    )).map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    let base = ContentHash::from_canonical_material(TARGET_DOMAIN, &material);
+    let material = crate::owned_decode::display_string(&format_args!(
+        "target={}\ndevice_sha256={}\nram_root_object={}\nram_logical_root={}\nram_checkpoint={}\nram_target={}\nram_frontier={}",
+        HashHex(base), HashHex(target.exact_ram.device_content_sha256),
+        target.exact_ram.paged.root_object, HashHex(target.exact_ram.paged.logical_root),
+        HashHex(target.exact_ram.paged.identity.checkpoint),
+        HashHex(target.exact_ram.paged.identity.target),
+        HashHex(target.exact_ram.paged.identity.frontier),
+    )).map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+    Ok(ContentHash::from_canonical_material(
+        RAM_TARGET_DOMAIN,
+        &material,
+    ))
+}
+
+fn identity_set<T: Ord>(
+    values: impl Iterator<Item = T>,
+) -> Result<std::collections::BTreeSet<T>, ExactCheckpointRelationError> {
+    let mut set = std::collections::BTreeSet::new();
+    for value in values {
+        if !set.contains(&value) {
+            crate::owned_decode::charge_btree_set_entry::<T>()
+                .map_err(|_| ExactCheckpointRelationError::ResourceExhausted)?;
+            set.insert(value);
+        }
     }
-    ContentHash::from_canonical_material(RAM_TARGET_DOMAIN, &material)
+    Ok(set)
 }
 
 pub(super) fn validate_closure_structure(
     closure: &ExactCheckpointClosureRecord,
 ) -> Result<(), ExactCheckpointRelationError> {
     if !strictly_sorted(&closure.signal_artifacts)
-        || closure
-            .event_log_segments
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len()
+        || identity_set(closure.event_log_segments.iter())?.len()
             != closure.event_log_segments.len()
         || !closure
             .targets
@@ -507,12 +517,10 @@ pub(super) fn validate_closure_structure(
             .windows(2)
             .all(|pair| pair[0].identity < pair[1].identity)
         || closure.objects.iter().any(|object| object.length == 0)
-        || manifest_object_identities(closure)
-            != closure
-                .objects
-                .iter()
-                .map(|object| object.identity)
-                .collect()
+        || !manifest_object_identities(closure)?
+            .iter()
+            .copied()
+            .eq(closure.objects.iter().map(|object| object.identity))
     {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
@@ -524,41 +532,37 @@ pub(super) fn validate_closure_structure(
         validate_artifact_object_lengths(&target.overlay, &closure.objects)?;
         validate_exact_ram(&target.exact_ram)?;
         validate_artifact_object_lengths(&target.exact_ram.device, &closure.objects)?;
-        for layer in &target.exact_ram.layers {
-            validate_artifact_object_lengths(&layer.artifact, &closure.objects)?;
-        }
     }
     Ok(())
 }
 
 pub(super) fn manifest_object_identities(
     closure: &ExactCheckpointClosureRecord,
-) -> std::collections::BTreeSet<ContentHash> {
-    let mut identities = std::collections::BTreeSet::from([
+) -> Result<std::collections::BTreeSet<ContentHash>, ExactCheckpointRelationError> {
+    let base = [
         closure.schedule,
         closure.scheduler,
         closure.trigger_state,
         closure.assertion_state,
         closure.lifecycle_state,
         closure.fault_checkpoint,
-    ]);
-    identities.extend(closure.event_log_segments.iter().copied());
-    identities.extend(closure.signal_artifacts.iter().copied());
-    identities.extend(
-        closure
-            .failed_host_io
-            .iter()
-            .map(|failed| failed.checkpoint),
-    );
-    for target in &closure.targets {
-        identities.insert(target.snapshot);
-        identities.extend(artifact_object_identities(&target.overlay));
-        identities.extend(artifact_object_identities(&target.exact_ram.device));
-        for layer in &target.exact_ram.layers {
-            identities.extend(artifact_object_identities(&layer.artifact));
-        }
-    }
-    identities
+    ];
+    identity_set(
+        base.into_iter()
+            .chain(closure.event_log_segments.iter().copied())
+            .chain(closure.signal_artifacts.iter().copied())
+            .chain(
+                closure
+                    .failed_host_io
+                    .iter()
+                    .map(|failed| failed.checkpoint),
+            )
+            .chain(closure.targets.iter().flat_map(|target| {
+                std::iter::once(target.snapshot)
+                    .chain(artifact_object_identities(&target.overlay))
+                    .chain(artifact_object_identities(&target.exact_ram.device))
+            })),
+    )
 }
 
 fn artifact_object_identities(
@@ -643,34 +647,11 @@ fn logical_artifact_chunk_length(
 fn validate_exact_ram(
     checkpoint: &ExactCheckpointRamRecord,
 ) -> Result<(), ExactCheckpointRelationError> {
-    let Some(first) = checkpoint.layers.first() else {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    };
-    if checkpoint.layers.len() > MAX_EXACT_CHECKPOINT_RAM_LAYERS
-        || first.kind != ExactCheckpointRamKind::Direct
-        || first.parent.is_some()
-        || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
-    {
-        return Err(ExactCheckpointRelationError::InvalidStructure);
-    }
     if checkpoint.device.length == 0 {
         return Err(ExactCheckpointRelationError::InvalidStructure);
     }
     validate_dense_artifact(&checkpoint.device)?;
-    for (index, layer) in checkpoint.layers.iter().enumerate() {
-        validate_dense_artifact(&layer.artifact)?;
-        if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != first.topology
-        {
-            return Err(ExactCheckpointRelationError::InvalidStructure);
-        }
-        if index > 0 {
-            let parent = &checkpoint.layers[index - 1];
-            if layer.kind != ExactCheckpointRamKind::Delta || layer.parent != Some(parent.identity)
-            {
-                return Err(ExactCheckpointRelationError::InvalidStructure);
-            }
-        }
-    }
+    decode_paged_ram(&checkpoint.paged)?;
     Ok(())
 }
 
@@ -720,15 +701,21 @@ fn validate_sparse_artifact(
         }
         prior_end = end;
     }
-    let mut material = Vec::new();
-    ciborium::ser::into_writer(
+    let material = crate::owned_decode::to_cbor_vec_prefixed(
         &SparseArtifactIdentityMaterial {
             length: artifact.length,
             extents: &artifact.extents,
         },
-        &mut material,
+        b"",
+        MAX_EXACT_CHECKPOINT_MANIFEST_BYTES,
     )
-    .map_err(|_| ExactCheckpointRelationError::CanonicalEncoding)?;
+    .map_err(|error| match error {
+        crate::owned_decode::CborEncodeError::Admission
+        | crate::owned_decode::CborEncodeError::Allocation => {
+            ExactCheckpointRelationError::ResourceExhausted
+        }
+        _ => ExactCheckpointRelationError::CanonicalEncoding,
+    })?;
     let identity = ContentHash::from_canonical_hex_bytes(SPARSE_ARTIFACT_DOMAIN, &material);
     if artifact.identity != identity {
         return Err(ExactCheckpointRelationError::InvalidStructure);

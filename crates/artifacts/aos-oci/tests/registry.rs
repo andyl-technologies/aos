@@ -25,6 +25,10 @@ use tokio::net::TcpListener;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
+// Four base OCI objects, seven evidence manifest/payload pairs, one shared
+// empty config, and the source archive. The evidence includes the Nix closure.
+const SIGNED_RELEASE_FIXTURE_OBJECTS: usize = 4 + 7 * 2 + 1 + 1;
+
 struct RegistryState {
     base: String,
     blobs: Mutex<BTreeMap<String, Vec<u8>>>,
@@ -66,12 +70,17 @@ fn verified_release_inventory_is_closed_sorted_and_rejects_missing_layers() {
     let release = support::add_signed_release_graph(&fixture);
     let graph = aos_oci::registry::verified_release_graph(fixture.root(), &release)
         .expect("complete graph inventory");
-    assert_eq!(graph.len(), 18);
+    assert_eq!(graph.len(), SIGNED_RELEASE_FIXTURE_OBJECTS);
     assert!(graph.windows(2).all(|pair| pair[0].digest < pair[1].digest));
     assert!(
         graph
             .iter()
             .any(|descriptor| descriptor.digest == fixture.layer_descriptor.digest)
+    );
+    assert!(
+        graph
+            .iter()
+            .any(|descriptor| descriptor.digest == release.nix.closure.digest)
     );
 
     fs::remove_file(
@@ -150,7 +159,7 @@ async fn interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags
         .await
         .expect("resume the exact immutable graph");
     assert_eq!(pushed.root_index_digest, release.oci.index.digest);
-    assert_eq!(pushed.object_count, 18);
+    assert_eq!(pushed.object_count, SIGNED_RELEASE_FIXTURE_OBJECTS);
     assert!(
         registry
             .state

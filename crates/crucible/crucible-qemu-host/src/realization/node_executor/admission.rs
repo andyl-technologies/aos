@@ -5,6 +5,55 @@
 
 use super::*;
 
+/// Prepares a fresh operational RAM registration immediately before a replay launch.
+///
+/// Both replay legs share this authority while the executor runs at most one
+/// native node at a time. Implementations retain the original service cap and
+/// refuse preparation until the preceding node has completed physical cleanup.
+pub trait QemuReplayValidationRegistrationPreparation: Send + Sync {
+    /// Restores one admitted exact replay leg through the retained native owner.
+    ///
+    /// # Errors
+    /// Refuses missing installed custody or the actual issuer/restore boundary.
+    fn launch_exact_node(
+        &self,
+        _request: QemuProductionExactRestoreRequest,
+    ) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+            source: crate::OriginalActorAccountError::Unavailable,
+        })
+    }
+
+    /// Builds the fresh replay leg through this same retained native issuer.
+    ///
+    /// # Errors
+    /// Refuses missing installed custody or the actual original launch boundary.
+    fn launch_fresh_node(
+        &self,
+        _config: &QemuLiveNodeStepGateConfig,
+        _admission: QemuProductionFreshLaunchAdmission<'_>,
+    ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+        Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+            source: crate::OriginalActorAccountError::Unavailable,
+        })
+    }
+
+    /// Returns the live service supervisor sharing the original outer cap.
+    fn supervisor(&self) -> crucible_host_resources::host_supervision::HostOperationSupervisor;
+
+    /// Admits the next node's operational allocation without changing replay inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the original owner, capacity, or cleanup ordering
+    /// does not authorize a new native allocation.
+    fn prepare(
+        &self,
+        config: &QemuLiveNodeStepGateConfig,
+        node: &NodeId,
+    ) -> Result<crate::ram_control::RamControlRegistration, QemuVmRealizationError>;
+}
+
 /// Validated exact-target admission for one replay-oracle comparison.
 pub struct QemuReplayValidationExactAdmission {
     config: QemuLiveNodeStepGateConfig,
@@ -16,7 +65,8 @@ pub struct QemuReplayValidationExactAdmission {
     request: Option<QemuProductionExactRestoreRequest>,
     #[cfg(target_os = "linux")]
     target: Option<crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode>,
-    failed_child: Option<crate::QemuNodeChild>,
+    launch_refusal: Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
+    registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
 /// Validated thin-target admission for one replay-oracle comparison.
@@ -27,7 +77,8 @@ pub struct QemuReplayValidationThinAdmission {
     snapshot: ContentHash,
     modeled_node: NodeId,
     identity: OwnedLiveNodeIdentity,
-    failed_child: Option<crate::QemuNodeChild>,
+    launch_refusal: Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
+    registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
 struct OwnedLiveNodeIdentity {
@@ -48,7 +99,7 @@ pub(super) struct QemuReplayValidationNodeLauncher {
 }
 
 impl QemuReplayValidationExactAdmission {
-    /// Admits one materialized v9 exact target for replay validation.
+    /// Admits one authenticated paged exact target for replay validation.
     ///
     /// # Errors
     ///
@@ -75,8 +126,19 @@ impl QemuReplayValidationExactAdmission {
             modeled_node: node,
             request: Some(request),
             target: None,
-            failed_child: None,
+            launch_refusal: None,
+            registration_preparation: None,
         })
+    }
+
+    /// Defers operational admission until the executor launches this exact leg.
+    #[must_use]
+    pub fn with_registration_preparation(
+        mut self,
+        preparation: Arc<dyn QemuReplayValidationRegistrationPreparation>,
+    ) -> Self {
+        self.registration_preparation = Some(preparation);
+        self
     }
 
     fn launch_prepared_exact_node(
@@ -85,7 +147,7 @@ impl QemuReplayValidationExactAdmission {
         snapshot: &QemuVmSnapshot,
         checkpoint: &Checkpoint,
     ) -> Result<QemuNode, QemuVmRealizationError> {
-        require_no_failed_launch_child(&self.failed_child)?;
+        require_no_issued_launch_refusal(&self.launch_refusal)?;
         if snapshot.id() != self.snapshot || checkpoint.id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded exact-profile checkpoint restore",
@@ -94,22 +156,31 @@ impl QemuReplayValidationExactAdmission {
                 ),
             });
         }
-        let request =
+        let mut request =
             self.request
                 .take()
                 .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
                     role: "atomic exact replay admission",
                     message: String::from("exact replay request was already consumed"),
                 })?;
-        let result = request
-            .launch()
-            .map(QemuProductionExactRestoreLaunch::into_paused_parts);
+        if let Some(preparation) = &self.registration_preparation {
+            let registration = preparation.prepare(&self.config, &self.modeled_node)?;
+            request = request.with_replay_ram_registration(registration, preparation.supervisor());
+        }
+        let result = self
+            .registration_preparation
+            .as_ref()
+            .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                source: crate::OriginalActorAccountError::Unavailable,
+            })
+            .and_then(|issuer| issuer.launch_exact_node(request))
+            .and_then(QemuProductionExactRestoreLaunch::into_paused_parts);
         let result = result.map(|(node, run_directory, target)| {
             self.run_directory = Some(run_directory);
             self.target = Some(target);
             node
         });
-        retain_profile_restore_result(result, &mut self.failed_child, config)
+        retain_profile_restore_result(result, &mut self.launch_refusal, config)
     }
 }
 
@@ -145,8 +216,19 @@ impl QemuReplayValidationThinAdmission {
                 router: String::from("crucible-router"),
                 crash_detector: crash_detector.into(),
             },
-            failed_child: None,
+            launch_refusal: None,
+            registration_preparation: None,
         })
+    }
+
+    /// Defers operational admission until the preceding replay leg is cleaned.
+    #[must_use]
+    pub fn with_registration_preparation(
+        mut self,
+        preparation: Arc<dyn QemuReplayValidationRegistrationPreparation>,
+    ) -> Self {
+        self.registration_preparation = Some(preparation);
+        self
     }
 
     fn launch_prepared_thin_node(
@@ -155,7 +237,7 @@ impl QemuReplayValidationThinAdmission {
         restore: QemuNodeCheckpointAssertion<'_>,
         process_contract: &QemuChildProcessContract,
     ) -> Result<QemuNode, QemuVmRealizationError> {
-        require_no_failed_launch_child(&self.failed_child)?;
+        require_no_issued_launch_refusal(&self.launch_refusal)?;
         if restore.checkpoint().id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded thin-profile checkpoint restore",
@@ -164,15 +246,28 @@ impl QemuReplayValidationThinAdmission {
                 ),
             });
         }
+        let mut launch_config = self.config.clone();
+        if let Some(preparation) = &self.registration_preparation {
+            let registration = preparation.prepare(&launch_config, &self.modeled_node)?;
+            launch_config = launch_config
+                .with_ram_control_registration(registration)
+                .with_host_operation_supervisor(preparation.supervisor());
+        }
         let launch = QemuProductionFreshLaunchAdmission::admit(
-            &self.config,
+            &launch_config,
             &self.run_directory,
             process_contract,
             self.identity.borrowed(),
         );
-        let result =
-            launch.and_then(|launch| launch_qemu_production_fresh_node(&self.config, launch));
-        retain_profile_restore_result(result, &mut self.failed_child, config)
+        let result = launch.and_then(|launch| {
+            self.registration_preparation
+                .as_ref()
+                .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                    source: crate::OriginalActorAccountError::Unavailable,
+                })?
+                .launch_fresh_node(&launch_config, launch)
+        });
+        retain_profile_restore_result(result, &mut self.launch_refusal, config)
     }
 }
 
@@ -214,26 +309,6 @@ impl QemuReplayValidationNodeLauncher {
             exact_observation_generation: None,
             thin_observation_generation: None,
         }
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationExactAdmission {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.failed_child.take()
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationThinAdmission {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.failed_child.take()
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationNodeLauncher {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.exact
-            .take_failed_launch_child()
-            .or_else(|| self.thin.take_failed_launch_child())
     }
 }
 

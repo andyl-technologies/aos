@@ -7,33 +7,27 @@ use super::{ARTIFACT_CHUNK_BYTES, ExactCheckpointArtifactRecord, ExactCheckpoint
 use crate::ContentHash;
 
 type ObjectOpener = dyn Fn(ContentHash) -> io::Result<Box<dyn Read + Send>> + Send + Sync + 'static;
-type RestoreReaders = (
-    Box<dyn Read + Send>,
-    Box<dyn Read + Send>,
-    Vec<Box<dyn Read + Send>>,
-);
+type RestoreReaders = (Box<dyn Read + Send>, Box<dyn Read + Send>);
 
 /// Opaque logical byte streams for one repository-rooted exact restore.
 pub struct ExactCheckpointRestoreStreams {
     root_overlay: Box<dyn Read + Send>,
     device_state: Box<dyn Read + Send>,
-    ram_layers: Vec<Box<dyn Read + Send>>,
 }
 
 impl std::fmt::Debug for ExactCheckpointRestoreStreams {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ExactCheckpointRestoreStreams")
-            .field("ram_layers", &self.ram_layers.len())
             .finish_non_exhaustive()
     }
 }
 
 impl ExactCheckpointRestoreStreams {
-    /// Consumes the set into the three operation-specific restore streams.
+    /// Consumes the set into the two operation-specific restore streams.
     #[must_use]
     pub fn into_readers(self) -> RestoreReaders {
-        (self.root_overlay, self.device_state, self.ram_layers)
+        (self.root_overlay, self.device_state)
     }
 }
 
@@ -44,22 +38,10 @@ pub(super) fn open_target_streams(
     let open: Arc<ObjectOpener> = Arc::new(open);
     let root_overlay = logical_reader(target.clone(), ArtifactSelector::RootOverlay, open.clone());
     let device_state = logical_reader(target.clone(), ArtifactSelector::DeviceState, open.clone());
-    let mut ram_layers = Vec::new();
-    ram_layers
-        .try_reserve_exact(target.exact_ram.layers.len())
-        .map_err(|_| io::Error::other("allocate exact-checkpoint RAM stream inventory"))?;
-    for index in 0..target.exact_ram.layers.len() {
-        ram_layers.push(logical_reader(
-            target.clone(),
-            ArtifactSelector::RamLayer(index),
-            open.clone(),
-        ));
-    }
 
     Ok(ExactCheckpointRestoreStreams {
         root_overlay,
         device_state,
-        ram_layers,
     })
 }
 
@@ -82,7 +64,6 @@ fn logical_reader(
 enum ArtifactSelector {
     RootOverlay,
     DeviceState,
-    RamLayer(usize),
 }
 
 impl ArtifactSelector {
@@ -90,7 +71,6 @@ impl ArtifactSelector {
         match self {
             Self::RootOverlay => &target.overlay,
             Self::DeviceState => &target.exact_ram.device,
-            Self::RamLayer(index) => &target.exact_ram.layers[index].artifact,
         }
     }
 }

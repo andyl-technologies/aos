@@ -130,7 +130,7 @@ with no owning-branch build/test claim or addition to the 77-member base.
 | Owning PR | Package | Directory | Responsibility |
 |---|---|---|---|
 | #232 | `aos-sandbox-api` | `crates/sandbox/protocol/aos-sandbox-api` | Generated public/local/shared coordinator message data from `api/proto/` |
-| #696 | `crucible-host-resources` | `crates/crucible/host/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
+| #696 | `crucible-host-resources` | `crates/crucible/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
 
 ## Required cross-PR boundaries
 

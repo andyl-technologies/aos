@@ -293,6 +293,7 @@ fn every_typed_node_command_has_an_exact_closed_schema() {
                 (P4, Ty::Bool),
                 (P5, Ty::U64),
                 (P6, Ty::Bytes),
+                (P7, Ty::Bytes),
             ],
             memory,
         ),

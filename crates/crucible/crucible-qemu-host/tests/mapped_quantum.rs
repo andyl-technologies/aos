@@ -178,6 +178,7 @@ fn mapped_quantum_emit_frame_reads_owned_outbound_ring() -> Result<(), Box<dyn E
 #[cfg(unix)]
 #[test]
 fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let guest_pc = 0x4010;
     let map_index = crucible_engine::basic_block_coverage_map_index(
         guest_pc,
@@ -235,6 +236,7 @@ fn mapped_quantum_drains_coverage_into_the_unified_event_log() -> Result<(), Box
     );
     assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
 
+    decode_scope.check()?;
     Ok(())
 }
 
@@ -253,14 +255,14 @@ fn mapped_quantum_rejects_duplicate_novelty_and_future_icount_loudly() -> Result
         QemuMappedQuantumShmemHotPath::new(config.clone(), duplicate_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut duplicate)
         .expect_err("duplicate novelty must fail the run");
-    assert!(error.message.contains("published more than once"));
+    assert!(error.message().contains("published more than once"));
 
     let future_entries = [CoverageEntry::new(7, 0, 0x6000, 4, map_index_for(0x6000))?];
     let future_region = mapped_region(6, None, &future_entries)?;
     let mut future = QemuMappedQuantumShmemHotPath::new(config, future_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut future)
         .expect_err("future coverage must fail the run");
-    assert!(error.message.contains("exceeds completed quantum boundary"));
+    assert!(error.message().contains("exceeds completed quantum boundary"));
     Ok(())
 }
 
@@ -268,6 +270,7 @@ fn mapped_quantum_rejects_duplicate_novelty_and_future_icount_loudly() -> Result
 #[test]
 fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result<(), Box<dyn Error>>
 {
+    let decode_scope = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let coverage = [CoverageEntry::new(6, 0, 0x4010, 4, map_index_for(0x4010))?];
     let marker_payload = WhiteboxMarkerPayload::Coverage(WhiteboxCoverageMarkerBody {
         point: "guest.ready".to_owned(),
@@ -293,6 +296,7 @@ fn mapped_quantum_merges_whitebox_markers_into_the_unified_event_log() -> Result
     );
     assert_eq!(projection.entries()[1].at.retired, Some(icount(6)));
     assert!(QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)?.is_empty());
+    decode_scope.check()?;
     Ok(())
 }
 
@@ -343,7 +347,7 @@ fn mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds()
         QemuMappedQuantumShmemHotPath::new(qemu_config(), future_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut future)
         .expect_err("a future marker must fail the run");
-    assert!(error.message.contains("exceeds completed quantum boundary"));
+    assert!(error.message().contains("exceeds completed quantum boundary"));
 
     let regressing = [
         marker_entry(6, &coverage_payload)?,
@@ -354,7 +358,7 @@ fn mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds()
         QemuMappedQuantumShmemHotPath::new(qemu_config(), regressing_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut regressing)
         .expect_err("a regressing marker must fail the run");
-    assert!(error.message.contains("marker tick regressed"));
+    assert!(error.message().contains("marker tick regressed"));
 
     let random = WhiteboxMarkerPayload::RandomRequest(WhiteboxRandomRequestBody {
         request_id: 3,
@@ -366,7 +370,7 @@ fn mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds()
         QemuMappedQuantumShmemHotPath::new(qemu_config(), random_region, AllowAllSends)?;
     let error = QemuShmemHotPathChannel::drain_observable_events(&mut random)
         .expect_err("an app-random request must not enter the observational ring");
-    assert!(error.message.contains("is not observational"));
+    assert!(error.message().contains("is not observational"));
     Ok(())
 }
 

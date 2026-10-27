@@ -59,6 +59,7 @@ fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
             PLUGIN_PACKAGE,
             "crucible-qemu-protocol",
             "crucible-qemu-shmem",
+            "crucible-ram",
         ],
         gpl2_compatible_external_license,
         "plugin",
@@ -79,7 +80,11 @@ fn debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choice
     let failures = resolved_production_graph_failures(
         &metadata,
         DEBUG_GATEWAY_PACKAGE,
-        &[DEBUG_GATEWAY_PACKAGE, "crucible-qemu-protocol"],
+        &[
+            DEBUG_GATEWAY_PACKAGE,
+            "crucible-qemu-protocol",
+            "crucible-ram",
+        ],
         gpl2_compatible_external_license,
         "debug gateway",
     )?;
@@ -97,11 +102,11 @@ fn permissive_boundary_dependency_graphs_remain_implementation_neutral()
 -> Result<(), Box<dyn Error>> {
     let metadata = cargo_metadata()?;
     let mut failures = Vec::new();
-    for root in ["crucible-qemu-protocol", "crucible-qemu-shmem"] {
+    for root in super::BOUNDARY_PACKAGES {
         failures.extend(resolved_production_graph_failures(
             &metadata,
             root,
-            &["crucible-qemu-protocol", "crucible-qemu-shmem"],
+            super::BOUNDARY_PACKAGES,
             permissive_external_license,
             root,
         )?);
@@ -311,6 +316,7 @@ fn resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions()
             PLUGIN_PACKAGE,
             "crucible-qemu-protocol",
             "crucible-qemu-shmem",
+            "crucible-ram",
         ],
         gpl2_compatible_external_license,
         "plugin",
@@ -324,7 +330,7 @@ fn resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions()
     let boundary_failures = resolved_production_graph_failures(
         &metadata,
         "crucible-qemu-protocol",
-        &["crucible-qemu-protocol", "crucible-qemu-shmem"],
+        super::BOUNDARY_PACKAGES,
         permissive_external_license,
         "crucible-qemu-protocol",
     )?;

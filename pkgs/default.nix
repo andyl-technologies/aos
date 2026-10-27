@@ -1379,12 +1379,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     in
       path == cratesRoot || path == "${cratesRoot}/Cargo.lock";
   };
-  aosWorkspaceVendor = fetchCargoVendor {
+  aosWorkspaceVendor = self.patchCiboriumSeedVendor (fetchCargoVendor {
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
     hash = "sha256-0AGsSmmxR5ED9d+EXSKSSBxF4tm8f+iqbfRVvvQNVhk=";
-  };
+  });
 
   # Auto-discover packages from subdirectories.
   # Recursively scans for .nix files, skipping default.nix and _-prefixed
@@ -1837,6 +1837,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
+      patchCiboriumSeedVendor = callPackage ./build-support/_ciborium-seed-vendor.nix {};
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       # Downstream flakes use the same package argument resolution as discovery.
       inherit callPackage;
@@ -2139,6 +2140,19 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         };
       crucible-controller = callPackage ./tools/crucible/crucible.nix {
         controllerOnly = true;
+      };
+      # The kernel flight uses the unqualified controller above. Its immutable
+      # output qualifies only the downstream suite, avoiding a build cycle.
+      crucible = callPackage ./tools/crucible/crucible.nix {
+        pagingQualificationReceipt =
+          if !stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux"
+          then
+            import ../tests/crucible/ram-live-paging.nix {
+              pkgs = self;
+              inherit lib;
+              attrPath = "checks.crucible.ram.livePaging";
+            }
+          else null;
       };
       sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
 
@@ -2925,7 +2939,14 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # only through buildPackages and build-dependency splicing.
       # The bootstrap shell serves builders; interactive shells use the public
       # recipe with ncurses terminal support on both native and cross targets.
-      bash = withDefaultMaintainers discoveredPackages.bash;
+      # Bash's documentation tools need Perl before the public runtime shell
+      # exists. Keep that build-only interpreter on the completed AOS shell;
+      # ordinary Perl still retains the public Bash selected by its recipe.
+      bash = withDefaultMaintainers (callPackage ./base/bash.nix {
+        texinfo = callPackage ./toolchain/texinfo.nix {
+          perl = callPackage ./tools/perl.nix {bash = stdenv.bash;};
+        };
+      });
       coreutils = withPlatformSupport discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils

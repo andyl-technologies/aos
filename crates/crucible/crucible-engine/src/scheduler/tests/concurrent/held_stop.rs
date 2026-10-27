@@ -198,6 +198,9 @@ fn drive(adapter: &mut Adapter) -> Result<SchedulerConcurrentQuantumOutcome, Sch
 
 #[test]
 fn zero_peer_guest_and_marker_stops_require_explicit_release_even_at_ceiling() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for (cause, kind) in [
         (
             BackendPhysicalStop::GuestSelectable,
@@ -244,6 +247,9 @@ fn zero_peer_guest_and_marker_stops_require_explicit_release_even_at_ceiling() {
 
 #[test]
 fn failed_reply_preserves_source_and_peer_ownership_until_success() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = adapter(
         &["a-source", "z-peer"],
         &[("a-source", 20, BackendPhysicalStop::GuestSelectable)],
@@ -293,6 +299,9 @@ fn failed_reply_preserves_source_and_peer_ownership_until_success() {
 
 #[test]
 fn physically_later_guest_is_hidden_until_earlier_source_release() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = adapter(
         &["a-source", "z-peer"],
         &[
@@ -349,6 +358,9 @@ fn physically_later_guest_is_hidden_until_earlier_source_release() {
 
 #[test]
 fn failed_semantic_finish_blocks_run_and_checkpoint_after_zero_peer_release() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = adapter(
         &["source"],
         &[("source", 20, BackendPhysicalStop::GuestSelectable)],
@@ -367,6 +379,9 @@ fn failed_semantic_finish_blocks_run_and_checkpoint_after_zero_peer_release() {
 
 #[test]
 fn changed_offer_prefix_rejects_before_external_reply() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = adapter(
         &["source"],
         &[("source", 20, BackendPhysicalStop::GuestSelectable)],
@@ -451,6 +466,9 @@ fn same_source_network_guest_adapter() -> Adapter {
 
 #[test]
 fn same_source_network_settlement_preserves_distinct_guest_hold() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = same_source_network_guest_adapter();
     drive(&mut adapter).expect("network and guest share one stopped source");
     assert!(adapter.live_network_preselection().is_some());
@@ -478,6 +496,9 @@ fn same_source_network_settlement_preserves_distinct_guest_hold() {
 
 #[test]
 fn held_peer_application_receipt_is_published_once_after_guest_release() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = adapter(
         &["a-source", "z-peer"],
         &[("a-source", 20, BackendPhysicalStop::GuestSelectable)],
@@ -545,6 +566,9 @@ fn held_peer_application_receipt_is_published_once_after_guest_release() {
 
 #[test]
 fn authenticated_host_publication_refreshes_only_the_same_stopped_source() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for cause in [
         BackendPhysicalStop::GuestSelectable,
         BackendPhysicalStop::CampaignMarker,
@@ -592,6 +616,9 @@ fn authenticated_host_publication_refreshes_only_the_same_stopped_source() {
 
 #[test]
 fn explicit_shutdown_discards_guest_and_marker_peers_only_after_backend_success() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for cause in [
         BackendPhysicalStop::GuestSelectable,
         BackendPhysicalStop::CampaignMarker,
@@ -636,6 +663,9 @@ fn explicit_shutdown_discards_guest_and_marker_peers_only_after_backend_success(
 
 #[test]
 fn same_source_network_and_guest_shutdown_keeps_authorities_until_physical_success() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut adapter = same_source_network_guest_adapter();
     drive(&mut adapter).expect("same-source network and guest authorities");
     let runs = adapter.backend().base.run_history.len();
@@ -666,6 +696,9 @@ fn same_source_network_and_guest_shutdown_keeps_authorities_until_physical_succe
 
 #[test]
 fn identical_prefix_new_world_rejects_old_controller_authority_before_reply() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut first = adapter(
         &["source"],
         &[("source", 20, BackendPhysicalStop::GuestSelectable)],
@@ -717,6 +750,9 @@ fn identical_prefix_new_world_rejects_old_controller_authority_before_reply() {
 
 #[test]
 fn cloned_world_rejects_original_witness_before_reply_but_keeps_own_authority() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut original = adapter(
         &["source"],
         &[("source", 20, BackendPhysicalStop::GuestSelectable)],

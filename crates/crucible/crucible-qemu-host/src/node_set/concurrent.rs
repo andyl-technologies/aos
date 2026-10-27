@@ -148,6 +148,7 @@ impl QemuNodeSet {
             maximum_workers,
         )?;
 
+        self.invalidate_whole_shutdown();
         fingerprint_selected_nodes(
             &mut self.nodes,
             &selected,
@@ -215,6 +216,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                 });
             }
         }
+        self.invalidate_whole_shutdown();
         self.arm_concurrent_fault_event_staging(&runs)?;
 
         let active = Arc::new(AtomicUsize::new(0));

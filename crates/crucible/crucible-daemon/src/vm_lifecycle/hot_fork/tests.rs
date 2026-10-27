@@ -136,6 +136,9 @@ fn exact_boundary_from_continuation(
 
 #[test]
 fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, continuation) = permanently_failed_continuation();
     let boundary = exact_boundary_from_continuation(&continuation);
     assert!(boundary.matches(&continuation));
@@ -163,6 +166,9 @@ fn exact_boundary_rejects_extra_active_and_failed_host_io_owners() {
 
 #[test]
 fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, mut captured) = permanently_failed_continuation();
     let original_bytes = vec![7; 4096];
     let original = ContentHash::from_bytes(&original_bytes);
@@ -244,6 +250,9 @@ fn host_continuation_clone_cost_is_bounded_across_siblings() {
         print!("{stdout}");
         return;
     }
+
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
 
     const SIBLINGS: usize = 64;
     const OBJECT_BYTES: usize = 16 * 1024 * 1024;
@@ -356,6 +365,9 @@ fn time_host_clone<T>(clone: impl FnOnce() -> T) -> (T, u128) {
 
 #[test]
 fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, mut captured) = permanently_failed_continuation();
     let event_bytes = vec![3; 4 * 1024 * 1024];
     let event = ContentHash::from_bytes(&event_bytes);
@@ -368,7 +380,10 @@ fn child_materialization_retains_immutable_scheduler_and_closure_backing() {
         .try_clone_for_branch()
         .unwrap_or_else(|error| panic!("clone child host branch: {error}"));
     let generations = child.node_generations.clone();
-    let restored = child.into_restore_parts(generations, "child-run-state");
+    let restore_config = child
+        .prepare_restore_config("child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
+    let restored = child.into_restore_parts(generations, restore_config);
 
     assert!(Arc::ptr_eq(
         &captured.scheduler,
@@ -422,7 +437,10 @@ fn hot_fork_preserves_failed_node_fingerprint_authority() {
         .collect::<BTreeMap<_, _>>();
     let generations = continuation.node_generations.clone();
 
-    let restore = continuation.into_restore_parts(generations, "child-run-state");
+    let restore_config = continuation
+        .prepare_restore_config("child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
+    let restore = continuation.into_restore_parts(generations, restore_config);
     let observed = restore
         .checkpoint
         .failed_host_io
@@ -543,12 +561,19 @@ fn permanently_failed_world_prepares_without_source_processes() {
         .unwrap_or_else(|error| panic!("permanently failed world should prepare: {error}"));
 
     assert_eq!(
-        source_world.continuation().nodes().len(),
+        source_world.continuation().unwrap().nodes().len(),
         source.world().vm_nodes().len()
     );
-    assert!(source_world.continuation().nodes().iter().all(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-    }));
+    assert!(
+        source_world
+            .continuation()
+            .unwrap()
+            .nodes()
+            .iter()
+            .all(|boundary| {
+                boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+    );
 
     let recovered = source_world
         .recover()
@@ -558,6 +583,9 @@ fn permanently_failed_world_prepares_without_source_processes() {
 
 #[test]
 fn source_world_forks_independent_process_neutral_continuations() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let (_source, lifecycle) = permanently_failed_loop();
     let mut source_world = lifecycle
         .prepare_hot_fork_source_world()
@@ -568,7 +596,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .unwrap_or_else(|error| panic!("process-neutral continuation should fork: {error}"));
     assert!(Arc::ptr_eq(
         &sibling.scheduler,
-        &source_world.continuation().scheduler
+        &source_world.continuation().unwrap().scheduler
     ));
     let node = sibling
         .nodes
@@ -578,6 +606,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
         .clone();
     let original_generation = source_world
         .continuation()
+        .unwrap()
         .node_generations
         .get(&node)
         .copied();
@@ -586,6 +615,7 @@ fn source_world_forks_independent_process_neutral_continuations() {
     assert_eq!(
         source_world
             .continuation()
+            .unwrap()
             .node_generations
             .get(&node)
             .copied(),
@@ -593,7 +623,10 @@ fn source_world_forks_independent_process_neutral_continuations() {
     );
     assert_eq!(
         sibling.fault_checkpoint_identity(),
-        source_world.continuation().fault_checkpoint_identity()
+        source_world
+            .continuation()
+            .unwrap()
+            .fault_checkpoint_identity()
     );
     assert!(source_world.recover().is_ok());
 }
@@ -918,6 +951,9 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     let expected_roots = continuation.immutable_root_images.clone();
     let generations = continuation.node_generations.clone();
 
+    let restore_config = continuation
+        .prepare_restore_config("child-run-state")
+        .unwrap_or_else(|error| panic!("admitted child configuration: {error}"));
     let ProductionVmHotForkRestoreParts {
         config,
         checkpoint,
@@ -926,7 +962,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
-    } = continuation.into_restore_parts(generations.clone(), "child-run-state");
+    } = continuation.into_restore_parts(generations.clone(), restore_config);
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
     assert_eq!(checkpoint.node_generations, generations);
@@ -935,4 +971,266 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert!(blocks.is_empty());
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
+}
+
+#[path = "tests/retained_continuation.rs"]
+mod retained_continuation;
+
+#[cfg(target_os = "linux")]
+struct LoanAwareSourceLauncher {
+    inner: Box<dyn ProductionVmNodeLauncher>,
+    loan: Arc<std::sync::atomic::AtomicBool>,
+    _custody: Arc<()>,
+}
+
+#[cfg(target_os = "linux")]
+impl crucible_control_api::ProductionVmCleanupOwner for LoanAwareSourceLauncher {
+    type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ProductionVmNodeLauncher for LoanAwareSourceLauncher {
+    fn fork_target_is_owned(&self) -> bool {
+        self.loan.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
+        self.inner.begin_execution_quantum()
+    }
+
+    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
+        self.inner.check_operational_boundary()
+    }
+
+    fn launch_fresh(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        qemu_executable: &Path,
+        root_image: &Path,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.inner
+            .launch_fresh(request, qemu_executable, root_image)
+    }
+
+    fn launch_restored(
+        &mut self,
+        request: ProductionVmNodeLaunchRequest<'_>,
+        admission: ProductionVmExactNodeRestoreAdmission,
+    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
+        self.inner.launch_restored(request, admission)
+    }
+
+    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
+        self.inner.replay_candidate()
+    }
+
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        self.inner.finish()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn source_world_with_target_loan() -> (
+    ProductionVmHotForkSourceWorld,
+    Arc<std::sync::atomic::AtomicBool>,
+    std::sync::Weak<()>,
+) {
+    let (_, lifecycle) = permanently_failed_loop();
+    let mut source = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("prepared loan fixture: {error}"));
+    let lifecycle = source
+        .lifecycle
+        .as_deref_mut()
+        .unwrap_or_else(|| panic!("retained source lifecycle"));
+    let loan = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let custody = Arc::new(());
+    let retained = Arc::downgrade(&custody);
+    let inner = std::mem::replace(
+        &mut lifecycle.node_launcher,
+        Box::new(PackagedProductionVmNodeLauncher),
+    );
+    lifecycle.node_launcher = Box::new(LoanAwareSourceLauncher {
+        inner,
+        loan: Arc::clone(&loan),
+        _custody: custody,
+    });
+    (source, loan, retained)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn target_loan_refuses_source_recovery_and_retains_the_same_lifecycle() {
+    let (source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .recover()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse recovery"));
+
+    assert!(failure.unreconciled_nodes().is_empty());
+    assert!(failure.rollback_diagnostics().is_empty());
+    assert!(retained.upgrade().is_some());
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("retain same source: {error}"));
+    assert!(source.fork_target_is_owned());
+
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    let lifecycle = source
+        .recover()
+        .unwrap_or_else(|error| panic!("recover after target retirement: {error}"));
+    assert!(retained.upgrade().is_some());
+    drop(lifecycle);
+    assert!(retained.upgrade().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn target_loan_refuses_source_reuse_until_the_actual_loan_clears() {
+    let (source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .into_reusable()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse reuse"));
+
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("retain same source: {error}"));
+    assert!(retained.upgrade().is_some());
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    assert!(source.into_reusable().is_ok());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dropping_a_loaned_source_retains_its_actual_launcher_custody() {
+    let (source, _loan, retained) = source_world_with_target_loan();
+
+    drop(source);
+
+    assert!(retained.upgrade().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn retiring_a_loaned_source_refuses_before_releasing_launcher_custody() {
+    let (mut source, loan, retained) = source_world_with_target_loan();
+
+    let failure = source
+        .retire()
+        .err()
+        .unwrap_or_else(|| panic!("target loan must refuse source retirement"));
+
+    assert!(failure.to_string().contains("same-family target loan"));
+    assert!(retained.upgrade().is_some());
+    assert!(source.fork_target_is_owned());
+
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    source
+        .retire()
+        .unwrap_or_else(|error| panic!("retire after target retirement: {error}"));
+    assert!(retained.upgrade().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_neutral_source_world_cannot_lend_a_physical_target_permit() {
+    let (_, lifecycle) = permanently_failed_loop();
+    let mut source = lifecycle
+        .prepare_hot_fork_source_world()
+        .unwrap_or_else(|error| panic!("prepared loan fixture: {error}"));
+
+    assert!(source.prepare_fork_target().is_err());
+
+    assert!(!source.fork_target_is_owned());
+    assert!(source.recover().is_ok());
+}
+
+#[test]
+fn borrowed_source_preparation_keeps_same_box_and_typed_failure_before_assembly() {
+    let (_source, mut lifecycle) = permanently_failed_loop();
+    lifecycle.node_lease_cleanup_failed = true;
+    let lifecycle = Box::new(lifecycle);
+    let address = std::ptr::from_ref(lifecycle.as_ref());
+    let preparation =
+        super::preparation::SourceWorldPreparation::new(lifecycle, BTreeMap::new(), false);
+
+    let mut preparation = preparation
+        .into_world()
+        .err()
+        .unwrap_or_else(|| panic!("an unattempted owner cannot become a Source"));
+    assert!(std::ptr::eq(
+        preparation.world.lifecycle.as_deref().unwrap(),
+        address
+    ));
+    assert!(preparation.run().is_err());
+    let Some(ProductionVmHotForkSourcePreparationError::Scheduler {
+        source: SchedulerError::BoundaryViolation { message },
+        ..
+    }) = preparation.first.as_ref() else {
+        panic!("missing source authority must retain its original boundary error");
+    };
+    let message_allocation = message.as_ptr();
+    // The changed component input would now permit preparation. Failure must
+    // remain a one-shot phase rather than trying the next input on this owner.
+    preparation
+        .world
+        .lifecycle
+        .as_mut()
+        .unwrap()
+        .node_lease_cleanup_failed = false;
+    assert!(preparation.run().is_err());
+    assert!(std::ptr::eq(
+        preparation.world.lifecycle.as_deref().unwrap(),
+        address
+    ));
+
+    let failure = preparation.into_failure();
+    assert!(std::ptr::eq(failure.lifecycle.as_deref().unwrap(), address));
+    let Some(ProductionVmHotForkSourcePreparationError::Scheduler {
+        source: SchedulerError::BoundaryViolation { message },
+        ..
+    }) = failure.first_error() else {
+        panic!("failure assembly replaced the typed boundary error");
+    };
+    assert_eq!(message.as_ptr(), message_allocation);
+    assert!(failure.unreconciled_nodes().is_empty());
+    let recovered = failure
+        .into_recovered_lifecycle()
+        .unwrap_or_else(|error| panic!("a refusal before mutation preserves recovery: {error}"));
+    assert_eq!(recovered.inner.backend().len(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parent_park_refusal_retains_and_returns_the_same_complete_source_owner() {
+    // This private refusal constructor models custody only. The actual held
+    // resource is the fixture's target loan; it issues no ParentPark authority.
+    let (source, loan, retained) = source_world_with_target_loan();
+    let failure = ProductionVmHotForkSourceWorldPreparationFailure::retained_parent_park(source);
+    assert!(retained.upgrade().is_some());
+
+    let source = failure
+        .into_retained_source()
+        .unwrap_or_else(|error| panic!("refusal must retain the actual Source: {error}"));
+    assert!(source.fork_target_is_owned());
+    loan.store(false, std::sync::atomic::Ordering::Release);
+    let lifecycle = source.recover().unwrap_or_else(|error| {
+        panic!("recover the same body after the actual loan returns: {error}")
+    });
+    assert!(retained.upgrade().is_some());
+    drop(lifecycle);
+    assert!(retained.upgrade().is_none());
 }

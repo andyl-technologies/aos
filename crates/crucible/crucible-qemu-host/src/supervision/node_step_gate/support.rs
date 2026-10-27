@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::QemuLaunchCommand;
-use crate::supervision::HostSupervisionDeadline;
+use crucible_host_resources::host_supervision::{HostOperationClass, HostOperationSupervisor};
 
 #[path = "support/priming.rs"]
 mod priming;
@@ -18,9 +18,6 @@ const AARCH64_KERNEL_CMDLINE: &str = "console=ttyAMA0 reboot=k panic=1 quiet";
 const MAX_REISSUES_PER_CEILING: u32 = 64;
 /// Nonzero boot-barrier ceiling below the first modeled busy window.
 const PRIME_CEILING_ICOUNT: u64 = 1_000_000;
-/// Host-liveness polling interval for the priming quantum.
-const PRIME_POLL_INTERVAL: Duration = Duration::from_millis(1);
-
 /// Returns the architecture-specific deterministic launch baseline.
 pub(super) fn launch_profile_candidate(
     architecture: LivePluginGuestArchitecture,
@@ -53,13 +50,26 @@ pub(super) fn advance_to_busy_ceiling(
     let mut reissue_count = 0;
     let mut last_icount = node
         .current_icount()
-        .map_err(|source| QemuLiveNodeStepGateError::node_op("read pre-advance icount", source))?
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("read pre-advance icount") },
+                source,
+            )
+        })?
         .retired;
     loop {
         node.advance_to_ceiling(Icount { retired: ceiling })
-            .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op(
+                    const { &QemuNodeStepOperation::new("advance to ceiling") },
+                    source,
+                )
+            })?;
         let idle = node.idle_state().map_err(|source| {
-            QemuLiveNodeStepGateError::node_op("read post-advance idle state", source)
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("read post-advance idle state") },
+                source,
+            )
         })?;
         let current = idle.current_icount.retired;
 
@@ -89,7 +99,7 @@ pub(super) fn advance_to_busy_ceiling(
 
 fn drive_mapped_prime_chain(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    supervisor: &HostOperationSupervisor,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     prime_ceiling: u64,
     block: Option<&mut QemuLiveBlockIoServicer>,
@@ -109,7 +119,7 @@ fn drive_mapped_prime_chain(
     .map_err(|source| QemuLiveNodeStepGateError::prime("start priming quantum", source))?;
     poll_mapped_prime_chain(
         setup,
-        timeout,
+        supervisor,
         hot_path,
         pending,
         prime_ceiling,
@@ -120,7 +130,7 @@ fn drive_mapped_prime_chain(
 
 fn poll_mapped_prime_chain(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    supervisor: &HostOperationSupervisor,
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     initial_pending: crate::QemuNodePendingQuantum,
     prime_ceiling: u64,
@@ -133,10 +143,11 @@ fn poll_mapped_prime_chain(
         },
     };
     let mut pending = Some(initial_pending);
-    let deadline = HostSupervisionDeadline::start(timeout);
+    let operation = supervisor.begin_work(HostOperationClass::Preparation, prime_ceiling)?;
     let mut emitted_frames = Vec::new();
     let mut next_progress_icount = 250_000_000_u64;
-    while deadline.has_time_remaining() {
+    loop {
+        operation.wait_slice()?;
         setup
             .signal_plugin_wake()
             .map_err(|source| QemuLiveNodeStepGateError::prime("wake priming guest", source))?;
@@ -161,7 +172,7 @@ fn poll_mapped_prime_chain(
             })?;
             match QemuShmemHotPathChannel::poll_quantum(hot_path, active) {
                 Ok(completion) => Some(completion),
-                Err(source) if source.retryable => None,
+                Err(source) if source.is_retryable() => None,
                 Err(source) => {
                     return Err(QemuLiveNodeStepGateError::prime(
                         "poll priming quantum",
@@ -188,8 +199,10 @@ fn poll_mapped_prime_chain(
                 next_progress_icount = completed_current.saturating_add(250_000_000);
             }
             if completed_current >= prime_ceiling {
+                operation.complete()?;
                 return Ok(emitted_frames);
             }
+            operation.progress(completed_current)?;
             pending = Some(
                 QemuShmemHotPathChannel::start_quantum(
                     hot_path,
@@ -201,13 +214,8 @@ fn poll_mapped_prime_chain(
                 })?,
             );
         }
-        if deadline.has_time_remaining() {
-            thread::sleep(PRIME_POLL_INTERVAL);
-        }
+        operation.wait_for_change()?;
     }
-    Err(QemuLiveNodeStepGateError::PrimeStalled {
-        ceiling_icount: prime_ceiling,
-    })
 }
 
 fn retained_network_at_capture(
@@ -417,3 +425,7 @@ pub(super) use tail::{
 #[cfg(test)]
 #[path = "support/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "support/startup_order.rs"]
+mod startup_order;

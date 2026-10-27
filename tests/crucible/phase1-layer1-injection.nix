@@ -22,7 +22,11 @@
 
   deviceManifest = builtins.readFile ../../crates/crucible/crucible-device/Cargo.toml;
   deviceGate = builtins.readFile ../../crates/crucible/crucible-device/tests/gate_layer1_injection.rs;
-  protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
+  ]);
   protocolGate = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_layer1_injection.rs;
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
@@ -227,7 +231,7 @@
         "$tie_break_result"; do
         require_line "$result" "campaign_mode=${campaignComposition.mode}"
         require_line "$result" \
-          "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"
+          "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"
         require_line "$result" \
           "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"
       done

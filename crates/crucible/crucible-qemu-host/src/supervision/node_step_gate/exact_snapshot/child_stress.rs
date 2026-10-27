@@ -142,14 +142,24 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
         &identity,
         exact_gate_checkpoint(&identity, quantum.completion_icount, false),
     )
-    .map_err(|source| QemuLiveNodeStepGateError::node_op("save source VMState", source))?;
+    .map_err(|source| {
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("save source VMState") },
+            source,
+        )
+    })?;
     let source_before = file_identity(&source_vmstate_path)?;
     if source_before.length == 0 {
         return Err(invariant("source VMState container stayed empty"));
     }
     let held = node
         .prepare_hot_fork_template_barriers(&[])
-        .map_err(|source| qmp_operation("prepare retained template", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("prepare retained template") },
+                source,
+            )
+        })?;
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
     let source_allocated_bytes = allocated_tree_bytes(source_directory.path())?;
@@ -222,7 +232,10 @@ pub fn run_qemu_live_hot_fork_child_stress_gate(
     let run_root_entries = u64::try_from(run_root_entries).unwrap_or(u64::MAX);
 
     node.force_crash_and_reap_for_gate().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("reap hot-fork stress source", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("reap hot-fork stress source") },
+            source,
+        )
     })?;
     drop(node);
     drop(source_directory);
@@ -306,7 +319,12 @@ fn run_one_lifecycle(
             source_vmstate_bytes.saturating_mul(4).max(1 << 20),
             template_generation,
         )
-        .map_err(|source| qmp_operation("stage child-private VMState destination", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("stage child-private VMState destination") },
+                source,
+            )
+        })?;
 
     let fork_started = monotonic_nanoseconds();
     let forked = node.fork_prepared_hot_fork_template_into(&mut target_owner, |owner| {
@@ -321,7 +339,10 @@ fn run_one_lifecycle(
     let launch = match forked {
         Ok(launch) => launch,
         Err(QemuHotForkLaunchError::Rejected { source }) => {
-            return Err(qmp_operation("fork retained template", source));
+            return Err(qmp_operation(
+                const { &QemuNodeStepOperation::new("fork retained template") },
+                source,
+            ));
         }
         Err(other) => {
             return Err(invariant(&format!(
@@ -365,25 +386,61 @@ fn run_one_lifecycle(
         .kill()
         .map_err(|source| realization("kill hot-fork child", source))?;
     wait_for_child_exit(node, child_generation)?;
-    node.release_hot_fork_plugin_endpoints()
-        .map_err(|source| qmp_operation("release plugin endpoints", source))?;
-    node.release_hot_fork_child_console()
-        .map_err(|source| qmp_operation("release child console", source))?;
-    node.release_hot_fork_child_qmp()
-        .map_err(|source| qmp_operation("release child QMP", source))?;
+    node.release_hot_fork_plugin_endpoints().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release plugin endpoints") },
+            source,
+        )
+    })?;
+    node.release_hot_fork_child_console().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child console") },
+            source,
+        )
+    })?;
+    node.release_hot_fork_child_qmp().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child QMP") },
+            source,
+        )
+    })?;
     let _capture = node
         .release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)
-        .map_err(|source| qmp_operation("release child diagnostics", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release child diagnostics") },
+                source,
+            )
+        })?;
     drop(
         node.release_hot_fork_private_ring_mapping()
-            .map_err(|source| qmp_operation("release private ring", source))?,
+            .map_err(|source| {
+                qmp_operation(
+                    const { &QemuNodeStepOperation::new("release private ring") },
+                    source,
+                )
+            })?,
     );
     node.release_hot_fork_child_process(child_generation)
-        .map_err(|source| qmp_operation("release reaped child record", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release reaped child record") },
+                source,
+            )
+        })?;
     node.release_hot_fork_child_process_contract()
-        .map_err(|source| qmp_operation("release child process contract", source))?;
-    node.release_hot_fork_child_files()
-        .map_err(|source| qmp_operation("release child file plan", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release child process contract") },
+                source,
+            )
+        })?;
+    node.release_hot_fork_child_files().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child file plan") },
+            source,
+        )
+    })?;
     drop(authority);
     drop(private_file);
     drop(target_directory);

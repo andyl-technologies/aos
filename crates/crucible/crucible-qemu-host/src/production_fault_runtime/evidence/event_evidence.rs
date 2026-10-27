@@ -73,7 +73,7 @@ pub(crate) fn validate_node_event_evidence(
                 })
             }
             crucible_qemu_shmem::FaultCommandKind::CpuInstructionTransform => {
-                FaultInstructionEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                FaultInstructionEvidenceV2::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.observed_icount == event.header.observed_icount
                         && evidence.before_state_sha256 == event.header.before_hash
                         && evidence.after_state_sha256 == event.header.after_hash
@@ -92,7 +92,7 @@ pub(crate) fn validate_node_event_evidence(
                 validate_interrupt_evidence(event)
             }
             crucible_qemu_shmem::FaultCommandKind::MemoryMutation => {
-                MemoryMutationEvidenceV1::decode(&event.payload).is_ok_and(|evidence| {
+                MemoryMutationEvidenceV2::decode(&event.payload).is_ok_and(|evidence| {
                     evidence.observed_icount == event.header.observed_icount
                         && evidence.before_sha256 == event.header.before_hash
                         && evidence.after_sha256 == event.header.after_hash
@@ -107,6 +107,9 @@ pub(crate) fn validate_node_event_evidence(
             }
             crucible_qemu_shmem::FaultCommandKind::MemoryService => {
                 validate_memory_service_evidence(event)
+                    && memory_service_rates_match(event, effect)
+                    && crate::fault_action_sink::materialized_memory_service_latency(action)
+                        .is_ok_and(|configured| read_u64(&event.payload, 440) == Some(configured))
             }
             crucible_qemu_shmem::FaultCommandKind::ClockTransform
             | crucible_qemu_shmem::FaultCommandKind::ClockSourceState => {
@@ -293,6 +296,28 @@ fn validate_memory_access_evidence(event: &DequeuedFaultEvent) -> bool {
         .and_then(|length| length.checked_add(mutations.checked_mul(96)?))
         .and_then(|length| length.checked_add(counters.checked_mul(64)?));
     expected.and_then(|length| usize::try_from(length).ok()) == Some(bytes.len())
+}
+
+// Presence bits are part of the configured service, including disabled rates.
+// A valid payload digest alone cannot bind reported parameters to the issued rule.
+fn memory_service_rates_match(
+    event: &DequeuedFaultEvent,
+    effect: &NodeEffectSpecification,
+) -> bool {
+    let NodeEffectSpecification::MemoryService {
+        bandwidth_bytes_per_second,
+        operations_per_second,
+        ..
+    } = effect
+    else {
+        return false;
+    };
+    let flags = u32::from(bandwidth_bytes_per_second.is_some())
+        | (u32::from(operations_per_second.is_some()) << 1);
+
+    read_u64(&event.payload, 448) == Some(bandwidth_bytes_per_second.map_or(0, |rate| rate.get()))
+        && read_u64(&event.payload, 456) == Some(operations_per_second.map_or(0, |rate| rate.get()))
+        && read_u32(&event.payload, 464) == Some(flags)
 }
 
 fn validate_memory_service_evidence(event: &DequeuedFaultEvent) -> bool {
@@ -518,8 +543,7 @@ mod tests {
         assert!(!validate_memory_access_evidence(&event));
     }
 
-    #[test]
-    fn memory_service_requires_tick_ledger_arithmetic() {
+    fn memory_service_event() -> DequeuedFaultEvent {
         let mut event = memory_event();
         event.header.command_kind = crucible_qemu_shmem::FaultCommandKind::MemoryService;
         event.header.observed_icount = 101;
@@ -538,6 +562,12 @@ mod tests {
         event.payload[424..432].copy_from_slice(&5_u64.to_le_bytes());
         event.payload[432..440].copy_from_slice(&8_u64.to_le_bytes());
         event.payload[468..472].copy_from_slice(&(event.header.outcome as u32).to_le_bytes());
+        event
+    }
+
+    #[test]
+    fn memory_service_requires_tick_ledger_arithmetic() {
+        let mut event = memory_service_event();
         assert!(validate_memory_service_evidence(&event));
 
         event.payload[0..8].copy_from_slice(b"CRUCMEM1");
@@ -551,5 +581,113 @@ mod tests {
         event.payload[376..380].copy_from_slice(&3_u32.to_le_bytes());
         event.payload[432..440].copy_from_slice(&7_u64.to_le_bytes());
         assert!(!validate_memory_service_evidence(&event));
+    }
+
+    #[test]
+    fn memory_service_rejects_rates_or_presence_that_contradict_the_issued_action() {
+        use crucible_engine::model::{
+            EFFECT_SEMANTIC_VERSION, EffectLifetime, EffectRequest, FaultPhase, MemoryServiceScope,
+            PositiveU64,
+        };
+
+        for (bytes_per_second, operations_per_second) in [
+            (None, None),
+            (Some(100), None),
+            (None, Some(200)),
+            (Some(100), Some(200)),
+        ] {
+            let mut action =
+                lifecycle_action(NodeLifecycleTransition::Reset, NodeBootPolicy::Immediate);
+            action.kind = BindingActionKind::UpsertPersistent;
+            action.phase = FaultPhase::Load;
+            let ResolvedFaultTarget::Node { node } = action.target else {
+                panic!("fixture requires one node");
+            };
+            action.target = ResolvedFaultTarget::MemoryRange {
+                node,
+                address_space: crucible_engine::model::FaultObjectId::parse("gva").unwrap(),
+                guest_address: 4096,
+                vcpu: Some(0),
+                length_bytes: 1,
+            };
+            action.effect = Arc::new(
+                EffectRequest::new(
+                    EFFECT_SEMANTIC_VERSION,
+                    EffectLifetime::Persistent,
+                    EffectSpecification::Node(NodeEffectSpecification::MemoryService {
+                        latency_picoseconds: 3,
+                        bandwidth_bytes_per_second: bytes_per_second
+                            .map(|rate| PositiveU64::new("byte rate", rate).unwrap()),
+                        operations_per_second: operations_per_second
+                            .map(|rate| PositiveU64::new("operation rate", rate).unwrap()),
+                        sharing_scope: MemoryServiceScope::Range,
+                    }),
+                )
+                .unwrap(),
+            );
+
+            let mut event = memory_service_event();
+            event.header.action_hash = action.id().bytes;
+            event.header.binding_hash = ContentHash::from_canonical_material(
+                "crucible.fault-binding.v1",
+                action.binding.as_str(),
+            )
+            .bytes;
+            event.header.target_hash = ContentHash::from_canonical_material(
+                "crucible.resolved-fault-target.v1",
+                &action.target.canonical_material(),
+            )
+            .bytes;
+            event.payload[440..448].copy_from_slice(&3_u64.to_le_bytes());
+            event.payload[448..456].copy_from_slice(&bytes_per_second.unwrap_or(0).to_le_bytes());
+            event.payload[456..464]
+                .copy_from_slice(&operations_per_second.unwrap_or(0).to_le_bytes());
+            let flags = u32::from(bytes_per_second.is_some())
+                | (u32::from(operations_per_second.is_some()) << 1);
+            event.payload[464..468].copy_from_slice(&flags.to_le_bytes());
+            rehash_memory_service_event(&mut event);
+            let commit = CommittedQemuActionEvidence {
+                command_sequence: event.header.rule_command_sequence,
+                command_kind: event.header.command_kind as u16,
+                before_hash: event.header.before_hash,
+                after_hash: event.header.after_hash,
+            };
+
+            assert!(qemu_event_matches_commit(&event, &action, &commit));
+            assert!(validate_node_event_evidence(&event, &action).is_ok());
+
+            for (offset, bytes) in [
+                (
+                    448,
+                    (bytes_per_second.unwrap_or(0) + 1).to_le_bytes().to_vec(),
+                ),
+                (
+                    456,
+                    (operations_per_second.unwrap_or(0) + 1)
+                        .to_le_bytes()
+                        .to_vec(),
+                ),
+                (464, (flags ^ 1).to_le_bytes().to_vec()),
+                (464, (flags ^ 2).to_le_bytes().to_vec()),
+                (464, (flags | 4).to_le_bytes().to_vec()),
+            ] {
+                let mut invalid = event.clone();
+                invalid.payload[offset..offset + bytes.len()].copy_from_slice(&bytes);
+                rehash_memory_service_event(&mut invalid);
+
+                assert_eq!(invalid.header.action_hash, action.id().bytes);
+                assert!(qemu_event_matches_commit(&invalid, &action, &commit));
+                assert!(validate_memory_service_evidence(&invalid));
+                assert!(
+                    validate_node_event_evidence(&invalid, &action).is_err(),
+                    "configured rates {bytes_per_second:?}/{operations_per_second:?}, offset {offset}"
+                );
+            }
+        }
+    }
+
+    fn rehash_memory_service_event(event: &mut DequeuedFaultEvent) {
+        event.header.evidence_hash = Sha256::digest(&event.payload).into();
+        event.header.payload_hash = *blake3::hash(&event.payload).as_bytes();
     }
 }

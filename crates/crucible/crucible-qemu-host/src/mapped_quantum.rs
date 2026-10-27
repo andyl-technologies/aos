@@ -56,6 +56,7 @@ mod preemption;
 mod restore;
 pub use error::QemuMappedQuantumShmemHotPathError;
 pub(crate) use fingerprint::black_box_execution_fingerprint;
+pub(crate) use fingerprint::validate_black_box_fingerprint_sample;
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
 pub struct QemuMappedQuantumShmemHotPath {
@@ -289,7 +290,7 @@ impl QemuMappedQuantumShmemHotPath {
         let view =
             mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
         let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
-            config.clone(),
+            config,
             view,
             inbound_delivery_ledger,
             send_authorizer.as_ref(),
@@ -754,8 +755,23 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         horizon: ExecutionHorizon,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        self.start_quantum_with_publication(horizon, stop_condition, None)
+    }
+
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        if let Some(publication) = publication.as_ref() {
+            publication
+                .corroborate_mapping(self.region.backing_identity(), self.config.vm_slot)
+                .map_err(QemuNodeChannelError::from)?;
+        }
         self.with_hot_path("start_quantum", |hot_path| {
-            let pending = QemuQuantumShmemHotPath::start_quantum(hot_path, horizon, stop_condition)
+            let pending = hot_path
+                .start_quantum_with_publication(horizon, stop_condition, publication)
                 .map_err(QemuNodeChannelError::from)?;
             let start_operations = hot_path.operation_log().to_vec();
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
@@ -1000,6 +1016,66 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn validate_selectable_reset(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "validate selectable reset",
+                "a guest reply is already queued",
+            ));
+        }
+        let plan = self.selectable_catalog_plan.as_ref().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "validate selectable reset",
+                "no mirrored selectable catalog",
+            )
+        })?;
+        plan.validate_reset_abandonment(pending).map_err(|error| {
+            QemuNodeChannelError::new("validate selectable reset", error.to_string())
+        })?;
+        let stopped_tick = pending
+            .trap_tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new("validate selectable reset", "stopped tick overflow")
+            })?;
+        let current = self.with_hot_path("validate selectable reset", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        if current != stopped_tick {
+            return Err(QemuNodeChannelError::new(
+                "validate selectable reset",
+                "pending token differs from current stopped boundary",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn abandon_selectable_after_reset(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "abandon selectable reset",
+                "a guest reply is already queued",
+            ));
+        }
+        let plan = self.selectable_catalog_plan.as_mut().ok_or_else(|| {
+            QemuNodeChannelError::new("abandon selectable reset", "no mirrored selectable catalog")
+        })?;
+        plan.apply_reset_abandonment(pending).map_err(|error| {
+            QemuNodeChannelError::new("abandon selectable reset", error.to_string())
+        })?;
+        self.pending_selectable_requests
+            .retain(|request| request != pending);
+        Ok(())
+    }
+
     fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
         self.selectable_catalog_plan.as_ref()
     }
@@ -1056,9 +1132,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
         let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| {
-                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
-            })?
+            .map_err(|source| source.into_channel_error("execution_fingerprint"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "execution_fingerprint",
@@ -1066,21 +1140,21 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 )
             })?;
         if sample.sample_icount < current_icount {
-            return Err(QemuNodeChannelError::retryable(
+            return Err(QemuNodeChannelError::fingerprint_sample(
                 "execution_fingerprint",
-                format!(
-                    "black-box fingerprint sample at icount {} is behind current boundary {current_icount}",
-                    sample.sample_icount
-                ),
+                crate::QemuFingerprintSampleError::BehindBoundary {
+                    sample_icount: sample.sample_icount,
+                    current_icount,
+                },
             ));
         }
         if sample.sample_icount != current_icount {
-            return Err(QemuNodeChannelError::new(
+            return Err(QemuNodeChannelError::fingerprint_sample(
                 "execution_fingerprint",
-                format!(
-                    "black-box fingerprint sample at icount {} is ahead of current boundary {current_icount}",
-                    sample.sample_icount
-                ),
+                crate::QemuFingerprintSampleError::AheadOfBoundary {
+                    sample_icount: sample.sample_icount,
+                    current_icount,
+                },
             ));
         }
         black_box_execution_fingerprint(&self.config.node, &sample)
@@ -1088,7 +1162,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
         QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .map_err(|source| source.into_channel_error("fingerprint_sample"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "fingerprint_sample",

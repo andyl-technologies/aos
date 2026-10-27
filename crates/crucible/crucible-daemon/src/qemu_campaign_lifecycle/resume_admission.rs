@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn validate_exact_resume_request(
+pub(crate) fn validate_exact_resume_request(
     checkpoint: ExactCheckpointId,
     basis: QemuExactResumeBasis<'_>,
     context: &AttemptExecutionContext,

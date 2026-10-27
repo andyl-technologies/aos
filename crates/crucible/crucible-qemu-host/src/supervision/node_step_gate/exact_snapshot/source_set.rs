@@ -125,9 +125,12 @@ pub(super) fn abort_vmstate_source_transaction(
     generation: u64,
 ) -> Result<(), QemuLiveNodeStepGateError> {
     for poll in 0..SOURCE_ROLLBACK_POLLS {
-        let state = node
-            .abort_hot_fork_template()
-            .map_err(|source| qmp_operation("abort retained native source set", source))?;
+        let state = node.abort_hot_fork_template().map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("abort retained native source set") },
+                source,
+            )
+        })?;
         if state.generation() != generation {
             return Err(invariant(
                 "source restoration changed its transaction generation",
@@ -157,7 +160,7 @@ fn invariant(reason: &str) -> QemuLiveNodeStepGateError {
 }
 
 fn qmp_operation(
-    operation: &'static str,
+    operation: &'static QemuNodeStepOperation,
     source: QemuNodeChannelError,
 ) -> QemuLiveNodeStepGateError {
     QemuLiveNodeStepGateError::node_op(

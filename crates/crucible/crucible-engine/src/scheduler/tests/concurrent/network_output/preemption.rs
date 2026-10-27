@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn retained_future_command_survives_a_new_control_cap_without_authorizing_a_replacement() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let command = PreemptionDecision {
         node: NodeId {
             name: String::from("producer"),
@@ -103,6 +106,9 @@ fn retained_future_command_survives_a_new_control_cap_without_authorizing_a_repl
 
 #[test]
 fn same_tick_tx_and_preemption_preserve_complete_choice_log_across_worker_counts() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for (source, peer) in [("a-source", "z-peer"), ("z-source", "a-peer")] {
         let mut reference = None;
         for workers in [1, 2] {
@@ -221,6 +227,9 @@ fn same_tick_tx_and_preemption_preserve_complete_choice_log_across_worker_counts
 
 #[test]
 fn omitted_producer_keeps_future_command_pending_until_its_natural_horizon() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut reference = None;
     for workers in [1, 2] {
         let decision = PreemptionDecision {
@@ -335,6 +344,9 @@ fn omitted_producer_keeps_future_command_pending_until_its_natural_horizon() {
 
 #[test]
 fn output_yield_before_preemption_defers_the_command_until_the_resumed_run() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for preemption_tick in [60] {
         let mut scheduler = test_scheduler(
             vec![
@@ -403,6 +415,9 @@ fn output_yield_before_preemption_defers_the_command_until_the_resumed_run() {
 
 #[test]
 fn interior_native_control_commits_before_peer_output_without_retiming_tx() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut reference = None;
     for workers in [1, 2] {
         let mut scheduler = test_scheduler(

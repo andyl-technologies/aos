@@ -7,6 +7,7 @@
 //! adapter can install that continuation only while it retains the source
 //! QEMU's child-status authority and the target attempt's pidfd/cgroup owner.
 
+use std::borrow::Cow;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
@@ -37,6 +38,7 @@ pub struct QemuHotForkNodeStateContinuation {
     next_fault_command_sequence: u64,
     setup_fault_command_sequence_floor: u64,
     next_fault_event_sequence: u64,
+    fault_fingerprint_invalidated: bool,
 }
 
 impl QemuHotForkNodeStateContinuation {
@@ -81,6 +83,7 @@ impl QemuHotForkNodeStateContinuation {
             next_fault_command_sequence: source.next_fault_command_sequence,
             setup_fault_command_sequence_floor: source.setup_fault_command_sequence_floor,
             next_fault_event_sequence: source.next_fault_event_sequence,
+            fault_fingerprint_invalidated: source.fault_fingerprint_invalidated,
         })
     }
 
@@ -130,6 +133,7 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible_engine::model::ContentHash,
     checkpoint_cancellation: OwnedFd,
+    ram: Option<super::hot_fork_ram_stage::RamAllocation<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
@@ -145,6 +149,22 @@ impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
 }
 
 impl QemuHotForkSchedulerNodeContinuation {
+    /// Settles this continuation's retained RAM body after actual child return.
+    ///
+    /// The canonical RAM custody verifies its own process disposition before
+    /// canceling the source. Refusal keeps this same continuation and journal.
+    /// This operation neither completes the outer Target loan nor admits work.
+    ///
+    /// # Errors
+    /// Preserves the saved Cleanup, source join, controller, or unknown-return
+    /// history without extracting the retained owner.
+    pub fn settle_ram_after_process_return(&mut self) -> Result<(), QemuNodeError> {
+        if let Some(ram) = &mut self.ram {
+            ram.finish_owned()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn from_host_continuation(
         continuation: QemuHotForkHostContinuation,
         child_qmp: QemuQmpVmStateControlChannel<UnixStream>,
@@ -161,6 +181,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             console_spool,
             node_state,
             checkpoint_cancellation,
+            ram,
         } = continuation;
         let channels = QemuNodeChannels {
             plugin_control: Box::new(endpoint),
@@ -168,6 +189,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             qmp_machine_control: Box::new(crate::QemuQmpExactSnapshotControlChannel::new(
                 child_qmp,
             )),
+            #[cfg(target_os = "linux")]
+            original_native_binding: None,
         };
         Self {
             request,
@@ -180,6 +203,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            ram,
         }
     }
 
@@ -270,6 +294,34 @@ impl QemuHotForkSchedulerNodeContinuation {
             ));
         }
 
+        if let Some(ram) = &mut self.ram
+            && let Err(source) = ram.activate()
+        {
+            return Err(QemuHotForkSchedulerNodeInstallError::new(
+                self, process, source,
+            ));
+        }
+
+        let child_shutdown = match self.ram.as_mut() {
+            Some(ram) => match ram.take_shutdown() {
+                Ok(shutdown) => shutdown,
+                Err(first) => {
+                    return Err(QemuHotForkSchedulerNodeInstallError::new(
+                        self, process, first,
+                    ));
+                }
+            },
+            None => super::shutdown_continuation::ChildShutdown::new(),
+        };
+
+        let launch_cleanup = self.ram.as_ref().map(|ram| ram.cleanup.clone());
+        let process = match &launch_cleanup {
+            Some(cleanup) => {
+                super::process_control::retain_external_launch_cleanup(process, cleanup.clone())
+            }
+            None => process,
+        };
+
         let Self {
             request,
             channels,
@@ -281,6 +333,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             endpoint_stage,
             host_io_binding,
             checkpoint_cancellation,
+            ram,
         } = self;
         let console_observation = console_spool.map(|spool| QemuConsoleObservation { node, spool });
         let authority = QemuHotForkInstalledNodeAuthority {
@@ -291,7 +344,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             host_io_binding,
         };
         Ok(QemuNode {
-            child: QemuNodeProcessControl::External(process),
+            child: QemuNodeProcessControl::external(process),
             channels,
             checkpoint_cancellation: Some(checkpoint_cancellation),
             hot_fork_private_ring_stage: None,
@@ -302,9 +355,14 @@ impl QemuHotForkSchedulerNodeContinuation {
             #[cfg(target_os = "linux")]
             hot_fork_child_files_stage: None,
             hot_fork_plugin_endpoint_stage: None,
+            hot_fork_ram_stage: None,
+            hot_fork_ram_continuation: ram,
+            #[cfg(any(test, feature = "test-support"))]
+            block_completion_observer: None,
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
+            child_shutdown,
             async_policy,
             crash_detector,
             host_io_runtime,
@@ -317,6 +375,8 @@ impl QemuHotForkSchedulerNodeContinuation {
             pending_preemption: state.pending_preemption,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            reset_resume_pending: None,
             network_output_resume_pending: false,
             hot_fork_resume_pending: true,
             pending_network_outputs: Vec::new(),
@@ -330,6 +390,13 @@ impl QemuHotForkSchedulerNodeContinuation {
             setup_fault_command_sequence_floor: state.setup_fault_command_sequence_floor,
             next_fault_event_sequence: state.next_fault_event_sequence,
             fault_event_terminal_failure: None,
+            fault_fingerprint_invalidated: state.fault_fingerprint_invalidated,
+            // External fork custody uses its separately installed process authority.
+            _launch_cleanup: launch_cleanup,
+            // A source generation's original witness cannot authorize a fork
+            // child. Only the admitted fresh factory issues this observation.
+            #[cfg(target_os = "linux")]
+            original_native_binding: None,
         })
     }
 }
@@ -485,6 +552,6 @@ impl QemuHotForkSchedulerNodeInstallError {
     }
 }
 
-fn invalid_node_continuation(message: impl Into<String>) -> QemuNodeChannelError {
+fn invalid_node_continuation(message: impl Into<Cow<'static, str>>) -> QemuNodeChannelError {
     QemuNodeChannelError::new("capture hot-fork scheduler-node continuation", message)
 }

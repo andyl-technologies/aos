@@ -88,14 +88,21 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 
     fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        Ok(self.current_icount_from_slot())
+        let snapshot = self
+            .observe_node_slot("observe current instruction count")
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(Icount {
+            retired: snapshot.current_icount,
+        })
     }
 
     fn logical_time_calibration(
         &mut self,
     ) -> Result<crate::QemuLogicalTimeCalibration, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let snapshot = self.node_snapshot();
+        let snapshot = self
+            .observe_node_slot("observe logical-time calibration")
+            .map_err(QemuNodeChannelError::from)?;
         let calibration = crate::QemuLogicalTimeCalibration {
             logical_icount: snapshot.current_icount,
             raw_icount: snapshot.logical_time_raw_icount,
@@ -108,7 +115,10 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
         &mut self,
     ) -> Result<Option<crate::node::QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        Ok(self.node_snapshot().virtual_timer_witness)
+        let snapshot = self
+            .observe_node_slot("observe virtual-timer fire witness")
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(snapshot.virtual_timer_witness)
     }
 
     fn start_quantum(
@@ -246,12 +256,17 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 
     fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        Ok(idle_state_from_snapshot(self.view.node_slot.snapshot()))
+        let snapshot = self
+            .observe_node_slot("observe node idle state")
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(idle_state_from_snapshot(snapshot))
     }
 
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let snapshot = self.view.node_slot.snapshot();
+        let snapshot = self
+            .observe_node_slot("observe execution fingerprint coordinates")
+            .map_err(QemuNodeChannelError::from)?;
         let material = format!(
             "node={}\ncurrent_icount={}\ncurrent_ns={}\nmax_advance_icount={}\nidle_wake_icount={}\nstatus={}\ndevice_io_active={}\ninbound_read_idx={}\ninbound_write_idx={}\noutbound_read_idx={}\noutbound_write_idx={}\n",
             self.config.node.name,
@@ -284,10 +299,18 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 
 impl From<QemuQuantumError> for QemuNodeChannelError {
     fn from(error: QemuQuantumError) -> Self {
-        if matches!(error, QemuQuantumError::PluginReportNotPublished { .. }) {
-            Self::retryable("qemu_quantum_shmem_hot_path", error.to_string())
-        } else {
-            Self::new("qemu_quantum_shmem_hot_path", error.to_string())
+        match error {
+            QemuQuantumError::OperationalSupervision { operation, source } => {
+                Self::operational_supervision(operation, source)
+            }
+            QemuQuantumError::NodeSlot { operation, source } => {
+                Self::quantum_node_slot(operation, source)
+            }
+            QemuQuantumError::PluginReportNotPublished {
+                current_icount,
+                ceiling,
+            } => Self::quantum_report_pending(current_icount, ceiling),
+            error => Self::new("qemu_quantum_shmem_hot_path", error.to_string()),
         }
     }
 }

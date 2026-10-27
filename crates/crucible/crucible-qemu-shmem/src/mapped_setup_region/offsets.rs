@@ -34,9 +34,8 @@ pub(super) fn directed_ring_descriptor(
     src_slot: u32,
     dst_slot: u32,
 ) -> Result<DirectedRing, MappedSetupRegionAccessError> {
-    directed_rings(vm_node_count)
+    directed_ring_descriptors(vm_node_count)
         .map_err(|source| MappedSetupRegionAccessError::RingTopology { source })?
-        .into_iter()
         .find(|ring| ring.src_slot == src_slot && ring.dst_slot == dst_slot)
         .ok_or(MappedSetupRegionAccessError::UnknownDirectedRing { src_slot, dst_slot })
 }

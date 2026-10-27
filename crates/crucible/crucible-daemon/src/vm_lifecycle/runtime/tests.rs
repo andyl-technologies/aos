@@ -14,6 +14,7 @@ use crucible_qemu_protocol::selectable_catalog_plan::{
 use crucible_qemu_protocol::{SelectionReply, SelectionRequest};
 
 use super::*;
+use crucible_qemu_host::QemuVmRealizationError;
 
 #[path = "tests/durable_run_state.rs"]
 mod durable_run_state;
@@ -24,6 +25,9 @@ mod trigger_deadlines;
 #[path = "tests/held_stop.rs"]
 mod held_stop;
 
+#[path = "tests/whole_shutdown.rs"]
+mod whole_shutdown;
+
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
 }
@@ -32,6 +36,27 @@ fn node() -> NodeId {
     NodeId {
         name: String::from("vm-a"),
     }
+}
+
+fn install_reaped_component_node(lifecycle: &mut ProductionVmLifecycleLoop, node: &NodeId) {
+    let mut backend = crucible_qemu_host::scripted_hot_fork_source_for_test(
+        crucible_qemu_host::QemuTestHotForkOutcome::Forked,
+    )
+    .unwrap_or_else(|error| panic!("component node should start: {error}"));
+    assert!(backend.shutdown_child().unwrap().reaped);
+    assert!(backend.cleanup_physically_returned());
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .insert(node.clone(), backend)
+            .is_none()
+    );
+    lifecycle
+        .inner
+        .backend_mut()
+        .validate_terminal_exits_reaped(std::slice::from_ref(node))
+        .unwrap_or_else(|error| panic!("component node must be reaped: {error}"));
 }
 
 #[test]
@@ -134,6 +159,7 @@ fn checkpoint_selectable_plan(continuation: SelectablePlanContinuation) -> Selec
 struct FailingFinishLauncher {
     finish_calls: Arc<std::sync::atomic::AtomicUsize>,
     fail_boundary: bool,
+    raw_failure: Option<crate::QemuAttemptResourceGuardCleanupFailure>,
 }
 
 struct RecordingNodeLease {
@@ -171,6 +197,20 @@ impl ProductionVmNodeLease for RecordingNodeLease {
     }
 }
 
+impl crucible_control_api::ProductionVmCleanupOwner for FailingFinishLauncher {
+    type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
+    }
+}
+
 impl ProductionVmNodeLauncher for FailingFinishLauncher {
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
@@ -205,10 +245,13 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.finish_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(loop_factory_error("test launcher retained quarantine"))
+        if let Some(first) = self.raw_failure.take() {
+            return Err(first.into());
+        }
+        Err((loop_factory_error("test launcher retained quarantine")).into())
     }
 }
 
@@ -233,11 +276,27 @@ struct RecordingFinishLauncher {
 type PreparationObservation = (&'static str, bool, u64);
 
 struct PreparationBoundaryLauncher {
+    construction: Option<Box<ProductionVmConstructionCustody>>,
     observations: Arc<std::sync::Mutex<Vec<PreparationObservation>>>,
 }
 
 struct SelectablePlanRecordingLauncher {
+    construction: Option<Box<ProductionVmConstructionCustody>>,
     plans: Arc<std::sync::Mutex<Vec<SelectableCatalogPlan>>>,
+}
+
+impl crucible_control_api::ProductionVmCleanupOwner for RecordingFinishLauncher {
+    type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
+    }
 }
 
 impl ProductionVmNodeLauncher for RecordingFinishLauncher {
@@ -270,7 +329,7 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         self.finish_order
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
@@ -279,7 +338,25 @@ impl ProductionVmNodeLauncher for RecordingFinishLauncher {
     }
 }
 
+impl crucible_control_api::ProductionVmCleanupOwner for PreparationBoundaryLauncher {
+    type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
+    }
+}
+
 impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
+    fn take_construction_custody(&mut self) -> Option<Box<ProductionVmConstructionCustody>> {
+        self.construction.take()
+    }
+
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
@@ -329,12 +406,30 @@ impl ProductionVmNodeLauncher for PreparationBoundaryLauncher {
         Err(loop_factory_error("test launcher does not admit replay"))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         Ok(())
     }
 }
 
+impl crucible_control_api::ProductionVmCleanupOwner for SelectablePlanRecordingLauncher {
+    type Failure = crate::ProductionVmConstructionCleanupError;
+    type PostBody = crate::ProductionVmConstructionPostBody;
+
+    fn take_post_body(&mut self) -> Result<Option<Self::PostBody>, Self::Failure> {
+        // This component launcher owns no native World or Service return.
+        Ok(None)
+    }
+
+    fn retry_cleanup(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
+        ProductionVmNodeLauncher::finish(self)
+    }
+}
+
 impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
+    fn take_construction_custody(&mut self) -> Option<Box<ProductionVmConstructionCustody>> {
+        self.construction.take()
+    }
+
     fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
         Ok(())
     }
@@ -384,7 +479,7 @@ impl ProductionVmNodeLauncher for SelectablePlanRecordingLauncher {
         ))
     }
 
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
+    fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         Ok(())
     }
 }
@@ -500,10 +595,70 @@ fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
 }
 
 #[test]
+fn missing_or_unreaped_node_cannot_finish_its_matching_generation_lease() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3).unwrap(),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let missing = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_err();
+    assert!(missing.to_string().contains("no authoritative node"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    let backend = crucible_qemu_host::scripted_hot_fork_source_for_test(
+        crucible_qemu_host::QemuTestHotForkOutcome::Forked,
+    )
+    .unwrap();
+    assert!(!backend.child_reaped());
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .insert(node.clone(), backend)
+            .is_none()
+    );
+    let live = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_err();
+    assert!(live.to_string().contains("preceded child reap"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    lifecycle
+        .inner
+        .backend_mut()
+        .settle_terminal_exits_for_return(std::slice::from_ref(&node))
+        .unwrap_err();
+    // Close this selected actual owner without clearing its authoritative map.
+    let mut backend = lifecycle.inner.backend_mut().take(&node).unwrap();
+    assert!(backend.shutdown_child().unwrap().reaped);
+    assert!(lifecycle.inner.backend_mut().insert(node.clone(), backend).is_none());
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
 fn reaped_generation_finishes_only_its_exact_linear_lease() {
     let source = initially_violated_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(node.clone(), 3);
     lifecycle.node_leases.insert(
@@ -530,6 +685,7 @@ fn mismatched_generation_lease_fails_closed_without_release() {
     let source = initially_violated_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(node.clone(), 4);
     lifecycle.node_leases.insert(
@@ -550,6 +706,14 @@ fn mismatched_generation_lease_fails_closed_without_release() {
 
     assert!(error.to_string().contains("mismatched generation lease"));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_or_else(|error| panic!("retained exact lease should finish: {error}"));
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(!lifecycle.node_leases.contains_key(&node));
 }
 
@@ -563,6 +727,8 @@ fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
     let second = NodeId {
         name: String::from("node-second"),
     };
+    install_reaped_component_node(&mut lifecycle, &first);
+    install_reaped_component_node(&mut lifecycle, &second);
     let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(first.clone(), 2);
@@ -596,8 +762,17 @@ fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
     assert!(error.to_string().contains("mismatched generation lease"));
     assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(!lifecycle.node_leases.contains_key(&first));
+    assert!(lifecycle.node_leases.contains_key(&first));
     assert!(!lifecycle.node_leases.contains_key(&second));
+
+    lifecycle.node_generations.insert(first.clone(), 1);
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&first))
+        .unwrap_or_else(|error| panic!("retained first lease should finish: {error}"));
+
+    assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&first));
 }
 
 fn initially_violated_scenario() -> ScenarioDefForm {
@@ -735,14 +910,16 @@ fn production_lifecycle_lends_generation_preparation_before_path_access() {
         root_image,
         root.path(),
     );
+    let config = crate::vm_lifecycle::admitted_clone::copy_component_configuration(&config);
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let error = build_production_vm_lifecycle_loop_with_launcher(
         &scenario,
         &source,
         &config,
-        PreparationBoundaryLauncher {
+        Box::new(PreparationBoundaryLauncher {
+            construction: Some(Box::new(ProductionVmConstructionCustody::new())),
             observations: Arc::clone(&observations),
-        },
+        }),
     )
     .err()
     .unwrap_or_else(|| panic!("preparation-boundary launcher should reject construction"));
@@ -807,14 +984,16 @@ fn production_lifecycle_derives_node_local_selectable_catalog_from_scenario() {
         root_image,
         root.path(),
     );
+    let config = crate::vm_lifecycle::admitted_clone::copy_component_configuration(&config);
     let plans = Arc::new(std::sync::Mutex::new(Vec::new()));
     let error = build_production_vm_lifecycle_loop_with_launcher(
         &scenario,
         &source,
         &config,
-        SelectablePlanRecordingLauncher {
+        Box::new(SelectablePlanRecordingLauncher {
+            construction: Some(Box::new(ProductionVmConstructionCustody::new())),
             plans: Arc::clone(&plans),
-        },
+        }),
     )
     .err()
     .unwrap_or_else(|| panic!("recording launcher should reject construction"));
@@ -1008,6 +1187,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
     );
     let run_directory = ProductionRunDirectory::temporary()
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
+    let config = admitted_clone::copy_component_configuration(&config);
 
     let mut lifecycle = ProductionVmLifecycleLoop {
         runtime_progress: runtime::progress::RuntimeProgress::default(),
@@ -1015,8 +1195,9 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
-        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
-            .with_world_white_box_policies(source.world()),
+        assertion_evaluator: crate::vm_lifecycle::admitted_clone::component_assertion_evaluator(
+            source,
+        ),
         assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         checkpoint_terminal_cause: None,
@@ -1042,6 +1223,10 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         node_generations: BTreeMap::new(),
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,
+        retained_cleanup_failure: None,
+        terminal_replacements: Vec::new(),
+        terminal_replacement_values: Vec::new(),
+        terminal_replacement_leases: BTreeMap::new(),
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,
@@ -1065,7 +1250,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         },
         scenario,
         source: source.clone(),
-        config,
+        config: config.clone(),
         checkpoint_targets: BTreeMap::new(),
         exact_ram_parents: BTreeMap::new(),
         repository_exact_ram_rebase: None,
@@ -1076,11 +1261,14 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         debug_attach: None,
         debug_gateway_teardown_required: false,
         indeterminate_debug_candidate: None,
+        retained_debug_construction: std::sync::Mutex::new(None),
+        construction_custody: LifecycleConstructionCustody::Unissued(None),
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
         retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
+        input_decode_custody: config.decode_custody.clone(),
         hot_fork_backing_files: BTreeMap::new(),
     };
     lifecycle
@@ -1091,6 +1279,9 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
 
 #[test]
 fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1122,6 +1313,9 @@ fn empty_branch_override_retains_its_scheduler_event_and_quantum() {
 
 #[test]
 fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1153,6 +1347,9 @@ fn branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary() {
 
 #[test]
 fn ordered_branch_reseeds_advance_without_dropping_a_generation() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1519,6 +1716,9 @@ fn production_queued_broadcast_lifecycle() -> ProductionVmLifecycleLoop {
 
 #[test]
 fn production_queued_broadcast_reserves_before_a_backend_run() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let outcome = lifecycle
@@ -1585,6 +1785,9 @@ fn production_queued_broadcast_reserves_before_a_backend_run() {
 
 #[test]
 fn production_selected_preselection_returns_only_its_new_event_append() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let reserved = lifecycle
@@ -1619,10 +1822,14 @@ fn production_selected_preselection_returns_only_its_new_event_append() {
 
 #[test]
 fn production_failed_boundary_cannot_publish_a_queued_reservation() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         fail_boundary: true,
+        raw_failure: None,
     });
     let parent = lifecycle.inner.loop_impl().configuration().clone();
     let error = lifecycle
@@ -1652,6 +1859,9 @@ fn production_failed_boundary_cannot_publish_a_queued_reservation() {
 
 #[test]
 fn choice_free_boot_rejects_a_due_queued_choice_before_any_run() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let mut lifecycle = production_queued_broadcast_lifecycle();
     lifecycle.set_choice_free_parallel_boot(true);
     let parent = lifecycle.inner.loop_impl().configuration().clone();
@@ -1678,6 +1888,9 @@ fn choice_free_boot_rejects_a_due_queued_choice_before_any_run() {
 
 #[test]
 fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.enable_signal_fault_campaign_promotion();
@@ -1711,6 +1924,9 @@ fn production_lifecycle_pauses_on_a_new_live_signal_fault_frontier() {
 
 #[test]
 fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1729,6 +1945,9 @@ fn production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in(
 
 #[test]
 fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = finite_signal_replay_scenario();
     let mut discovery = production_loop_without_backends(&source);
     discovery.initial_lifecycle_observations_pending = false;
@@ -1786,6 +2005,9 @@ fn production_lifecycle_authenticates_typed_signal_branch_before_checkpointing()
 
 #[test]
 fn production_lifecycle_rejects_typed_signal_branch_without_producer_choice() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
     let source = nonterminal_signal_replay_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     lifecycle.initial_lifecycle_observations_pending = false;
@@ -1821,6 +2043,7 @@ fn lifecycle_reports_launch_authority_cleanup_after_backend_shutdown() {
     lifecycle.node_launcher = Box::new(FailingFinishLauncher {
         finish_calls: Arc::clone(&finish_calls),
         fail_boundary: false,
+        raw_failure: None,
     });
 
     let error = QuantumLoop::shutdown(&mut lifecycle)
@@ -1853,6 +2076,7 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
             label: "disk-resource",
         }));
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     lifecycle.node_generations.insert(node.clone(), 9);
     lifecycle.node_leases.insert(
         node.clone(),
@@ -1893,12 +2117,21 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
     let repeated = QuantumLoop::shutdown(&mut lifecycle)
         .err()
         .unwrap_or_else(|| panic!("repeated shutdown must retain quarantine failure"));
-    assert!(repeated.to_string().contains("remains owned by quarantine"));
+    assert!(
+        repeated
+            .to_string()
+            .contains("test node lease retained quarantine")
+    );
+    assert_eq!(
+        lease_finish_calls.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert_eq!(lifecycle.node_leases.len(), 1);
     assert_eq!(
         *order
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
-        vec!["lease"]
+        vec!["lease", "lease"]
     );
     assert_eq!(lifecycle.retained_resource_owners.len(), 1);
     assert_eq!(lifecycle.retained_hot_fork_disk_owners.len(), 1);
@@ -1922,6 +2155,7 @@ fn lifecycle_releases_retained_resources_after_lease_before_aggregate_launcher()
             label: "disk-resource",
         }));
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     lifecycle.node_generations.insert(node.clone(), 11);
     lifecycle.node_leases.insert(
         node.clone(),
@@ -2179,6 +2413,9 @@ mod initial_terminal_boundary {
     #[test]
     fn genesis_entrypoint_pass_returns_without_advancing_a_backend()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let base = initially_violated_scenario();
         let world = base.world();
         let graph = crucible_engine::EventGraph::builder()
@@ -2220,6 +2457,9 @@ mod initial_terminal_boundary {
     #[test]
     fn genesis_entrypoint_unblocks_conditional_event_after_initial_observations()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let base = initially_violated_scenario();
         let world = base.world();
         let graph = crucible_engine::EventGraph::builder()
@@ -2277,6 +2517,9 @@ mod initial_terminal_boundary {
 
     #[test]
     fn initial_terminal_assertion_returns_without_advancing_a_backend() {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)
+            .unwrap_or_else(|error| panic!("finite API component authority: {error}"));
+
         let source = initially_violated_scenario();
         let mut lifecycle = production_loop_without_backends(&source);
         let configuration = lifecycle.inner.loop_impl().configuration().clone();
@@ -2417,4 +2660,41 @@ fn production_debug_evidence_restores_the_recorded_scheduler_frontier() {
         recorded.scheduler_frontier(VirtualTime { ticks: 99 }),
         VirtualTime { ticks: 99 }
     );
+}
+
+#[test]
+fn shutdown_presentation_keeps_actual_guard_leaf_for_owning_extraction() {
+    let source = crucible_engine::crash_restart_scenario().unwrap().scenario;
+    let mut lifecycle = production_loop_without_backends(&source);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let message = String::from("original component guard leaf");
+    let address = message.as_ptr();
+    lifecycle.node_launcher = Box::new(FailingFinishLauncher {
+        finish_calls: Arc::clone(&calls),
+        fail_boundary: false,
+        raw_failure: Some(crate::QemuAttemptResourceGuardCleanupFailure::retained(
+            QemuVmRealizationError::ModelCopy {
+                source: Box::new(SchedulerError::BoundaryViolation { message }),
+            },
+        )),
+    });
+
+    assert!(lifecycle.shutdown().is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let history = lifecycle
+        .take_cleanup_failure()
+        .expect("scheduler presentation must leave the actual leaf owned");
+    assert!(lifecycle.take_cleanup_failure().is_none());
+    drop(lifecycle);
+
+    let QemuVmRealizationError::ModelCopy { source } = history.guard_failure().unwrap().error()
+    else {
+        panic!("the actual cleanup leaf was formatted or replaced");
+    };
+    let SchedulerError::BoundaryViolation { message } =
+        source.downcast_ref::<SchedulerError>().unwrap()
+    else {
+        panic!("the original component cause was replaced");
+    };
+    assert_eq!(message.as_ptr(), address);
 }

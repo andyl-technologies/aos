@@ -28,8 +28,9 @@ use crate::{
     ProductionVmHotForkNodeAdoption, ProductionVmHotForkSourceWorld, ProductionVmNodeGeneration,
     ProductionVmNodeLease,
 };
-use crucible_campaign::{ExactCheckpointId, ObservationId};
 use crucible_control_api::LifecycleApiError;
+use crucible_campaign::{ExactCheckpointId, ObservationId};
+
 use crucible_qemu_host::{
     LinuxQemuHotForkChildProcessAuthority, QemuAsyncDriverPolicy, QemuChildWait, QemuCrashDetector,
     QemuHotForkChildDiagnosticConsumer, QemuHotForkChildLaunch, QemuHotForkChildProcessBasis,
@@ -221,7 +222,7 @@ pub(crate) enum QemuHotForkPublicationDisposition {
 
 /// Monotonic phase of one hot-fork reconciliation owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum QemuHotForkReconciliationPhase {
+pub enum QemuHotForkReconciliationPhase {
     /// The child exists but its private QMP endpoint is not authenticated.
     AwaitingChildAdmission,
     /// The private child channel is authenticated and modeled work may run.
@@ -352,7 +353,7 @@ pub(crate) trait QemuHotForkReconciliationBackend {
 
 /// Failure while advancing a hot-fork reconciliation state.
 #[derive(Debug, Error)]
-pub(crate) enum QemuHotForkAttemptReconciliationError<E>
+pub enum QemuHotForkAttemptReconciliationError<E>
 where
     E: Error + 'static,
 {
@@ -399,6 +400,7 @@ where
 }
 
 mod launch;
+pub(crate) use launch::TargetNodeConstruction;
 mod linux;
 mod state;
 

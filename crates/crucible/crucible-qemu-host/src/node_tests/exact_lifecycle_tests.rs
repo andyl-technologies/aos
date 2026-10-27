@@ -5,7 +5,17 @@ use super::*;
 #[test]
 fn exact_checkpoint_pause_orders_quiesce_stop_and_release() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(false)?;
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
     node.synchronize_observed_time()?;
     log.lock().unwrap().clear();
 
@@ -22,15 +32,21 @@ fn exact_checkpoint_pause_orders_quiesce_stop_and_release() -> Result<(), Box<dy
         ]
     );
     node.shutdown_child()?;
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 
 #[test]
 fn exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(true)?;
     let mut node = scripted_node_with_options(
         Arc::clone(&log),
         ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
             fail_qmp_stop: true,
             ..ScriptedNodeOptions::default()
         },
@@ -54,6 +70,8 @@ fn exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails() -> Result<()
         ]
     );
     node.shutdown_child()?;
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 
@@ -68,7 +86,11 @@ fn permanent_failure_retires_and_removes_the_authoritative_generation() -> Resul
     assert!(nodes.insert(identity.clone(), node).is_none());
 
     let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
-    let retired = nodes.commit_terminal_replacements(plan, vec![None]);
+    let mut replacements = vec![None];
+    let capacity = replacements.capacity();
+    let retired = nodes.commit_terminal_replacements(plan, &mut replacements)?;
+    assert!(replacements.is_empty());
+    assert_eq!(replacements.capacity(), capacity);
 
     assert!(nodes.is_empty());
     assert_eq!(retired.len(), 1);
@@ -89,7 +111,11 @@ fn restored_replacement_requires_explicit_release_after_install() -> Result<(), 
     assert!(nodes.insert(identity.clone(), current).is_none());
 
     let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
-    let retired = nodes.commit_terminal_replacements(plan, vec![Some(replacement)]);
+    let mut replacements = vec![Some(replacement)];
+    let capacity = replacements.capacity();
+    let retired = nodes.commit_terminal_replacements(plan, &mut replacements)?;
+    assert!(replacements.is_empty());
+    assert_eq!(replacements.capacity(), capacity);
     assert_eq!(retired.len(), 1);
     assert!(!recorded(&replacement_log).contains(&ChannelCall::QmpContinue));
 
@@ -98,10 +124,21 @@ fn restored_replacement_requires_explicit_release_after_install() -> Result<(), 
     nodes.shutdown()?;
     Ok(())
 }
+
 #[test]
 fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), Box<dyn Error>> {
     let log = shared_log();
-    let mut node = scripted_node(Arc::clone(&log), false, false, false)?;
+    #[cfg(target_os = "linux")]
+    let ownership = checkpoint_ownership::Ownership::new(false)?;
+    let mut node = scripted_node_with_options(
+        Arc::clone(&log),
+        ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(ownership.clone()),
+            ..ScriptedNodeOptions::default()
+        },
+        std::iter::empty(),
+    )?;
     let mut checkpoint = checkpoint("terminal-exact");
     checkpoint.virtual_time = node.synchronize_observed_time()?;
     let node_identity = node_id("vm-a");
@@ -128,11 +165,14 @@ fn terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence() -> Result<(), 
             ChannelCall::QmpExactSave(snapshot.checkpoint().id),
         ]
     );
+    #[cfg(target_os = "linux")]
+    assert_eq!(ownership.counts(), (1, 1));
     Ok(())
 }
 
 #[test]
 fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -165,6 +205,7 @@ fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), B
     );
     let (shutdown, _final_append) = node.shutdown_child_with_event_log(&mut event_log)?;
     assert!(shutdown.reaped);
+    decode_scope.check()?;
     Ok(())
 }
 
@@ -235,6 +276,7 @@ fn qemu_node_discards_pre_authoritative_observations_after_coverage_generation_r
 #[test]
 fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
 -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -256,6 +298,7 @@ fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
     assert_eq!(event_log_coverage_projection(&append.entries).len(), 1);
     SimulationBackend::shutdown(&mut node)?;
     assert!(node.child_reaped());
+    decode_scope.check()?;
     SimulationBackend::shutdown(&mut node)?;
     assert!(node.child_reaped());
     Ok(())
@@ -286,6 +329,7 @@ fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box
 
 #[test]
 fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error>> {
+    let decode_scope = crucible_engine::test_support::fixture_decode_scope(4 * 1024 * 1024)?;
     let log = shared_log();
     let event = ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
     let mut node = scripted_node_with_coverage(
@@ -307,6 +351,7 @@ fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error
         projection.entries()[0].at.retired,
         Some(Icount { retired: 17 })
     );
+    decode_scope.check()?;
     Ok(())
 }
 
@@ -404,5 +449,38 @@ fn qemu_node_satisfies_simulation_backend_trait() -> Result<(), Box<dyn Error>> 
         ]
     );
 
+    Ok(())
+}
+
+#[test]
+fn terminal_commit_wrong_value_count_preserves_actual_node_and_buffer() -> Result<(), Box<dyn Error>>
+{
+    let identity = node_id("vm-a");
+    let mut current = scripted_node(shared_log(), false, false, false)?;
+    current.force_quarantine_and_reap()?;
+    let replacement = scripted_node(shared_log(), false, false, false)?;
+    let replacement_pid = replacement.process_id();
+    let mut nodes = QemuNodeSet::new();
+    assert!(nodes.insert(identity.clone(), current).is_none());
+    let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
+    let mut replacements = vec![Some(replacement), None];
+    let capacity = replacements.capacity();
+
+    assert!(
+        nodes
+            .commit_terminal_replacements(plan, &mut replacements)
+            .is_err()
+    );
+    assert_eq!(replacements.len(), 2);
+    assert_eq!(replacements.capacity(), capacity);
+    assert_eq!(
+        replacements[0].as_ref().unwrap().process_id(),
+        replacement_pid
+    );
+    replacements[0]
+        .as_mut()
+        .unwrap()
+        .force_quarantine_and_reap()?;
+    nodes.shutdown()?;
     Ok(())
 }

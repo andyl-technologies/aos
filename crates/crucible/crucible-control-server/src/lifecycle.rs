@@ -35,6 +35,7 @@ use crucible_control_client::{
     InProcessLifecycleControlStream,
 };
 
+mod decode_scope;
 /// Opaque authority retained for the complete lifetime of one admitted session.
 ///
 /// Owner-side session composition uses this guard to keep immutable source and
@@ -42,6 +43,8 @@ use crucible_control_client::{
 pub struct SessionLifetimeRetention {
     _capability: Box<dyn Send + Sync>,
     on_destroy: Option<Arc<dyn Fn() -> Result<(), SessionRetentionUpdateError> + Send + Sync>>,
+    // Concrete capability and callback allocations free before their receipts.
+    _custody: Option<crucible_engine::owned_decode::DecodeCustody>,
 }
 
 impl SessionLifetimeRetention {
@@ -51,7 +54,29 @@ impl SessionLifetimeRetention {
         Self {
             _capability: Box::new(capability),
             on_destroy: None,
+            _custody: None,
         }
+    }
+
+    /// Admits the concrete capability allocation under the current request.
+    ///
+    /// The same account remains outside the capability Box, which is destroyed
+    /// and deallocated before its custody returns. Dynamic data already owned
+    /// by the capability and a later destroy callback require their own debits.
+    ///
+    /// # Errors
+    /// Refuses missing current authority, a prior account failure or exhausted
+    /// original metadata before allocating the concrete capability.
+    pub fn try_new_admitted<T: Send + Sync + 'static>(
+        capability: T,
+    ) -> Result<Self, crucible_engine::owned_decode::DecodeAdmissionError> {
+        let custody = crucible_engine::owned_decode::require_current_custody()?;
+        crucible_engine::owned_decode::charge_bytes(std::mem::size_of::<T>() as u64)?;
+        Ok(Self {
+            _capability: Box::new(capability),
+            on_destroy: None,
+            _custody: Some(custody),
+        })
     }
 
     /// Installs cleanup that runs only when the lifecycle registry explicitly
@@ -86,6 +111,14 @@ impl fmt::Debug for SessionLifetimeRetention {
 #[path = "lifecycle/debug_dispatch.rs"]
 mod debug_dispatch;
 
+#[cfg(test)]
+#[path = "lifecycle/retention_admission_tests.rs"]
+mod retention_admission_tests;
+
+#[cfg(test)]
+#[path = "lifecycle/retention_transport_tests.rs"]
+mod retention_transport_tests;
+
 /// Authorized actor dispatch handle captured without retaining the global registry lock.
 #[derive(Clone)]
 pub struct GuestIntrospectionDispatch {
@@ -103,7 +136,7 @@ pub struct DebugRepositionDispatch {
 /// Minimal delegated quantum loop used by the in-process CLI double.
 ///
 /// The loop owns the scheduler boundary below the CLI/API layer. It advances a
-/// deterministic virtual-time counter, emits no scheduler event-log entries, and
+/// deterministic virtual-time counter, emits an observational diagnostic, and
 /// reports terminal quiescence after each quantum so lifecycle-created sessions
 /// can exercise the real `Start`/`Continue`/streaming/terminal-state path
 /// without a QEMU backend.
@@ -132,28 +165,40 @@ impl QuiescentLifecycleLoop {
 
 impl QuantumLoop for QuiescentLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        self.quanta = self.quanta.saturating_add(1);
-        let frontier = VirtualTime { ticks: self.quanta };
-        let event_log_entries = vec![self.diagnostic_entry(frontier)];
-        self.event_log_events = self
-            .event_log_events
-            .saturating_add(event_log_entries.len() as u64);
+        let _origin = crucible_engine::owned_decode::require_current_custody()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+            .map_err(SchedulerError::from)?;
+        let output_budget = crucible_engine::owned_decode::require_current_child_budget()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        let _output_scope = output_budget.enter();
+        let next_quanta = self.quanta.saturating_add(1);
+        let frontier = VirtualTime { ticks: next_quanta };
+        let mut event_log_entries = Vec::new();
+        crucible_engine::owned_decode::reserve_vec(&mut event_log_entries, 1)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+            .map_err(SchedulerError::from)?;
+        event_log_entries.push(self.diagnostic_entry(frontier, next_quanta)?);
         let decision = Decision::DeliveryOrder(DeliveryOrderDecision {
             at: frontier,
             order: Vec::new(),
         });
+        let mut decisions = Vec::new();
+        crucible_engine::owned_decode::reserve_vec(&mut decisions, 1)
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+            .map_err(SchedulerError::from)?;
         let configuration = crucible_engine::try_step(&request.configuration, decision.clone())
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!(
-                    "quiescent lifecycle loop could not record virtual-time decision: {error}"
-                ),
-            })?;
+            .map_err(SchedulerError::from)?;
+        decisions.push(decision);
+        self.quanta = next_quanta;
+        self.event_log_events = self
+            .event_log_events
+            .saturating_add(event_log_entries.len() as u64);
         Ok(QuantumOutcome {
             configuration,
             frontier,
             advanced_node: None,
             resolved_events: Vec::new(),
-            decisions: vec![decision],
+            decisions,
             discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: Vec::new(),
@@ -161,6 +206,7 @@ impl QuantumLoop for QuiescentLifecycleLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::new(Default::default(), 0, self.event_log_events),
             scheduler_quiescence: Some(SchedulerQuiescence::default()),
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()?,
         })
     }
 
@@ -186,17 +232,27 @@ impl QuantumLoop for QuiescentLifecycleLoop {
 }
 
 impl QuiescentLifecycleLoop {
-    fn diagnostic_entry(&self, frontier: VirtualTime) -> SchedulerEventLogEntry {
+    fn diagnostic_entry(
+        &self,
+        frontier: VirtualTime,
+        quanta: u64,
+    ) -> Result<SchedulerEventLogEntry, SchedulerError> {
+        crucible_engine::owned_decode::charge_btree_entry::<String, EventAttributeValue>()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+            .map_err(SchedulerError::from)?;
+        crucible_engine::owned_decode::charge_bytes(
+            ("quantum".len() + "crucible.lifecycle.quiescent".len()) as u64,
+        )
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })
+        .map_err(SchedulerError::from)?;
         let mut details = BTreeMap::new();
-        details.insert(
-            String::from("quantum"),
-            EventAttributeValue::U64(self.quanta),
-        );
+        details.insert(String::from("quantum"), EventAttributeValue::U64(quanta));
         SchedulerEventLogEntry::diagnostic(
             self.event_log_events,
             frontier,
             EventDiagnosticPayload::new("crucible.lifecycle.quiescent", EventLevel::Info, details),
         )
+        .map_err(SchedulerError::from)
     }
 }
 
@@ -266,6 +322,8 @@ pub use observation_resume::{
 /// In-process lifecycle control plane for unary API methods.
 pub struct LifecycleControlPlane<L, F> {
     server_name: String,
+    host_operational_control:
+        Option<crucible_control_api::host_operational::SharedHostOperationalControl>,
     scenarios: BTreeMap<String, ScenarioCatalogEntry>,
     sessions: BTreeMap<SessionId, SessionRuntime>,
     next_session_id: u64,
@@ -281,15 +339,98 @@ pub struct LifecycleControlPlane<L, F> {
     max_sessions: Option<usize>,
     retain_stopped_sessions: bool,
     _loop: PhantomData<fn() -> L>,
+    decode_budget: Option<crucible_engine::owned_decode::DecodeBudget>,
 }
 
 mod constructors;
+
+/// Admits a caller future under its original metadata resource account.
+///
+/// Each synchronous poll restores the same account, including after a thread
+/// change. The account remains retained through the future's final destructor;
+/// no thread-local scope crosses an await and no new capacity is created.
+///
+/// # Errors
+/// Refuses exhausted original credit before allocating the future storage.
+pub fn admit_future<F>(
+    future: F,
+    decoding: crucible_engine::owned_decode::DecodeBudget,
+) -> Result<impl std::future::Future<Output = F::Output>, LifecycleApiError>
+where
+    F: std::future::Future,
+{
+    decode_scope::scoped(future, Some(decoding))
+}
+
+/// Spawns an admitted session actor under its original metadata resource account.
+///
+/// Each poll reinstalls the same credit, and the task retains it through the
+/// actor's final destructor. This does not create capacity or native authority;
+/// production callers retain their independently admitted lifecycle Service.
+///
+/// # Errors
+/// Refuses exhausted original credit before allocating the actor future.
+///
+/// # Panics
+/// Panics if no Tokio runtime is active, as with [`tokio::spawn`].
+pub fn spawn_admitted_session_actor<L>(
+    actor: SessionActor<L>,
+    decoding: crucible_engine::owned_decode::DecodeBudget,
+) -> Result<JoinHandle<Result<SessionRunReport, SessionError>>, LifecycleApiError>
+where
+    L: QuantumLoop + Send + 'static,
+{
+    decode_scope::spawn(actor.run(), Some(decoding))
+}
 
 impl<L, F> LifecycleControlPlane<L, F>
 where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>,
 {
+    /// Retains original admitted metadata credit for session construction and polls.
+    ///
+    /// Production owners supply the quota-backed account they already retain.
+    /// Actor tasks restore this account on every poll, including when Tokio
+    /// moves a task between threads. No thread-local scope crosses an await.
+    #[must_use]
+    pub fn with_decode_budget(
+        mut self,
+        budget: crucible_engine::owned_decode::DecodeBudget,
+    ) -> Self {
+        self.decode_budget = Some(budget);
+        self
+    }
+
+    /// Installs the executor's live operational RAM and supervision authority.
+    ///
+    /// This authority bypasses modeled session commands. Targets must retain
+    /// exact daemon, execution, process, and arena ownership generations.
+    #[must_use]
+    pub fn with_host_operational_control(
+        mut self,
+        control: crucible_control_api::host_operational::SharedHostOperationalControl,
+    ) -> Self {
+        self.host_operational_control = Some(control);
+        self
+    }
+
+    /// Installs live host control after a packaged executor has been attached.
+    pub fn set_host_operational_control(
+        &mut self,
+        control: crucible_control_api::host_operational::SharedHostOperationalControl,
+    ) {
+        self.host_operational_control = Some(control);
+    }
+
+    /// Clones the independent executor authority without holding the actor lock.
+    #[must_use]
+    pub fn host_operational_control(
+        &self,
+    ) -> Option<crucible_control_api::host_operational::SharedHostOperationalControl> {
+        self.host_operational_control.clone()
+    }
+
     /// Installs the authority that authenticates campaign choice evidence on resume.
     ///
     /// The validator receives the scenario, exact recorded configuration, and
@@ -411,6 +552,19 @@ where
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<CreateSessionResponse, LifecycleApiError> {
+        let decoding = self
+            .decode_budget
+            .as_ref()
+            .map(crucible_engine::owned_decode::DecodeBudget::child)
+            .transpose()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        decode_scope::scoped(self.create_session_with_original_budget(request), decoding)?.await
+    }
+
+    async fn create_session_with_original_budget(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<CreateSessionResponse, LifecycleApiError> {
         if let Some(limit) = self.max_sessions
             && self.sessions.len() >= limit
         {
@@ -423,10 +577,20 @@ where
         let debug_genesis = scenario_form
             .map(|source| debug_genesis_checkpoint(&configuration, source))
             .transpose()?;
+        if let Some(budget) = crucible_engine::owned_decode::current_budget() {
+            budget
+                .check()
+                .map_err(LifecycleApiError::ConfigurationCopy)?;
+        }
         let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed)?;
         let white_box_policies = self.white_box_policies_for_source(scenario_form);
         let engine = Engine::new(configuration, graph, loop_instance)
             .with_white_box_policies(white_box_policies);
+        if let Some(budget) = crucible_engine::owned_decode::current_budget() {
+            budget
+                .check()
+                .map_err(LifecycleApiError::ConfigurationCopy)?;
+        }
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
         let actor = SessionActor::new(engine, receiver)
             .with_terminal_command_keepalive(self.retain_stopped_sessions);
@@ -434,11 +598,16 @@ where
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = decode_scope::spawn(
+            actor.run(),
+            crucible_engine::owned_decode::current_budget().or_else(|| self.decode_budget.clone()),
+        )?;
 
         let session_ref = self.next_session_ref(request.seed);
         let runtime = SessionRuntime {
             session: session_ref,
+            output_budget: crucible_engine::owned_decode::current_budget()
+                .or_else(|| self.decode_budget.clone()),
             sender,
             live,
             event_log,
@@ -475,6 +644,20 @@ where
         &self,
         request: ResumeSessionRequest,
     ) -> Result<PendingObservationResume<L>, LifecycleApiError> {
+        let decoding = self
+            .decode_budget
+            .clone()
+            .or_else(crucible_engine::owned_decode::current_budget)
+            .ok_or_else(|| {
+                LifecycleApiError::ConfigurationCopy(
+                    crucible_engine::owned_decode::DecodeAdmissionError::new(std::io::Error::other(
+                        "portable observation preparation requires its original metadata authority",
+                    )),
+                )
+            })?
+            .child()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        let _scope = decoding.enter();
         self.validate_resume_capacity_and_seed(&request)?;
         let permit = self.acquire_resume_observation_preparation()?;
         let configuration = self.validate_direct_resume_request(&request)?;
@@ -494,10 +677,23 @@ where
                 self.resume_observation_preparation_timeout,
             ),
             permit,
+            decoding,
         })
     }
 
     pub(crate) async fn commit_observation_resume(
+        &mut self,
+        prepared: PreparedObservationResume<L>,
+    ) -> Result<ResumeSessionResponse, LifecycleApiError> {
+        let decoding = prepared.decoding.clone();
+        decode_scope::scoped(
+            self.commit_observation_resume_with_original_budget(prepared),
+            Some(decoding),
+        )?
+        .await
+    }
+
+    async fn commit_observation_resume_with_original_budget(
         &mut self,
         prepared: PreparedObservationResume<L>,
     ) -> Result<ResumeSessionResponse, LifecycleApiError> {
@@ -635,11 +831,16 @@ where
             &Configuration::genesis(scenario.clone()),
             &request.scenario,
         )?);
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = decode_scope::spawn(
+            actor.run(),
+            crucible_engine::owned_decode::current_budget().or_else(|| self.decode_budget.clone()),
+        )?;
 
         let session_ref = self.next_session_ref(request.seed);
         let runtime = SessionRuntime {
             session: session_ref,
+            output_budget: crucible_engine::owned_decode::current_budget()
+                .or_else(|| self.decode_budget.clone()),
             sender,
             live,
             event_log,
@@ -685,7 +886,7 @@ where
         build_loop: impl FnOnce() -> Result<L, E>,
     ) -> Result<ResumeSessionResponse, LifecycleApiError>
     where
-        E: fmt::Display,
+        E: std::error::Error + Send + Sync + 'static,
     {
         if let Some(limit) = self.max_sessions
             && self.sessions.len() >= limit
@@ -714,12 +915,18 @@ where
         let mut graph = graph_with_baked_genesis(&scenario)?;
         if !configuration.is_genesis() {
             graph
-                .cache_snapshot(&configuration, checkpoint.clone())
+                .cache_snapshot(
+                    &configuration,
+                    checkpoint
+                        .try_clone_admitted()
+                        .map_err(resume_checkpoint_error)?,
+                )
                 .map_err(resume_checkpoint_error)?;
         }
-        let resumed_loop = build_loop().map_err(|error| LifecycleApiError::LoopFactory {
-            message: error.to_string(),
-        })?;
+        let resumed_loop =
+            build_loop().map_err(|error| LifecycleApiError::BackendConstruction {
+                source: LifecycleBackendConstructionError::new(error),
+            })?;
         let engine = Engine::from_recorded_checkpoint(graph, resumed_loop, checkpoint.id)
             .map_err(|error| LifecycleApiError::ResumeCheckpoint {
                 message: error.to_string(),
@@ -736,10 +943,15 @@ where
             &Configuration::genesis(scenario.clone()),
             &source,
         )?);
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = decode_scope::spawn(
+            actor.run(),
+            crucible_engine::owned_decode::current_budget().or_else(|| self.decode_budget.clone()),
+        )?;
         let session = self.next_session_ref(seed);
         let runtime = SessionRuntime {
             session,
+            output_budget: crucible_engine::owned_decode::current_budget()
+                .or_else(|| self.decode_budget.clone()),
             sender,
             live,
             event_log,
@@ -881,14 +1093,35 @@ where
         request: GetReproductionRequest,
     ) -> Result<GetReproductionResponse, LifecycleApiError> {
         let runtime = self.checked_runtime(request.session, request.expected_epoch)?;
-        Ok(GetReproductionResponse {
-            session: runtime.session,
-            commands: runtime
-                .reproduction_log
-                .snapshot()
-                .into_iter()
-                .map(ReproductionCommandRecord::from)
-                .collect(),
+        let _original = runtime
+            .output_budget
+            .as_ref()
+            .map(crucible_engine::owned_decode::DecodeBudget::enter);
+        let budget = crucible_engine::owned_decode::require_current_child_budget()
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        let _scope = budget.enter();
+        let snapshot = runtime
+            .reproduction_log
+            .snapshot_admitted()
+            .map_err(|source| LifecycleApiError::BackendConstruction {
+                source: LifecycleBackendConstructionError::new(source),
+            })?;
+        let mut commands = Vec::new();
+        crucible_engine::owned_decode::reserve_vec(&mut commands, snapshot.entries().len())
+            .map_err(LifecycleApiError::ConfigurationCopy)?;
+        for entry in snapshot.entries() {
+            commands.push(
+                ReproductionCommandRecord::from_entry_admitted(entry).map_err(|source| {
+                    LifecycleApiError::BackendConstruction {
+                        source: LifecycleBackendConstructionError::new(source),
+                    }
+                })?,
+            );
+        }
+        GetReproductionResponse::from_owned_commands(runtime.session, commands).map_err(|source| {
+            LifecycleApiError::BackendConstruction {
+                source: LifecycleBackendConstructionError::new(source),
+            }
         })
     }
 
@@ -1357,7 +1590,8 @@ where
             runtime.event_log.clone(),
             runtime.reproduction_log.clone(),
             runtime.state_transitions.clone(),
-        );
+        )
+        .with_output_budget(runtime.output_budget.clone());
         Ok(match runtime.access {
             SessionAccess::ReadWrite | SessionAccess::WritableDebugBranch { .. } => streaming,
             SessionAccess::ReadOnlyDebug => streaming.with_read_only_debug_policy(),
@@ -1597,19 +1831,61 @@ where
         build_loop: impl FnOnce() -> Result<L, E>,
     ) -> Result<ResumeSessionResponse, LifecycleApiError>
     where
-        E: fmt::Display,
+        E: std::error::Error + Send + Sync + 'static,
     {
-        self.control_plane
-            .lock()
-            .await
-            .admit_authenticated_read_only_session(
-                source,
-                configuration,
-                checkpoint,
-                seed,
-                retention,
+        self.admit_authenticated_read_only_session_with_decode_budget(
+            source,
+            configuration,
+            checkpoint,
+            seed,
+            (
                 build_loop,
-            )
+                retention,
+                crucible_engine::owned_decode::current_budget(),
+            ),
+        )
+        .await
+    }
+
+    /// Reinstalls original decoded input custody after asynchronous lock handoff.
+    ///
+    /// The grouped builder carries its original resource account independently
+    /// of the caller thread. Native actor polls reinstall the same account.
+    ///
+    /// # Errors
+    /// Refuses inconsistent modeled identities, exhausted original resources,
+    /// session capacity, or failed native runtime construction.
+    pub async fn admit_authenticated_read_only_session_with_decode_budget<E>(
+        &self,
+        source: ScenarioDefForm,
+        configuration: Configuration,
+        checkpoint: Checkpoint,
+        seed: Seed,
+        builder: (
+            impl FnOnce() -> Result<L, E>,
+            SessionLifetimeRetention,
+            Option<crucible_engine::owned_decode::DecodeBudget>,
+        ),
+    ) -> Result<ResumeSessionResponse, LifecycleApiError>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Keep the ordered tuple intact through the only asynchronous cut:
+        // a cancelled/unpolled request drops builder aliases before retention
+        // and finally their actual decoded-allocation account.
+        let mut control_plane = self.control_plane.lock().await;
+        let (build_loop, retention, decoding) = builder;
+        let _decode_scope = decoding
+            .as_ref()
+            .map(crucible_engine::owned_decode::DecodeBudget::enter);
+        control_plane.admit_authenticated_read_only_session(
+            source,
+            configuration,
+            checkpoint,
+            seed,
+            retention,
+            build_loop,
+        )
     }
 }
 
@@ -1822,6 +2098,7 @@ where
 
 struct SessionRuntime {
     session: SessionRef,
+    output_budget: Option<crucible_engine::owned_decode::DecodeBudget>,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,

@@ -172,6 +172,8 @@ impl QemuNode {
         let process_contract = self
             .release_hot_fork_child_process_contract()
             .map_err(QemuHotForkSourceRearmError::Detach)?;
+        self.release_hot_fork_ram_stage()
+            .map_err(QemuHotForkSourceRearmError::Detach)?;
         let child_files = self
             .release_hot_fork_child_files()
             .map_err(QemuHotForkSourceRearmError::Detach)?;

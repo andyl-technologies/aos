@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
+use std::os::unix::process::ExitStatusExt;
 
 use super::*;
 
@@ -211,148 +212,55 @@ fn stderr_prefix_capture_enforces_exact_record_and_line_bounds() {
     );
 }
 
-pub(super) fn append_process_diagnostics(diagnostics: &mut String) {
-    diagnostics.push_str("; processes=[");
-    let Ok(entries) = fs::read_dir("/proc") else {
-        diagnostics.push_str("<proc-unreadable>]");
-        return;
-    };
-    let mut process_directories = entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
-        })
-        .collect::<Vec<_>>();
-    process_directories.sort_by_key(|entry| entry.file_name());
-    for entry in process_directories {
-        let process = entry.path();
-        let command = fs::read(process.join("cmdline"))
-            .map(|bytes| {
-                String::from_utf8_lossy(&bytes)
-                    .replace('\0', " ")
-                    .trim()
-                    .to_owned()
-            })
-            .unwrap_or_default();
-        if !command.contains("crucible")
-            && !command.contains("qemu-system")
-            && !command.contains("campaign_store_process")
-        {
-            continue;
-        }
-        let status = fs::read_to_string(process.join("status"))
-            .unwrap_or_else(|_| String::from("<status-unreadable>"));
-        let wait_channel = fs::read_to_string(process.join("wchan"))
-            .unwrap_or_else(|_| String::from("<wchan-unreadable>"));
-        let _ = write!(
-            diagnostics,
-            "pid={} cmd={command:?} wchan={:?} status={status:?}; ",
-            entry.file_name().to_string_lossy(),
-            wait_channel.trim(),
-        );
-        append_thread_waits(diagnostics, &process);
-        append_descriptor_state(diagnostics, &process);
-    }
-    diagnostics.push(']');
-}
-
-fn append_thread_waits(diagnostics: &mut String, process: &Path) {
-    diagnostics.push_str("threads=[");
-    if let Ok(tasks) = fs::read_dir(process.join("task")) {
-        let mut tasks = tasks.filter_map(Result::ok).collect::<Vec<_>>();
-        tasks.sort_by_key(|task| task.file_name());
-        for task in tasks.into_iter().take(64) {
-            let name = fs::read_to_string(task.path().join("comm"))
-                .unwrap_or_else(|_| String::from("<comm-unreadable>"));
-            let wait = fs::read_to_string(task.path().join("wchan"))
-                .unwrap_or_else(|_| String::from("<wchan-unreadable>"));
-            let _ = write!(
-                diagnostics,
-                "tid={} name={:?} wchan={:?};",
-                task.file_name().to_string_lossy(),
-                name.trim(),
-                wait.trim(),
-            );
-        }
-    } else {
-        diagnostics.push_str("<tasks-unreadable>");
-    }
-    diagnostics.push_str("]; ");
-}
-
-fn append_descriptor_state(diagnostics: &mut String, process: &Path) {
-    diagnostics.push_str("fds=[");
-    if let Ok(descriptors) = fs::read_dir(process.join("fd")) {
-        let mut descriptors = descriptors.filter_map(Result::ok).collect::<Vec<_>>();
-        descriptors.sort_by_key(|descriptor| descriptor.file_name());
-        for descriptor in descriptors.into_iter().take(128) {
-            let target = fs::read_link(descriptor.path())
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| String::from("<target-unreadable>"));
-            let info = fs::read_to_string(process.join("fdinfo").join(descriptor.file_name()))
-                .unwrap_or_default();
-            let eventfd_count = info
-                .lines()
-                .find(|line| line.starts_with("eventfd-count:"))
-                .unwrap_or("");
-            let _ = write!(
-                diagnostics,
-                "fd={} target={target:?} {eventfd_count};",
-                descriptor.file_name().to_string_lossy(),
-            );
-        }
-    } else {
-        diagnostics.push_str("<fds-unreadable>");
-    }
-    diagnostics.push_str("]; ");
-}
-
 type ProcessCommand = (u32, Vec<String>);
 
+/// Samples only the process tree reached through the owned root's task children.
 pub(super) fn descendant_process_commands(
     root_pid: u32,
 ) -> Result<Vec<ProcessCommand>, Box<dyn Error>> {
-    let mut processes = Vec::new();
-    for entry in fs::read_dir("/proc")?.filter_map(Result::ok) {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Some(parent_pid) = process_parent_pid(&stat) else {
-            continue;
-        };
-        processes.push((pid, parent_pid, entry.path()));
+    if root_pid == 0 {
+        return Err("descendant census requires an owned process ID".into());
     }
 
     let mut descendants = BTreeSet::from([root_pid]);
-    loop {
-        let previous_count = descendants.len();
-        for (pid, parent_pid, _path) in &processes {
-            if descendants.contains(parent_pid) {
-                descendants.insert(*pid);
+    let mut pending = VecDeque::from([root_pid]);
+    while let Some(parent_pid) = pending.pop_front() {
+        let tasks = match fs::read_dir(format!("/proc/{parent_pid}/task")) {
+            Ok(tasks) => tasks,
+            Err(error) if process_disappeared(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        // A child belongs to its creating task; the thread-group leader's
+        // children file alone would miss births on the service's other threads.
+        for task in tasks {
+            let task = match task {
+                Ok(task) => task,
+                Err(error) if process_disappeared(&error) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let children = match fs::read_to_string(task.path().join("children")) {
+                Ok(children) => children,
+                Err(error) if process_disappeared(&error) && !task.path().try_exists()? => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for child in children.split_whitespace() {
+                let child_pid = child.parse::<u32>()?;
+                if child_pid == 0 {
+                    return Err("task children contained an invalid process ID".into());
+                }
+                if descendants.insert(child_pid) {
+                    pending.push_back(child_pid);
+                }
             }
-        }
-        if descendants.len() == previous_count {
-            break;
         }
     }
 
     let mut commands = Vec::new();
-    for (pid, _parent_pid, path) in processes {
-        if pid == root_pid || !descendants.contains(&pid) {
-            continue;
-        }
-        let Ok(command_line) = fs::read(path.join("cmdline")) else {
-            continue;
+    for pid in descendants.into_iter().filter(|pid| *pid != root_pid) {
+        let command_line = match fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(command_line) => command_line,
+            Err(error) if process_disappeared(&error) => continue,
+            Err(error) => return Err(error.into()),
         };
         let arguments = command_line
             .split(|byte| *byte == 0)
@@ -364,7 +272,217 @@ pub(super) fn descendant_process_commands(
     Ok(commands)
 }
 
-fn process_parent_pid(stat: &str) -> Option<u32> {
-    let after_name = stat.rsplit_once(") ")?.1;
-    after_name.split_whitespace().nth(1)?.parse().ok()
+fn process_disappeared(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
+}
+
+const CENSUS_TEST_NAME: &str = "descendant_census_follows_owned_thread_births_only";
+const CENSUS_ROLE: &str = "CRUCIBLE_DESCENDANT_CENSUS_ROLE";
+const CENSUS_DIRECTORY: &str = "CRUCIBLE_DESCENDANT_CENSUS_DIRECTORY";
+const CENSUS_READY: &str = "CRUCIBLE_DESCENDANT_CENSUS_READY";
+
+fn census_test_path() -> Result<String, Box<dyn Error>> {
+    // This file is both a standalone integration target and a nested gate module.
+    let (_, module) = module_path!()
+        .split_once("::")
+        .ok_or("census helper is missing its containing module")?;
+    Ok(format!("{module}::{CENSUS_TEST_NAME}"))
+}
+
+/// Keeps every directly owned probe child available for cleanup on assertion failure.
+struct CensusChild(Child, PathBuf);
+
+impl CensusChild {
+    fn spawn(directory: &Path, role: &str, ready: &str) -> Result<Self, Box<dyn Error>> {
+        let test_path = census_test_path()?;
+        let child = Command::new(std::env::current_exe()?)
+            .args(["--exact", test_path.as_str(), "--nocapture", "--test-threads=1"])
+            .env(CENSUS_ROLE, role)
+            .env(CENSUS_DIRECTORY, directory)
+            .env(CENSUS_READY, directory.join(ready))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let returned = directory.join(format!("reaped-{}", child.id()));
+        Ok(Self(child, returned))
+    }
+
+    fn finish(&mut self) -> Result<(), Box<dyn Error>> {
+        self.0
+            .stdin
+            .as_mut()
+            .ok_or("probe stdin is absent")?
+            .write_all(b"x")?;
+        assert!(wait_for_exit(&mut self.0, Duration::from_secs(5))?.success());
+        Ok(())
+    }
+}
+
+impl Drop for CensusChild {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
+            return;
+        }
+
+        // EOF lets each nested owner run its own child guard before we resort
+        // to killing this direct child. Forced exit cannot prove subtree reap.
+        drop(self.0.stdin.take());
+        let (disposition, status) = match wait_for_exit(&mut self.0, Duration::from_secs(5)) {
+            Ok(status) => ("cooperative", status),
+            Err(_) => {
+                let _ = self.0.kill();
+                match wait_for_exit(&mut self.0, Duration::from_secs(5)) {
+                    Ok(status) => ("forced", status),
+                    Err(_) => return,
+                }
+            }
+        };
+        // Publish only the actual direct-child wait output, after it returned.
+        // The negative control requires each nested owner to publish its own.
+        let record = format!("{} {disposition} {}\n", self.0.id(), status.into_raw());
+        let _ = publish_census_record(&self.1, record.as_bytes());
+    }
+}
+
+fn publish_census_record(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    // Each actor owns a distinct record; rename exposes its complete contents.
+    let pending = path.with_extension("pending");
+    fs::write(&pending, bytes)?;
+    fs::rename(pending, path)?;
+    Ok(())
+}
+
+fn run_census_branch(directory: &Path, child_role: &str, record: &str) -> Result<(), Box<dyn Error>> {
+    let mut child = CensusChild::spawn(directory, child_role, "leaf-ready")?;
+    publish_census_record(&directory.join(record), child.0.id().to_string().as_bytes())?;
+    let mut proceed = [0_u8; 1];
+    std::io::stdin().read_exact(&mut proceed)?;
+    child.finish()
+}
+
+#[test]
+fn descendant_census_follows_owned_thread_births_only() -> Result<(), Box<dyn Error>> {
+    if let Some(role) = std::env::var_os(CENSUS_ROLE) {
+        let directory = PathBuf::from(
+            std::env::var_os(CENSUS_DIRECTORY).ok_or("probe directory absent")?,
+        );
+        if role == "branch" || role == "middle" {
+            let (child_role, record) = if role == "branch" {
+                ("middle", "branch-ready")
+            } else {
+                ("leaf", "middle-ready")
+            };
+            // Keep each creating nonleader task alive until its child is reaped.
+            return thread::spawn(move || {
+                run_census_branch(&directory, child_role, record).map_err(|error| error.to_string())
+            })
+            .join()
+            .map_err(|_| "probe creator thread panicked")?
+            .map_err(Into::into);
+        }
+        assert_eq!(role, "leaf");
+        let ready = PathBuf::from(
+            std::env::var_os(CENSUS_READY).ok_or("probe readiness path absent")?,
+        );
+        publish_census_record(&ready, b"ready")?;
+        let mut proceed = [0_u8; 1];
+        std::io::stdin().read_exact(&mut proceed)?;
+        return Ok(());
+    }
+
+    let directory = tempfile::tempdir()?;
+    let mut branch = CensusChild::spawn(directory.path(), "branch", "unused")?;
+    let mut sibling = CensusChild::spawn(directory.path(), "leaf", "sibling-ready")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !["branch-ready", "middle-ready", "leaf-ready", "sibling-ready"]
+        .iter()
+        .all(|name| directory.path().join(name).exists())
+    {
+        assert!(
+            branch.0.try_wait()?.is_none(),
+            "branch exited before readiness"
+        );
+        assert!(
+            sibling.0.try_wait()?.is_none(),
+            "sibling exited before readiness"
+        );
+        if Instant::now() >= deadline {
+            return Err("owned census probes did not become ready".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let middle_pid = fs::read_to_string(directory.path().join("branch-ready"))?.parse::<u32>()?;
+    let leaf_pid = fs::read_to_string(directory.path().join("middle-ready"))?.parse::<u32>()?;
+    let commands = descendant_process_commands(branch.0.id())?;
+    let observed = commands.iter().map(|(pid, _)| *pid).collect::<BTreeSet<_>>();
+    assert_eq!(commands.len(), 2);
+    assert_eq!(observed, BTreeSet::from([middle_pid, leaf_pid]));
+    let test_path = census_test_path()?;
+    assert!(
+        commands
+            .iter()
+            .all(|(_, arguments)| arguments.iter().any(|argument| argument == &test_path))
+    );
+    assert!(!observed.contains(&sibling.0.id()));
+    assert!(!observed.contains(&branch.0.id()));
+
+    branch.finish()?;
+    sibling.finish()?;
+    Ok(())
+}
+
+#[test]
+fn descendant_census_error_path_reaps_owned_tree_cooperatively() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut branch = CensusChild::spawn(directory.path(), "branch", "unused")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !["branch-ready", "middle-ready", "leaf-ready"]
+        .iter()
+        .all(|name| directory.path().join(name).exists())
+    {
+        assert!(
+            branch.0.try_wait()?.is_none(),
+            "branch exited before negative-control readiness"
+        );
+        if Instant::now() >= deadline {
+            return Err("owned census probes did not become ready".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let branch_pid = branch.0.id();
+    let middle_pid = fs::read_to_string(directory.path().join("branch-ready"))?.parse::<u32>()?;
+    let leaf_pid = fs::read_to_string(directory.path().join("middle-ready"))?.parse::<u32>()?;
+    let known = BTreeSet::from([branch_pid, middle_pid, leaf_pid]);
+    assert_eq!(known.len(), 3);
+
+    // Refuse the ready setup without finish(): leaving this scope must close
+    // stdin and run the real recursive guards, rather than the success path.
+    let refused: Result<(), Box<dyn Error>> = {
+        let _owned_branch = branch;
+        Err("intentional refusal after actual tree readiness".into())
+    };
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "intentional refusal after actual tree readiness"
+    );
+
+    for pid in known {
+        let record = fs::read_to_string(directory.path().join(format!("reaped-{pid}")))?;
+        let fields = record.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].parse::<u32>()?, pid);
+        assert_eq!(
+            fields[1], "cooperative",
+            "force fallback is not recursive reap proof"
+        );
+        let status = fields[2].parse::<i32>()?;
+        assert!(
+            libc::WIFEXITED(status),
+            "expected an actual EOF-driven normal exit"
+        );
+    }
+    Ok(())
 }

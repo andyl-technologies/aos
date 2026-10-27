@@ -7,7 +7,7 @@ use crate::QemuAsyncDriverRuntimeError;
 
 /// Maps a node-slot access failure to a runtime await error.
 pub(super) fn map_slot_error(source: MappedSetupRegionAccessError) -> QemuAsyncDriverRuntimeError {
-    QemuAsyncDriverRuntimeError::new("poll advance completion", source.to_string())
+    QemuAsyncDriverRuntimeError::mapped_region_access("poll advance completion", source)
 }
 
 /// Error building a [`super::QemuLiveHostIoRuntime`].
@@ -37,4 +37,524 @@ pub enum QemuLiveHostIoRuntimeError {
     /// More than one console stream was attached to one node runtime.
     #[error("QEMU host-I/O runtime already has a console stream")]
     DuplicateConsole,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    use std::os::unix::fs::FileExt;
+
+    #[test]
+    fn actual_network_stop_refusals_keep_observations_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (corrupt_indices, source_slot) in [(true, 0), (false, 1), (false, 0)] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&allocation.setup_region_bytes()?)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let mut producer =
+                crucible_qemu_shmem::mmap_setup_region(file.as_fd(), layout.region_size)?;
+            let base = producer.header() as *const _ as usize;
+            let frame = crucible_qemu_shmem::FrameEntry::new(1_500, source_slot, 23, b"refused")?;
+            let (header_offset, capacity) = {
+                let rings = producer.node_directed_ring_pair_mut(
+                    0,
+                    0,
+                    crucible_qemu_shmem::SLOT_NET_ROUTER as u32,
+                    crucible_qemu_shmem::SLOT_NET_ROUTER as u32,
+                    0,
+                )?;
+                rings.first.header.enqueue(rings.first.entries, &frame)?;
+                (
+                    (rings.first.header as *const _ as usize)
+                        .checked_sub(base)
+                        .ok_or("mapped ring precedes its header")?,
+                    u64::try_from(rings.first.entries.len())?,
+                )
+            };
+            if corrupt_indices {
+                let offset = header_offset + crucible_qemu_shmem::RING_HEADER_WRITE_IDX_OFFSET;
+                file.write_all_at(&(capacity + 1).to_ne_bytes(), u64::try_from(offset)?)?;
+            }
+            // These deliberately inconsistent wire observations grant no
+            // physical stop or Native frame; only the real refusal path runs.
+            let mut snapshot = producer.node_slot(0)?.snapshot();
+            snapshot.status = crucible_qemu_shmem::STATUS_IDLE;
+            snapshot.current_icount = 1_000;
+            snapshot.idle_wake_icount = 1_000;
+            let mut before = vec![0; usize::try_from(layout.region_size)?];
+            file.read_exact_at(&mut before, 0)?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let error = runtime
+                    .network_output_stop_write_index(&snapshot)
+                    .expect_err("actual mapped network stop rejects inconsistent observations");
+                supervisor.cancel().unwrap();
+                error.with_operational_supervision_post(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled"),
+                )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(error.operation, "observe network output stop");
+            let expected_message = if corrupt_indices {
+                let expected = crucible_qemu_shmem::SpscRingError::CorruptIndices {
+                    read_idx: 0,
+                    write_idx: capacity + 1,
+                    capacity,
+                };
+                assert_eq!(error.network_ring_source(), Some(&expected));
+                assert_eq!(
+                    std::error::Error::source(&error).and_then(|source| source.downcast_ref()),
+                    Some(&expected),
+                );
+                assert!(error.network_output_stop_coordinates().is_none());
+                expected.to_string()
+            } else {
+                assert!(error.network_ring_source().is_none());
+                assert_eq!(
+                    error.network_output_stop_coordinates(),
+                    Some((23, source_slot, 1_500, 0, 1_000))
+                );
+                format!(
+                    "frame 23 from slot {source_slot} at 1500 does not match stopped slot 0 at 1000"
+                )
+            };
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "observe network output stop failed: {expected_message}; independent host operation postcheck failed: {post}"
+                ),
+            );
+            let mut after = vec![0; before.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, before);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn actual_fault_event_corruption_retains_typed_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_qemu_shmem::{FaultEventError, FaultTransportError};
+
+        for corrupt_indices in [true, false] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let capacity = u64::from(layout.fault_event_queue_capacity);
+            let write_index = if corrupt_indices { capacity + 1 } else { 1 };
+            let offset = usize::try_from(layout.fault_event_ring_hdr_off)?
+                + crucible_qemu_shmem::RING_HEADER_WRITE_IDX_OFFSET;
+            // A malformed wire index or zero-filled event header supplies no
+            // issued event. The real consumer must refuse before releasing it.
+            bytes[offset..offset + 8].copy_from_slice(&write_index.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            runtime.staged_fault_events.try_reserve_exact(1)?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe fault event corruption",
+            )?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let error = runtime
+                    .drain_fault_events_for_operation(
+                        1,
+                        &deadline,
+                        std::time::Duration::from_secs(1),
+                        "observe fault event corruption",
+                    )
+                    .expect_err("actual mapped consumer refuses malformed event state");
+                supervisor.cancel().unwrap();
+                error.with_operational_supervision_post(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled"),
+                )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert!(runtime.staged_fault_events.is_empty());
+            let cause = std::error::Error::source(&error).ok_or("typed cause is absent")?;
+            if corrupt_indices {
+                let expected = FaultTransportError::CorruptRingIndices {
+                    read: 0,
+                    write: write_index,
+                    capacity,
+                };
+                assert_eq!(error.operation, "inspect fault-event transport");
+                assert_eq!(error.fault_transport_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            } else {
+                assert_eq!(error.operation, "dequeue fault event");
+                assert_eq!(error.fault_event_source(), Some(&FaultEventError::Version));
+                assert_eq!(cause.downcast_ref(), Some(&FaultEventError::Version));
+            }
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{} failed: {cause}; independent host operation postcheck failed: {post}",
+                    error.operation,
+                ),
+            );
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn actual_action_preview_refusal_keeps_typed_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_qemu_protocol::boundary_action::ActionDecodeError;
+        use crucible_qemu_shmem::{
+            NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+            NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        };
+
+        for (generation, frontier, capture) in [(u32::MAX, 0_u64, 0_u32), (2, 1, 1), (2, 0, 3)] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let node_offset = usize::try_from(layout.node_slots_off)?;
+            let ack_offset = node_offset + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET;
+            let frontier_offset =
+                node_offset + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET;
+            let capture_offset = node_offset + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET;
+            // These are malformed or exhausted wire observations, not an
+            // issued action. Preview must refuse before the sampler publishes.
+            bytes[ack_offset..ack_offset + 4].copy_from_slice(&generation.to_ne_bytes());
+            bytes[frontier_offset..frontier_offset + 8].copy_from_slice(&frontier.to_ne_bytes());
+            bytes[capture_offset..capture_offset + 4].copy_from_slice(&capture.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe action preview refusal",
+            )?;
+            supervisor.cancel()?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                runtime
+                    .capture_execution_fingerprint(&deadline, std::time::Duration::from_secs(1))
+                    .expect_err("actual mapped preview refuses the observation")
+                    .with_operational_supervision_post(
+                        original
+                            .wait_slice()
+                            .expect_err("same Original is canceled"),
+                    )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(error.boundary_action_source(), Some(&ActionDecodeError));
+            assert_eq!(
+                std::error::Error::source(&error).and_then(|cause| cause.downcast_ref()),
+                Some(&ActionDecodeError),
+            );
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "publish current execution fingerprint failed: {ActionDecodeError}; independent host operation postcheck failed: {post}"
+                ),
+            );
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn actual_publication_exhaustion_retains_typed_causes_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for fingerprint_exhausted in [false, true] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let (offset, generation) = if fingerprint_exhausted {
+                (
+                    usize::try_from(layout.fingerprint_sample_off)?
+                        + crucible_qemu_shmem::FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
+                    u32::MAX - 1,
+                )
+            } else {
+                (
+                    usize::try_from(layout.node_slots_off)?
+                        + crucible_qemu_shmem::NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+                    u32::MAX,
+                )
+            };
+            // The fixture seeds a terminal wire generation, not an issuer or
+            // a completed command. The real mapped publication must refuse it.
+            bytes[offset..offset + 4].copy_from_slice(&generation.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe publication exhaustion",
+            )?;
+            supervisor.cancel()?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let result = if fingerprint_exhausted {
+                    runtime
+                        .capture_execution_fingerprint(&deadline, std::time::Duration::from_secs(1))
+                } else {
+                    runtime.signal_wake(None).map(|_| ())
+                };
+                result
+                    .expect_err("actual mapped generation has no successor")
+                    .with_operational_supervision_post(
+                        original
+                            .wait_slice()
+                            .expect_err("same Original is canceled"),
+                    )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(
+                error.operational_supervision_post(),
+                Some(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled")
+                ),
+            );
+            let cause = std::error::Error::source(&error).ok_or("typed cause is absent")?;
+            if fingerprint_exhausted {
+                let expected =
+                    crucible_qemu_shmem::FingerprintSampleError::CaptureGenerationExhausted {
+                        acknowledged_generation: generation,
+                    };
+                assert_eq!(error.fingerprint_sample_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            } else {
+                let expected =
+                    crucible_qemu_shmem::NodeSlotError::ControlBoundaryGenerationExhausted {
+                        acknowledged: generation,
+                    };
+                assert_eq!(error.node_slot_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            }
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn actual_mapped_refusal_retains_typed_cause_and_independent_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 4),
+        )?;
+        let length = allocation.layout().region_size;
+        let mut file = std::fs::File::from(crate::spawn::memfd_region(length)?);
+        file.write_all(&allocation.setup_region_bytes()?)?;
+        let mapping = crucible_qemu_shmem::mmap_setup_region(file.as_fd(), length)?;
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        supervisor.cancel()?;
+        let post = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let ((source, error), counts) = TestAllocationObserver::count(|| {
+            let source = match mapping.node_slot(u32::MAX) {
+                Err(source) => source,
+                Ok(_) => panic!("actual mapping cannot contain the foreign node"),
+            };
+            let error = map_slot_error(source.clone()).with_operational_supervision_post(post);
+            (source, error)
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(error.mapped_region_access_source(), Some(&source));
+        assert_eq!(error.operational_supervision_post(), Some(post));
+        assert!(error.message.is_empty());
+        assert_eq!(
+            std::error::Error::source(&error)
+                .and_then(|cause| cause.downcast_ref::<MappedSetupRegionAccessError>()),
+            Some(&source),
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "poll advance completion failed: {source}; independent host operation postcheck failed: {post}"
+            ),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_fault_transport_refusal_keeps_runtime_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 4),
+        )?;
+        let length = allocation.layout().region_size;
+        let mut file = std::fs::File::from(crate::spawn::memfd_region(length)?);
+        file.write_all(&allocation.setup_region_bytes()?)?;
+        let wake = tempfile::tempfile()?;
+        let mut runtime = super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+            file.as_fd(),
+            wake.as_fd(),
+            length,
+            0,
+            std::time::Duration::from_millis(1),
+        )?;
+        runtime.vm_slot = u32::MAX;
+        let expected = runtime
+            .region
+            .as_mut()
+            .ok_or("actual mapped runtime is absent")?
+            .fault_event_transport_mut(runtime.vm_slot)
+            .err()
+            .ok_or("actual mapping unexpectedly contains foreign VM")?;
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        let deadline = super::super::OperationPollBudget::borrow_original(
+            &original,
+            "observe fault transport refusal",
+        )?;
+        supervisor.cancel()?;
+
+        let (errors, counts) = TestAllocationObserver::count(|| {
+            let indices = runtime
+                .fault_event_ring_indices()
+                .expect_err("actual transport mapping refuses the foreign VM");
+            let indices = indices.with_operational_supervision_post(
+                original
+                    .wait_slice()
+                    .expect_err("same Original is canceled"),
+            );
+            let drain = runtime
+                .drain_fault_events_for_operation(
+                    1,
+                    &deadline,
+                    std::time::Duration::from_secs(1),
+                    "observe fault transport refusal",
+                )
+                .expect_err("actual event drain refuses before transport access");
+            let drain = drain.with_operational_supervision_post(
+                original
+                    .wait_slice()
+                    .expect_err("same Original is canceled"),
+            );
+            [indices, drain]
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(runtime.staged_fault_events.is_empty());
+        for error in errors {
+            assert_eq!(error.operation, "map fault-event transport");
+            assert!(error.message.is_empty());
+            assert_eq!(error.mapped_region_access_source(), Some(&expected));
+            assert_eq!(
+                error.operational_supervision_post(),
+                Some(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled")
+                ),
+            );
+        }
+        Ok(())
+    }
 }

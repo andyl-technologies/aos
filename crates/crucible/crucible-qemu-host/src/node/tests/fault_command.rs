@@ -103,6 +103,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
                 hot_fork_ring_image: None,
             },
             ScriptedQmpMachineControl {
+                #[cfg(target_os = "linux")]
+                checkpoint: None,
                 log: Arc::clone(&log),
                 track_process_endpoint_retirement: false,
                 fail_stop: false,
@@ -136,6 +138,8 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             QemuAsyncDriverPolicy::fast_test(),
             QemuCrashDetector::new("vm-a"),
             ScriptedHostIoRuntime {
+                #[cfg(target_os = "linux")]
+                checkpoint: None,
                 log,
                 outcomes: VecDeque::new(),
                 fault_results: VecDeque::from([result.clone()]),
@@ -199,5 +203,97 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
         };
         assert_eq!(*fault_commands.lock().unwrap(), expected_publications);
     }
+    Ok(())
+}
+
+/// Models only an identity-cleanup refusal, never a Source or Native return.
+struct PendingControlActionRuntime {
+    attempts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl QemuHostIoRuntime for PendingControlActionRuntime {
+    fn settle_pending_control_action(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(QemuAsyncDriverRuntimeError::new(
+            "return previous action",
+            "physical return is pending",
+        ))
+    }
+
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "fixture",
+            "capture unsupported",
+        ))
+    }
+
+    fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    fn await_child(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "fixture",
+            "await unsupported",
+        ))
+    }
+
+    fn repoll_child(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "fixture",
+            "repoll unsupported",
+        ))
+    }
+}
+
+#[test]
+fn old_action_cleanup_refusal_precedes_each_command_publication() -> Result<(), Box<dyn Error>> {
+    let mut node = scripted_node(shared_log(), false, false, false)?;
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    node.host_io_runtime = Box::new(PendingControlActionRuntime {
+        attempts: Arc::clone(&attempts),
+    });
+    let command = FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation,
+        command_flags: 0,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 7,
+        target_node_hash: [1; 32],
+        target_icount: 11,
+        authorization_ceiling_icount: 11,
+        binding_hash: [2; 32],
+        opportunity_hash: [3; 32],
+        expected_precondition_hash: [4; 32],
+        payload_hash: *blake3::hash(&[]).as_bytes(),
+        payload_offset: 0,
+        payload_length: 0,
+    };
+
+    assert!(!node.fault_fingerprint_invalidated);
+    let first = node
+        .enqueue_fault_command(command.clone(), &[])
+        .unwrap_err();
+    let second = node.enqueue_fault_command(command, &[]).unwrap_err();
+    assert_eq!(first, second);
+    assert!(first.message().contains("physical return is pending"));
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(!node.fault_fingerprint_invalidated);
+
+    node.shutdown_child()?;
     Ok(())
 }

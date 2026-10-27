@@ -169,6 +169,8 @@ impl QemuPreparedRunDirectory {
     ///
     /// The sibling source-built image tool runs under this generation's exact
     /// cgroup, cancellation, credentials, directory, and resource contract.
+    /// Its effect borrows the paused Source's existing checkpoint Original;
+    /// the launch Preparation guard cannot authorize this later command.
     /// The new name is exclusive and remains in the source directory until
     /// QEMU either installs it or the owning source is reconciled. A failed
     /// command may leave that named file as explicit cleanup debt.
@@ -181,13 +183,11 @@ impl QemuPreparedRunDirectory {
         &self,
         qemu_executable: &Path,
         process_contract: &QemuChildProcessContract,
+        effect_original: &crate::QemuHotForkSourceOriginal,
         graph_generation: u64,
         virtual_size: u64,
     ) -> Result<(File, std::path::PathBuf), crate::spawn::QemuGuardedImagePreparationError> {
-        let fail = |source| crate::spawn::QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        };
+        let fail = |source| crate::spawn::QemuGuardedImagePreparationError::local(source);
         if !self.launch_resources.has_root_overlay() || graph_generation == 0 || virtual_size == 0 {
             return Err(fail(QemuSpawnError::Io {
                 operation: "admit detached hot-fork root overlay",
@@ -196,6 +196,10 @@ impl QemuPreparedRunDirectory {
         }
         self.validate_retained_source_helper_basis(process_contract)
             .map_err(fail)?;
+        let receiver = process_contract
+            .retained_source_helper_lender()
+            .map_err(fail)?;
+        effect_original.checked_original(&receiver).map_err(fail)?;
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
             return Err(fail(QemuSpawnError::FreshImageToolPath {
@@ -247,13 +251,14 @@ impl QemuPreparedRunDirectory {
             OsString::from(&file_name),
             OsString::from(format!("{virtual_size}B")),
         ];
-        crate::spawn::run_guarded_image_tool_for_purpose(
+        crate::spawn::run_guarded_image_tool_with_original(
             &image_tool,
             &args,
             "create detached hot-fork root overlay",
             self,
             process_contract,
             crate::spawn::GuardedImageToolPurpose::RetainedHotForkSource,
+            Some(effect_original),
         )?;
 
         let named = openat(

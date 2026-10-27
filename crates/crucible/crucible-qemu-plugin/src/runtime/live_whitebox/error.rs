@@ -2,27 +2,12 @@
 
 use thiserror::Error;
 
-pub(super) fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
-    // SAFETY: `bytes` is a valid readable slice for the duration of the call.
-    // The fixed descriptor is stderr, and no ownership is transferred.
-    let written = unsafe { libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len()) };
-    if written < 0 {
-        Err(std::io::Error::last_os_error())
-    } else if written as usize != bytes.len() {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::WriteZero,
-            format!(
-                "short live white-box diagnostic write: wrote {written} of {} bytes",
-                bytes.len()
-            ),
-        ))
-    } else {
-        Ok(())
-    }
-}
+mod guest_introspection;
+
+pub use guest_introspection::GuestIntrospectionTransportError;
 
 /// Reports a failure at the live QEMU white-box ABI boundary.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveWhiteboxError {
     /// The host did not provide the architecture's collision-free attestation.
     #[error("live white-box registration requires a matching architecture setup attestation")]
@@ -72,10 +57,54 @@ pub enum LiveWhiteboxError {
         maximum: usize,
     },
     /// The safe registration plan rejected the live configuration.
-    #[error("live white-box registration plan failed: {message}")]
+    #[error("live white-box registration plan failed: {source}")]
     RegistrationPlan {
-        /// Stable diagnostic.
-        message: String,
+        /// Original doorbell validation failure.
+        source: crate::WhiteboxDoorbellError,
+    },
+    /// The launch-authenticated selectable catalog rejected registration.
+    #[error("live white-box registration plan failed: {source}")]
+    CatalogRegistration {
+        /// Original catalog validation failure.
+        source: crate::SelectableCatalogError,
+    },
+    /// The enabled doorbell plan did not select a trap installation.
+    #[error(
+        "live white-box registration plan failed: enabled live white-box plan did not install a trap"
+    )]
+    TrapInstallationMissing,
+    /// Branch decisions were supplied without their app-random producer.
+    #[error(
+        "live white-box registration plan failed: app-random branch plan requires an enabled app-random producer"
+    )]
+    AppRandomBranchProducerMissing,
+    /// Branch decisions named a different app-random producer node.
+    #[error(
+        "live white-box registration plan failed: app-random branch plan names another producer node"
+    )]
+    AppRandomBranchNodeMismatch,
+    /// The selectable handoff had no installed vCPU callback state.
+    #[error(
+        "live white-box registration plan failed: live selectable handoff requires installed vCPU callback state"
+    )]
+    VcpuCallbackStateMissing,
+    /// Registration could not resolve a required QEMU observation capability.
+    #[error(
+        "live white-box registration plan failed: required QEMU capability {symbol} is unavailable"
+    )]
+    RegistrationCapabilityUnavailable {
+        /// Missing process symbol.
+        symbol: &'static str,
+    },
+    /// QEMU refused registration of the live catalog owner.
+    #[error(
+        "live white-box registration plan failed: {symbol} refused the live catalog owner with status {status}"
+    )]
+    CatalogOwnerRefused {
+        /// Registration entry point.
+        symbol: &'static str,
+        /// Original QEMU refusal status.
+        status: i32,
     },
     /// Another live white-box state was already published.
     #[error("live white-box callback state is already published")]
@@ -135,7 +164,236 @@ pub enum LiveWhiteboxError {
         /// Fixed callback read bound.
         maximum: usize,
     },
-    /// The safe doorbell callback rejected the live event.
+    /// The guest-memory adapter could not read the live event.
+    #[error("safe white-box callback failed: {source}")]
+    GuestMemoryRead {
+        /// Original guest-memory failure.
+        source: crate::GuestMemoryReadError,
+    },
+    /// The safe observational marker callback rejected the live event.
+    #[error("safe white-box callback failed: {source}")]
+    DoorbellCallback {
+        /// Original doorbell failure.
+        source: crate::WhiteboxDoorbellError,
+    },
+    /// QEMU rejected an observed ready marker.
+    #[error(
+        "safe white-box callback failed: QEMU rejected ready-marker observation `{name}` with status {status}"
+    )]
+    ReadyMarkerRefused {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+        /// Original QEMU refusal status.
+        status: i32,
+    },
+    /// A campaign marker arrived while another VMStop was deferred.
+    #[error(
+        "safe white-box callback failed: campaign boundary `{name}` collided with another deferred VMStop"
+    )]
+    CampaignMarkerCollision {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+    },
+    /// QEMU rejected the campaign boundary's requested TB exit.
+    #[error(
+        "safe white-box callback failed: QEMU rejected campaign boundary `{name}` TB exit with status {status}"
+    )]
+    CampaignMarkerExitRefused {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+        /// Original QEMU refusal status.
+        status: i32,
+    },
+    /// The guest-introspection frame failed validation before routing.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionFrame {
+        /// Original fixed-frame or embedded record failure.
+        source:
+            crucible_qemu_protocol::guest_introspection_doorbell::GuestIntrospectionDoorbellError,
+    },
+    /// The guest-introspection transport rejected routing or request commit.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionTransport {
+        /// Original typed transport refusal.
+        source: GuestIntrospectionTransportError,
+    },
+    /// Delivery of the fixed guest-introspection reply failed.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionInput {
+        /// Original capability, range, coordinate or guest-write failure.
+        source: crate::WhiteboxDoorbellError,
+    },
+    /// Preparation or service rejected a selectable guest callback.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableCallback {
+        /// Original snapshot, protocol, catalog or guest-input refusal.
+        source: crate::SelectableDoorbellError,
+    },
+    /// A selectable catalog delta failed canonical encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableProtocol {
+        /// Original fixed-field or reservation validation refusal.
+        source: crucible_qemu_protocol::SelectableProtocolError,
+    },
+    /// A deferred request exceeded its transport profile or failed encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectablePendingTransport {
+        /// Original process-neutral transport refusal.
+        source: crucible_qemu_protocol::selectable_transport::SelectablePendingTransportError,
+    },
+    /// The real marker ring refused a selectable catalog publication.
+    #[error("safe white-box callback failed: {source}")]
+    SelectablePublication {
+        /// Original marker validation or queue refusal.
+        source: crate::WhiteboxMarkerSinkError,
+    },
+    /// A correlated reset still owns the catalog being restored.
+    #[error(
+        "safe white-box callback failed: correlated reset retains the selectable catalog until settlement"
+    )]
+    SelectableRestorePendingReset,
+    /// A deferred callback reported pending after losing its catalog token.
+    #[error(
+        "safe white-box callback failed: selectable callback reported pending without retained catalog state"
+    )]
+    SelectablePendingStateMissing,
+    /// The VM stop lacked the request that requested its native handoff.
+    #[error("safe white-box callback failed: selectable VM stop has no pending request")]
+    SelectableHandoffWithoutPending,
+    /// The request cannot represent its required next instruction boundary.
+    #[error("safe white-box callback failed: selectable native handoff icount overflowed")]
+    SelectableHandoffIcountOverflow,
+    /// The request cannot represent its required next simulation tick.
+    #[error("safe white-box callback failed: selectable native handoff tick overflowed")]
+    SelectableHandoffTickOverflow,
+    /// QEMU stopped at another boundary after the selectable instruction.
+    #[error(
+        "safe white-box callback failed: selectable request at raw icount {request_icount} tick {request_tick_ps} stopped at raw {actual_icount} tick {actual_tick_ps}, expected exactly raw {expected_icount} tick {expected_tick_ps} after the doorbell instruction boundary"
+    )]
+    SelectableHandoffCoordinate {
+        /// Original pre-instruction retirement count.
+        request_icount: u64,
+        /// Original pre-instruction simulation tick.
+        request_tick_ps: u64,
+        /// Actual stopped retirement count.
+        actual_icount: u64,
+        /// Actual stopped simulation tick.
+        actual_tick_ps: u64,
+        /// Required stopped retirement count.
+        expected_icount: u64,
+        /// Required stopped simulation tick.
+        expected_tick_ps: u64,
+    },
+    /// A host reply arrived without a catalog-owned request.
+    #[error("safe white-box callback failed: selectable reply arrived without a pending request")]
+    SelectableReplyWithoutPending,
+    /// The retained selectable request failed sequence or completion accounting.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableCatalog {
+        /// Original catalog refusal without diagnostic replacement.
+        source: crate::SelectableCatalogError,
+    },
+    /// The selectable reply ring refused an observation or consumption.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyRing {
+        /// Original ring geometry, index or consumer-admission refusal.
+        source: crucible_qemu_shmem::SpscRingError,
+    },
+    /// A selectable reply envelope failed fixed-layout validation.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyEntry {
+        /// Original entry validation refusal.
+        source: crucible_qemu_shmem::WhiteboxMarkerEntryError,
+    },
+    /// A selectable reply failed canonical decoding or encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyProtocol {
+        /// Original protocol refusal.
+        source: crucible_qemu_protocol::SelectableProtocolError,
+    },
+    /// The host-to-plugin selectable ring contained another message kind.
+    #[error("safe white-box callback failed: selectable reply ring carried unexpected kind {kind}")]
+    SelectableReplyUnexpectedKind {
+        /// Observed envelope kind.
+        kind: u16,
+    },
+    /// The retained trap cannot represent its following stopped boundary.
+    #[error("safe white-box callback failed: selectable stopped-boundary tick overflowed")]
+    SelectableReplyStoppedTickOverflow,
+    /// The reply envelope names another stopped request boundary.
+    #[error(
+        "safe white-box callback failed: selectable reply coordinate ({actual_tick_ps}, {actual_vcpu}) differs from pending request stopped tick ({expected_tick_ps}, {expected_vcpu})"
+    )]
+    SelectableReplyCoordinate {
+        /// Simulation tick retained in the reply envelope.
+        actual_tick_ps: u64,
+        /// vCPU retained in the reply envelope.
+        actual_vcpu: u32,
+        /// Stopped tick derived from the retained guest trap.
+        expected_tick_ps: u64,
+        /// vCPU that owns the retained guest trap.
+        expected_vcpu: u32,
+    },
+    /// The callback resumed before the retained request's stop.
+    #[error(
+        "safe white-box callback failed: selectable reply resume tick {current_tick_ps} precedes stopped request boundary {stopped_tick_ps}"
+    )]
+    SelectableReplyEarlyResume {
+        /// Actual resume tick.
+        current_tick_ps: u64,
+        /// Required stopped boundary.
+        stopped_tick_ps: u64,
+    },
+    /// A previously observed reply was absent at consumption.
+    #[error(
+        "safe white-box callback failed: selectable reply disappeared between peek and consume"
+    )]
+    SelectableReplyDisappeared,
+    /// The consumed envelope differed from the validated observation.
+    #[error("safe white-box callback failed: selectable reply changed between peek and consume")]
+    SelectableReplyChanged,
+    /// The decoded reply names another retained request sequence.
+    #[error(
+        "safe white-box callback failed: selectable reply sequence {actual} differs from pending request {expected}"
+    )]
+    SelectableReplySequence {
+        /// Sequence owned by the retained request.
+        expected: u64,
+        /// Sequence decoded from the reply.
+        actual: u64,
+    },
+    /// A valid reply exceeds the guest's retained reservation.
+    #[error(
+        "safe white-box callback failed: selectable reply has {len} bytes but guest reserved {capacity}"
+    )]
+    SelectableReplyCapacity {
+        /// Canonical encoded reply length.
+        len: usize,
+        /// Guest reservation length.
+        capacity: usize,
+    },
+    /// The retained reservation exceeds its containing Runtime workspace.
+    #[error(
+        "safe white-box callback failed: selectable reservation exceeds its fixed reply workspace"
+    )]
+    SelectableReplyWorkspace,
+    /// The backend refused delivery after the exact reply was consumed.
+    #[error(
+        "safe white-box callback failed: selectable guest reply write failed at retained coordinate ({trap_icount}, {trap_vcpu}) during resume ({resume_tick_ps}, {resume_vcpu}): {source}"
+    )]
+    SelectableReplyGuestWrite {
+        /// Original raw trap icount.
+        trap_icount: u64,
+        /// vCPU that owns the retained request.
+        trap_vcpu: u32,
+        /// Actual callback resume tick.
+        resume_tick_ps: u64,
+        /// Actual callback vCPU.
+        resume_vcpu: u32,
+        /// Original guest-memory write failure, moved without formatting.
+        source: crate::WhiteboxGuestInputWriteError,
+    },
+    /// A remaining safe doorbell service rejected the live event.
     #[error("safe white-box callback failed: {message}")]
     Callback {
         /// Stable callback diagnostic.

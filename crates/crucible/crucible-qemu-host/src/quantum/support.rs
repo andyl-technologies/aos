@@ -155,6 +155,14 @@ pub(super) fn quantum_outcome(
 /// An error produced by the QEMU quantum shared-memory hot path.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuQuantumError {
+    /// The same actual Quantum or retained Source refused the publication cut.
+    #[error("QEMU Quantum operation {operation} refused: {source}")]
+    OperationalSupervision {
+        /// Actual publication cut being attempted.
+        operation: &'static str,
+        /// Original typed lender or Source failure, without diagnostic allocation.
+        source: crucible_host_resources::host_supervision::HostSupervisionError,
+    },
     /// A borrowed SPSC ring slice was not a nonzero power-of-two capacity.
     #[error("QEMU quantum {ring} capacity {capacity} is not a nonzero power of two")]
     InvalidQueueCapacity {

@@ -461,7 +461,7 @@ pub(super) fn debug_read_only_observation_entry(
     at: VirtualTime,
     event: DebugReadOnlyInspectionEvent,
     attach: &DebugAttachReport,
-) -> SchedulerEventLogEntry {
+) -> Result<SchedulerEventLogEntry, EngineError> {
     let mut details = BTreeMap::new();
     details.insert(
         String::from("phase"),
@@ -657,7 +657,7 @@ pub(super) fn debug_non_canonical_fork_marker(
     fork_checkpoint: ContentHash,
     request: &DebugNonCanonicalBranchRequest,
     sequence: u64,
-) -> DebugNonCanonicalForkMarker {
+) -> Result<DebugNonCanonicalForkMarker, EngineError> {
     let mut details = BTreeMap::new();
     details.insert(
         String::from("branch"),
@@ -695,12 +695,12 @@ pub(super) fn debug_non_canonical_fork_marker(
         fork_checkpoint,
         schedule_delta,
         details,
-    );
-    DebugNonCanonicalForkMarker {
+    )?;
+    Ok(DebugNonCanonicalForkMarker {
         branch,
         fork_point,
         entry,
-    }
+    })
 }
 
 pub(super) fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u64 {
@@ -711,7 +711,7 @@ pub(super) fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u
 
 pub(super) fn canonical_run_event_log_projection_without_debug_branches(
     entries: &[SchedulerEventLogEntry],
-) -> EventLogCausalProjection {
+) -> Result<EventLogCausalProjection, EngineError> {
     let canonical_entries = entries
         .iter()
         .filter(|entry| !is_debug_non_canonical_fork_marker_entry(entry))
@@ -1323,7 +1323,7 @@ impl DebugNonCanonicalBranch {
         attach: &DebugAttachReport,
         request: &DebugNonCanonicalBranchRequest,
         marker_sequence: u64,
-    ) -> Self {
+    ) -> Result<Self, EngineError> {
         let fork_point = request.current.id();
         let id = debug_non_canonical_branch_id(attach, request);
         let debug_edit_script = DebugEditScript::from_actions(fork_point, &request.actions);
@@ -1368,7 +1368,7 @@ impl DebugNonCanonicalBranch {
             attach.checkpoint,
             request,
             marker_sequence,
-        );
+        )?;
         let live_status = DebugNonCanonicalLiveStatus {
             branch: id,
             fork_point,
@@ -1380,7 +1380,7 @@ impl DebugNonCanonicalBranch {
             one_execution_path: true,
         };
 
-        Self {
+        Ok(Self {
             id,
             fork_point,
             fork_checkpoint: attach.checkpoint,
@@ -1396,7 +1396,7 @@ impl DebugNonCanonicalBranch {
             divergent_actions_recorded: !request.actions.is_empty(),
             replay_oracle_excluded: true,
             seed_scenario_schedule_artifact: false,
-        }
+        })
     }
 
     /// Returns whether this branch is visibly non-canonical everywhere exposed.
@@ -1728,7 +1728,7 @@ pub struct DebugSymbolResolutionPolicy {
 }
 
 impl DebugSymbolResolutionPolicy {
-    /// Builds the RFC-0010 no-symbol-server policy.
+    /// Builds the debug policy without a symbol server.
     #[must_use]
     pub const fn no_symbol_server() -> Self {
         Self {
@@ -1765,7 +1765,7 @@ pub struct DebugMultiVcpuPolicy {
 }
 
 impl DebugMultiVcpuPolicy {
-    /// Builds the RFC-0010 multi-vCPU debug policy.
+    /// Builds the multi-vCPU debug policy.
     #[must_use]
     pub const fn coherent_round_robin_threads() -> Self {
         Self {
@@ -1804,7 +1804,7 @@ pub struct DebugReadMutationBoundaryPolicy {
 }
 
 impl DebugReadMutationBoundaryPolicy {
-    /// Builds the RFC-0010 read/mutate boundary policy.
+    /// Builds the debug read and mutation boundary policy.
     #[must_use]
     pub const fn read_only_default_with_explicit_branching() -> Self {
         Self {
@@ -1839,7 +1839,7 @@ pub struct DebugReverseLatencyPolicy {
 }
 
 impl DebugReverseLatencyPolicy {
-    /// Builds the RFC-0010 reverse-latency risk policy.
+    /// Builds the reverse-execution latency risk policy.
     #[must_use]
     pub const fn performance_only_checkpoint_cadence() -> Self {
         Self {
@@ -1884,9 +1884,9 @@ pub struct DebugCliSurfaceContract {
 }
 
 impl DebugCliSurfaceContract {
-    /// Builds the RFC-0010 `crucible debug` surface contract.
+    /// Builds the `crucible debug` surface contract.
     #[must_use]
-    pub fn rfc0010() -> Self {
+    pub fn standard() -> Self {
         Self {
             coordinate_flags: vec!["--at", "--at-event", "--at-failure", "--at-checkpoint"],
             control_flags: vec![

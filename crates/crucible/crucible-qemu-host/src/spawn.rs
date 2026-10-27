@@ -1,12 +1,11 @@
 //! Linux QEMU process spawning with fixed inherited descriptors.
 //!
-//! This module owns the Linux-only process boundary required by RFC-0010
-//! T-QEMU-7. It creates the per-node control socket pair, shared-memory memfd,
+//! This module owns the Linux process boundary for contained guest execution.
+//! It creates the per-node control socket pair, shared-memory memfd,
 //! and wake eventfd before `exec`, maps the child descriptors to the fixed
 //! plugin fd numbers, clears the inherited host environment, and sets
 //! `PR_SET_PDEATHSIG=SIGKILL` in the child.
 
-use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -28,10 +27,40 @@ use crate::{
     QemuNodeChild,
 };
 
+#[cfg(target_os = "linux")]
+mod process_envelope;
+#[cfg(target_os = "linux")]
+pub(crate) use process_envelope::{ConfiguredProcessEnvelope, ProcessEnvelopeRefinementError};
+
 mod control_delivery_trace;
+#[cfg(target_os = "linux")]
+mod device_digest_workspace;
+mod guarded_preparation_error;
 mod image_launch;
 mod materialization;
+mod plugin_startup;
+mod prelaunch_error;
+pub(crate) use prelaunch_error::QemuPrelaunchError;
+#[cfg(target_os = "linux")]
+pub(crate) mod preexec_setup;
+#[cfg(target_os = "linux")]
+pub(crate) mod ram_endpoint_binding;
+mod ram_spill;
 mod run_directory;
+pub(crate) mod source_supervision;
+mod worker_stack_profile;
+
+#[cfg(target_os = "linux")]
+pub(crate) use device_digest_workspace::{
+    DeviceDigestWorkspaceBody, DeviceDigestWorkspaceIssueError, OriginalDeviceDigestWorkspace,
+};
+
+pub use guarded_preparation_error::QemuGuardedImagePreparationError;
+pub(crate) use plugin_startup::OriginalPluginStartup;
+pub use plugin_startup::PluginStartupError;
+#[cfg(target_os = "linux")]
+pub use preexec_setup::PreexecSetupError;
+pub(crate) use worker_stack_profile::GuardedWorkerStackProfile;
 
 pub(crate) use control_delivery_trace::valid_control_delivery_row;
 pub(crate) use run_directory::valid_rr_control_boundary_row;
@@ -39,9 +68,7 @@ pub(crate) use run_directory::valid_rr_control_boundary_row;
 use image_launch::{GuardedLaunchImagePins, GuardedSetupProbeCommand, guarded_launch_args};
 pub(crate) use materialization::QemuProductionExactRestoreSource;
 pub(crate) use materialization::SealedAtomicExactRestoreInputs;
-pub(crate) use materialization::{
-    QemuExactDeviceStateBinding, QemuGuardedExactRamInput, require_exact_restore_not_canceled,
-};
+pub(crate) use materialization::{QemuExactDeviceStateBinding, require_exact_restore_not_canceled};
 pub use run_directory::QemuPreparedRunDirectory;
 use run_directory::{PinnedFileIdentity, open_prepared_root_overlay};
 
@@ -49,12 +76,14 @@ const QEMU_VMSTATE_LAUNCH_FD: RawFd = QEMU_PLUGIN_WAKE_FD + 1;
 const QEMU_ROOT_OVERLAY_READ_LAUNCH_FD: RawFd = QEMU_VMSTATE_LAUNCH_FD + 1;
 const QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD: RawFd = QEMU_ROOT_OVERLAY_READ_LAUNCH_FD + 1;
 // Every inherited source is relocated above all fixed exec targets before dup2.
-const CHILD_SOURCE_FD_MIN: RawFd = QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD + 1;
+pub(crate) const QEMU_RAM_SOURCE_LAUNCH_FD: RawFd = 10;
+pub(crate) const QEMU_RAM_SPILL_LAUNCH_FD: RawFd = 11;
+pub(crate) const QEMU_STARTUP_CANCELLATION_FD: RawFd = QEMU_RAM_SPILL_LAUNCH_FD + 1;
+const CHILD_SOURCE_FD_MIN: RawFd = QEMU_STARTUP_CANCELLATION_FD + 1;
 const CGROUP_ATTACH_SELF: &[u8] = b"0\n";
 const MAX_SUPERVISOR_GROUPS: usize = 65_536;
 const VMSTATE_FILE_NAME_C: &[u8] = b"crucible-vmstate.qcow2\0";
 const GUARDED_IMAGE_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
-const GUARDED_IMAGE_TOOL_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const GUARDED_IMAGE_TOOL_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Owned pre-exec contract for one attempt-contained child process.
@@ -79,14 +108,59 @@ pub struct QemuChildProcessContract {
     cancellation_event: OwnedFd,
     maximum_vcpus: u32,
     maximum_resident_bytes: u64,
+    maximum_tasks: Option<u32>,
     maximum_writable_bytes: u64,
+    maximum_file_descriptors: Option<u64>,
+    maximum_locked_bytes: u64,
     credentials: Option<QemuChildCredentials>,
     attempt_binding: Arc<AttemptResourceBinding>,
     exact_checkpoint_root: Option<crucible_engine::ContentHash>,
 }
 
+/// Independently bounded writable storage and descriptor limits of one child.
+pub(crate) struct QemuChildFileLimits {
+    pub(crate) writable_bytes: u64,
+    pub(crate) descriptors: u64,
+    pub(crate) locked_bytes: u64,
+}
+
 #[derive(Debug)]
-struct AttemptResourceBinding;
+struct AttemptResourceBinding {
+    #[cfg(target_os = "linux")]
+    helper_receiver: std::sync::OnceLock<crate::linux_attempt_host::SourceCleanupLender>,
+    // Refinement closes before the first attempted exec. Genuine duplicates
+    // observe the same effective ceiling through this retained binding.
+    // The state is shared by the existing allocation, never a new authority.
+    launch_state: std::sync::atomic::AtomicU8,
+    effective_resident_bytes: std::sync::atomic::AtomicU64,
+    main_stack_bytes: std::sync::atomic::AtomicU64,
+    effective_file_descriptors: std::sync::atomic::AtomicU64,
+}
+
+impl AttemptResourceBinding {
+    fn new(resident_bytes: u64, file_descriptors: Option<u64>) -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            helper_receiver: std::sync::OnceLock::new(),
+            launch_state: std::sync::atomic::AtomicU8::new(0),
+            effective_resident_bytes: std::sync::atomic::AtomicU64::new(resident_bytes),
+            main_stack_bytes: std::sync::atomic::AtomicU64::new(0),
+            effective_file_descriptors: std::sync::atomic::AtomicU64::new(
+                file_descriptors.unwrap_or(0),
+            ),
+        }
+    }
+}
+
+mod child_privilege;
+mod main_stack;
+pub(crate) mod helper_first;
+pub use helper_first::QemuIssuedHelperFailure;
+pub(crate) mod helper_receiver;
+pub use helper_receiver::QemuIssuedHelperReceiver;
+mod process_stage_binding;
+pub(crate) use process_stage_binding::QemuProcessStageRetirement;
+pub use process_stage_binding::{QemuProcessStageBinding, QemuProcessStageIdentityError};
 
 fn invalid_input(operation: &'static str, message: &'static str) -> QemuSpawnError {
     QemuSpawnError::Io {
@@ -105,7 +179,19 @@ pub(crate) struct QemuChildCredentials {
 struct SupervisorCredentials {
     user_ids: [libc::uid_t; 3],
     group_ids: [libc::gid_t; 3],
-    supplementary_group_ids: Vec<libc::gid_t>,
+    supplementary_group_ids: SupervisorGroups,
+}
+
+// The physical group array always drops before its same-budget temporary loan.
+struct SupervisorGroups {
+    values: Vec<libc::gid_t>,
+    _credit: Option<crucible_engine::owned_decode::DecodeScratch>,
+}
+
+impl SupervisorGroups {
+    fn contains(&self, group: &libc::gid_t) -> bool {
+        self.values.contains(group)
+    }
 }
 
 impl QemuChildCredentials {
@@ -113,13 +199,16 @@ impl QemuChildCredentials {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError::InvalidChildCredentials`] when either ID is
+    /// Returns [`QemuPrelaunchError::InvalidChildCredentials`] when either ID is
     /// root, the user ID equals any real, effective, or saved daemon user, or
     /// the group ID equals any real, effective, saved, or supplementary daemon
     /// group. Returns
-    /// [`QemuSpawnError::Io`] when the daemon group set cannot be inspected
-    /// within its explicit bound.
-    pub(crate) fn new(user_id: libc::uid_t, group_id: libc::gid_t) -> Result<Self, QemuSpawnError> {
+    /// [`QemuPrelaunchError::Io`] when credential inspection fails, or a typed
+    /// group-bound, group-change or decode-admission refusal before use.
+    pub(crate) fn new(
+        user_id: libc::uid_t,
+        group_id: libc::gid_t,
+    ) -> Result<Self, QemuPrelaunchError> {
         let supervisor = current_supervisor_credentials()?;
         if user_id == 0
             || group_id == 0
@@ -127,13 +216,13 @@ impl QemuChildCredentials {
             || supervisor.group_ids.contains(&group_id)
             || supervisor.supplementary_group_ids.contains(&group_id)
         {
-            return Err(QemuSpawnError::InvalidChildCredentials { user_id, group_id });
+            return Err(QemuPrelaunchError::InvalidChildCredentials { user_id, group_id });
         }
         Ok(Self { user_id, group_id })
     }
 }
 
-fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnError> {
+fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuPrelaunchError> {
     let mut real_user_id = 0;
     let mut effective_user_id = 0;
     let mut saved_user_id = 0;
@@ -146,7 +235,9 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
         )
     };
     if users_read != 0 {
-        return Err(last_io_error("inspect supervisor user credentials"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor user credentials",
+        ));
     }
     let mut real_group_id = 0;
     let mut effective_group_id = 0;
@@ -160,7 +251,9 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
         )
     };
     if groups_read != 0 {
-        return Err(last_io_error("inspect supervisor group credentials"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor group credentials",
+        ));
     }
     Ok(SupervisorCredentials {
         user_ids: [real_user_id, effective_user_id, saved_user_id],
@@ -169,51 +262,63 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
     })
 }
 
-fn current_supplementary_groups() -> Result<Vec<libc::gid_t>, QemuSpawnError> {
+fn current_supplementary_groups() -> Result<SupervisorGroups, QemuPrelaunchError> {
     let count = unsafe {
         // SAFETY: a zero count permits a null list and returns its required size.
         libc::getgroups(0, std::ptr::null_mut())
     };
     if count < 0 {
-        return Err(last_io_error("inspect supervisor supplementary groups"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor supplementary groups",
+        ));
     }
-    let count = usize::try_from(count).map_err(|source| QemuSpawnError::Io {
-        operation: "bound supervisor supplementary groups",
-        source: io::Error::new(io::ErrorKind::InvalidData, source),
-    })?;
+    let count = count as usize;
     if count > MAX_SUPERVISOR_GROUPS {
-        return Err(QemuSpawnError::Io {
-            operation: "bound supervisor supplementary groups",
-            source: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "supervisor supplementary groups exceed the supported bound",
-            ),
-        });
+        return Err(QemuPrelaunchError::SupervisorGroupLimit);
     }
-    let mut groups = vec![0; count];
+    let credit = crucible_engine::owned_decode::current_budget()
+        .map(|budget| budget.reserve_scratch_array::<libc::gid_t>(count))
+        .transpose()
+        .map_err(QemuPrelaunchError::ConfigurationAdmission)?;
+    let mut groups = SupervisorGroups {
+        values: vec![0; count],
+        _credit: credit,
+    };
     if count == 0 {
         return Ok(groups);
     }
     let returned = unsafe {
         // SAFETY: `groups` contains exactly `count` writable gid_t elements.
-        libc::getgroups(count as libc::c_int, groups.as_mut_ptr())
+        libc::getgroups(count as libc::c_int, groups.values.as_mut_ptr())
     };
     if returned < 0 {
-        return Err(last_io_error("read supervisor supplementary groups"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "read supervisor supplementary groups",
+        ));
     }
-    if usize::try_from(returned).ok() != Some(count) {
-        return Err(QemuSpawnError::Io {
-            operation: "read supervisor supplementary groups",
-            source: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "supervisor supplementary groups changed while inspected",
-            ),
-        });
+    if returned as usize != count {
+        return Err(QemuPrelaunchError::SupervisorGroupsChanged);
     }
     Ok(groups)
 }
 
 impl QemuChildProcessContract {
+    /// Returns the validated effective credentials installed by guarded spawn.
+    ///
+    /// The identifiers come from this retained process contract, rather than
+    /// from an operator-supplied capability receipt. `None` identifies a contract
+    /// without native child credentials and cannot authenticate a kernel probe.
+    pub fn effective_credentials(&self) -> Option<(u32, u32)> {
+        self.credentials
+            .map(|credentials| (credentials.user_id, credentials.group_id))
+    }
+
+    /// Returns the authenticated hard and soft child memory-lock entitlement.
+    #[must_use]
+    pub const fn maximum_locked_bytes(&self) -> u64 {
+        self.maximum_locked_bytes
+    }
+
     /// Duplicates the sticky cancellation event for one bounded QMP operation.
     ///
     /// The returned descriptor observes the same eventfd counter as the child
@@ -246,6 +351,8 @@ impl QemuChildProcessContract {
     /// Returns [`QemuSpawnError::Io`] when a retained descriptor cannot be
     /// duplicated.
     pub fn try_clone_for_attempt_generation(&self) -> Result<Self, QemuSpawnError> {
+        self.attempt_binding.check_clone_available()?;
+
         let cgroup_directory = self
             .cgroup_directory
             .as_ref()
@@ -276,7 +383,10 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus: self.maximum_vcpus,
             maximum_resident_bytes: self.maximum_resident_bytes,
+            maximum_tasks: self.maximum_tasks,
             maximum_writable_bytes: self.maximum_writable_bytes,
+            maximum_file_descriptors: self.maximum_file_descriptors,
+            maximum_locked_bytes: self.maximum_locked_bytes,
             credentials: self.credentials,
             attempt_binding: Arc::clone(&self.attempt_binding),
             exact_checkpoint_root: self.exact_checkpoint_root,
@@ -306,9 +416,53 @@ impl QemuChildProcessContract {
     fn admitted_resource_ceiling(&self) -> (u32, u64, u64) {
         (
             self.maximum_vcpus,
-            self.maximum_resident_bytes,
+            self.effective_resident_bytes(),
             self.maximum_writable_bytes,
         )
+    }
+
+    fn effective_resident_bytes(&self) -> u64 {
+        self.attempt_binding
+            .effective_resident_bytes
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn effective_file_descriptors(&self) -> Option<u64> {
+        self.maximum_file_descriptors.map(|_| {
+            self.attempt_binding
+                .effective_file_descriptors
+                .load(std::sync::atomic::Ordering::Acquire)
+        })
+    }
+
+    /// Returns the descriptor-index floor of the actual fixed child assignments.
+    ///
+    /// Stdio and every selected launch target must fit below NOFILE. This is
+    /// neither an aggregate family entitlement nor a promise that transient
+    /// opens or unrelated inherited descriptors fit inside the chosen limit.
+    pub(crate) const fn required_launch_file_descriptors() -> u64 {
+        let targets = [
+            libc::STDERR_FILENO,
+            QEMU_PLUGIN_CONTROL_FD,
+            QEMU_PLUGIN_SHMEM_FD,
+            QEMU_PLUGIN_WAKE_FD,
+            QEMU_VMSTATE_LAUNCH_FD,
+            QEMU_ROOT_OVERLAY_READ_LAUNCH_FD,
+            QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD,
+            crate::QEMU_PLUGIN_RAM_CONTROL_FD,
+            QEMU_RAM_SOURCE_LAUNCH_FD,
+            QEMU_RAM_SPILL_LAUNCH_FD,
+            QEMU_STARTUP_CANCELLATION_FD,
+        ];
+        let mut highest = libc::STDERR_FILENO;
+        let mut index = 0;
+        while index < targets.len() {
+            if targets[index] > highest {
+                highest = targets[index];
+            }
+            index += 1;
+        }
+        highest as u64 + 1
     }
 
     /// Builds one child-side containment and credential contract.
@@ -321,10 +475,24 @@ impl QemuChildProcessContract {
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         cgroup_limits: crate::linux_cgroup::LinuxQemuCgroupLimits,
-        maximum_writable_bytes: u64,
+        files: QemuChildFileLimits,
         credentials: QemuChildCredentials,
         exact_checkpoint_root: Option<crucible_engine::ContentHash>,
     ) -> Result<Self, QemuSpawnError> {
+        if files.locked_bytes == libc::RLIM_INFINITY {
+            return Err(invalid_input(
+                "seal QEMU memory-lock limit",
+                "memory-lock entitlement must be finite",
+            ));
+        }
+        if files.descriptors == libc::RLIM_INFINITY
+            || files.descriptors < Self::required_launch_file_descriptors()
+        {
+            return Err(invalid_input(
+                "seal QEMU descriptor limit",
+                "descriptor limit must be finite and accommodate fixed launch descriptors",
+            ));
+        }
         validate_cgroup_directory_fd(&cgroup_directory)?;
         validate_cgroup_procs_fd(&cgroup_procs)?;
         validate_cancellation_eventfd(cancellation_event.as_raw_fd())?;
@@ -334,9 +502,15 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus: cgroup_limits.maximum_vcpus(),
             maximum_resident_bytes: cgroup_limits.maximum_resident_bytes(),
-            maximum_writable_bytes,
+            maximum_tasks: Some(cgroup_limits.maximum_tasks()),
+            maximum_writable_bytes: files.writable_bytes,
+            maximum_file_descriptors: Some(files.descriptors),
+            maximum_locked_bytes: files.locked_bytes,
             credentials: Some(credentials),
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(
+                cgroup_limits.maximum_resident_bytes(),
+                Some(files.descriptors),
+            )),
             exact_checkpoint_root,
         })
     }
@@ -355,7 +529,7 @@ impl QemuChildProcessContract {
     }
 
     #[cfg(test)]
-    fn for_test(
+    pub(crate) fn for_test(
         cgroup_procs: OwnedFd,
         cancellation_event: OwnedFd,
         maximum_writable_bytes: u64,
@@ -426,9 +600,12 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus,
             maximum_resident_bytes,
+            maximum_tasks: None,
             maximum_writable_bytes,
+            maximum_file_descriptors: None,
+            maximum_locked_bytes: 0,
             credentials: None,
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(maximum_resident_bytes, None)),
             exact_checkpoint_root,
         }
     }
@@ -455,9 +632,12 @@ impl QemuChildProcessContract {
             cancellation_event,
             maximum_vcpus,
             maximum_resident_bytes,
+            maximum_tasks: None,
             maximum_writable_bytes,
+            maximum_file_descriptors: None,
+            maximum_locked_bytes: 0,
             credentials: None,
-            attempt_binding: Arc::new(AttemptResourceBinding),
+            attempt_binding: Arc::new(AttemptResourceBinding::new(maximum_resident_bytes, None)),
             exact_checkpoint_root: None,
         }
     }
@@ -508,13 +688,63 @@ impl QemuChildProcessContract {
 #[derive(Debug)]
 pub struct QemuSpawnHostResources {
     control_socket: OwnedFd,
+    ram_control_socket: Option<OwnedFd>,
+    ram_source_socket: Option<OwnedFd>,
+    ram_control: Option<crate::QemuRamControlLaunch>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
+    #[cfg(target_os = "linux")]
+    preexec_receipt: Option<crucible_qemu_protocol::PreexecSetupHandover>,
+    #[cfg(target_os = "linux")]
+    device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
+    service_lease: Option<crucible_host_resources::host_services::HostServiceLease>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnHostResources {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_device_digest_workspace(&mut self, body: Arc<DeviceDigestWorkspaceBody>) {
+        self.device_digest_workspace = Some(body);
+    }
+
+    // Copy the same identity that was validated and emitted before child birth.
+    fn bind_plugin_launch(&mut self, command: &QemuLaunchCommand) {
+        self.fault_node_hash = command.plugin_fault_node_hash();
+        self.process_generation = command.plugin_process_generation();
+        self.ram_control = command.ram_control();
+    }
+
+    pub(crate) fn retain_launch_cleanup(&mut self, cleanup: crate::launch_cleanup::LaunchCleanup) {
+        self.launch_cleanup = Some(cleanup);
+    }
+    /// Returns shared retained authority for this launch's descriptor peak.
+    #[must_use]
+    pub fn host_service_lease(
+        &self,
+    ) -> Option<&crucible_host_resources::host_services::HostServiceLease> {
+        self.service_lease.as_ref()
+    }
+
+    /// Takes the independent pager-control endpoint and its authenticated setup.
+    ///
+    /// Callers retain this separately from QMP and the execution control stream.
+    pub fn take_ram_control_socket(&mut self) -> Option<(UnixStream, crate::QemuRamControlLaunch)> {
+        let setup = self.ram_control?;
+        self.ram_control_socket
+            .take()
+            .map(|fd| (UnixStream::from(fd), setup))
+    }
+
+    /// Takes the independent lazy authenticated RAM-source endpoint.
+    ///
+    /// The source owner supplies its fresh binding before restore or fork readiness.
+    pub fn take_ram_source_socket(&mut self) -> Option<UnixStream> {
+        self.ram_source_socket.take().map(UnixStream::from)
+    }
+
     /// Returns the host end of the plugin IPC control socket.
     #[must_use]
     pub fn control_socket_fd(&self) -> RawFd {
@@ -544,10 +774,20 @@ impl QemuSpawnHostResources {
     pub fn into_setup_resources(self) -> QemuSpawnSetupResources {
         QemuSpawnSetupResources {
             control_socket: UnixStream::from(self.control_socket),
+            ram_control_socket: self.ram_control_socket,
+            ram_source_socket: self.ram_source_socket,
+            ram_control: self.ram_control,
+            service_lease: self.service_lease,
             shmem_fd: self.shmem_fd,
             wake_fd: self.wake_fd,
             region_len: self.region_len,
             fault_node_hash: self.fault_node_hash,
+            process_generation: self.process_generation,
+            #[cfg(target_os = "linux")]
+            preexec_receipt: self.preexec_receipt,
+            #[cfg(target_os = "linux")]
+            device_digest_workspace: self.device_digest_workspace,
+            launch_cleanup: self.launch_cleanup,
         }
     }
 }
@@ -556,13 +796,70 @@ impl QemuSpawnHostResources {
 #[derive(Debug)]
 pub struct QemuSpawnSetupResources {
     control_socket: UnixStream,
+    ram_control_socket: Option<OwnedFd>,
+    ram_source_socket: Option<OwnedFd>,
+    ram_control: Option<crate::QemuRamControlLaunch>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
     fault_node_hash: [u8; 32],
+    process_generation: u64,
+    #[cfg(target_os = "linux")]
+    preexec_receipt: Option<crucible_qemu_protocol::PreexecSetupHandover>,
+    #[cfg(target_os = "linux")]
+    device_digest_workspace: Option<Arc<DeviceDigestWorkspaceBody>>,
+    service_lease: Option<crucible_host_resources::host_services::HostServiceLease>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuSpawnSetupResources {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_preexec_receipt(
+        &mut self,
+    ) -> Option<crucible_qemu_protocol::PreexecSetupHandover> {
+        self.preexec_receipt.take()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_device_digest_workspace(
+        &mut self,
+    ) -> Option<Arc<DeviceDigestWorkspaceBody>> {
+        self.device_digest_workspace.take()
+    }
+
+    /// Returns the same generation retained from the validated launch command.
+    pub(crate) const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
+    pub(crate) fn launch_cleanup(&self) -> Option<crate::launch_cleanup::LaunchCleanup> {
+        self.launch_cleanup.clone()
+    }
+    /// Returns shared retained authority for this launch's descriptor peak.
+    #[must_use]
+    pub fn host_service_lease(
+        &self,
+    ) -> Option<&crucible_host_resources::host_services::HostServiceLease> {
+        self.service_lease.as_ref()
+    }
+
+    /// Takes the independent pager-control endpoint and its authenticated setup.
+    ///
+    /// Callers retain this separately from QMP and the execution control stream.
+    pub fn take_ram_control_socket(&mut self) -> Option<(UnixStream, crate::QemuRamControlLaunch)> {
+        let setup = self.ram_control?;
+        self.ram_control_socket
+            .take()
+            .map(|fd| (UnixStream::from(fd), setup))
+    }
+
+    /// Takes the independent lazy authenticated RAM-source endpoint.
+    ///
+    /// The source owner supplies its fresh binding before restore or fork readiness.
+    pub fn take_ram_source_socket(&mut self) -> Option<UnixStream> {
+        self.ram_source_socket.take().map(UnixStream::from)
+    }
+
     /// Returns the host end of the plugin IPC control socket.
     #[must_use]
     pub fn control_socket_fd(&self) -> RawFd {
@@ -595,13 +892,23 @@ impl QemuSpawnSetupResources {
 
     /// Consumes the setup resources into their owned parts.
     #[must_use]
-    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64, [u8; 32]) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        UnixStream,
+        OwnedFd,
+        OwnedFd,
+        u64,
+        [u8; 32],
+        Option<crate::launch_cleanup::LaunchCleanup>,
+    ) {
         (
             self.control_socket,
             self.shmem_fd,
             self.wake_fd,
             self.region_len,
             self.fault_node_hash,
+            self.launch_cleanup,
         )
     }
 }
@@ -613,25 +920,6 @@ pub struct QemuSpawnedChild {
     resources: QemuSpawnHostResources,
 }
 
-/// Failed guarded image preparation with optional unreaped helper ownership.
-///
-/// Callers must transfer an unreaped helper into their attempt-wide process
-/// owner before dropping the error. Errors without a child attest that no
-/// helper was spawned or that every spawned helper was synchronously reaped.
-#[derive(Debug, Error)]
-#[error("{source}")]
-pub struct QemuGuardedImagePreparationError {
-    pub(super) source: QemuSpawnError,
-    pub(super) child: Option<QemuNodeChild>,
-}
-
-impl QemuGuardedImagePreparationError {
-    /// Takes the unique wait authority for an unreaped image-tool helper.
-    #[must_use]
-    pub fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
-        self.child.take()
-    }
-}
 
 impl QemuSpawnedChild {
     /// Consumes the spawn result into its node child and retained host resources.
@@ -644,6 +932,81 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The containing launch's physical child-return slot was already consumed.
+    #[error("the original child-return recipient is unavailable")]
+    ChildReturnUnavailable,
+    /// The constructor-bound helper recipient is unavailable or occupied.
+    ///
+    /// This custody refusal retains no boxed I/O error or diagnostic allocation.
+    #[error("retain guarded helper failed: issued helper custody is unavailable or still occupied")]
+    HelperCustodyUnavailable,
+    /// Shares the actual first helper error with its issued physical recipient.
+    #[error("issued helper failed: {first:?}")]
+    HelperFailure {
+        /// Same concrete first error; its separately owned payload stays live.
+        #[source]
+        first: QemuIssuedHelperFailure,
+    },
+    /// The real Source host owner refused custody before or after process birth.
+    #[error("authenticated Source custody refused: {source}")]
+    SourceHost {
+        /// Actual Main resource or kernel-custody cause.
+        #[source]
+        source: crucible_host_resources::host_services::process_birth::ServiceBirthError,
+    },
+    /// The actual Source spawn control reservation refused before any socket birth.
+    #[error("Source spawn admission refused: {source}")]
+    SourceAdmission {
+        /// The actual initiating nominal account refusal.
+        #[source]
+        source: crate::OriginalAccountCheckError,
+    },
+    /// The active original configuration account refused before allocation.
+    #[error("QEMU configuration admission refused: {0}")]
+    ConfigurationAdmission(#[source] crucible_engine::owned_decode::DecodeAdmissionError),
+    /// The actual supervisor group inventory exceeded its source bound.
+    #[error("supervisor supplementary groups exceed the supported bound")]
+    SupervisorGroupLimit,
+    /// The actual supervisor group inventory changed during inspection.
+    #[error("supervisor supplementary groups changed while inspected")]
+    SupervisorGroupsChanged,
+    /// The guarded environment does not preserve the matched worker request.
+    #[error("guarded QEMU worker stack profile is unsupported")]
+    UnsupportedWorkerStackProfile,
+    /// Explicit per-node host service descriptor admission failed before allocation.
+    #[error(transparent)]
+    HostServices {
+        /// Original independently configured service capacity refusal.
+        #[from]
+        source: crucible_host_resources::host_services::HostServiceError,
+    },
+    /// The actual registered startup refused before selected native birth.
+    #[error("registered startup refused: {source}")]
+    PluginStartup {
+        /// The original typed startup cause and retained control loan.
+        #[source]
+        source: PluginStartupError,
+    },
+    /// The actual original Setup refused an independent boundary check.
+    #[error("original Setup refused: {source}")]
+    OriginalStartup {
+        /// The unchanged original cancellation or deadline cause.
+        #[source]
+        source: crucible_host_resources::host_supervision::HostSupervisionError,
+    },
+    /// The sole selected plan or descriptor handover refused with its owner.
+    #[error("pre-exec handover refused: {source}")]
+    Preexec {
+        /// The first cause, independent postcut and actual retained aliases.
+        #[source]
+        source: PreexecSetupError,
+    },
+    /// The selected region exceeds the prepaid encoder overlap or fixed topology.
+    #[error("selected pre-exec region {region_len} does not fit its funded single-node encoder")]
+    PreexecRegionUnsupported {
+        /// Actual requested region size, which grants no additional credit.
+        region_len: u64,
+    },
     /// The shared-memory region length was zero.
     #[error("shared-memory region length must be non-zero")]
     RegionLengthZero,
@@ -666,8 +1029,14 @@ pub enum QemuSpawnError {
     GuardedImageTool {
         /// Stable preparation operation.
         operation: &'static str,
-        /// Rendered process exit status.
-        status: String,
+        /// Actual process exit status, retained without formatting allocation.
+        status: std::process::ExitStatus,
+    },
+    /// The owned helper had already been reaped before a natural-wait poll.
+    #[error("{operation} failed: helper child was already reaped")]
+    HelperAlreadyReaped {
+        /// Operation being attempted.
+        operation: &'static str,
     },
     /// A guarded image-tool helper exceeded its absolute execution deadline.
     #[error("guarded qemu-img operation `{operation}` exceeded its execution deadline")]
@@ -918,7 +1287,35 @@ pub enum QemuSpawnError {
         /// Exact launch-resource mismatch.
         source: crate::QemuLaunchResourceError,
     },
+    /// The spill filesystem would retain externalized RAM in host memory.
+    #[error("RAM spill storage uses an unsupported memory filesystem: {filesystem_type:#x}")]
+    RamSpillMemoryFilesystem {
+        /// Linux filesystem type reported by the pinned descriptor.
+        filesystem_type: i64,
+    },
+    /// The private spill file lacks a valid admitted backing quota.
+    #[error("RAM spill backing quota is invalid: {bytes}")]
+    InvalidRamSpillQuota {
+        /// Requested private backing bytes.
+        bytes: u64,
+    },
 }
+
+impl QemuSpawnError {
+    /// Moves the actual helper wait cause without formatting or rebuilding I/O.
+    pub(crate) fn from_helper_wait(
+        operation: &'static str,
+        failure: crate::node::ChildNaturalWaitFailure,
+    ) -> Self {
+        match failure {
+            crate::node::ChildNaturalWaitFailure::AlreadyReaped => {
+                Self::HelperAlreadyReaped { operation }
+            }
+            crate::node::ChildNaturalWaitFailure::Io(source) => Self::Io { operation, source },
+        }
+    }
+}
+
 /// Spawns QEMU from an already-provisioned run directory under `contract`.
 ///
 /// This fixed-FD operation never invokes `qemu-img` or creates the exact-VMState
@@ -940,30 +1337,258 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     run_directory: &QemuPreparedRunDirectory,
     region_len: u64,
     contract: &QemuChildProcessContract,
+    host_services: Option<&crucible_host_resources::host_services::HostServiceAllocator>,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    spawn_prepared_qemu_child_with_preexec(PreparedQemuChildLaunch {
+        command,
+        run_directory,
+        region_len,
+        contract,
+        host_services,
+        launch_cleanup,
+        preexec: None,
+        child_return: None,
+    })
+}
+
+/// Retains the inputs to one guarded child birth and its existing return slot.
+///
+/// Constructing this record borrows the already-admitted launch basis and
+/// transfers the same cleanup alias; it does not reserve or issue resources.
+pub(crate) struct PreparedQemuChildLaunch<'a> {
+    /// Command whose fixed resource baseline must match the process contract.
+    pub(crate) command: &'a QemuLaunchCommand,
+    /// Existing pinned run directory revalidated before descriptor creation.
+    pub(crate) run_directory: &'a QemuPreparedRunDirectory,
+    /// Admitted shared-region extent checked against pre-exec requirements.
+    pub(crate) region_len: u64,
+    /// Sealed process resource and containment contract.
+    pub(crate) contract: &'a QemuChildProcessContract,
+    /// Existing service allocator used for the fixed launch descriptor lease.
+    pub(crate) host_services:
+        Option<&'a crucible_host_resources::host_services::HostServiceAllocator>,
+    /// Same-original cleanup control retained across birth and failure.
+    pub(crate) launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    /// Borrowed native startup and descriptor handover inputs, when selected.
+    pub(crate) preexec: Option<preexec_setup::BorrowedPreexecSetup<'a>>,
+    /// Existing reservation that receives the child immediately after birth.
+    pub(crate) child_return: Option<&'a mut crate::node::SourceLaunchReservation>,
+}
+
+/// Spawns one prepared child through its retained pre-exec and return inputs.
+///
+/// # Errors
+///
+/// Returns the original launch, resource, descriptor or containment refusal.
+/// Missing child-return custody is rejected before resource construction.
+pub(crate) fn spawn_prepared_qemu_child_with_preexec(
+    launch: PreparedQemuChildLaunch<'_>,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    let PreparedQemuChildLaunch {
+        command,
+        run_directory,
+        region_len,
+        contract,
+        host_services,
+        launch_cleanup,
+        preexec,
+        child_return,
+    } = launch;
+
+    GuardedWorkerStackProfile::for_environment(command.diagnostic_envs())
+        .ok_or(QemuSpawnError::UnsupportedWorkerStackProfile)?;
+
     run_directory.validate_launch_basis(command, contract)?;
+    let child_return = child_return.ok_or_else(helper_receiver::helper_custody_refusal)?;
     run_directory.revalidate()?;
+    if let Some(selected) = preexec.as_ref() {
+        selected
+            .startup
+            .require_preexec_receiver()
+            .map_err(|source| QemuSpawnError::PluginStartup { source })?;
+        if region_len == 0
+            || region_len
+                > crucible_qemu_protocol::plugin_setup_plan::PLUGIN_SETUP_PLAN_MAX_BYTES as u64
+            || selected.region_config.vm_node_count != 1
+        {
+            return Err(QemuSpawnError::PreexecRegionUnsupported { region_len });
+        }
+    }
+    let spill_quota = if command.ram_control().is_some() {
+        let bytes = command.ram_backing_quota_bytes().unwrap_or(0);
+        if bytes < 4096 || bytes > contract.maximum_writable_bytes {
+            return Err(QemuSpawnError::InvalidRamSpillQuota { bytes });
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+    // Reserve the same selected owner before endpoint birth and binder landing.
+    // Declaring it first keeps its final control after the physical pair locals.
+    let mut prepared_preexec = preexec
+        .as_ref()
+        .map(|selected| {
+            let cleanup = launch_cleanup
+                .as_ref()
+                .ok_or(QemuSpawnError::RegionLengthZero)?
+                .clone();
+            preexec_setup::PreparedPreexecSetup::reserve(selected.startup, cleanup)
+                .map_err(|source| QemuSpawnError::Preexec { source })
+        })
+        .transpose()?;
+    let mut child_return_recipient = if let Some(cleanup) = launch_cleanup.as_ref() {
+        Some(
+            cleanup
+                .claim_child_return()
+                .ok_or(QemuSpawnError::ChildReturnUnavailable)?,
+        )
+    } else {
+        None
+    };
+
+    // Three socket pairs, three temporary duplicated child endpoints, two
+    // shared-memory descriptors, two wake descriptors, and three image pins.
+    let service_lease = host_services
+        .map(|services| services.reserve_resources(0, 16, 0))
+        .transpose()
+        .map_err(|source| QemuSpawnError::HostServices { source })?;
+    if let Some(selected) = preexec.as_ref() {
+        launch_cleanup
+            .as_ref()
+            .ok_or(QemuSpawnError::RegionLengthZero)?
+            .reserve_source_spawn_controls(
+                selected
+                    .startup
+                    .admission()
+                    .map_err(OriginalPluginStartup::state_refusal)
+                    .map_err(|source| QemuSpawnError::PluginStartup { source })?,
+            )
+            .map_err(|source| QemuSpawnError::SourceAdmission { source })?;
+    }
+    let source_purpose = preexec
+        .as_ref()
+        .map(|selected| {
+            selected
+                .startup
+                .admission()
+                .map(|admission| admission.host_purpose().clone())
+        })
+        .transpose()
+        .map_err(OriginalPluginStartup::state_refusal)
+        .map_err(|source| QemuSpawnError::PluginStartup { source })?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
     let launch_args = guarded_launch_args(
         command.args(),
         image_pins.overlay.is_some(),
         run_directory.path(),
     )?;
-    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
-    resources.fault_node_hash = command.plugin_fault_node_hash();
+    let (mut resources, mut child_resources) = create_spawn_resources(region_len)?;
+    resources.service_lease = service_lease;
+    resources.bind_plugin_launch(command);
+    if let Some(cleanup) = &launch_cleanup {
+        resources.retain_launch_cleanup(cleanup.clone());
+    }
+    if let Some(bytes) = spill_quota {
+        child_resources.ram_spill = Some(ram_spill::create_private_spill(
+            &run_directory.directory,
+            bytes,
+        )?);
+    }
+    // Consume the actual Source's endpoint assignment before Setup can expose
+    // aliases. This same owner covers the interval before spawn returns its
+    // Child; neither a queued frame nor an uncertain result permits another birth.
+    let mut source_birth = source_purpose
+        .as_ref()
+        .map(|purpose| purpose.prepare_birth(child_resources.control_socket.as_fd()))
+        .transpose()
+        .map_err(|source| QemuSpawnError::SourceHost { source })?;
+    if let Some(preexec) = preexec {
+        let ram_endpoint =
+            child_resources.issue_ram_control_endpoint(&resources, command, contract, &preexec)?;
+        let owner = prepared_preexec.take().ok_or_else(|| QemuSpawnError::Io {
+            operation: "retain prepaid selected pre-exec owner",
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "selected pre-exec owner was consumed before endpoint sealing",
+            ),
+        })?;
+        let owner = owner
+            .prepare(
+                &preexec,
+                preexec_setup::PreexecSetupMaterial {
+                    contract,
+                    ram_endpoint: ram_endpoint.as_ref(),
+                    plan: command.plugin_setup_plan(),
+                    region_len,
+                    shmem: &resources.shmem_fd,
+                    wake: &resources.wake_fd,
+                },
+            )
+            .map_err(|source| QemuSpawnError::Preexec { source })?;
+        let mut owner = owner
+            .queue(&resources.control_socket, preexec.startup)
+            .map_err(|source| QemuSpawnError::Preexec { source })?;
+        resources.preexec_receipt = owner.take_receipt();
+        prepared_preexec = Some(owner);
+    }
+    let selected_preexec = prepared_preexec.is_some();
+    if selected_preexec {
+        // A failed spawn can follow a successful fork or partial pre-exec.
+        // Until actual reap is known, queued aliases and their original owner
+        // must not retire as a never-started launch.
+        if let Some(cleanup) = launch_cleanup.as_ref() {
+            cleanup.child_started();
+        }
+    }
+    if let Some(birth) = source_birth.as_mut() {
+        birth
+            .begin_birth()
+            .map_err(|source| QemuSpawnError::SourceHost { source })?;
+    }
     let child = spawn_process_with_resources(
         command.executable(),
         &launch_args,
         run_directory,
-        child_resources,
+        &child_resources,
         &image_pins,
         command.diagnostic_envs(),
-        Some(contract),
+        Some(BorrowedSpawnProcessContract {
+            process: contract,
+            startup: command.plugin_setup_plan().startup_operation(),
+            selected_preexec,
+        }),
     )?;
-    Ok(QemuSpawnedChild {
-        child: QemuNodeChild::new(child),
-        resources,
-    })
+    let mut child = match source_birth.take() {
+        Some(birth) => match birth.retain_child(child) {
+            Ok(child) => QemuNodeChild::from_authenticated_source(child),
+            Err((child, source)) => {
+                let mut child = QemuNodeChild::new(child);
+                if let Some(recipient) = child_return_recipient.take() {
+                    child.retain_child_return(recipient);
+                }
+                if let Some(cleanup) = launch_cleanup {
+                    child.retain_launch_cleanup(cleanup);
+                }
+                if let Some(owner) = prepared_preexec.take() {
+                    child.retain_preexec_setup(owner);
+                }
+                child_return.retain_failed_child(child);
+                return Err(QemuSpawnError::SourceHost { source });
+            }
+        },
+        None => QemuNodeChild::new(child),
+    };
+    if let Some(recipient) = child_return_recipient.take() {
+        child.retain_child_return(recipient);
+    }
+    if let Some(owner) = prepared_preexec.take() {
+        child.retain_preexec_setup(owner);
+    }
+    if let Some(cleanup) = launch_cleanup {
+        child.retain_launch_cleanup(cleanup);
+    }
+    Ok(QemuSpawnedChild { child, resources })
 }
 
 pub(crate) fn validate_guarded_launch_resources(
@@ -971,23 +1596,28 @@ pub(crate) fn validate_guarded_launch_resources(
     contract: &QemuChildProcessContract,
 ) -> Result<(), QemuSpawnError> {
     validate_guarded_launch_requirements(command.resource_requirements(), contract)
+        .map_err(Into::into)
 }
 
 pub(crate) fn validate_guarded_launch_requirements(
     requirements: crate::QemuLaunchResourceRequirements,
     contract: &QemuChildProcessContract,
-) -> Result<(), QemuSpawnError> {
+) -> Result<(), QemuPrelaunchError> {
     requirements
         .validate_ceiling(
             contract.maximum_vcpus,
-            contract.maximum_resident_bytes,
+            contract.effective_resident_bytes(),
             contract.maximum_writable_bytes,
         )
-        .map_err(|source| QemuSpawnError::LaunchResources { source })
+        .map_err(|source| QemuPrelaunchError::LaunchResources { source })
 }
+
 #[derive(Debug)]
 struct QemuSpawnChildResources {
     control_socket: OwnedFd,
+    ram_control_socket: OwnedFd,
+    ram_source_socket: OwnedFd,
+    ram_spill: Option<OwnedFd>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
 }
@@ -1000,6 +1630,12 @@ fn create_spawn_resources(
     }
 
     let (host_control, child_control) = socket_pair()?;
+    let (host_ram_control, child_ram_control) = socket_pair()?;
+    let (host_ram_source, child_ram_source) = socket_pair()?;
+    let child_ram_control =
+        duplicate_cloexec_fd(child_ram_control.as_raw_fd(), "duplicate pager control fd")?;
+    let child_ram_source =
+        duplicate_cloexec_fd(child_ram_source.as_raw_fd(), "duplicate RAM source fd")?;
     let child_control =
         duplicate_cloexec_fd(child_control.as_raw_fd(), "duplicate plugin control fd")?;
     let host_shmem = memfd_region(region_len)?;
@@ -1010,13 +1646,26 @@ fn create_spawn_resources(
     Ok((
         QemuSpawnHostResources {
             control_socket: host_control,
+            ram_control_socket: Some(host_ram_control),
+            ram_source_socket: Some(host_ram_source),
+            ram_control: None,
+            launch_cleanup: None,
+            service_lease: None,
             shmem_fd: host_shmem,
             wake_fd: host_wake,
             region_len,
             fault_node_hash: [0; 32],
+            process_generation: 0,
+            #[cfg(target_os = "linux")]
+            preexec_receipt: None,
+            #[cfg(target_os = "linux")]
+            device_digest_workspace: None,
         },
         QemuSpawnChildResources {
             control_socket: child_control,
+            ram_control_socket: child_ram_control,
+            ram_source_socket: child_ram_source,
+            ram_spill: None,
             shmem_fd: child_shmem,
             wake_fd: child_wake,
         },
@@ -1035,22 +1684,230 @@ pub(crate) fn create_test_spawn_resource_pair(
 ) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
     let (mut host_resources, child_resources) = create_spawn_resources(region_len)?;
     host_resources.fault_node_hash = crate::qemu_fault_target_hash("standalone-vm-slot-0");
+    // This explicit standalone fixture models its existing first generation.
+    host_resources.process_generation = 1;
     Ok((
         host_resources,
         UnixStream::from(child_resources.control_socket),
     ))
 }
 
+/// Initializes and prequeues real transport fixtures without issuing native authority.
+///
+/// # Errors
+/// Returns actual layout, descriptor, serialization, sealing or one-shot send errors.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn prepare_test_preexec_setup(
+    resources: &mut QemuSpawnHostResources,
+    config: crucible_qemu_shmem::RegionConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crucible_qemu_protocol::plugin_setup_plan::{
+        PluginSetupPlan, StartupOperation, StartupOperationFields,
+    };
+    use std::os::unix::fs::FileExt as _;
+
+    if resources.preexec_receipt.is_some() {
+        return Err("fixture setup was already queued".into());
+    }
+    let region = crucible_qemu_shmem::RegionAllocation::new(config)?;
+    let bytes = region.setup_region_bytes()?;
+    if bytes.len() as u64 > resources.region_len {
+        return Err("fixture region does not fit its actual backing".into());
+    }
+    let shmem = fs::File::from(resources.shmem_fd.try_clone()?);
+    shmem.write_all_at(&bytes, 0)?;
+    drop(shmem);
+
+    // These syntax-only fields deliberately do not name an issued native account
+    // or usable original. The fixture qualifies transport, never native startup.
+    let startup = StartupOperation::new(StartupOperationFields {
+        cap_id: [0xa1; 32],
+        operation_id: 1,
+        original_start_ns: 1,
+        absolute_end_ns: 2,
+        poll_ns: 1,
+        process_generation: resources.process_generation,
+        cancellation_device: 0,
+        cancellation_inode: 1,
+        cancellation_event_id: 1,
+        cancellation_descriptor: resources.wake_fd.as_raw_fd(),
+        original_total_metadata_bytes: 4096,
+    })?;
+    let mut purpose = [0_u8; crucible_qemu_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES];
+    purpose[..8].copy_from_slice(b"CRUCPUR8");
+    purpose[8..12].copy_from_slice(&8_u32.to_be_bytes());
+    purpose[12..16].copy_from_slice(
+        &(crucible_qemu_protocol::plugin_setup_plan::PROCESS_PURPOSE_BYTES as u32).to_be_bytes(),
+    );
+    for (offset, value) in [
+        (16, 4096_u64),
+        (96, resources.process_generation),
+        (520, 1),
+        (528, 1),
+        (536, 100_000),
+        (544, 1),
+        (552, 1),
+        (560, 1),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    purpose[184..216].copy_from_slice(&startup.fields().cap_id);
+    // Syntax-only reservations exercise the codec; they issue no native owner.
+    for (offset, value) in [
+        (24, 2048_u64),
+        (72, 512),
+        (80, 1),
+        (88, 9),
+        (104, 1024),
+        (112, 256),
+        (120, 1),
+        (128, 32),
+        (136, 1),
+        (472, 1024),
+        (480, 2),
+        (528, 100_000),
+    ] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut family = [0; 256];
+    family[..8].copy_from_slice(b"CRUCFAM1");
+    family[8..12].copy_from_slice(&1_u32.to_be_bytes());
+    family[12..16].copy_from_slice(&256_u32.to_be_bytes());
+    family[16..48].copy_from_slice(&purpose[184..216]);
+    family[48..56].copy_from_slice(&9_u64.to_be_bytes());
+    family[56..64].copy_from_slice(&9_u64.to_be_bytes());
+    for (index, identity) in [(0, 11), (1, 13)] {
+        let offset = 64 + index * 96;
+        family[offset..offset + 4].copy_from_slice(&(index as u32).to_be_bytes());
+        family[offset + 8..offset + 40].fill(identity);
+        for (relative, value) in [
+            (40, 1024_u64),
+            (56, 1024),
+            (64, 256),
+            (72, 1),
+            (80, 32),
+            (88, 1),
+        ] {
+            family[offset + relative..offset + relative + 8].copy_from_slice(&value.to_be_bytes());
+        }
+    }
+    purpose[744..1000].copy_from_slice(&family);
+    // Fixed syntax-only standing observation; no kernel owner is issued.
+    for (offset, value) in [(1000, 1_u64), (1008, 29), (1016, 1504)] {
+        purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut standing = [0_u8; 1496];
+    standing[..8].copy_from_slice(b"CRUCSRV4");
+    standing[8..12].copy_from_slice(&4_u32.to_be_bytes());
+    standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
+    standing[16..48].copy_from_slice(&purpose[184..216]);
+    standing[88..120].copy_from_slice(&purpose[184..216]);
+    standing[120..152].copy_from_slice(&purpose[816..848]);
+    standing[200..232].copy_from_slice(&purpose[144..176]);
+    standing[72..80].copy_from_slice(&purpose[88..96]);
+    standing[80..88].copy_from_slice(&purpose[96..104]);
+    for (offset, value) in [(48, 1_u64), (160, 1), (168, 2), (176, 1)] {
+        standing[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+    }
+    // Independently authored schema11 literal roster: fourteen 1ns polls,
+    // absent progress and 500us total bounds, with canonical zero padding.
+    standing[192..196].copy_from_slice(&256_u32.to_be_bytes());
+    standing[196..200].copy_from_slice(&1_u32.to_be_bytes());
+    standing[232..236].copy_from_slice(&11_u32.to_be_bytes());
+    for index in 0..14 {
+        let offset = 236 + index * 18;
+        standing[offset..offset + 8].copy_from_slice(&1_u64.to_be_bytes());
+        standing[offset + 9] = 1;
+        standing[offset + 10..offset + 18].copy_from_slice(&500_000_u64.to_be_bytes());
+    }
+    purpose[1024..2520].copy_from_slice(&standing);
+
+    let selectable = crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan::new(
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanLimits::new(1, 1, 1)?,
+        Vec::new(),
+        crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanContinuation::cold(),
+    )?;
+    let bytes = PluginSetupPlan::new(
+        crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
+        selectable,
+    )
+    .with_startup_operation(startup)
+    .encode_preexec(&purpose, None)?;
+    let plan = fs::File::from(memfd_region(u64::try_from(bytes.len())?)?);
+    plan.write_all_at(&bytes, 0)?;
+    rustix::fs::fcntl_add_seals(
+        &plan,
+        rustix::fs::SealFlags::GROW
+            | rustix::fs::SealFlags::SHRINK
+            | rustix::fs::SealFlags::WRITE
+            | rustix::fs::SealFlags::SEAL,
+    )?;
+
+    let frame: [u8; 61] =
+        crucible_qemu_protocol::control_encode_host_msg(&crucible_qemu_protocol::HostMsg::Setup {
+            region_len: resources.region_len,
+            process_generation: resources.process_generation,
+            device_digest_workspace: None,
+        })
+        .try_into()
+        .map_err(|_| "fixture current setup frame size differs")?;
+    // Physical transport fixtures provide each mandatory owned role. They
+    // establish no standing Source, Main payer or native constructor authority.
+    let source_publication = fs::File::open("/dev/null")?;
+    let source_cancellation = rustix::event::eventfd(
+        0,
+        rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+    )?;
+    resources.preexec_receipt = Some(
+        crucible_qemu_protocol::send_preexec_setup_frame_with_descriptors(
+            resources.control_socket.as_raw_fd(),
+            &frame,
+            &[
+                resources.shmem_fd.as_raw_fd(),
+                resources.wake_fd.as_raw_fd(),
+                plan.as_raw_fd(),
+                source_publication.as_raw_fd(),
+                source_cancellation.as_raw_fd(),
+            ],
+        )?,
+    );
+    Ok(())
+}
+
+// The startup borrow belongs to the same already-authenticated launch plan.
+// Grouping it with the actual process contract keeps retention at this private
+// spawn boundary; neither a bool nor a numeric descriptor issues authority.
+struct BorrowedSpawnProcessContract<'contract> {
+    process: &'contract QemuChildProcessContract,
+    startup: Option<&'contract crucible_qemu_protocol::plugin_setup_plan::StartupOperation>,
+    selected_preexec: bool,
+}
+
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
     run_directory: &QemuPreparedRunDirectory,
-    child_resources: QemuSpawnChildResources,
+    child_resources: &QemuSpawnChildResources,
     image_pins: &GuardedLaunchImagePins,
     envs: &[(&str, &str)],
-    process_contract: Option<&QemuChildProcessContract>,
+    process_contract: Option<BorrowedSpawnProcessContract<'_>>,
 ) -> Result<Child, QemuSpawnError> {
+    if let Some(contract) = &process_contract {
+        // A failed or ambiguous spawn still closes pre-exec refinement. Later
+        // generations may use this same frozen contract, never reopen it.
+        contract.process.attempt_binding.freeze_for_launch()?;
+    }
+
+    let selected_preexec = process_contract
+        .as_ref()
+        .is_some_and(|contract| contract.selected_preexec);
+    let retain_startup_cancellation = process_contract
+        .as_ref()
+        .is_some_and(|contract| contract.startup.is_some());
     let control_fd = child_resources.control_socket.as_raw_fd();
+    let ram_control_fd = child_resources.ram_control_socket.as_raw_fd();
+    let ram_source_fd = child_resources.ram_source_socket.as_raw_fd();
+    let ram_spill_fd = child_resources.ram_spill.as_ref().map(AsRawFd::as_raw_fd);
     let shmem_fd = child_resources.shmem_fd.as_raw_fd();
     let wake_fd = child_resources.wake_fd.as_raw_fd();
     let expected_parent_pid = unsafe {
@@ -1058,10 +1915,13 @@ fn spawn_process_with_resources(
         libc::getpid()
     };
     let process_contract = process_contract.map(|contract| ChildProcessContractRaw {
-        cgroup_procs: contract.cgroup_procs.as_raw_fd(),
-        cancellation_event: contract.cancellation_event.as_raw_fd(),
-        maximum_file_bytes: contract.maximum_writable_bytes,
-        credentials: contract.credentials,
+        cgroup_procs: contract.process.cgroup_procs.as_raw_fd(),
+        cancellation_event: contract.process.cancellation_event.as_raw_fd(),
+        maximum_file_bytes: contract.process.maximum_writable_bytes,
+        maximum_file_descriptors: contract.process.effective_file_descriptors(),
+        maximum_locked_bytes: contract.process.maximum_locked_bytes,
+        main_stack_bytes: contract.process.main_stack_limit(),
+        credentials: contract.process.credentials,
     });
     let pinned_run_directory = PreparedRunDirectoryRaw {
         directory: run_directory.directory.as_raw_fd(),
@@ -1075,6 +1935,9 @@ fn spawn_process_with_resources(
         .map(|overlay| (overlay.read.as_raw_fd(), overlay.write.as_raw_fd()));
 
     let mut command = guarded_qemu_process_command(executable, args, envs);
+    if selected_preexec {
+        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "6");
+    }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
     // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw
@@ -1089,8 +1952,24 @@ fn spawn_process_with_resources(
             if let Some(credentials) = process_contract.and_then(|contract| contract.credentials) {
                 install_child_credentials(credentials)?;
             }
+            // Contract and directory sources may occupy descriptor 12. Consume
+            // them first, then preserve cancellation before fixed exec targets.
+            if retain_startup_cancellation {
+                let contract =
+                    process_contract.ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+                dup_to_fixed_child_fd(contract.cancellation_event, QEMU_STARTUP_CANCELLATION_FD)?;
+            }
             install_child_process_contract(control_fd, shmem_fd, wake_fd, expected_parent_pid)?;
-            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)
+            dup_to_fixed_child_fd(ram_control_fd, crate::QEMU_PLUGIN_RAM_CONTROL_FD)?;
+            dup_to_fixed_child_fd(ram_source_fd, QEMU_RAM_SOURCE_LAUNCH_FD)?;
+            if let Some(spill) = ram_spill_fd {
+                dup_to_fixed_child_fd(spill, QEMU_RAM_SPILL_LAUNCH_FD)?;
+                close_child_source_fd(spill)?;
+            }
+            close_child_source_fd(ram_control_fd)?;
+            close_child_source_fd(ram_source_fd)?;
+            install_guarded_launch_image_pins(vmstate_fd, overlay_fds)?;
+            Ok(())
         });
     }
 
@@ -1135,8 +2014,8 @@ pub(crate) fn guarded_qemu_process_command(
 ///
 /// The probe uses the exact descriptor-pinned launch directory and child
 /// credentials of the eventual VM. Its input, lifetime, and two diagnostic
-/// streams are bounded. A helper that cannot be synchronously reaped remains
-/// owned by the returned error for transfer to the attempt resource owner.
+/// streams are bounded. The issued Source recipient owns the helper before
+/// pipe validation and retains it when synchronous cleanup refuses.
 pub(crate) fn run_guarded_qemu_setup_probe(
     launch: &QemuLaunchCommand,
     args: &[String],
@@ -1145,11 +2024,8 @@ pub(crate) fn run_guarded_qemu_setup_probe(
     timeout: Duration,
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
-) -> Result<Output, QemuGuardedImagePreparationError> {
-    let fail = |source| QemuGuardedImagePreparationError {
-        source,
-        child: None,
-    };
+) -> Result<helper_receiver::GuardedProbeOutput, QemuGuardedImagePreparationError> {
+    let fail = |source| QemuGuardedImagePreparationError::local(source);
     run_directory
         .validate_launch_basis(launch, process_contract)
         .and_then(|()| run_directory.revalidate())
@@ -1190,15 +2066,19 @@ fn run_guarded_qemu_setup_probe_inner(
     timeout: Duration,
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
-) -> Result<Output, QemuGuardedImagePreparationError> {
+) -> Result<helper_receiver::GuardedProbeOutput, QemuGuardedImagePreparationError> {
     if let Err(source) = run_directory
         .validate_launch_basis(launch, process_contract)
         .and_then(|()| run_directory.revalidate())
     {
-        return Err(QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        });
+        return Err(QemuGuardedImagePreparationError::local(source));
+    }
+
+    if maximum_output_bytes > helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES {
+        return Err(QemuGuardedImagePreparationError::local(invalid_input(
+            "prepare guarded QEMU setup probe",
+            "probe output exceeds the issued Source capture capacity",
+        )));
     }
 
     let deadline = HostSupervisionDeadline::start(timeout);
@@ -1216,162 +2096,25 @@ fn run_guarded_qemu_setup_probe_inner(
         setup.root_overlay.map(AsRawFd::as_raw_fd),
     );
 
-    let mut child = command
-        .spawn()
-        .map_err(|source| QemuGuardedImagePreparationError {
-            source: QemuSpawnError::Io {
-                operation: "spawn guarded QEMU setup probe",
-                source,
-            },
-            child: None,
-        })?;
-    let child_stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            return Err(cleanup_missing_guarded_probe_pipe(
+    process_contract
+        .attempt_binding
+        .freeze_for_launch()
+        .map_err(QemuGuardedImagePreparationError::local)?;
+
+    process_contract.with_spawned_helper(
+        command,
+        "spawn guarded QEMU setup probe",
+        |child, original, output| {
+            helper_receiver::wait_probe(
                 child,
-                "open guarded QEMU probe stdin",
-            ));
-        }
-    };
-    let child_stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            return Err(cleanup_missing_guarded_probe_pipe(
-                child,
-                "open guarded QEMU probe stdout",
-            ));
-        }
-    };
-    let child_stderr = match child.stderr.take() {
-        Some(stderr) => stderr,
-        None => {
-            return Err(cleanup_missing_guarded_probe_pipe(
-                child,
-                "open guarded QEMU probe stderr",
-            ));
-        }
-    };
-
-    if let Err(source) = nonblocking_probe_pipe(&child_stdin)
-        .and_then(|()| nonblocking_probe_pipe(&child_stdout))
-        .and_then(|()| nonblocking_probe_pipe(&child_stderr))
-    {
-        return Err(cleanup_failed_image_tool(QemuNodeChild::new(child), source));
-    }
-
-    let mut stdin = (!input.is_empty()).then_some(child_stdin);
-    let mut stdout = child_stdout;
-    let mut stderr = child_stderr;
-    let mut written = 0;
-    let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
-    let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
-    let mut child = QemuNodeChild::new(child);
-    let mut status = None;
-
-    loop {
-        if !deadline.has_time_remaining() {
-            return Err(cleanup_failed_image_tool(
-                child,
-                QemuSpawnError::GuardedQemuProbeTimeout,
-            ));
-        }
-
-        let mut progressed = false;
-        if let Some(pipe) = stdin.as_mut() {
-            match pipe.write(&input[written..]) {
-                Ok(0) => {
-                    return Err(cleanup_failed_image_tool(
-                        child,
-                        QemuSpawnError::Io {
-                            operation: "write guarded QEMU setup probe input",
-                            source: io::ErrorKind::WriteZero.into(),
-                        },
-                    ));
-                }
-                Ok(count) => {
-                    written += count;
-                    progressed = true;
-                    if written == input.len() {
-                        stdin = None;
-                    }
-                }
-                Err(error) if retryable_probe_io(&error) => {}
-                Err(source) => {
-                    return Err(cleanup_failed_image_tool(
-                        child,
-                        QemuSpawnError::Io {
-                            operation: "write guarded QEMU setup probe input",
-                            source,
-                        },
-                    ));
-                }
-            }
-        }
-
-        match stdout_capture.read_once(&mut stdout) {
-            Ok(read_progressed) => progressed |= read_progressed,
-            Err(source) => {
-                return Err(cleanup_failed_image_tool(
-                    child,
-                    QemuSpawnError::Io {
-                        operation: "read guarded QEMU setup probe stdout",
-                        source,
-                    },
-                ));
-            }
-        }
-        match stderr_capture.read_once(&mut stderr) {
-            Ok(read_progressed) => progressed |= read_progressed,
-            Err(source) => {
-                return Err(cleanup_failed_image_tool(
-                    child,
-                    QemuSpawnError::Io {
-                        operation: "read guarded QEMU setup probe stderr",
-                        source,
-                    },
-                ));
-            }
-        }
-        if stdout_capture.exceeded || stderr_capture.exceeded {
-            return Err(cleanup_failed_image_tool(
-                child,
-                QemuSpawnError::GuardedQemuProbeOutputLimit {
-                    maximum_bytes: maximum_output_bytes,
-                },
-            ));
-        }
-
-        if status.is_none() {
-            match child.try_wait_natural_exit() {
-                Ok(observed) => status = observed,
-                Err(error) => {
-                    return Err(cleanup_failed_image_tool(
-                        child,
-                        QemuSpawnError::Io {
-                            operation: "poll guarded QEMU setup probe",
-                            source: io::Error::other(error.to_string()),
-                        },
-                    ));
-                }
-            }
-        }
-        if stdout_capture.eof
-            && stderr_capture.eof
-            && stdin.is_none()
-            && let Some(status) = status
-        {
-            return Ok(Output {
-                status,
-                stdout: stdout_capture.bytes,
-                stderr: stderr_capture.bytes,
-            });
-        }
-
-        if !progressed {
-            thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL);
-        }
-    }
+                original,
+                input,
+                maximum_output_bytes,
+                &deadline,
+                output,
+            )
+        },
+    )
 }
 
 fn install_guarded_helper_authority(
@@ -1396,6 +2139,9 @@ fn install_guarded_helper_authority_with_probe_pin(
         cgroup_procs: process_contract.cgroup_procs.as_raw_fd(),
         cancellation_event: process_contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: process_contract.maximum_writable_bytes,
+        maximum_file_descriptors: process_contract.effective_file_descriptors(),
+        maximum_locked_bytes: process_contract.maximum_locked_bytes,
+        main_stack_bytes: process_contract.main_stack_limit(),
         credentials: process_contract.credentials,
     };
     let directory = PreparedRunDirectoryRaw {
@@ -1421,19 +2167,6 @@ fn install_guarded_helper_authority_with_probe_pin(
     }
 }
 
-fn cleanup_missing_guarded_probe_pipe(
-    child: Child,
-    operation: &'static str,
-) -> QemuGuardedImagePreparationError {
-    cleanup_failed_image_tool(
-        QemuNodeChild::new(child),
-        QemuSpawnError::Io {
-            operation,
-            source: io::Error::other("configured pipe was unavailable"),
-        },
-    )
-}
-
 struct ProbeCapture {
     bytes: Vec<u8>,
     maximum_bytes: usize,
@@ -1444,7 +2177,7 @@ struct ProbeCapture {
 impl ProbeCapture {
     fn new(maximum_bytes: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(maximum_bytes.min(64 * 1024)),
+            bytes: Vec::with_capacity(maximum_bytes),
             maximum_bytes,
             exceeded: false,
             eof: false,
@@ -1523,19 +2256,42 @@ fn run_guarded_image_tool_for_purpose(
     process_contract: &QemuChildProcessContract,
     purpose: GuardedImageToolPurpose,
 ) -> Result<(), QemuGuardedImagePreparationError> {
+    run_guarded_image_tool_with_original(
+        executable,
+        args,
+        operation,
+        run_directory,
+        process_contract,
+        purpose,
+        None,
+    )
+}
+
+fn run_guarded_image_tool_with_original(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+    purpose: GuardedImageToolPurpose,
+    effect_original: Option<&crate::QemuHotForkSourceOriginal>,
+) -> Result<(), QemuGuardedImagePreparationError> {
     let admission = match purpose {
         GuardedImageToolPurpose::FreshLaunch => {
             run_directory.validate_helper_basis(process_contract)
         }
-        GuardedImageToolPurpose::RetainedHotForkSource => {
-            run_directory.validate_retained_source_helper_basis(process_contract)
-        }
+        GuardedImageToolPurpose::RetainedHotForkSource => run_directory
+            .validate_retained_source_helper_basis(process_contract)
+            .and_then(|()| {
+                let receiver = process_contract.retained_source_helper_lender()?;
+                effect_original
+                    .ok_or_else(helper_receiver::helper_custody_refusal)?
+                    .checked_original(&receiver)
+                    .map(|_| ())
+            }),
     };
     if let Err(source) = admission {
-        return Err(QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        });
+        return Err(QemuGuardedImagePreparationError::local(source));
     }
     let mut command = Command::new(executable);
     command
@@ -1545,61 +2301,36 @@ fn run_guarded_image_tool_for_purpose(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     install_guarded_helper_authority(&mut command, run_directory, process_contract);
-    let child = command
-        .spawn()
-        .map_err(|source| QemuGuardedImagePreparationError {
-            source: QemuSpawnError::Io { operation, source },
-            child: None,
-        })?;
-    let mut child = QemuNodeChild::new(child);
-    let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
-    loop {
-        match child.try_wait_natural_exit() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                return Err(QemuGuardedImagePreparationError {
-                    source: QemuSpawnError::GuardedImageTool {
-                        operation,
-                        status: status.to_string(),
-                    },
-                    child: None,
-                });
-            }
-            Ok(None) if deadline.has_time_remaining() => {
-                thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
-            }
-            Ok(None) => {
-                return Err(cleanup_failed_image_tool(
-                    child,
-                    QemuSpawnError::GuardedImageToolTimeout { operation },
-                ));
-            }
-            Err(error) => {
-                return Err(cleanup_failed_image_tool(
-                    child,
-                    QemuSpawnError::Io {
-                        operation,
-                        source: io::Error::other(error.to_string()),
-                    },
-                ));
-            }
-        }
-    }
-}
+    process_contract
+        .attempt_binding
+        .freeze_for_launch()
+        .map_err(QemuGuardedImagePreparationError::local)?;
 
-fn cleanup_failed_image_tool(
-    mut child: QemuNodeChild,
-    source: QemuSpawnError,
-) -> QemuGuardedImagePreparationError {
-    match child.force_kill_and_reap_failed_helper(GUARDED_IMAGE_TOOL_REAP_TIMEOUT) {
-        Ok(()) => QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        },
-        Err(_) => QemuGuardedImagePreparationError {
-            source,
-            child: Some(child),
-        },
+    match purpose {
+        GuardedImageToolPurpose::FreshLaunch => {
+            process_contract.with_spawned_helper(command, operation, |child, original, _output| {
+                helper_receiver::wait_image_tool(child, original, operation)
+            })
+        }
+        GuardedImageToolPurpose::RetainedHotForkSource => {
+            let effect_original = effect_original.ok_or_else(|| {
+                QemuGuardedImagePreparationError::local(helper_receiver::helper_custody_refusal())
+            })?;
+            let receiver = process_contract
+                .retained_source_helper_lender()
+                .map_err(QemuGuardedImagePreparationError::local)?;
+            process_contract.with_spawned_retained_source_helper(
+                effect_original,
+                command,
+                operation,
+                |child, _original, _output| {
+                    helper_receiver::wait_image_tool_checked(child, operation, || {
+                        let original = effect_original.checked_original(&receiver)?;
+                        helper_receiver::wait_slice(original)
+                    })
+                },
+            )
+        }
     }
 }
 
@@ -1608,7 +2339,10 @@ struct ChildProcessContractRaw {
     cgroup_procs: RawFd,
     cancellation_event: RawFd,
     maximum_file_bytes: u64,
+    maximum_file_descriptors: Option<u64>,
+    maximum_locked_bytes: u64,
     credentials: Option<QemuChildCredentials>,
+    main_stack_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -1736,6 +2470,38 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
     if limited != 0 {
         return Err(io::Error::last_os_error());
     }
+    if let Some(maximum) = contract.maximum_file_descriptors {
+        let descriptor_limit = libc::rlimit {
+            rlim_cur: maximum,
+            rlim_max: maximum,
+        };
+        let result = unsafe {
+            // SAFETY: The initialized limit is copied by this async-signal-safe syscall.
+            libc::setrlimit(libc::RLIMIT_NOFILE, &descriptor_limit)
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    if let Some(bytes) = contract.main_stack_bytes {
+        main_stack::install_and_verify(bytes)?;
+    }
+
+    // Install the exact authored limit before credentials are dropped. Kernel
+    // refusal to raise an inherited hard limit aborts launch before placement.
+    let locked_limit = libc::rlimit {
+        rlim_cur: contract.maximum_locked_bytes,
+        rlim_max: contract.maximum_locked_bytes,
+    };
+    let result = unsafe {
+        // SAFETY: The initialized limit is copied by this async-signal-safe syscall.
+        libc::setrlimit(libc::RLIMIT_MEMLOCK, &locked_limit)
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
     let no_new_privileges = unsafe {
         // SAFETY: PR_SET_NO_NEW_PRIVS takes scalar arguments and permanently
         // prevents this child from regaining privilege across exec.
@@ -1745,6 +2511,20 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Installs the existing sealed birth contract for the private outer VM.
+///
+/// The operator retains the original account and process owner before calling
+/// this helper. The child joins that already limited domain before exec; the
+/// helper exports neither a raw cgroup descriptor nor new launch authority.
+#[cfg(feature = "private-measurement-domain")]
+pub(super) fn install_original_parent_birth(
+    command: &mut Command,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) {
+    install_guarded_helper_authority(command, run_directory, process_contract);
 }
 
 fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()> {
@@ -1784,7 +2564,7 @@ fn install_child_credentials(credentials: QemuChildCredentials) -> io::Result<()
     if user_changed != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    child_privilege::clear_and_verify(credentials)
 }
 
 fn validate_cgroup_procs_fd(fd: &OwnedFd) -> Result<(), QemuSpawnError> {
@@ -1912,35 +2692,29 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
 /// Returns [`QemuSpawnError`] when the length is not representable or the
 /// memfd cannot be created, sized, or sealed.
 pub(crate) fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
-    let region_len = libc::off_t::try_from(region_len)
+    libc::off_t::try_from(region_len)
         .map_err(|_| QemuSpawnError::RegionLengthTooLarge { region_len })?;
-    let name = CString::new("crucible-qemu-shmem").map_err(|source| QemuSpawnError::Io {
-        operation: "build memfd name",
-        source: io::Error::new(io::ErrorKind::InvalidInput, source),
+
+    let fd = rustix::fs::memfd_create(
+        c"crucible-qemu-shmem",
+        rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+    )
+    .map_err(|source| QemuSpawnError::Io {
+        operation: "create shmem memfd",
+        source: source.into(),
     })?;
-    let fd = unsafe {
-        // SAFETY: `name` is a valid NUL-terminated C string.
-        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
-    };
-    if fd < 0 {
-        return Err(last_io_error("create shmem memfd"));
-    }
-    let fd = owned_fd_from_raw(fd);
-    let truncate = unsafe {
-        // SAFETY: `fd` is a live memfd, and `region_len` was range-checked.
-        libc::ftruncate(fd.as_raw_fd(), region_len)
-    };
-    if truncate != 0 {
-        return Err(last_io_error("size shmem memfd"));
-    }
-    let seal = unsafe {
-        // SAFETY: `fd` is a live sealable memfd. The shrink seal preserves the
-        // mapping length while still permitting shared-memory writes.
-        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
-    };
-    if seal != 0 {
-        return Err(last_io_error("seal shmem memfd against shrink"));
-    }
+    rustix::fs::ftruncate(&fd, region_len).map_err(|source| QemuSpawnError::Io {
+        operation: "size shmem memfd",
+        source: source.into(),
+    })?;
+
+    // The shrink seal preserves mapping length while allowing shared writes.
+    rustix::fs::fcntl_add_seals(&fd, rustix::fs::SealFlags::SHRINK).map_err(|source| {
+        QemuSpawnError::Io {
+            operation: "seal shmem memfd against shrink",
+            source: source.into(),
+        }
+    })?;
     Ok(fd)
 }
 
@@ -2039,6 +2813,10 @@ fn last_io_error(operation: &'static str) -> QemuSpawnError {
         source: io::Error::last_os_error(),
     }
 }
+
+#[cfg(test)]
+#[path = "spawn/memfd_tests.rs"]
+mod memfd_tests;
 
 #[cfg(test)]
 #[path = "spawn_test.rs"]

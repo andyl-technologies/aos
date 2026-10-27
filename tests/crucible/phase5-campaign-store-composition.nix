@@ -4,9 +4,16 @@
   attrPath ? "checks.crucible.phase5.gates.campaignStoreComposition",
   taskIds ? ["T-CAM-5.5" "T-CAM-5.6" "T-CAM-5.7"],
   dependencies ? [],
+  nativeFindingIntegration,
+  nativeGcIntegration,
+  nativeOfflineIntegration,
+  nativePlanningIntegration,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  nativeCliTests = import ../../pkgs/tools/crucible/_native-cli-tests.nix {inherit lib;};
+  compositionNativeTests = builtins.filter (execution: execution.target == "gate_campaign_store_composition") nativeCliTests.assignments;
+  nativeCliSkips = lib.concatMapStringsSep " " (execution: "--skip ${execution.selector}") compositionNativeTests;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase5-campaign-store-composition";
@@ -64,6 +71,33 @@ in
           fi
 
           target="$TMPDIR/crucible-campaign-store-composition-target"
+          # Both public integration binaries execute all four native selectors
+          # under the separately retained kernel/quota/cgroup flight.
+          test -f ${nativeFindingIntegration}/result
+          grep -Fxq cli_native_executions=8 ${nativeFindingIntegration}/result
+          grep -Fxq gate=gate:cli-native-finding-integration ${nativeFindingIntegration}/result
+          # The two unit and twelve process executions retain genuine original
+          # maintenance and quota custody in the disposable kernel gate.
+          test -f ${nativeGcIntegration}/result
+          grep -Fxq cli_native_gc_executions=14 ${nativeGcIntegration}/result
+          grep -Fxq gate=gate:cli-native-gc-integration ${nativeGcIntegration}/result
+          test -f ${nativePlanningIntegration}/result
+          grep -Fxq cli_native_planning_executions=2 ${nativePlanningIntegration}/result
+          grep -Fxq gate=gate:cli-native-planning-integration ${nativePlanningIntegration}/result
+          for selector in \
+            plain_native_run_plans_and_completes_on_one_deployed_owner \
+            plain_native_fuzz_plans_and_records_real_coverage_on_one_deployed_owner; do
+            grep -Fxq "cli_native_planning_selector_pass=native_input_planning:$selector" ${nativePlanningIntegration}/result
+          done
+          test -f ${nativeOfflineIntegration}/result
+          grep -Fxq cli_native_offline_executions=11 ${nativeOfflineIntegration}/result
+          for target in campaign_store_process gate_campaign_store_composition; do
+            case "$target" in
+              campaign_store_process) selector=packaged_campaign_service_uses_mtls_without_debug_authority ;;
+              gate_campaign_store_composition) selector=campaign_store_process::packaged_campaign_service_uses_mtls_without_debug_authority ;;
+            esac
+            grep -Fxq "cli_native_offline_selector_pass=$target:$selector" ${nativeOfflineIntegration}/result
+          done
           component_test=same_campaign_survives_direct_rpc_and_independent_component_restarts
           component_listing=$(cargo test \
             --frozen \
@@ -92,7 +126,7 @@ in
             -p crucible-cli \
             --features test-double \
             --test gate_campaign_store_composition \
-            -- --test-threads=1
+            -- --test-threads=1 ${nativeCliSkips}
           socket_listing=$(cargo test \
             --frozen --offline --target-dir "$target" \
             --manifest-path crates/Cargo.toml \

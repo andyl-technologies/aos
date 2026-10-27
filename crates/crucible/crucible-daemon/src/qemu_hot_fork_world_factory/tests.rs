@@ -19,6 +19,13 @@ use crate::vm_lifecycle::{
     reset_hot_fork_adoption_count_for_test,
 };
 use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
+use crucible_engine::model::MeasurementTerminalState;
+use crucible_engine::{
+    Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
+    Icount, MarkerId, NodeId, ObservableEvent, ScenarioDefForm, ScenarioSelectableLimits,
+    ScenarioSelectables, SchedulerEventLogEntry, SchedulerNodeActivity, SchedulerQuiescence,
+    SelectionDecision, World, WorldNodeDef,
+};
 use crucible_campaign::{
     AlternativeId, AssignmentId, Attempt, AttemptResourceLimits, AttemptStart, AttemptStartMode,
     BooleanDomain, BranchPath, BranchPathSegment, BudgetGrant, CampaignCommandId,
@@ -32,13 +39,8 @@ use crucible_campaign::{
     RetentionPolicy, SelectableDeclaration, Selection, SelectionOrigin, StopCondition, StopOutcome,
     SubmitAttemptDisposition, SubmitAttemptRequest,
 };
-use crucible_engine::model::MeasurementTerminalState;
-use crucible_engine::{
-    Configuration, ContentHash, Decision, EventLog, ExecutionFingerprint, FingerprintSample,
-    Icount, MarkerId, NodeId, ObservableEvent, ScenarioDefForm, ScenarioSelectableLimits,
-    ScenarioSelectables, SchedulerEventLogEntry, SchedulerNodeActivity, SchedulerQuiescence,
-    SelectionDecision, World, WorldNodeDef,
-};
+
+
 use crucible_qemu_host::{
     LinuxQemuHotForkChildProcessAuthority, QemuChildProcessContract, QemuHotForkChildProcessBasis,
     QemuHotForkChildProcessOwner, QemuLaunchResourceRequirements, QemuNodeChannelError,
@@ -87,11 +89,17 @@ use crate::{
     reconcile_published_attempt_result, stage_prepared_attempt_result,
 };
 
+#[path = "tests/target_operations.rs"]
+mod target_operations;
+
 #[path = "tests/native_acceptance.rs"]
 mod native_acceptance;
 
 #[path = "tests/world_fork_atomicity.rs"]
 mod world_fork_atomicity;
+
+#[path = "tests/operational.rs"]
+mod operational;
 
 #[cfg(feature = "destructive-recovery-faults")]
 const WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT: &str =
@@ -126,6 +134,8 @@ struct ScriptedWorldGuard {
     retained_child_requests: Arc<Mutex<Vec<crucible_qemu_host::QmpHotForkRequest>>>,
     _liveness: Arc<()>,
     terminal: bool,
+    // Child contracts, directories and callbacks return before the service.
+    _component_service: Arc<operational::ComponentService>,
 }
 
 impl QemuAttemptOperationalBoundary for ScriptedWorldGuard {
@@ -147,7 +157,7 @@ impl QemuAttemptOperationalBoundary for ScriptedWorldGuard {
 }
 
 impl QemuAttemptResourceGuard for ScriptedWorldGuard {
-    fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
+    fn finish(&mut self) -> Result<(), crate::QemuAttemptResourceGuardCleanupFailure> {
         if !self.terminal {
             self.finishes.fetch_add(1, Ordering::SeqCst);
             self.terminal = true;
@@ -159,7 +169,7 @@ impl QemuAttemptResourceGuard for ScriptedWorldGuard {
             })
             .is_ok()
         {
-            return Err(test_realization_error("scripted target cleanup failure"));
+            return Err((test_realization_error("scripted target cleanup failure")).into());
         }
         Ok(())
     }
@@ -283,6 +293,16 @@ impl QemuHotForkChildProcessOwner for ScriptedWorldGuard {
 
 struct ScriptedWorldGuardFactory {
     observations: ScriptedWorldObservations,
+    component: operational::ComponentBinding,
+}
+
+impl ScriptedWorldGuardFactory {
+    fn new(observations: ScriptedWorldObservations) -> Self {
+        Self {
+            observations,
+            component: operational::ComponentBinding::default(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -324,6 +344,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
         _selected_checkpoint: Option<crate::executor_supervisor::SelectedExactCheckpointRoot>,
     ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
     {
+        let component_service = self.component.retain(&cancellation)?;
         let cgroup = tempfile::tempdir().map_err(test_realization_error)?;
         let cgroup_directory: OwnedFd = File::open(cgroup.path())
             .map_err(test_realization_error)?
@@ -373,6 +394,7 @@ impl QemuAttemptResourceGuardFactory for ScriptedWorldGuardFactory {
             retained_child_requests: Arc::clone(&self.observations.retained_child_requests),
             _liveness: liveness,
             terminal: false,
+            _component_service: component_service,
         })
     }
 }
@@ -550,6 +572,7 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::default(),
         })
     }
 
@@ -680,7 +703,8 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }
@@ -908,7 +932,7 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
             .start_events
             .iter()
             .map(SchedulerEventLogEntry::canonical_material_len)
-            .sum();
+            .sum::<Result<usize, _>>()?;
         Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
             self.configuration.clone(),
             self.start_events.clone(),
@@ -923,7 +947,8 @@ impl QemuHotForkWorldLifecycleOwner for InheritedBoundaryLifecycle {
     fn reconcile_execution_disposition(
         &mut self,
         _disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, crucible_control_api::LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
 }
@@ -1214,12 +1239,13 @@ impl QemuHotForkSourceWorldProvider for CleanupOrderedSourceWorldProvider {
 
 #[test]
 fn source_provider_failure_preserves_its_diagnostic_chain() {
+    let _metadata_scope = component_metadata_scope();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         FailingSourceWorldProvider,
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -1267,6 +1293,12 @@ impl CrucibleExecutionRunner for RecordingFallbackRunner {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Ok(AttemptExecutionReconciliationStep::Complete)
     }
+}
+
+/// Keeps one explicit component metadata bank alive through all scripted owners.
+fn component_metadata_scope() -> crucible_engine::test_support::FixtureDecodeScope {
+    crucible_engine::test_support::fixture_decode_scope(128 * 1024 * 1024)
+        .expect("finite scripted World/configuration/output metadata bank")
 }
 
 fn test_realization_error(error: impl std::fmt::Display) -> QemuVmRealizationError {
@@ -1492,15 +1524,11 @@ fn execution_basis(
 fn execution_context(
     input: &CrucibleAttemptExecution,
     execution_byte: u8,
-) -> AttemptExecutionContext {
-    AttemptExecutionContext::new(
+) -> operational::ComponentContext {
+    operational::service_context(
         AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("resources"),
-        ExecutionRetentionIntent::Discard,
-        ExecutionCancellation::default(),
-        ExecutionCheckpointRequest::default(),
-        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        execution_basis(input, execution_byte),
     )
-    .with_runtime_basis(execution_basis(input, execution_byte))
 }
 
 fn branch_replay_guest_pending(
@@ -1522,3 +1550,6 @@ fn branch_replay_guest_pending(
 mod branch_runner;
 #[path = "tests/reconciliation.rs"]
 mod reconciliation;
+
+pub(crate) use native_acceptance::assert_native_atomic_resources_private;
+pub(crate) use native_acceptance::assert_native_sibling_resources_private;

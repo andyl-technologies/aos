@@ -15,17 +15,17 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{
-    Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
-};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use super::admin::persistent_ref_inventory_generation;
+use super::publication::{PublicationLease, PublicationLock};
 use super::s3::{StoreS3EndpointId, validate_configuration};
+
 use super::{
     ContentId, MAX_REF_SCAN_VISITS, MutableRefBackend, RefBackendCapabilities, RefCasOutcome,
     RefInventoryFence, RefInventoryRecord, RefInventorySummary, RefName, RefPublicationGuard,
-    RefScanEntry, RefScanPage, RefStoreAdmin, StoreError, encode_hex, ref_name_is_descendant,
-    validate_ref_scan_basis,
+    RefRemoveOutcome, RefScanEntry, RefScanPage, RefStoreAdmin, StoreError, encode_hex,
+    ref_name_is_descendant, validate_ref_scan_basis,
 };
 
 const REF_RECORD_MAGIC: &[u8] = b"crucible.content-store.s3-ref.v1\0";
@@ -261,7 +261,7 @@ impl StoreS3ObjectListPage {
 /// S3 transport contract admitted only after strong-CAS service conformance.
 ///
 /// Implementations MUST provide strongly consistent reads and listings after a
-/// successful conditional write. `put_small_if_absent` and
+/// successful conditional write or deletion. `put_small_if_absent` and
 /// `replace_small_if_version` MUST be atomic and MUST NOT report success unless
 /// the returned version names the exact committed body. Conditional mismatch is
 /// an ordinary [`StoreS3ConditionalWriteOutcome::PreconditionFailed`].
@@ -306,6 +306,26 @@ pub trait StoreS3StrongCasClient: Send + Sync {
         bytes: Arc<[u8]>,
     ) -> Result<StoreS3ConditionalWriteOutcome, StoreError>;
 
+    /// Conditionally removes only one exact committed small-object version.
+    ///
+    /// A successful deletion must be immediately absent from reads and listings;
+    /// a version mismatch must preserve the current object.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified error without claiming successful removal, or
+    /// [`StoreError::Unsupported`] for a service lacking strong deletion.
+    fn delete_small_if_version(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _expected: &StoreS3ObjectVersion,
+    ) -> Result<super::StoreS3ConditionalDeleteOutcome, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "conditional-small-ref-retirement",
+        })
+    }
+
     /// Begins one strongly consistent committed-object scan below `prefix`.
     ///
     /// # Errors
@@ -328,7 +348,7 @@ struct RefNamespaceKey {
 
 #[derive(Default)]
 struct RefNamespaceLifecycle {
-    publication: RwLock<()>,
+    publication: PublicationLock,
     state: Mutex<()>,
 }
 
@@ -630,7 +650,7 @@ impl MutableRefBackend for S3RefBackend {
         RefBackendCapabilities { durable: true }
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         let guard =
             self.capability
                 .lifecycle
@@ -640,6 +660,42 @@ impl MutableRefBackend for S3RefBackend {
                     operation: "acquire-S3-ref-publication-guard",
                 })?;
         Ok(Box::new(S3RefPublicationGuard { _guard: guard }))
+    }
+
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let _state = self.lock_state("retire-S3-ref-state")?;
+        let Some((current, version)) = self.read_current(name)? else {
+            return Ok(RefRemoveOutcome::AlreadyAbsent);
+        };
+        if current != expected {
+            return Ok(RefRemoveOutcome::Conflict { expected, current });
+        }
+        self.advance_inventory_state()?;
+        match self.capability.client.delete_small_if_version(
+            &self.capability.bucket,
+            &self.key(name),
+            &version,
+        )? {
+            super::StoreS3ConditionalDeleteOutcome::Deleted => {
+                if self.read_current(name)?.is_some() {
+                    return Err(StoreError::Incompatible);
+                }
+                Ok(RefRemoveOutcome::Removed)
+            }
+            super::StoreS3ConditionalDeleteOutcome::PreconditionFailed => {
+                match self.read_current(name)? {
+                    None => Ok(RefRemoveOutcome::AlreadyAbsent),
+                    Some((current, _)) if current != expected => {
+                        Ok(RefRemoveOutcome::Conflict { expected, current })
+                    }
+                    Some(_) => Err(StoreError::Incompatible),
+                }
+            }
+        }
     }
 
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
@@ -754,7 +810,7 @@ impl RefStoreAdmin for S3RefBackend {
 
 struct S3RefInventoryFence<'a> {
     backend: &'a S3RefBackend,
-    _publication: RwLockWriteGuard<'a, ()>,
+    _publication: PublicationLease,
     _state: MutexGuard<'a, ()>,
     inventory: S3RefInventoryState,
 }
@@ -783,11 +839,11 @@ impl RefInventoryFence for S3RefInventoryFence<'_> {
     }
 }
 
-struct S3RefPublicationGuard<'a> {
-    _guard: RwLockReadGuard<'a, ()>,
+struct S3RefPublicationGuard {
+    _guard: PublicationLease,
 }
 
-impl RefPublicationGuard for S3RefPublicationGuard<'_> {}
+impl RefPublicationGuard for S3RefPublicationGuard {}
 
 fn encode_ref_record(name: &RefName, target: ContentId) -> Result<Vec<u8>, StoreError> {
     let name = name.as_str().as_bytes();
@@ -1031,6 +1087,24 @@ mod tests {
             Ok(StoreS3ConditionalWriteOutcome::Committed(token))
         }
 
+        fn delete_small_if_version(
+            &self,
+            bucket: &str,
+            key: &str,
+            expected: &StoreS3ObjectVersion,
+        ) -> Result<super::super::StoreS3ConditionalDeleteOutcome, StoreError> {
+            let mut objects = self.objects.lock().expect("object lock");
+            let location = (bucket.to_owned(), key.to_owned());
+            let Some((_, version)) = objects.get(&location) else {
+                return Ok(super::super::StoreS3ConditionalDeleteOutcome::PreconditionFailed);
+            };
+            if expected.as_str() != format!("etag-{version}") {
+                return Ok(super::super::StoreS3ConditionalDeleteOutcome::PreconditionFailed);
+            }
+            objects.remove(&location);
+            Ok(super::super::StoreS3ConditionalDeleteOutcome::Deleted)
+        }
+
         fn begin_small_object_scan(
             &self,
             bucket: &str,
@@ -1190,6 +1264,51 @@ mod tests {
         assert_eq!(second.entries().len(), 1);
         assert_eq!(second.entries()[0].name(), &zeta);
         assert!(second.next_after().is_none());
+    }
+
+    #[test]
+    fn conditional_ref_retirement_is_exact_idempotent_and_generation_bound() {
+        let refs = backend(Arc::new(FakeStrongCasClient::new(endpoint())));
+        let name = RefName::new("ram-readers/owned-reader").expect("claim name");
+        let expected = ContentId::for_bytes(ObjectKind::ExactManifest, 1, b"owned root");
+        let replacement = ContentId::for_bytes(ObjectKind::ExactManifest, 1, b"other root");
+        refs.compare_exchange(&name, None, expected).expect("claim");
+        let before = {
+            let mut fence = refs
+                .acquire_ref_inventory_fence()
+                .expect("before inventory");
+            fence
+                .visit_refs(&mut |_| Ok(()))
+                .expect("before summary")
+                .generation()
+        };
+        assert_eq!(
+            refs.compare_remove(&name, replacement)
+                .expect("target conflict"),
+            RefRemoveOutcome::Conflict {
+                expected: replacement,
+                current: expected
+            }
+        );
+        assert_eq!(
+            refs.read_ref(&name).expect("retained binding"),
+            Some(expected)
+        );
+        assert_eq!(
+            refs.compare_remove(&name, expected).expect("owned removal"),
+            RefRemoveOutcome::Removed
+        );
+        assert_eq!(
+            refs.compare_remove(&name, expected).expect("retry removal"),
+            RefRemoveOutcome::AlreadyAbsent
+        );
+        let after = {
+            let mut fence = refs.acquire_ref_inventory_fence().expect("after inventory");
+            let summary = fence.visit_refs(&mut |_| Ok(())).expect("after summary");
+            assert_eq!(summary.refs(), 0);
+            summary.generation()
+        };
+        assert_ne!(before, after);
     }
 
     #[test]

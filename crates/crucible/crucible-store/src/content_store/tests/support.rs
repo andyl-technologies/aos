@@ -50,10 +50,23 @@ pub(super) struct RecordedPhysicalQuotaBinding {
     pub(super) maximum_inodes: u64,
 }
 
-#[derive(Default)]
 pub(super) struct RecordingPhysicalQuotaGuard {
     pub(super) allowed: AtomicBool,
     pub(super) calls: AtomicUsize,
+    resources: crate::content_store::test_resources::FixtureResourceBudget,
+}
+
+impl Default for RecordingPhysicalQuotaGuard {
+    fn default() -> Self {
+        Self {
+            allowed: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            resources: crate::content_store::test_resources::FixtureResourceBudget::new(
+                128,
+                256 * 1024 * 1024,
+            ),
+        }
+    }
 }
 
 impl RecordingPhysicalQuotaGuard {
@@ -63,6 +76,20 @@ impl RecordingPhysicalQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        // This is the same authored model ceiling already held by resources.
+        Ok(256 * 1024 * 1024)
+    }
+
+    fn reserve_resources(
+        &self,
+        descriptors: u64,
+        resident_bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+        self.verify()?;
+        self.resources.reserve(descriptors, resident_bytes)
+    }
+
     fn verify(&self) -> Result<(), StoreError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.allowed.load(Ordering::SeqCst) {
@@ -73,9 +100,10 @@ impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct RecordingPhysicalQuotaBinder {
     pub(super) guard: Arc<RecordingPhysicalQuotaGuard>,
-    pub(super) bindings: Mutex<Vec<RecordedPhysicalQuotaBinding>>,
+    pub(super) bindings: Arc<Mutex<Vec<RecordedPhysicalQuotaBinding>>>,
 }
 
 impl RecordingPhysicalQuotaBinder {
@@ -84,7 +112,7 @@ impl RecordingPhysicalQuotaBinder {
         guard.set_allowed(allowed);
         Self {
             guard,
-            bindings: Mutex::new(Vec::new()),
+            bindings: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -249,6 +277,7 @@ pub(super) fn write_back_graph_config(
     let staging = node_id("staging");
     let destination = node_id("destination");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -630,10 +659,10 @@ impl ImmutableBlobBackend for SynchronizedMetricsBackend {
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.synchronization.rendezvous();
         let blob = self.child.read(id, range)?;
-        let source = Arc::new(SynchronizedBlobSource {
+        let source = SynchronizedBlobSource {
             source: blob.clone(),
             synchronization: Arc::clone(&self.synchronization),
-        });
+        };
         Ok(blob.with_observed_source(source))
     }
 

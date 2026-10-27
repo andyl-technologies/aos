@@ -15,8 +15,8 @@ use super::materialization::{
     PreparedRootOverlayMaterialization,
 };
 use super::{
-    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract,
-    QemuGuardedExactRamInput, QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
+    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract, QemuPrelaunchError,
+    QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
     validate_guarded_launch_resources,
 };
 use crate::QemuLaunchCommand;
@@ -68,7 +68,7 @@ pub struct QemuPreparedRunDirectory {
     pub(super) exact_checkpoint_materialization: PreparedExactCheckpointMaterialization,
     pub(super) exact_checkpoint_target:
         Option<crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode>,
-    pub(super) exact_ram_inputs: Vec<QemuGuardedExactRamInput>,
+    ram_launch_custody: Option<crate::QemuRamLaunchCustody>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +99,30 @@ impl PinnedFileIdentity {
 }
 
 impl QemuPreparedRunDirectory {
+    /// Retains launch admission until this directory's physical handles close.
+    ///
+    /// The capability shares custody with the target and staged transports; it
+    /// does not change storage identity, capacity, or guest state.
+    ///
+    /// # Errors
+    /// Refuses replacement with a different launch while physical handles live.
+    pub fn retain_ram_launch_custody(
+        &mut self,
+        custody: crate::QemuRamLaunchCustody,
+    ) -> Result<(), QemuSpawnError> {
+        if self
+            .ram_launch_custody
+            .as_ref()
+            .is_some_and(|existing| !existing.same_launch(&custody))
+        {
+            return Err(invalid_input(
+                "retain RAM launch custody",
+                "prepared directory belongs to another RAM launch",
+            ));
+        }
+        self.ram_launch_custody = Some(custody);
+        Ok(())
+    }
     /// Opens a prepared directory from an explicit resource profile for tests.
     ///
     /// This constructor exercises the same descriptor pinning and resource
@@ -136,13 +160,14 @@ impl QemuPreparedRunDirectory {
         })?;
         let vmstate = open_prepared_vmstate(&directory, &path)?;
         Self::from_admitted_descriptors(requirements, &path, directory, vmstate, contract)
+            .map_err(Into::into)
     }
 
     /// Constructs one prepared authority from already-pinned storage descriptors.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError`] when the launch profile exceeds the process
+    /// Returns [`QemuPrelaunchError`] when the launch profile exceeds the process
     /// contract or either descriptor has the wrong file type.
     pub(crate) fn from_admitted_descriptors(
         requirements: crate::QemuLaunchResourceRequirements,
@@ -150,25 +175,25 @@ impl QemuPreparedRunDirectory {
         directory: OwnedFd,
         vmstate: OwnedFd,
         contract: &QemuChildProcessContract,
-    ) -> Result<Self, QemuSpawnError> {
+    ) -> Result<Self, QemuPrelaunchError> {
         validate_guarded_launch_requirements(requirements, contract)?;
 
-        let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
+        let directory_metadata = fstat(&directory).map_err(|source| QemuPrelaunchError::Io {
             operation: "inspect prepared QEMU run directory",
             source: source.into(),
         })?;
         if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared QEMU run directory",
                 "prepared QEMU run path is not a directory",
             ));
         }
-        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuSpawnError::Io {
+        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuPrelaunchError::Io {
             operation: "inspect prepared exact-VMState container",
             source: source.into(),
         })?;
         if FileType::from_raw_mode(vmstate_metadata.st_mode) != FileType::RegularFile {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared exact-VMState container",
                 "exact-VMState container path is not a regular file",
             ));
@@ -179,14 +204,14 @@ impl QemuPreparedRunDirectory {
                 .as_ref()
                 .map(fstat)
                 .transpose()
-                .map_err(|source| QemuSpawnError::Io {
+                .map_err(|source| QemuPrelaunchError::Io {
                     operation: "inspect prepared root overlay",
                     source: source.into(),
                 })?;
         if root_overlay_metadata.as_ref().is_some_and(|metadata| {
             FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         }) {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared root overlay",
                 "prepared root overlay path is not a regular file",
             ));
@@ -218,7 +243,7 @@ impl QemuPreparedRunDirectory {
             exact_device_state_materialization: PreparedDeviceStateMaterialization::Provisioned,
             exact_checkpoint_materialization: PreparedExactCheckpointMaterialization::Absent,
             exact_checkpoint_target: None,
-            exact_ram_inputs: Vec::new(),
+            ram_launch_custody: None,
         })
     }
 
@@ -1370,7 +1395,7 @@ fn widen_link_count(links: impl Into<u64>) -> u64 {
     links.into()
 }
 
-fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
+fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuPrelaunchError> {
     match openat(
         directory,
         crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
@@ -1379,7 +1404,7 @@ fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, Qe
     ) {
         Ok(file) => Ok(Some(file)),
         Err(rustix::io::Errno::NOENT) => Ok(None),
-        Err(source) => Err(QemuSpawnError::Io {
+        Err(source) => Err(QemuPrelaunchError::Io {
             operation: "open optional prepared root overlay",
             source: source.into(),
         }),

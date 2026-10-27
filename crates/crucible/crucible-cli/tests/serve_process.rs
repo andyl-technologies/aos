@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 use crucible_control_api::{HelloRequest, RPC_PROTOCOL_VERSION};
 use crucible_control_client::{ControlClient, RpcControlClient, RpcEndpoint};
 
+#[path = "support/input_scope.rs"]
+mod input_scope;
+
 #[test]
 fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Box<dyn Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
@@ -36,6 +39,8 @@ fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Bo
 
 #[tokio::test(flavor = "current_thread")]
 async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
+    let resources = input_scope::open()?;
+    resources.authority.verify()?;
     let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
         .args([
             "serve",
@@ -56,7 +61,8 @@ async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
     let line = read_first_stdout_line(stdout, Duration::from_secs(5))?;
     let endpoint = parse_serve_endpoint(&line)?;
 
-    let rpc = RpcControlClient::new(RpcEndpoint::http2(endpoint))?;
+    let rpc = RpcControlClient::new(RpcEndpoint::http2(endpoint))?
+        .with_decode_budget(resources.decoding.clone());
     let hello = rpc
         .hello(HelloRequest::new(
             "crucible-cli-serve-process-test",

@@ -1,7 +1,6 @@
 //! Local run/save workflows and remote resume control setup.
 
 use super::*;
-use crucible_daemon as production_api;
 
 // Live QEMU quanta can spend most of the backend completion window outside the
 // actor. Polling by yield count races the VM and can report a false timeout.
@@ -17,7 +16,7 @@ pub(super) enum RunExecutionOwner {
     Campaign,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct RunWorkflowReport {
     pub(super) status: BackendCommandStatus,
     pub(super) execution_owner: RunExecutionOwner,
@@ -40,9 +39,13 @@ pub(super) struct RunWorkflowReport {
     pub(super) acknowledged_commands: Vec<SessionCommandKind>,
     pub(super) reproduction_commands: Vec<crucible_control_api::ReproductionCommandRecord>,
     pub(super) watch_statuses: Vec<String>,
+    // Returned presentation buffers retain their original metadata loans after
+    // native cleanup and the caller's local admission scope have ended.
+    pub(super) input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
+    pub(super) output_custody: Vec<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct SaveWorkflowReport {
     pub(super) run: RunWorkflowReport,
     pub(super) oracle: SavepointOracleProof,
@@ -76,7 +79,7 @@ pub(crate) enum SaveBoundaryProof {
     /// Uses the campaign owner's authenticated post-quantum observation proof.
     CampaignObservation {
         proof: Box<crucible_campaign::ObservationStopProof>,
-        evidence: Vec<u8>,
+        evidence: crucible_daemon::CrucibleMeasurementEvidenceBytes,
     },
 }
 
@@ -199,7 +202,7 @@ pub(super) fn encode_canonical_summary_value(value: &str) -> String {
     encoded
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ResumeWorkflowReport {
     pub(super) run: RunWorkflowReport,
     pub(super) source_checkpoint: crucible_engine::ContentHash,
@@ -227,13 +230,14 @@ pub(super) struct ResumeHandleEvidence {
         Option<Box<crucible_daemon::CrucibleMeasurementReplayEvidence>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct VerifyWorkflowReport {
     pub(super) witnesses: Vec<VerifyRunWitness>,
     pub(super) divergence: Option<VerifyDivergenceReport>,
+    pub(super) _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct VerifyRunWitness {
     pub(super) reduction: VerifyReductionPlan,
     pub(super) canonical_log: Vec<CanonicalLogEntry>,
@@ -245,6 +249,7 @@ pub(super) struct VerifyRunWitness {
         Option<crucible_daemon::BoundedSchedulerPreemptionEvidenceSnapshot>,
     pub(super) state_dump: String,
     pub(super) artifact: Option<Vec<u8>>,
+    pub(super) _input_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -333,6 +338,8 @@ pub(super) fn run_local_double_resume_workflow(
     };
     let (_evidence, report) =
         run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
+    let decoding = crate::cli_input_resources::original_budget()?;
+    let _scope = decoding.enter();
     finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -383,16 +390,26 @@ pub(super) fn run_local_resume_workflow_report_with_driver(
     resume_plan: &ResumeInvocationPlan,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<(ResumeHandleEvidence, ResumeWorkflowReport), CliError> {
-    let evidence = resume_handle_evidence(resume_plan)?;
+    let decoding = crate::cli_input_resources::original_budget()?;
+    let evidence = {
+        let _scope = decoding.enter();
+        resume_handle_evidence(resume_plan)?
+    };
     ensure_session_replay_evidence_supported("local test-double resume", &evidence)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let report = runtime.block_on(run_resumed_savepoint_actor_with_driver_async(
-        resume_plan,
-        evidence.clone(),
-        interactive_driver,
-    ))?;
+    let workflow = {
+        let _scope = decoding.enter();
+        run_resumed_savepoint_actor_with_driver_async(
+            resume_plan,
+            evidence.clone(),
+            interactive_driver,
+        )
+    };
+    let admitted = crucible_control_server::admit_future(workflow, decoding)
+        .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
+    let report = runtime.block_on(admitted)?;
     Ok((evidence, report))
 }
 
@@ -506,13 +523,20 @@ where
             let raw_evidence = source_evidence.canonical_bytes().map_err(|error| {
                 artifact_error(format!("encode remote observation evidence: {error}"))
             })?;
+            let mut copied_evidence = Vec::new();
+            crucible_session::engine::owned_decode::reserve_vec(
+                &mut copied_evidence,
+                raw_evidence.len(),
+            )
+            .map_err(CliError::MetadataAdmission)?;
+            copied_evidence.extend_from_slice(raw_evidence.as_slice());
             crucible_control_api::ResumeObservationSource::new(
                 &evidence.scenario_form,
                 &evidence.schedule,
                 &evidence.checkpoint,
                 crucible_daemon::qemu_campaign_lifecycle::RemoteObservationResumeFactory::SOURCE_SCHEMA_VERSION,
                 proof.canonical_bytes(),
-                raw_evidence,
+                copied_evidence,
             )
             .map_err(|error| artifact_error(error.to_string()))?
         }
@@ -937,6 +961,8 @@ where
             acknowledged_commands,
             reproduction_commands: Vec::new(),
             watch_statuses,
+            input_custody: crucible_session::engine::owned_decode::current_custody(),
+            output_custody: Vec::new(),
         },
         source_checkpoint: evidence.checkpoint.id,
         resumed_configuration: resumed.configuration,

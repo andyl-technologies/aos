@@ -35,7 +35,11 @@ fn streaming_to_strict_derivation_accepts_an_empty_authenticated_history() {
             .snapshot_id(),
         source.snapshot_id()
     );
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("strict-empty")
@@ -199,7 +203,11 @@ fn streaming_to_strict_derivation_preserves_completions_beyond_a_real_hole() {
 
     // A cold reader must reconstruct the same prefix; no local derivation
     // cache or numeric caller cursor grants the next completion.
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         restarted.publish_observation("strict-hole", derived.new_snapshot, &fourth),
         Err(CampaignRepositoryError::Integrity {
@@ -358,7 +366,11 @@ fn streaming_to_strict_derivation_rejects_a_forged_prefix_on_cold_import() {
     let forged_content = repository
         .put_snapshot(&forged)
         .expect("store imported forged snapshot");
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         restarted.validate_complete_head(forged_content),
         Err(CampaignRepositoryError::Integrity {
@@ -405,7 +417,11 @@ fn streaming_to_strict_derivation_authenticates_a_complete_prefix_before_new_wor
             Some(&strict_policy),
         )
         .expect("derive complete prefix");
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let roots = restarted
         .read_snapshot(derived.new_snapshot.content_id())
         .expect("derived")
@@ -434,7 +450,11 @@ fn streaming_to_strict_derivation_authenticates_a_complete_prefix_before_new_wor
         &first,
     );
     publish_current(&restarted, "strict-complete", &third);
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let head = cold
         .head("strict-complete")
         .expect("new strict work validates cold");
@@ -498,7 +518,11 @@ fn streaming_to_strict_derivation_refuses_an_unauthenticated_source_before_publi
         RefCasOutcome::Advanced { .. }
     ));
     let objects_before = blobs.object_count().expect("objects before refusal");
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
 
     assert!(
         cold.derive_campaign(

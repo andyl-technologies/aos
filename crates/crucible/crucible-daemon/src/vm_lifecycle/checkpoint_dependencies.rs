@@ -4,12 +4,13 @@
 //! those identities before launch and expands the two artifact formats that
 //! contain further references: normalized traces and tiled spatial grids.
 
-use super::*;
 use crucible_control_api::LifecycleResourceLimit;
+use super::*;
 use crucible_engine::model::{
     FaultResourceLimits, FaultSignalPlan, InverseCdfTable, NormalizedSpatialArtifact,
     SignalNodeKind, SignalSourceSpecification, SignalTraceManifest, SpatialArtifactKind,
 };
+
 
 /// Resolves and authenticates the transitive object closure of a signal plan.
 ///
@@ -235,6 +236,8 @@ fn retain_object(
     objects: &mut BTreeMap<ContentHash, Vec<u8>>,
 ) -> Result<Vec<u8>, LifecycleApiError> {
     if let Some(bytes) = objects.get(&identity) {
+        crucible_engine::owned_decode::charge_array::<u8>(bytes.len())
+            .map_err(|_| loop_factory_error("original signal artifact copy refused"))?;
         return Ok(bytes.clone());
     }
     let bytes = store.get(&identity).map_err(|error| {
@@ -303,6 +306,9 @@ fn retain_object(
             limits.fat_checkpoint_bytes,
         ));
     }
+    crucible_engine::owned_decode::charge_array::<u8>(bytes.len())
+        .and_then(|()| crucible_engine::owned_decode::charge_btree_entry::<ContentHash, Vec<u8>>())
+        .map_err(|_| loop_factory_error("original signal artifact retention refused"))?;
     objects.insert(identity, bytes.clone());
     Ok(bytes)
 }

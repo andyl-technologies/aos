@@ -897,6 +897,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rustix",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -2818,6 +2819,7 @@ name = "crucible-campaign"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-ram",
  "crucible-store",
  "ed25519-dalek",
  "num-bigint",
@@ -2846,6 +2848,7 @@ dependencies = [
  "crucible-device",
  "crucible-engine",
  "crucible-guest",
+ "crucible-host-resources",
  "crucible-qemu-host",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
@@ -2872,12 +2875,18 @@ name = "crucible-control-api"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bytes",
  "ciborium",
+ "crucible-campaign",
  "crucible-engine",
+ "crucible-host-resources",
  "crucible-qemu-protocol",
+ "crucible-ram",
  "crucible-session",
+ "crucible-store",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
@@ -2890,11 +2899,13 @@ dependencies = [
  "crucible-control-api",
  "crucible-control-server",
  "crucible-engine",
+ "crucible-host-resources",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
  "crucible-session",
  "futures-util",
  "reqwest",
+ "rustls-pemfile",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2910,9 +2921,11 @@ dependencies = [
  "crucible-control-api",
  "crucible-control-client",
  "crucible-engine",
+ "crucible-host-resources",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
  "crucible-session",
+ "crucible-store",
  "futures-util",
  "http-body-util",
  "hyper-util",
@@ -2921,7 +2934,6 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
- "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2943,14 +2955,17 @@ dependencies = [
  "crucible-device",
  "crucible-engine",
  "crucible-guest",
+ "crucible-host-resources",
  "crucible-qemu-host",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-ram",
  "crucible-session",
  "crucible-store",
  "crucible-store-s3",
  "ed25519-dalek",
  "rand 0.9.4",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",
@@ -2959,6 +2974,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
+ "zbus",
 ]
 
 [[package]]
@@ -2989,13 +3005,18 @@ dependencies = [
  "crucible-campaign",
  "crucible-determinism",
  "crucible-device",
+ "crucible-host-resources",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-ram",
  "crucible-store",
  "crucible-test-support",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
@@ -3009,6 +3030,24 @@ dependencies = [
  "crucible-qemu-protocol",
  "libc",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-host-resources"
+version = "0.1.0"
+dependencies = [
+ "aos-linux-project-quota",
+ "blake3",
+ "crucible-host-resources",
+ "crucible-qemu-protocol",
+ "crucible-ram",
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zbus",
 ]
 
 [[package]]
@@ -3030,8 +3069,11 @@ dependencies = [
  "ciborium",
  "crucible-device",
  "crucible-engine",
+ "crucible-host-resources",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-ram",
+ "crucible-store",
  "libc",
  "rustix",
  "serde",
@@ -3050,6 +3092,7 @@ dependencies = [
  "crucible-engine",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-ram",
  "hex",
  "libc",
  "serde_json",
@@ -3062,6 +3105,7 @@ name = "crucible-qemu-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-ram",
  "libc",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -3074,8 +3118,20 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-qemu-protocol",
+ "crucible-ram",
  "libc",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-ram"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crucible-host-resources",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -3087,8 +3143,17 @@ version = "0.1.0"
 dependencies = [
  "crucible-engine",
  "crucible-qemu-protocol",
+ "crucible-store",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "crucible-sqlite-heap"
+version = "0.1.0"
+dependencies = [
+ "libsqlite3-sys",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3097,6 +3162,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "crucible-host-resources",
+ "crucible-qemu-protocol",
+ "crucible-ram",
+ "crucible-sqlite-heap",
+ "crucible-store",
  "rusqlite",
  "rustix",
  "tempfile",

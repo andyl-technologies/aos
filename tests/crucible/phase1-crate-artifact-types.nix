@@ -23,6 +23,10 @@
       expected = "library";
     }
     {
+      package = "crucible-ram";
+      expected = "library";
+    }
+    {
       package = "crucible-device";
       expected = "library";
     }
@@ -79,6 +83,14 @@
       expected = "library";
     }
     {
+      package = "crucible-host-resources";
+      expected = "library";
+    }
+    {
+      package = "crucible-sqlite-heap";
+      expected = "library";
+    }
+    {
       package = "crucible-store-s3";
       expected = "library";
     }
@@ -104,6 +116,10 @@
     hasLibRs = builtins.pathExists (srcDir + "/lib.rs");
     hasMainRs = builtins.pathExists (srcDir + "/main.rs");
     hasSrcBinDir = builtins.pathExists (srcDir + "/bin");
+    binarySources =
+      if builtins.pathExists (srcDir + "/bin")
+      then builtins.readDir (srcDir + "/bin")
+      else {};
   };
 
   manifestPackageName = manifest:
@@ -123,16 +139,64 @@
 
   declaresOrImpliesLibTarget = manifest: layout: manifest ? lib || layout.hasLibRs;
 
-  forbiddenBinaryFailures = package: manifest: layout:
-    lib.optionals (binTargets manifest != []) [
-      "${package}: library/plugin package must not declare [[bin]] targets"
+  privateLibraryTargets = {
+    crucible-host-resources = [
+      {
+        name = "crucible-measurement-init";
+        path = "src/bin/measurement_init.rs";
+        required-features = ["private-measurement-domain"];
+      }
+      {
+        name = "crucible-allocation-roster-controls";
+        path = "src/bin/allocation_roster_controls.rs";
+        required-features = ["test-support"];
+      }
+    ];
+    crucible-daemon = [
+      {
+        name = "crucible-measurement-actor";
+        path = "src/bin/measurement_actor.rs";
+        required-features = ["private-measurement-domain"];
+      }
+      {
+        name = "crucible-measurement-workflow";
+        path = "src/bin/measurement_workflow.rs";
+        required-features = ["private-measurement-domain"];
+      }
+    ];
+  };
+
+  privateLibraryFailures = package: manifest: layout: let
+    expected = privateLibraryTargets.${package};
+    sources = builtins.listToAttrs (map (bin: {
+        name = builtins.baseNameOf bin.path;
+        value = "regular";
+      })
+      expected);
+  in
+    lib.optionals (binTargets manifest != expected) [
+      "${package}: private binaries require the exact reviewed names, paths, and feature gates"
+    ]
+    ++ lib.optionals ((layout.binarySources or {}) != sources) [
+      "${package}: private library has missing or unreviewed implicit binary sources"
     ]
     ++ lib.optionals layout.hasMainRs [
-      "${package}: library/plugin package must not have an implicit binary target at src/main.rs"
-    ]
-    ++ lib.optionals layout.hasSrcBinDir [
-      "${package}: library/plugin package must not have implicit binary targets under src/bin"
+      "${package}: private library must not expose an implicit public binary"
     ];
+
+  forbiddenBinaryFailures = package: manifest: layout:
+    if builtins.hasAttr package privateLibraryTargets
+    then privateLibraryFailures package manifest layout
+    else
+      lib.optionals (binTargets manifest != []) [
+        "${package}: library/plugin package must not declare [[bin]] targets"
+      ]
+      ++ lib.optionals layout.hasMainRs [
+        "${package}: library/plugin package must not have an implicit binary target at src/main.rs"
+      ]
+      ++ lib.optionals layout.hasSrcBinDir [
+        "${package}: library/plugin package must not have implicit binary targets under src/bin"
+      ];
 
   checkArtifact = spec: manifest: layout: let
     package = manifestPackageName manifest;
@@ -344,7 +408,7 @@
         package.name = "crucible-cli";
         bin = [
           {
-            name = "crucible-engine";
+            name = "crucible";
             path = "src/main.rs";
           }
           {

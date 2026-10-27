@@ -100,3 +100,9 @@ const fn adapter_name(adapter: FaultAdapter) -> &'static str {
         FaultAdapter::Node => "node",
     }
 }
+
+#[test]
+fn assert_qemu_node_implements_simulation_backend_contract() {
+    fn assert_backend<T: crucible_engine::SimulationBackend>() {}
+    assert_backend::<crucible_qemu_host::QemuNode>();
+}

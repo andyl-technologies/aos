@@ -13,6 +13,8 @@
 #include <string.h>
 #include <qemu/qemu-plugin.h>
 
+#include "crucible-resident-ram.h"
+
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 static uint64_t stop_icount;
@@ -57,6 +59,10 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     errno = 0;
     stop_icount = strtoull(argv[0] + 5, &end, 10);
     if (errno != 0 || *end != '\0' || stop_icount == 0) {
+        return -1;
+    }
+
+    if (crucible_fixture_install_resident_ram() != 0) {
         return -1;
     }
 

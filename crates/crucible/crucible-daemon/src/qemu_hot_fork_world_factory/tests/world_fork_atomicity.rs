@@ -84,6 +84,7 @@ fn rollback_policy() -> QemuShutdownPolicy {
 
 #[test]
 fn rollback_retains_every_unfinished_owner_on_termination_failure() {
+    let _metadata_scope = component_metadata_scope();
     let terminations = Arc::new(AtomicUsize::new(0));
     let quarantines = Arc::new(AtomicUsize::new(0));
     let children = BTreeMap::from([
@@ -125,6 +126,7 @@ fn rollback_retains_every_unfinished_owner_on_termination_failure() {
 
 #[test]
 fn rollback_deadline_covers_reap_private_release_and_cancellation_progress() {
+    let _metadata_scope = component_metadata_scope();
     for (mode, expected) in [
         (RollbackFailureMode::ReapForever, "reconcile `node-0`"),
         (
@@ -180,13 +182,15 @@ fn three_source_world(
         } else {
             QemuTestHotForkOutcome::Forked
         };
-        let source = scripted_hot_fork_source_for_test(outcome).expect("scripted source");
+        let source = scripted_hot_fork_source_for_test(outcome).unwrap_or_else(|error| {
+            panic!("scripted source at index {index}, failure index {failure_index}: {error:?}")
+        });
         source_processes.push(source.process_id());
         sources.push(source);
     }
     let (_nodes, source_world) =
         prepared_test_source_world(sources).expect("prepared source world");
-    let roster = source_world.continuation().nodes().to_vec();
+    let roster = source_world.continuation().unwrap().nodes().to_vec();
     (source_processes, roster, source_world)
 }
 
@@ -200,6 +204,7 @@ fn assert_process_absent(process: u32) {
 
 #[test]
 fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, original_roster, source_world) =
             three_source_world(failure_index, QemuTestHotForkOutcome::RejectedOnce);
@@ -214,7 +219,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
         );
 
         let failure = factory
-            .try_start(
+            .try_start_component(
                 &input,
                 &execution_context(&input, 0x80 + failure_index as u8),
             )
@@ -224,7 +229,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(message),
         ) = failure
         else {
-            panic!("unexpected clean-rejection disposition at index {failure_index}")
+            panic!("unexpected clean-rejection disposition at index {failure_index}: {failure:?}")
         };
         assert!(
             factory.sources.available(),
@@ -240,7 +245,11 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
             .retained_child_processes
             .lock()
             .expect("retained child registry");
-        assert_eq!(retained_children.len(), 2);
+        assert_eq!(
+            retained_children.len(),
+            2,
+            "clean rejection at index {failure_index}: {message}"
+        );
         for process in retained_children.iter().copied() {
             assert_process_absent(process);
         }
@@ -259,12 +268,13 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
                 .as_ref()
                 .expect("restored source")
                 .continuation()
+                .unwrap()
                 .nodes(),
             original_roster
         );
 
         let mut lifecycle = match factory
-            .try_start(
+            .try_start_component(
                 &input,
                 &execution_context(&input, 0x90 + failure_index as u8),
             )
@@ -282,6 +292,7 @@ fn production_three_node_clean_rejection_is_atomic_at_every_launch_index() {
 
 #[test]
 fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, _roster, source_world) =
             three_source_world(failure_index, QemuTestHotForkOutcome::Indeterminate);
@@ -295,16 +306,26 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
             observations.clone(),
         );
 
-        assert!(matches!(
-            factory.try_start(
+        let failure = factory
+            .try_start_component(
                 &input,
-                &execution_context(&input, 0xa0 + failure_index as u8)
+                &execution_context(&input, 0xa0 + failure_index as u8),
+            )
+            .err()
+            .expect("ambiguous launch must fail this transaction");
+        assert!(
+            matches!(
+                &failure,
+                AttemptWorkerFailure::Retryable(
+                    QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
+                )
             ),
-            Err(AttemptWorkerFailure::Retryable(
-                QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-            ))
-        ));
-        assert!(!factory.sources.available());
+            "unexpected ambiguous-launch disposition at index {failure_index}: {failure:?}"
+        );
+        assert!(
+            !factory.sources.available(),
+            "ambiguous launch restored source at index {failure_index}: {failure:?}"
+        );
         assert_eq!(observations.finishes.load(Ordering::SeqCst), 0);
         assert_eq!(observations.quarantines.load(Ordering::SeqCst), 1);
         for process in source_processes {
@@ -335,10 +356,11 @@ fn production_three_node_ambiguous_launch_is_fail_closed_at_every_index() {
 
 #[test]
 fn production_three_node_adoption_failure_retains_the_complete_world() {
+    let _metadata_scope = component_metadata_scope();
     for failure_index in 0..3 {
         let (source_processes, _roster, mut source_world) =
             three_source_world(usize::MAX, QemuTestHotForkOutcome::Forked);
-        let node = source_world.continuation().nodes()[failure_index]
+        let node = source_world.continuation().unwrap().nodes()[failure_index]
             .node()
             .clone();
         source_world
@@ -358,7 +380,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
         );
 
         assert!(matches!(
-            factory.try_start(
+            factory.try_start_component(
                 &input,
                 &execution_context(&input, 0xb0 + failure_index as u8)
             ),
@@ -395,6 +417,7 @@ fn production_three_node_adoption_failure_retains_the_complete_world() {
 
 #[test]
 fn production_aggregate_release_failure_blocks_source_restore() {
+    let _metadata_scope = component_metadata_scope();
     let (_source_processes, _roster, source_world) =
         three_source_world(1, QemuTestHotForkOutcome::RejectedOnce);
     let input = execution_input();
@@ -411,16 +434,27 @@ fn production_aggregate_release_failure_blocks_source_restore() {
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0xc0))
+        .try_start_component(&input, &execution_context(&input, 0xc0))
         .err()
         .expect("aggregate release failure must reject restore");
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::AssemblyCleanup { message, cleanup },
+    ) = failure
     else {
-        panic!("unexpected aggregate release disposition")
+        panic!("unexpected aggregate release disposition: {failure:?}")
     };
     assert!(message.contains("aggregate target release failed after rollback"));
+    let raw = cleanup
+        .guard_failure()
+        .expect("aggregate release retains its actual leaf");
+    assert!(
+        matches!(raw.error(), QemuVmRealizationError::Executor { message, .. }
+        if message == "scripted target cleanup failure")
+    );
+    assert!(
+        !raw.was_quarantined(),
+        "logical terminal retention is not a new physical transfer"
+    );
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
     assert!(
@@ -436,6 +470,7 @@ fn production_aggregate_release_failure_blocks_source_restore() {
 
 #[test]
 fn production_source_identity_drift_blocks_restore_after_complete_rollback() {
+    let _metadata_scope = component_metadata_scope();
     let (source_processes, _roster, source_world) =
         three_source_world(1, QemuTestHotForkOutcome::RejectedAfterSourceExit);
     let input = execution_input();
@@ -449,7 +484,7 @@ fn production_source_identity_drift_blocks_restore_after_complete_rollback() {
     );
 
     let failure = factory
-        .try_start(&input, &execution_context(&input, 0xc1))
+        .try_start_component(&input, &execution_context(&input, 0xc1))
         .err()
         .expect("source identity drift must reject restore");
     let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(

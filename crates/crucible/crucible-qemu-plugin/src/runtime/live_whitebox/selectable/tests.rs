@@ -13,6 +13,10 @@ use crucible_qemu_protocol::{
     },
 };
 
+use crucible_qemu_protocol::selectable_transport::{
+    SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES, SelectablePendingTransportError,
+};
+
 use super::*;
 use crate::WhiteboxGuestInputWriteError;
 
@@ -199,9 +203,15 @@ fn empty_reply_resume_leaves_later_publication_for_exactly_one_delivery()
     let mut state = live_state(&restored_plan()?, ring.consumer())?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
+    let mut reply_buffer = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
 
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
+    assert!(reply_buffer.iter().all(|byte| *byte == 0xa5));
     assert!(state.catalog().pending_request().is_some());
     assert_eq!(state.catalog().total_completed_requests(), 1);
 
@@ -217,14 +227,25 @@ fn empty_reply_resume_leaves_later_publication_for_exactly_one_delivery()
     std::thread::scope(|scope| scope.spawn(|| ring.publish(entry)).join())
         .map_err(|_| std::io::Error::other("reply producer panicked"))??;
 
-    assert_eq!(state.deliver_reply(1_000_137, 2, &mut writer)?, Some(reply));
+    assert_eq!(
+        state.deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?,
+        Some(reply)
+    );
     assert_eq!(writer.delivery_icount, Some(1_000_137));
+    assert_eq!(&reply_buffer[..160], writer.payload);
+    assert!(reply_buffer[160..].iter().all(|byte| *byte == 0xa5));
+    let delivered_buffer = reply_buffer;
     assert!(state.catalog().pending_request().is_none());
     assert_eq!(state.catalog().total_completed_requests(), 2);
     writer.delivery_icount = None;
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
     assert_eq!(ring.header.read_index(), 1);
+    assert_eq!(reply_buffer, delivered_buffer);
     Ok(())
 }
 
@@ -243,8 +264,24 @@ fn available_reply_keeps_kind_and_unsolicited_errors_before_consumption()
         ring.publish(WhiteboxMarkerEntry::new(50, 0, kind, b"bad reply")?)?;
         let mut writer = RecordingWriter::default();
 
-        let error = state.deliver_reply(50, 0, &mut writer).err();
-        assert!(error.is_some_and(|error| error.to_string().contains(expected)));
+        let error = state
+            .deliver_reply(
+                50,
+                0,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+            )
+            .err();
+        let error = error.expect("the queued envelope must be refused");
+        assert!(error.to_string().contains(expected));
+        if kind == WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY {
+            assert_eq!(error, LiveWhiteboxError::SelectableReplyWithoutPending);
+        } else {
+            assert_eq!(
+                error,
+                LiveWhiteboxError::SelectableReplyUnexpectedKind { kind }
+            );
+        }
         assert_eq!(writer.delivery_icount, None);
         assert_eq!(ring.header.read_index(), 0);
         assert_eq!(state.catalog().total_completed_requests(), 0);
@@ -262,7 +299,16 @@ fn available_reply_rereads_the_ring_after_an_advisory_observation()
     ring.header.dequeue_whitebox_marker(&ring.entries)?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_available_reply(50, 0, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_available_reply(
+                50,
+                0,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
     assert_eq!(state.catalog().total_completed_requests(), 0);
     Ok(())
@@ -282,11 +328,45 @@ fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
     )?)?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_reply(1_000_086, 2, &mut writer).is_err());
+    let early = state
+        .deliver_reply(
+            1_000_086,
+            2,
+            &mut writer,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
+        .unwrap_err();
+    assert_eq!(
+        early,
+        LiveWhiteboxError::SelectableReplyEarlyResume {
+            current_tick_ps: 1_000_086,
+            stopped_tick_ps: 1_000_087,
+        }
+    );
     assert_eq!(ring.header.read_index(), 0);
     assert!(state.catalog().pending_request().is_some());
 
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer).is_err());
+    let malformed = state
+        .deliver_reply(
+            1_000_137,
+            2,
+            &mut writer,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
+        .unwrap_err();
+    let original = SelectionReply::decode(b"bad reply").unwrap_err();
+    assert_eq!(
+        malformed,
+        LiveWhiteboxError::SelectableReplyProtocol {
+            source: original.clone()
+        }
+    );
+    assert_eq!(
+        std::error::Error::source(&malformed).and_then(|source| {
+            source.downcast_ref::<crucible_qemu_protocol::SelectableProtocolError>()
+        }),
+        Some(&original),
+    );
     assert_eq!(ring.header.read_index(), 1);
     assert_eq!(writer.delivery_icount, None);
     assert!(state.catalog().pending_request().is_some());
@@ -297,7 +377,9 @@ fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
 #[test]
 fn available_reply_keeps_guest_write_failure_after_consumption()
 -> Result<(), Box<dyn std::error::Error>> {
-    struct RejectingWriter;
+    struct RejectingWriter {
+        refusal: Option<WhiteboxGuestInputWriteError>,
+    }
 
     impl WhiteboxGuestInputWriter for RejectingWriter {
         fn write_whitebox_input(
@@ -306,8 +388,29 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
             _range: crate::GuestMemoryRange,
             _payload: &[u8],
         ) -> Result<(), WhiteboxGuestInputWriteError> {
-            Err(WhiteboxGuestInputWriteError::new("injected write failure"))
+            Err(self.refusal.take().expect("the backend is called once"))
         }
+    }
+
+    thread_local! {
+        static NATIVE_WRITES: Cell<usize> = const { Cell::new(0) };
+        static LAST_NATIVE_WRITE: Cell<(u32, u64, usize, usize)> = const { Cell::new((0, 0, 0, 0)) };
+    }
+
+    extern "C" fn reject_native_write(
+        vcpu: u32,
+        address: u64,
+        payload: *const u8,
+        len: usize,
+    ) -> bool {
+        NATIVE_WRITES.set(NATIVE_WRITES.get() + 1);
+        LAST_NATIVE_WRITE.set((vcpu, address, payload as usize, len));
+        false
+    }
+
+    extern "C" fn reject_callback_write(_address: u64, _payload: *const u8, _len: usize) -> bool {
+        NATIVE_WRITES.set(NATIVE_WRITES.get() + 1);
+        false
     }
 
     let mut ring = ReplyRing::new();
@@ -321,12 +424,123 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
         &reply.encode()?,
     )?)?;
 
+    let cause = WhiteboxGuestInputWriteError::new("injected write failure");
+    let diagnostic_address = cause.message().as_ptr();
+    let mut writer = RejectingWriter {
+        refusal: Some(cause),
+    };
     let error = state
-        .deliver_reply(1_000_137, 2, &mut RejectingWriter)
-        .err();
-    assert!(error.is_some_and(|error| error.to_string().contains("injected write failure")));
+        .deliver_reply(
+            1_000_137,
+            2,
+            &mut writer,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "safe white-box callback failed: selectable guest reply write failed at retained coordinate (700, 2) during resume (1000137, 2): white-box guest input write failed: injected write failure",
+    );
+    let source = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<WhiteboxGuestInputWriteError>())
+        .expect("the original typed guest write cause stays inspectable");
+    assert_eq!(source.message().as_ptr(), diagnostic_address);
+    assert!(matches!(
+        &error,
+        LiveWhiteboxError::SelectableReplyGuestWrite {
+            trap_icount: 700,
+            trap_vcpu: 2,
+            resume_tick_ps: 1_000_137,
+            resume_vcpu: 2,
+            ..
+        }
+    ));
+    assert!(writer.refusal.is_none());
     assert_eq!(ring.header.read_index(), 1);
     assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+
+    let range = state.catalog().pending_request().unwrap().reply_range();
+    let mut native_writer = LiveSelectableGuestMemoryWriter::new(reject_native_write, 2, 1_000_137);
+    let drift = native_writer
+        .write_whitebox_input(1_000_136, range, &[])
+        .unwrap_err();
+    assert_eq!(
+        drift,
+        WhiteboxGuestInputWriteError::ResumeIcountMismatch {
+            delivery_icount: 1_000_136,
+            resume_icount: 1_000_137,
+        }
+    );
+    assert_eq!(
+        drift.to_string(),
+        "white-box guest input write failed: delivery icount 1000136 differs from resume icount 1000137"
+    );
+    assert_eq!(NATIVE_WRITES.get(), 0);
+
+    let mut callback_writer =
+        app_random::LiveGuestMemoryWriter::new(reject_callback_write, u64::MAX);
+    let drift = callback_writer
+        .write_whitebox_input(u64::MAX - 1, range, &[])
+        .unwrap_err();
+    assert_eq!(
+        drift,
+        WhiteboxGuestInputWriteError::CallbackIcountMismatch {
+            delivery_icount: u64::MAX - 1,
+            callback_icount: u64::MAX,
+        }
+    );
+    assert_eq!(
+        drift.message(),
+        "delivery icount 18446744073709551614 differs from callback icount 18446744073709551615"
+    );
+    assert_eq!(NATIVE_WRITES.get(), 0);
+
+    ring.publish(WhiteboxMarkerEntry::new(
+        1_000_087,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        &reply.encode()?,
+    )?)?;
+    let mut workspace = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let error = state
+        .deliver_reply(1_000_137, 2, &mut native_writer, &mut workspace)
+        .unwrap_err();
+    let original = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<WhiteboxGuestInputWriteError>())
+        .expect("the actual writer's typed refusal remains inspectable");
+    assert_eq!(
+        original,
+        &WhiteboxGuestInputWriteError::VirtualReplyWriteRejected {
+            vcpu_index: 2,
+            guest_address: range.guest_address(),
+            payload_len: range.len(),
+            resume_icount: 1_000_137,
+        }
+    );
+    assert_eq!(NATIVE_WRITES.get(), 1);
+    assert_eq!(
+        LAST_NATIVE_WRITE.get(),
+        (
+            2,
+            range.guest_address(),
+            workspace.as_ptr() as usize,
+            range.len()
+        )
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "safe white-box callback failed: selectable guest reply write failed at retained coordinate (700, 2) during resume (1000137, 2): white-box guest input write failed: qemu_plugin_crucible_write_memory_vaddr_for_vcpu failed for vCPU 2 at guest virtual address {:#x} with {} bytes at resume icount 1000137",
+            range.guest_address(),
+            range.len()
+        )
+    );
+    assert_eq!(ring.header.read_index(), 2);
+    assert_eq!(
+        state.catalog().pending_request().unwrap().reply_range(),
+        range
+    );
     assert_eq!(state.catalog().total_completed_requests(), 1);
     Ok(())
 }
@@ -379,7 +593,87 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     assert_eq!(state.catalog().total_completed_requests(), 0);
     let transport = state.pending_transport_record()?;
     assert_eq!(transport.request(), &request);
+    assert!(std::ptr::eq(transport.request(), pending.request()));
     assert_eq!(transport.guest_virtual_address(), 0x4000);
+    assert_eq!(transport.raw_icount(), pending.coordinate().raw_icount());
+    let expected_transport =
+        crucible_qemu_protocol::selectable_transport::SelectablePendingTransportRecord::new(
+            request.clone(),
+            0x4000,
+            50,
+        )?
+        .encode()?;
+
+    let header = RingHeader::new();
+    let mut entries = [WhiteboxMarkerEntry::default()];
+    // SAFETY: the actual stack ring remains in place through this serialized
+    // producer's last use; each observation follows its synchronous publication.
+    let mut producer = unsafe {
+        LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+            std::ptr::from_ref(&header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    };
+    let mut workspace = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let registered = registration(1)?;
+    producer.record_selectable_registration(500, 0, &registered, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED);
+    assert_eq!(observed.current_icount(), 500);
+    assert_eq!(observed.vcpu_index(), 0);
+    assert_eq!(observed.payload(), registered.encode()?);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+
+    workspace.fill(0xa5);
+    producer.record_selectable_pending(2_500, 1, &transport, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING);
+    assert_eq!(observed.current_icount(), 2_500);
+    assert_eq!(observed.vcpu_index(), 1);
+    assert_eq!(observed.payload(), expected_transport);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+
+    let reply = SelectionReply::selected(2, [1; 32], [2; 32], vec![2])?;
+    workspace.fill(0xa5);
+    producer.record_selectable_completed(2_550, 1, &reply, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED);
+    assert_eq!(observed.current_icount(), 2_550);
+    assert_eq!(observed.vcpu_index(), 1);
+    assert_eq!(observed.payload(), reply.encode()?);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+    assert!(header.dequeue_whitebox_marker(&mut entries)?.is_none());
+
+    producer.record_selectable_registration(500, 0, &registered, &mut workspace)?;
+    let refused = producer
+        .record_selectable_completed(2_550, 1, &reply, &mut workspace)
+        .unwrap_err();
+    let retained = std::error::Error::source(&refused)
+        .and_then(|source| source.downcast_ref::<crate::WhiteboxMarkerSinkError>())
+        .unwrap_or_else(|| panic!("publication must retain its original marker refusal"));
+    assert_eq!(retained.message(), "live white-box marker queue is full");
+    assert!(matches!(
+        refused,
+        LiveWhiteboxError::SelectablePublication { .. }
+    ));
+    assert_eq!(
+        refused.to_string(),
+        "safe white-box callback failed: white-box marker sink failed: live white-box marker queue is full"
+    );
+    let unchanged = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let unchanged = unchanged.validate()?;
+    assert_eq!(unchanged.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED);
+    assert_eq!(unchanged.current_icount(), 500);
+    assert_eq!(unchanged.vcpu_index(), 0);
+    assert_eq!(unchanged.payload(), registered.encode()?);
+    assert!(header.dequeue_whitebox_marker(&mut entries)?.is_none());
     Ok(())
 }
 
@@ -402,18 +696,33 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit()
         crucible_qemu_protocol::SELECTABLE_MESSAGE_MAX_BYTES,
     )?;
 
-    assert!(
-        state
-            .serve_selection(
-                &request,
-                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
-                crate::GuestMemoryRange::new(
-                    crate::GuestMemoryAddressSpace::Virtual,
-                    0x4000,
-                    request.reply_capacity(),
-                ),
-            )
-            .is_err()
+    let error = state
+        .serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, (50) * 50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )
+        .expect_err("the service must refuse before delivering a reply");
+    let original = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<SelectablePendingTransportError>())
+        .unwrap_or_else(|| panic!("the service must retain its original transport refusal"));
+    let expected = SelectablePendingTransportError::RequestTooLarge {
+        len: request.encode()?.len(),
+        maximum: crucible_qemu_protocol::SELECTABLE_MESSAGE_MAX_BYTES
+            - SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES,
+    };
+    assert_eq!(original, &expected);
+    assert_eq!(
+        error,
+        SelectableDoorbellServiceError::PendingTransport(expected)
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("selectable service failed: {original}")
     );
     assert_eq!(FORCE_EXIT_CALLS.get(), 0);
     assert!(state.catalog().pending_request().is_none());
@@ -465,10 +774,20 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
     let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(1_000_137, 1, &mut writer)?;
+    state.deliver_reply(
+        1_000_137,
+        1,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
-    state.deliver_reply(1_000_137, 2, &mut writer)?;
+    state.deliver_reply(
+        1_000_137,
+        2,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
 
     assert_eq!(writer.delivery_icount, Some(1_000_137));
     assert_eq!(
@@ -542,7 +861,12 @@ fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundar
     );
 
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(2_600, 1, &mut writer)?;
+    state.deliver_reply(
+        2_600,
+        1,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
 
     assert_eq!(writer.delivery_icount, Some(2_600));
     assert!(state.catalog().pending_request().is_none());
@@ -555,6 +879,14 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = cold_plan()?;
     let mut state = live_state(&plan, reply_input())?;
+    assert_eq!(
+        state.rebind_pending_boundary(52, 2_550),
+        Err(LiveWhiteboxError::SelectableHandoffWithoutPending)
+    );
+    assert!(matches!(
+        state.pending_transport_record(),
+        Err(LiveWhiteboxError::SelectablePendingStateMissing)
+    ));
     state.register_selectable(
         &registration(1)?,
         SelectableCallbackCoordinate::new(10, (10) * 50, 0),
@@ -575,10 +907,20 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
         panic!("a chained guest instruction must fail the selectable stop fence");
     };
 
-    assert!(
-        error
-            .to_string()
-            .contains("expected exactly raw 51 tick 2550")
+    assert_eq!(
+        error,
+        LiveWhiteboxError::SelectableHandoffCoordinate {
+            request_icount: 50,
+            request_tick_ps: 2_500,
+            actual_icount: 52,
+            actual_tick_ps: 2_550,
+            expected_icount: 51,
+            expected_tick_ps: 2_550,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "safe white-box callback failed: selectable request at raw icount 50 tick 2500 stopped at raw 52 tick 2550, expected exactly raw 51 tick 2550 after the doorbell instruction boundary"
     );
     assert_eq!(
         state
@@ -618,7 +960,16 @@ fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_reply(700, 2, &mut writer).is_err());
+    assert!(
+        state
+            .deliver_reply(
+                700,
+                2,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )
+            .is_err()
+    );
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
     assert_eq!(state.catalog().total_completed_requests(), 1);
@@ -646,19 +997,27 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
     state.freeze()?;
     let request = request(2)?;
 
-    assert!(
-        state
-            .serve_selection(
-                &request,
-                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
-                crate::GuestMemoryRange::new(
-                    crate::GuestMemoryAddressSpace::Virtual,
-                    0x4000,
-                    request.reply_capacity(),
-                ),
-            )
-            .is_err()
+    let error = state
+        .serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, (50) * 50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )
+        .expect_err("the service must refuse before delivering a reply");
+    assert_eq!(error, SelectableDoorbellServiceError::HandoffAlreadyPending);
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: another selectable VMStop handoff is already pending",
     );
+    assert_eq!(
+        error.message(),
+        "another selectable VMStop handoff is already pending"
+    );
+    assert!(std::error::Error::source(&error).is_none());
     assert_eq!(FORCE_EXIT_CALLS.get(), 1);
     assert!(vmstop_handoff.is_pending());
     assert_eq!(
@@ -702,7 +1061,19 @@ fn rejected_tb_exit_releases_the_vmstop_handoff() -> Result<(), Box<dyn std::err
         panic!("QEMU must reject a selectable outside the native exit context");
     };
 
-    assert!(error.to_string().contains("status -22"));
+    assert_eq!(
+        error,
+        SelectableDoorbellServiceError::HandoffRejected { status: -22 }
+    );
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: QEMU rejected selectable translated-block exit with status -22",
+    );
+    assert_eq!(
+        error.message(),
+        "QEMU rejected selectable translated-block exit with status -22",
+    );
+    assert!(std::error::Error::source(&error).is_none());
     assert_eq!(FORCE_EXIT_CALLS.get(), 1);
     assert!(!vmstop_handoff.is_pending());
     assert!(state.catalog().pending_request().is_some());
@@ -729,5 +1100,21 @@ fn selectable_prefix_is_disjoint_from_marker_frames() -> Result<(), Box<dyn std:
         &WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::TestDone),
     )?;
     assert!(!super::super::is_setup_complete_marker(&test_done));
+
+    for length in 0..setup_complete.len() {
+        assert!(!super::super::is_setup_complete_marker(
+            &setup_complete[..length]
+        ));
+    }
+    for index in [0, 4, 6, 8, 12, 13] {
+        let mut malformed = setup_complete.clone();
+        malformed[index] ^= 0x80;
+        assert!(!super::super::is_setup_complete_marker(&malformed));
+    }
+
+    let mut trailing = setup_complete.clone();
+    trailing[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    trailing.push(0);
+    assert!(!super::super::is_setup_complete_marker(&trailing));
     Ok(())
 }

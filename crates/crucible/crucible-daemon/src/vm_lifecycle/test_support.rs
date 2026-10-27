@@ -17,3 +17,5 @@ pub(super) fn duplicate_network_fault_checkpoint_fixture(
     )
     .unwrap_or_else(|error| panic!("checkpoint fixture should decode: {error}"))
 }
+
+pub(super) mod decode_budget;

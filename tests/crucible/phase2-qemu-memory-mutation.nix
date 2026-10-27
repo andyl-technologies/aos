@@ -6,12 +6,19 @@
   attrPath ? "checks.crucible.phase2.qemuMemoryMutation",
   taskIds ? ["T-QEMU-0049"],
 }: let
+  ramObserver = pkgs.callPackage ../../pkgs/emulation/crucible-qemu-plugin.nix {
+    nativeConformance = true;
+    qemu-crucible = qemuPackage;
+  };
+  correspondingSource = pkgs.callPackage ../../pkgs/emulation/qemu-crucible-source.nix {
+    qemu-crucible = qemuPackage;
+  };
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  liveCaseCount = 40;
+  rejectionCaseCount = 18;
 
   failures =
     failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
@@ -96,6 +103,7 @@ in
         pkgs.grep
         pkgs.llvm
         pkgs.pkg-config
+        ramObserver
         qemuPackage
         referenceQemu
       ];
@@ -112,6 +120,21 @@ in
               ${patchedPluginSource}/crucible-memory.c \
               -o crucible-memory.so \
               $(pkg-config --libs glib-2.0)
+            cat > memory-refusal-status.c <<'EOF'
+            #include <stdio.h>
+            #include <qemu-plugin.h>
+            #include "aos/crucible/crucible_shmem_abi.h"
+            int main(void)
+            {
+                printf("prepare status=%u expected=%u\n",
+                       CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR,
+                       CRUCIBLE_FAULT_STATUS_PREPARED);
+                return 0;
+            }
+            EOF
+            "$CC" -I${qemuPackage}/include/qemu -I${qemuPackage}/include \
+              $(pkg-config --cflags glib-2.0) \
+              memory-refusal-status.c -o memory-refusal-status
             as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
             ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
               fault-guest-x86.o -o fault-guest-x86.elf
@@ -163,11 +186,24 @@ in
                 -monitor none \
                 -kernel "$guest" \
                 $loader_args \
+                -plugin "${ramObserver}/lib/libcrucible_qemu_plugin.so,ram_metadata_budget=268435456" \
                 -plugin "$PWD/crucible-memory.so,$plugin_args" \
                 > "logs/$architecture-$case_name.log" 2>&1
               case_status=$?
               set -e
               cat "logs/$architecture-$case_name.log"
+              if test "$case_name" = unmanaged-positive-refused; then
+                test "$case_status" -ne 0
+                test "$case_status" -ne 124
+                test "$case_status" -ne 137
+                grep -Fxq "$(./memory-refusal-status)" \
+                  "logs/$architecture-$case_name.log"
+                grep -Fq 'preparation returned the wrong status' \
+                  "logs/$architecture-$case_name.log"
+                ! grep -q CRUCIBLE_MEMORY_MUTATION_LIVE_PASS \
+                  "logs/$architecture-$case_name.log"
+                return
+              fi
               test "$case_status" -eq 0
               grep -Fxq CRUCIBLE_MEMORY_MUTATION_LIVE_PASS \
                 "logs/$architecture-$case_name.log"
@@ -175,6 +211,15 @@ in
                 "logs/$architecture-$case_name.log")" -eq 1
               ! grep -q 'Crucible memory mutation live test failed' \
                 "logs/$architecture-$case_name.log"
+              ! grep -q CRUCIBLE-RAM-ORACLE-FAIL \
+                "logs/$architecture-$case_name.log"
+              case "$plugin_args" in
+                *status=*|*malformed=*) ;;
+                *)
+                  grep -Fq CRUCIBLE-RAM-ORACLE-PASS \
+                    "logs/$architecture-$case_name.log"
+                  ;;
+              esac
             }
 
             run_architecture_matrix() {
@@ -182,46 +227,30 @@ in
               case "$architecture" in
                 x86_64)
                   mutation=0x102000
-                  cross=0x102fff
                   unmapped=0x70000000
                   rollback=0x9ffff
-                  large=0x1000000
                   paging=0x102001
-                  execution_result=0x102002
                   readonly=0x105000
                   rom=0xffff0000
                   mmio=0xfee00000
-                  translation=1db71a69a29f61f2cc29c125602043f908c0e936270f3f3a5b4ec046ae9ee7f3
-                  cross_translation=2836d92be4f95a57a3dd43ae3f03d9858c527cd4bb90147272c2f84fcc308cc0
                   deferred_target='target-mode=current-tb'
-                  executable_args='address=0x104001,length=1,before=0x5a,after=0xa5,target-mode=current-tb,tb-invalidated=required,execution-result=0x102002,submit=paging-ready,paging-ready=0x102001'
                   ;;
                 aarch64)
                   mutation=0x40300000
-                  cross=0x40300fff
                   unmapped=0x50000000
                   rollback=0x43ffffff
-                  large=0x41000000
                   paging=0x40300001
-                  execution_result=0x40300002
                   readonly=0x40302000
                   rom=0x0
                   mmio=0x08000000
-                  translation=391323646bed3dcedb4031ddfd8376c760eebd15f167ef85ecbf0929bfa15d24
-                  cross_translation=c9dad7f6c3814d6caa2f222dd46c4608df79904e5b57815c6ef778425441f5b4
                   deferred_target='target-mode=current-tb'
-                  executable_args='address=0x40201000,length=4,before-bytes=400b8052,after-bytes=a0148052,before=0x5a,after=0xa5,target-mode=current-tb,tb-invalidated=required,execution-result=0x40300002,submit=paging-ready,paging-ready=0x40300001'
                   ;;
               esac
 
-              run_case "$architecture" gpa-replace \
+              # A logical observer cannot issue physical mutation grants.
+              # This refusal does not qualify any managed mutation semantics.
+              run_case "$architecture" unmanaged-positive-refused \
                 "address=$mutation,before=0x5a,after=0xa5,icount=100"
-              run_case "$architecture" gpa-bit-flip \
-                "address=$mutation,before=0x5a,after=0xa5,icount=100,transform=bit-flip"
-              run_case "$architecture" gpa-cross-page \
-                "address=$cross,length=2,before=0x5a,after=0xa5,icount=100"
-              run_case "$architecture" precondition-mismatch \
-                "address=$mutation,before=0x5a,after=0xa5,icount=100,status=precondition-mismatch"
               run_case "$architecture" unmapped-target \
                 "address=$unmapped,before=0x5a,after=0xa5,icount=100,status=invalid-target"
               run_case "$architecture" malformed-zero-length \
@@ -230,17 +259,6 @@ in
                 "address=$mutation,before=0x5a,after=0xa5,icount=100,malformed=overflow"
               run_case "$architecture" malformed-over-limit \
                 "address=$mutation,before=0x5a,after=0xa5,icount=100,malformed=over-limit"
-              run_case "$architecture" canonical-overlap-order \
-                "address=$mutation,before=0x5a,after=0xa5,icount=100,mode=overlap-order"
-              run_case "$architecture" same-boundary-prepare-commit \
-                "address=$mutation,before=0x5a,after=0xa5,icount=100"
-              run_case "$architecture" gva-replace \
-                "address=$mutation,address-space=gva,vcpu=0,translations=1,translation=$translation,before=0x5a,after=0xa5,$deferred_target,tb-invalidated=required,submit=paging-ready,paging-ready=$paging"
-              run_case "$architecture" gva-cross-page \
-                "address=$cross,address-space=gva,vcpu=0,translations=2,fragments=2,translation=$cross_translation,length=2,before=0x5a,after=0xa5,$deferred_target,tb-invalidated=required,submit=paging-ready,paging-ready=$paging"
-              run_case "$architecture" changed-proposal-after-prepare \
-                "address=$mutation,address-space=gva,vcpu=0,translations=1,translation=$translation,before=0x5a,after=0xa5,$deferred_target,status=prepared-state-mismatch,submit=paging-ready,paging-ready=$paging"
-              run_case "$architecture" executable-page "$executable_args"
               run_case "$architecture" gva-write-protected \
                 "address=$readonly,address-space=gva,vcpu=0,translations=1,translation=1111111111111111111111111111111111111111111111111111111111111111,before=0x5a,after=0xa5,$deferred_target,status=invalid-target,submit=paging-ready,paging-ready=$paging"
               run_case "$architecture" rom-target \
@@ -249,10 +267,6 @@ in
                 "address=$mmio,before=0x5a,after=0xa5,icount=100,status=invalid-target"
               run_case "$architecture" valid-prefix-invalid-suffix \
                 "address=$rollback,length=2,before=0x5a,after=0xa5,icount=100,status=invalid-target,unchanged-vaddr=$rollback"
-              run_case "$architecture" hash-only-evidence \
-                "address=$large,length=65537,before=0x00,after=0xa5,icount=100"
-              run_case "$architecture" hard-bound-success \
-                "address=$large,length=16777216,before=0x00,after=0xa5,icount=100"
             }
 
             printf 'info mtree -f\nquit\n' | \
@@ -300,6 +314,8 @@ in
 
             mkdir -p "$out"
             cp -R logs "$out/"
+            mkdir -p "$out/share/aos"
+            ln -s ${correspondingSource} "$out/share/aos/qemu-crucible-source"
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
@@ -311,15 +327,17 @@ in
               printf 'attr_path=%s\n' '${attrPath}'
               printf 'task_ids=%s\n' '${taskList}'
               printf 'backend=actual-patched-and-stock-qemu\n'
-              printf 'live_cases=%s\n' '${toString liveCaseCount}'
+              printf 'rejection_cases=%s\n' '${toString rejectionCaseCount}'
               printf 'architectures=%s\n' 'x86_64,aarch64'
-              printf 'gva_translation_matrix=%s\n' 'x86_64+aarch64:single-page,cross-page,stale-digest,write-protected'
-              printf 'executable_tb_invalidation=%s\n' 'x86_64+aarch64:behavior-observed'
-              printf 'all_or_nothing=%s\n' 'valid-prefix-invalid-suffix-unchanged'
-              printf 'evidence_bounds=%s\n' 'inline,hash-only,16MiB-hard-bound'
+              printf 'unmanaged_positive_requests_refused=true\n'
+              printf 'managed_mutation_qualified=false\n'
+              printf 'gva_write_protected_rejected=true\n'
+              printf 'invalid_suffix_preserves_valid_prefix=true\n'
+              printf 'malformed_payload_matrix=%s\n' 'zero-length,overflow,over-limit'
+              printf 'remaining_managed_coverage=%s\n' 'gva-resolution,executable-tb,precondition,changed-proposal,overlap-order,hash-only,hard-bound'
               printf 'disallowed_target_matrix=%s\n' 'x86_64+aarch64:unmapped,rom,mmio,write-protected'
               printf 'target_types_introspected=%s\n' 'rom,romd,mmio'
-              printf 'production_effect_row=memory.mutation|physical-virtual-atomic-matrix|gate:patch-microtests|actual-patched-qemu|translation+before-after+dirty-tracking\n'
+              printf 'component_effect_row=memory.rejection|malformed-and-nonram-matrix|gate:patch-microtests|actual-patched-qemu|unchanged-valid-prefix+typed-refusal\n'
             } > "$out/result"
           '';
         }

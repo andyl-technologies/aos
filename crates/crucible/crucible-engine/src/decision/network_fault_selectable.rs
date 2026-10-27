@@ -412,6 +412,18 @@ pub struct NetworkFaultCampaignBranch {
 }
 
 impl NetworkFaultCampaignBranch {
+    pub(crate) fn try_clone_admitted(&self) -> Result<Self, NetworkFaultSelectableError> {
+        Ok(Self {
+            parent: self.parent.try_clone_admitted()?,
+            selected: self.selected.try_clone_admitted()?,
+            phase: self.phase,
+            at: self.at,
+            value: self.value.clone_admitted()?,
+            parameters: self.parameters.clone(),
+            decision: self.decision.try_clone_admitted()?,
+        })
+    }
+
     /// Returns the configuration before this selection.
     #[must_use]
     pub const fn parent(&self) -> &Configuration {
@@ -762,7 +774,7 @@ impl NetworkFaultCampaignReplayPlan {
 }
 
 /// Failure to construct or replay a network fault choice.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NetworkFaultSelectableError {
     /// A campaign record failed canonical validation.
     #[error(transparent)]

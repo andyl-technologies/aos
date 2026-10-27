@@ -546,6 +546,18 @@ struct ScriptedTarget {
     shutdowns: usize,
     completion_fence: Option<QemuAdvanceCompletionFence>,
     child_exit_status: Option<std::process::ExitStatus>,
+    health_forbidden: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    health_calls: std::cell::Cell<usize>,
+    cancel_during_health: Option<(
+        crucible_host_resources::host_supervision::HostOperationSupervisor,
+        usize,
+        Option<QemuAsyncDriverHealthError>,
+    )>,
+    refuse_start: Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
+    refuse_finish: Option<(
+        crucible_host_resources::host_supervision::HostOperationSupervisor,
+        bool,
+    )>,
 }
 
 impl ScriptedTarget {
@@ -572,6 +584,11 @@ impl ScriptedTarget {
             shutdowns: 0,
             completion_fence: None,
             child_exit_status: None,
+            health_forbidden: None,
+            health_calls: std::cell::Cell::new(0),
+            cancel_during_health: None,
+            refuse_start: None,
+            refuse_finish: None,
         }
     }
 
@@ -586,21 +603,36 @@ impl ScriptedTarget {
 impl QemuAsyncCrashEscalationTarget for ScriptedTarget {
     fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
         self.shutdowns += 1;
-        Ok(QemuShutdownReport {
-            attempts: vec![QemuShutdownAttempt {
-                rung: QemuShutdownRung::Sigkill,
-                wait: Duration::from_millis(1),
-                child: crate::QemuChildWait::Exited,
-            }],
-            failures: Vec::new(),
-            reaped: true,
-            leaked: false,
-        })
+        let journal = crate::launch_cleanup::ShutdownJournal::component();
+        journal.record_attempt(0, QemuShutdownAttempt {
+            rung: QemuShutdownRung::Sigkill,
+            wait: Duration::from_millis(1),
+            child: crate::QemuChildWait::Exited,
+        });
+        Ok(journal.report(true, false))
     }
 }
 
 impl QemuAsyncNodeStepTarget for ScriptedTarget {
     type PendingQuantum = u64;
+
+    fn operational_health(&self) -> Result<(), QemuAsyncDriverHealthError> {
+        let call = self.health_calls.get() + 1;
+        self.health_calls.set(call);
+        if let Some((supervisor, cut, failure)) = &self.cancel_during_health
+            && call == *cut
+        {
+            supervisor.cancel().unwrap();
+            return failure.clone().map_or(Ok(()), Err);
+        }
+        if let Some(forbidden) = &self.health_forbidden {
+            assert!(
+                !forbidden.load(std::sync::atomic::Ordering::Acquire),
+                "later health must not replace the first runtime refusal"
+            );
+        }
+        Ok(())
+    }
 
     fn child_exit_status(
         &mut self,
@@ -613,6 +645,13 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
         self.started.push(horizon.icount.retired);
+        if let Some(supervisor) = &self.refuse_start {
+            supervisor.cancel().unwrap();
+            return Err(QemuNodeChannelError::new(
+                "actual start refusal",
+                "first channel cause",
+            ));
+        }
         Ok(horizon.icount.retired)
     }
 
@@ -628,6 +667,14 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
         _pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
         self.finished += 1;
+        if let Some((supervisor, retryable)) = &self.refuse_finish {
+            supervisor.cancel().unwrap();
+            return Err(if *retryable {
+                QemuNodeChannelError::retryable("actual finish refusal", "first channel cause")
+            } else {
+                QemuNodeChannelError::new("actual finish refusal", "first channel cause")
+            });
+        }
         if self.pending_finishes > 0 {
             self.pending_finishes -= 1;
             return Err(QemuNodeChannelError::retryable(
@@ -644,3 +691,253 @@ fn horizon(retired: u64) -> ExecutionHorizon {
         icount: Icount { retired },
     }
 }
+
+struct OriginalWaitRuntime {
+    scripted: ScriptedRuntime,
+    close_during_wait: bool,
+    ordinary_waits: usize,
+    fail_wait: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl QemuHostIoRuntime for OriginalWaitRuntime {
+    fn publish_current_execution_fingerprint(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.scripted.publish_current_execution_fingerprint(timeout)
+    }
+
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_host_resources::host_supervision::HostOperationSupervisor> {
+        panic!("borrowed original must not consult an ambient Quantum issuer");
+    }
+
+    fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.scripted.yield_to_control_plane()
+    }
+
+    fn await_child(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        self.ordinary_waits += 1;
+        Err(QemuAsyncDriverRuntimeError::new(
+            "ordinary wait",
+            "original wait was bypassed",
+        ))
+    }
+
+    fn repoll_child(
+        &mut self,
+        wait: QemuAsyncWait,
+        timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        self.await_child(wait, timeout)
+    }
+
+    fn await_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let timeout = original.wait_slice().map_err(|source| {
+            QemuAsyncDriverRuntimeError::operational_supervision("original fixture wait", source)
+        })?;
+        let result = self.scripted.await_child(wait, timeout)?;
+        if self.close_during_wait {
+            original.complete().map_err(|source| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "close fixture original",
+                    source,
+                )
+            })?;
+        }
+        if let Some(failed) = &self.fail_wait {
+            failed.store(true, std::sync::atomic::Ordering::Release);
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "original fixture refusal",
+                "actual adapter refusal before later cancellation/health",
+            ));
+        }
+        Ok(result)
+    }
+
+    fn repoll_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let timeout = original.wait_slice().map_err(|source| {
+            QemuAsyncDriverRuntimeError::operational_supervision("original fixture repoll", source)
+        })?;
+        self.scripted.repoll_child(wait, timeout)
+    }
+}
+
+#[test]
+fn reset_original_quantum_keeps_original_live_and_ignores_ambient_issuer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let mut target = ScriptedTarget::pending_once();
+    let mut runtime = OriginalWaitRuntime {
+        scripted: ScriptedRuntime::new([
+            QemuAsyncWaitOutcome::Completed,
+            QemuAsyncWaitOutcome::Completed,
+        ]),
+        close_during_wait: false,
+        ordinary_waits: 0,
+        fail_wait: None,
+    };
+    let report = run_qemu_node_step_under_original(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        horizon(12),
+        |_target, _pending| Ok(()),
+        &original,
+    )?;
+
+    assert!(matches!(
+        report.outcome,
+        QemuAsyncNodeStepOutcome::Completed { .. }
+    ));
+    assert_eq!(runtime.scripted.awaits, 1);
+    assert_eq!(runtime.scripted.repolls, 1);
+    assert_eq!(runtime.ordinary_waits, 0);
+    assert_eq!(original.status()?.completed_work_units, 0);
+    assert!(original.wait_slice().is_ok());
+    Ok(())
+}
+
+#[test]
+fn reset_original_closure_during_wait_prevents_finish_and_retains_target()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = OriginalWaitRuntime {
+        scripted: ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]),
+        close_during_wait: true,
+        ordinary_waits: 0,
+        fail_wait: None,
+    };
+    let result = run_qemu_node_step_under_original(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        horizon(12),
+        |_target, _pending| Ok(()),
+        &original,
+    );
+
+    assert!(matches!(result, Err(QemuAsyncDriverError::Runtime(_))));
+    assert_eq!(target.started, vec![12]);
+    assert_eq!(target.finished, 0);
+    assert_eq!(target.shutdowns, 0);
+    assert_eq!(runtime.ordinary_waits, 0);
+    Ok(())
+}
+
+#[test]
+fn reset_closed_original_refuses_quantum_publication_before_hook()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    original.complete()?;
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = OriginalWaitRuntime {
+        scripted: ScriptedRuntime::new([]),
+        close_during_wait: false,
+        ordinary_waits: 0,
+        fail_wait: None,
+    };
+    let result = run_qemu_node_step_under_original(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        horizon(12),
+        |_target, _pending| panic!("closed original must not resume"),
+        &original,
+    );
+
+    assert!(matches!(result, Err(QemuAsyncDriverError::Runtime(_))));
+    assert!(target.started.is_empty());
+    assert_eq!(runtime.scripted.yields, 0);
+    Ok(())
+}
+
+#[test]
+fn reset_original_wait_refusal_precedes_later_health_and_guard_loss()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut target = ScriptedTarget::completed();
+    target.health_forbidden = Some(std::sync::Arc::clone(&failed));
+    let mut runtime = OriginalWaitRuntime {
+        scripted: ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]),
+        close_during_wait: true,
+        ordinary_waits: 0,
+        fail_wait: Some(failed),
+    };
+
+    let result = run_qemu_node_step_under_original(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        horizon(12),
+        |_target, _pending| Ok(()),
+        &original,
+    );
+
+    let QemuAsyncDriverError::Runtime(source) = result.expect_err("adapter refuses") else {
+        panic!("the initiating runtime error must remain typed");
+    };
+    assert_eq!(source.operation, "original fixture refusal");
+    assert_eq!(
+        source.operational_supervision_post(),
+        original.wait_slice().err(),
+    );
+    assert!(source.operational_supervision_post().is_some());
+    assert_eq!(target.finished, 0);
+    assert_eq!(target.shutdowns, 0);
+    assert!(original.wait_slice().is_err());
+    Ok(())
+}
+
+#[path = "async_driver_test/supervision.rs"]
+mod supervision;
+
+#[path = "async_driver_test/health_posts.rs"]
+mod health_posts;

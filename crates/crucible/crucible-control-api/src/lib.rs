@@ -1,9 +1,11 @@
 //! Native transport-independent Crucible control contracts, encodings, and compatibility rules.
 //!
-//! Spec index: RFC-0010 files 21.
+//! Implementation contract: Versioned control requests, admitted response contracts, and host ownership interfaces.
 //!
 //! Module map: lifecycle and streaming own request/response values; rpc_abi
 //! owns frozen encodings; open_set and session_mapping own capability vocabulary.
+//! admitted_output retains original allocation custody; cleanup_owner defines
+//! backend handoffs; host_operational owns host policy and deadline contracts.
 //! The crate does not start servers, instantiate actors, or launch QEMU.
 //!
 //! Native clients and services reuse session command, debugger, and event-log
@@ -17,7 +19,15 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod admitted_output;
+pub use admitted_output::{AdmittedOutput, AdmittedShared};
+pub mod cleanup_owner;
+pub use cleanup_owner::{
+    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
+    ProductionVmCleanupStage,
+};
 pub mod control_responsive;
+pub mod host_operational;
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
@@ -30,22 +40,23 @@ pub use debug_relay::{
 };
 pub mod event_log_stream;
 pub use event_log_stream::{
-    EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE,
-    SessionEventLogFrame, SessionEventLogSnapshot, SessionEventLogStreamError,
+    EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SessionEventLogFrame,
+    SessionEventLogSnapshot, SessionEventLogStreamError,
 };
 pub mod lifecycle;
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugLandedRuntimeCoordinate,
     DebugRepositionResult, DestroySessionRequest, DestroySessionResponse, GetReproductionRequest,
     GetReproductionResponse, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
-    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleResourceLimit,
-    ListScenariosResponse, ListSessionsResponse, RESUME_OBSERVATION_PREPARATION_CAPACITY,
+    LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError,
+    LifecycleBackendConstructionError, LifecycleResourceLimit, ListScenariosResponse,
+    ListSessionsResponse, RESUME_OBSERVATION_PREPARATION_CAPACITY,
     RESUME_OBSERVATION_PREPARATION_TIMEOUT, RESUME_OBSERVATION_SOURCE_MAX_BYTES,
     RESUME_REPLAY_CLOSURE_MAX_BYTES, ReproductionCommandDecodeError, ReproductionCommandPayload,
-    ReproductionCommandRecord, ReproductionCommandResult, ResumeObservationSource,
-    ResumeReplayClosure, ResumeSessionRequest, ResumeSessionResponse, ScenarioCatalogEntry,
-    ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef, SessionRetentionUpdateError,
-    SessionSummary,
+    ReproductionCommandRecord, ReproductionCommandRecordFields, ReproductionCommandResult,
+    ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest, ResumeSessionResponse,
+    ScenarioCatalogEntry, ScenarioCatalogSource, ScenarioSummary, SessionId, SessionRef,
+    SessionRetentionUpdateError, SessionSummary,
 };
 pub mod open_set;
 pub use open_set::{
@@ -82,6 +93,8 @@ pub use streaming::{
     StreamingEquivalenceError, StreamingEquivalenceReport, StreamingEventFrame, StreamingFrame,
     StreamingStateUpdateFrame, validate_control_watch_send_equivalence,
 };
+pub mod transport_identity;
+pub use transport_identity::DebugTransportIdentity;
 pub mod wire_model;
 pub use wire_model::{ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse};
 

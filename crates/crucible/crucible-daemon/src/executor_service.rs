@@ -35,6 +35,7 @@ where
 {
     inner: Option<ExecutorLocalServiceInner<L, V>>,
     shutdown: ExecutorLocalServiceShutdown<L, V>,
+    original_retired: bool,
 }
 
 struct ExecutorLocalServiceInner<L, V> {
@@ -81,6 +82,7 @@ where
                 endpoint_guard,
             }),
             shutdown,
+            original_retired: false,
         })
     }
 
@@ -88,6 +90,54 @@ where
     #[must_use]
     pub fn shutdown_handle(&self) -> ExecutorLocalServiceShutdown<L, V> {
         self.shutdown.clone()
+    }
+
+    /// Shares this exact unserved pool under its caller's saved original.
+    ///
+    /// # Errors
+    /// Refuses a retired service, a stopped pool or the same original boundary.
+    #[cfg(feature = "private-measurement-domain")]
+    pub(crate) fn original_component(
+        &self,
+        original: Arc<crucible_host_resources::host_supervision::HostOperationGuard>,
+    ) -> Result<LocalExecutorPoolService<L, V>, crate::LocalExecutorPoolServiceError<L::Error>>
+    {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or(crate::LocalExecutorPoolServiceError::ShuttingDown)?;
+        inner.pool.service().bind_original(original)
+    }
+
+    /// Retires the unserved listener and exact pool under their saved original.
+    ///
+    /// # Errors
+    /// Retains both domains when original-bounded worker retirement refuses.
+    pub(crate) fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::executor_pool::original_retirement::OriginalPoolRetirementError> {
+        original.wait_slice()?;
+        let work = match self.inner.as_mut() {
+            Some(inner) => {
+                let work = inner.pool.try_retire_original(original);
+                if !inner.pool.physically_retired() {
+                    return work;
+                }
+                work
+            }
+            None => Ok(()),
+        };
+        // A semantic pool report can coexist with actual joined worker and
+        // destroyed model bodies. Only the pool's physical cut permits this drop.
+        self.original_retired = true;
+        drop(self.inner.take());
+        let post = original.wait_slice();
+        work.and_then(|()| post.map(|_| ()).map_err(Into::into))
+    }
+
+    pub(crate) fn physically_retired(&self) -> bool {
+        self.original_retired && self.inner.is_none()
     }
 
     /// Serves authenticated requests and waits for owned worker cleanup on exit.
@@ -155,6 +205,11 @@ where
     V: AttemptAdmissionValidator + Send + Sync + 'static,
 {
     fn drop(&mut self) {
+        if self.original_retired {
+            // The original path already freed the unserved listener and joined
+            // its exact pool. The remaining shutdown facade is only an alias.
+            return;
+        }
         self.shutdown.shutdown();
         let Some(ExecutorLocalServiceInner {
             server,

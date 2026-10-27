@@ -1,0 +1,903 @@
+//! Original decode-account credit, diagnostic custody and scratch lifetimes.
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use super::*;
+
+struct Authority {
+    used: Arc<AtomicU64>,
+    calls: AtomicU64,
+    verifications: AtomicU64,
+    revoked: AtomicBool,
+    maximum: u64,
+}
+
+struct Credit {
+    used: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl Drop for Credit {
+    fn drop(&mut self) {
+        self.used.fetch_sub(self.bytes, Ordering::SeqCst);
+    }
+}
+
+impl DecodeResourceAuthority for Authority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(DecodeAdmissionError::new(RevokedFixtureAuthority));
+        }
+        if self.used.load(Ordering::SeqCst) > self.maximum {
+            return Err(DecodeAdmissionError::new(std::io::Error::other(
+                "original component accounting is invalid",
+            )));
+        }
+        Ok(())
+    }
+
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.verify_live()?;
+        if bytes == 0 {
+            return Err(refusal("fixture allocator rejects empty contracts"));
+        }
+        self.used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(bytes).filter(|next| *next <= self.maximum)
+            })
+            .map_err(|_| refusal("fixture original allowance exhausted"))?;
+        Ok(crate::owned_decode::ResourceLoan::new(Credit {
+            used: Arc::clone(&self.used),
+            bytes,
+        }))
+    }
+}
+
+fn authority() -> Arc<Authority> {
+    Arc::new(Authority {
+        used: Arc::new(AtomicU64::new(0)),
+        calls: AtomicU64::new(0),
+        verifications: AtomicU64::new(0),
+        revoked: AtomicBool::new(false),
+        maximum: 4096,
+    })
+}
+
+fn used_bytes(budget: &DecodeBudget) -> Result<u64, DecodeAdmissionError> {
+    Ok(budget
+        .0
+        .state
+        .lock()
+        .map_err(|_| refusal("fixture accounting lock is poisoned"))?
+        .used)
+}
+
+#[test]
+fn empty_scratch_keeps_original_account_without_an_empty_allocator_contract()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let initial = authority.used.load(Ordering::SeqCst);
+    let calls = authority.calls.load(Ordering::SeqCst);
+
+    let empty = budget.reserve_scratch_array::<u64>(0)?;
+    let populated = budget.reserve_scratch_bytes(512)?;
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls + 1);
+    assert_eq!(authority.used.load(Ordering::SeqCst), initial + 512);
+    assert_eq!(used_bytes(&budget)?, initial + 512);
+
+    drop(populated);
+    assert_eq!(authority.used.load(Ordering::SeqCst), initial);
+    assert_eq!(used_bytes(&budget)?, initial);
+    drop(budget);
+    assert_eq!(authority.used.load(Ordering::SeqCst), initial);
+    drop(empty);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn empty_scratch_preserves_a_prior_typed_refusal() -> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let failure = budget
+        .reserve_scratch_bytes(authority.maximum)
+        .err()
+        .unwrap_or_else(|| panic!("scratch beyond the remaining allowance must refuse"));
+    let calls = authority.calls.load(Ordering::SeqCst);
+
+    let repeated = budget
+        .reserve_scratch_bytes(0)
+        .err()
+        .unwrap_or_else(|| panic!("empty scratch must retain the original refusal"));
+    assert_eq!(repeated, failure);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    Ok(())
+}
+
+#[test]
+fn empty_scratch_refuses_a_poisoned_original_account() -> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let poison = budget.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _state = poison
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture account should initially be available"));
+        panic!("intentional original-account poisoning");
+    }));
+    assert!(result.is_err());
+    let calls = authority.calls.load(Ordering::SeqCst);
+
+    let error = budget
+        .reserve_scratch_bytes(0)
+        .err()
+        .unwrap_or_else(|| panic!("poisoned empty scratch must refuse"));
+    assert_eq!(error.to_string(), "decoded metadata account is poisoned");
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("original finite fixture authority was revoked")]
+struct RevokedFixtureAuthority;
+
+#[test]
+fn live_verification_keeps_original_usage_and_failure_precedence()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let child = budget.child()?;
+    let baseline = authority.used.load(Ordering::SeqCst);
+    let reservations = authority.calls.load(Ordering::SeqCst);
+    let verifications = authority.verifications.load(Ordering::SeqCst);
+
+    child.verify_live()?;
+    budget.verify_live()?;
+    assert_eq!(authority.used.load(Ordering::SeqCst), baseline);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    assert_eq!(
+        authority.verifications.load(Ordering::SeqCst),
+        verifications + 2
+    );
+
+    authority.revoked.store(true, Ordering::SeqCst);
+    let error = child
+        .verify_live()
+        .err()
+        .ok_or_else(|| refusal("revocation was ignored"))?;
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<RevokedFixtureAuthority>())
+            .is_some()
+    );
+    child.check()?;
+    budget.check()?;
+    assert_eq!(authority.used.load(Ordering::SeqCst), baseline);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    drop(error);
+
+    // A refused record child remains isolated; an earlier sticky refusal still
+    // wins before any later live-authority check or original resource callback.
+    authority.revoked.store(false, Ordering::SeqCst);
+    let sticky = child
+        .charge_bytes(authority.maximum)
+        .err()
+        .ok_or_else(|| refusal("expected finite refusal"))?;
+    authority.revoked.store(true, Ordering::SeqCst);
+    let before = authority.verifications.load(Ordering::SeqCst);
+    assert_eq!(child.verify_live().err(), Some(sticky));
+    assert_eq!(authority.verifications.load(Ordering::SeqCst), before);
+    budget.check()?;
+
+    drop(child);
+    drop(budget);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn bulk_btree_bound_is_one_target_request_and_overflow_is_sticky()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), 4096)?;
+    let initial = used_bytes(&budget)?;
+    let calls = authority.calls.load(Ordering::SeqCst);
+    budget.charge_btree_entries::<u8, ()>(2)?;
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls + 1);
+    assert_eq!(
+        used_bytes(&budget)? - initial,
+        2 * btree_entry_bytes::<u8, ()>()? + (4 * std::mem::size_of::<ResourceLoan>()) as u64
+    );
+
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let used = authority.used.load(Ordering::SeqCst);
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget
+                .charge_btree_entries::<u64, u64>(usize::MAX)
+                .unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(
+        error.to_string(),
+        if usize::BITS == 64 {
+            "decoded B-tree size overflow"
+        } else {
+            "decoded metadata allowance exhausted"
+        }
+    );
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(budget.charge_btree_entries::<u8, ()>(0), Err(error.clone()));
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn btree_geometry_query_does_not_debit_and_matches_actual_admission()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let used = authority.used.load(Ordering::SeqCst);
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let bytes = DecodeBudget::btree_control_bytes::<u8, ()>(1)?;
+    assert_eq!(bytes, btree_entry_bytes::<u8, ()>()?);
+    assert_eq!(DecodeBudget::btree_control_bytes::<u8, ()>(0)?, 0);
+    assert!(DecodeBudget::btree_control_bytes::<u64, u64>(usize::MAX).is_err());
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    budget.charge_btree_entries::<u8, ()>(1)?;
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls + 1);
+    assert!(authority.used.load(Ordering::SeqCst) >= used + bytes);
+    Ok(())
+}
+
+#[test]
+fn exhausted_account_reports_its_prepaid_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    for scratch in [false, true] {
+        let authority = authority();
+        let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+        let reservations = authority.calls.load(Ordering::SeqCst);
+
+        let (error, counts) = TestAllocationObserver::count(|| {
+            if scratch {
+                budget.reserve_scratch_bytes(authority.maximum).err()
+            } else {
+                budget.charge_bytes(authority.maximum).err()
+            }
+        });
+        let error = error.unwrap_or_else(|| panic!("the original finite account must refuse"));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+        assert_eq!(error.to_string(), "decoded metadata allowance exhausted");
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+                .is_some()
+        );
+        assert_eq!(budget.failure()?, Some(error.clone()));
+        assert_eq!(budget.charge_bytes(0), Err(error));
+    }
+    Ok(())
+}
+
+#[test]
+fn prepaid_refusals_keep_account_identity_and_do_not_retain_the_account()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let left = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let right = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let left_error = left.charge_bytes(authority.maximum).unwrap_err();
+    let right_error = right.charge_bytes(authority.maximum).unwrap_err();
+    let clone = left_error.clone();
+
+    assert_eq!(left_error, clone);
+    assert_ne!(left_error, right_error);
+    drop(left);
+    drop(right);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        2 * PrepaidRefusals::peak_bytes()
+    );
+    drop(left_error);
+    drop(right_error);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(clone);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn final_prepaid_refusal_control_frees_before_its_original_loan() -> Result<(), DecodeAdmissionError>
+{
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let authority = authority();
+    let extent = prepaid_refusal::allocation_bytes_for_test();
+    let (budget, identities) =
+        TestAllocationObserver::capture_controls([extent, usize::MAX, usize::MAX], || {
+            DecodeBudget::new(authority.clone(), authority.maximum)
+        });
+    let budget = budget?;
+    let error = budget.charge_bytes(authority.maximum).unwrap_err();
+    drop(budget);
+    let retained = authority.used.load(Ordering::SeqCst);
+    assert_eq!(retained, PrepaidRefusals::peak_bytes());
+
+    let ((), observed) = TestAllocationObserver::observe_atomic_after_free(
+        &authority.used,
+        identities[0]
+            .unwrap_or_else(|| panic!("the actual prepaid refusal control was not observed")),
+        || drop(error),
+    );
+
+    assert_eq!(observed, Some(retained));
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn poisoned_account_reports_from_prepaid_storage_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let poisoned = budget.clone();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _locked = poisoned.0.state.lock().unwrap();
+            panic!("intentional accounting poison");
+        }))
+        .is_err()
+    );
+
+    let (error, counts) = TestAllocationObserver::count(|| budget.check().unwrap_err());
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(error.to_string(), "decoded metadata account is poisoned");
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn unused_prepaid_refusal_control_frees_before_its_original_loan()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let authority = authority();
+    let extent = prepaid_refusal::allocation_bytes_for_test();
+    let (budget, identities) =
+        TestAllocationObserver::capture_controls([extent, usize::MAX, usize::MAX], || {
+            DecodeBudget::new(authority.clone(), authority.maximum)
+        });
+    let budget = budget?;
+    let retained = authority.used.load(Ordering::SeqCst);
+
+    let ((), observed) = TestAllocationObserver::observe_atomic_after_free(
+        &authority.used,
+        identities[0]
+            .unwrap_or_else(|| panic!("the actual unused refusal control was not observed")),
+        || drop(budget),
+    );
+
+    assert_eq!(observed, Some(retained));
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn refusal_storage_is_not_born_when_its_original_credit_refuses() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let authority = Arc::new(Authority {
+        maximum: DecodeBudget::account_bytes(),
+        ..Arc::try_unwrap(authority())
+            .unwrap_or_else(|_| panic!("the fresh fixture authority was shared"))
+    });
+    let extent = prepaid_refusal::allocation_bytes_for_test();
+
+    let (result, identities) =
+        TestAllocationObserver::capture_controls([extent, usize::MAX, usize::MAX], || {
+            DecodeBudget::new(authority.clone(), 4096)
+        });
+
+    assert!(result.is_err());
+    assert!(identities.iter().all(Option::is_none));
+    assert_eq!(authority.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn array_size_overflow_reports_a_prepaid_cause_without_poisoning()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    for scratch in [false, true] {
+        let authority = authority();
+        let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+        let reservations = authority.calls.load(Ordering::SeqCst);
+
+        let (error, counts) = TestAllocationObserver::count(|| {
+            if scratch {
+                budget.reserve_scratch_array::<u64>(usize::MAX).err()
+            } else {
+                budget.charge_array::<u64>(usize::MAX).err()
+            }
+        });
+        let error = error.unwrap_or_else(|| panic!("the array extent must overflow"));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+        assert_eq!(
+            error.to_string(),
+            if scratch {
+                "decoded scratch array size overflow"
+            } else {
+                "decoded array size overflow"
+            }
+        );
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+                .is_some()
+        );
+        assert_eq!(budget.failure()?, None);
+        budget.charge_bytes(1)?;
+        drop(budget);
+        assert_eq!(
+            authority.used.load(Ordering::SeqCst),
+            PrepaidRefusals::peak_bytes()
+        );
+        drop(error);
+        assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn vector_size_overflow_retains_the_innermost_prepaid_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let mut values = vec![7_u8];
+    let authority = authority();
+    let outer = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let outer_scope = outer.enter();
+    let inner = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let inner_scope = inner.enter();
+    let reservations = authority.calls.load(Ordering::SeqCst);
+
+    let (inner_error, inner_counts) =
+        TestAllocationObserver::count(|| reserve_vec(&mut values, usize::MAX).unwrap_err());
+    drop(inner_scope);
+    let (outer_error, outer_counts) =
+        TestAllocationObserver::count(|| reserve_vec(&mut values, usize::MAX).unwrap_err());
+
+    for counts in [inner_counts, outer_counts] {
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+    }
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    assert_eq!(values, [7]);
+    assert_eq!(inner_error.to_string(), "decoded vector size overflow");
+    assert_eq!(outer_error.to_string(), "decoded vector size overflow");
+    assert_ne!(inner_error, outer_error);
+    assert!(
+        inner_error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(inner.failure()?, None);
+    assert_eq!(outer.failure()?, None);
+
+    drop(outer_scope);
+    drop(inner);
+    drop(outer);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        2 * PrepaidRefusals::peak_bytes()
+    );
+    drop(inner_error);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(outer_error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn btree_node_overflow_uses_its_own_prepaid_account_under_a_foreign_scope()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign_initial = used_bytes(&foreign)?;
+    let foreign_scope = foreign.enter();
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let used = authority.used.load(Ordering::SeqCst);
+
+    // Both eleven-element layouts are valid; their doubled node overlap is not.
+    // No value of this type is constructed or allocated by the geometry query.
+    type LargeField = [u8; 1 << 59];
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget
+                .charge_btree_entry::<LargeField, LargeField>()
+                .unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(error.to_string(), "decoded tree node size overflow");
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(foreign.failure()?, None);
+
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+    drop(error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), foreign_initial);
+    drop(foreign_scope);
+    drop(foreign);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn key_layout_overflow_retains_its_actual_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    assert_prepaid_layout_refusal::<[u8; 1 << 60], u8>()
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn value_layout_overflow_retains_its_actual_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    assert_prepaid_layout_refusal::<u8, [u8; 1 << 60]>()
+}
+
+#[cfg(target_pointer_width = "64")]
+fn assert_prepaid_layout_refusal<K, V>() -> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign_initial = used_bytes(&foreign)?;
+    let foreign_scope = foreign.enter();
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let used = authority.used.load(Ordering::SeqCst);
+
+    // An unscoped query preserves the original typed error independently of TLS.
+    // No value of either huge type is constructed by the real layout queries.
+    let expected = DecodeBudget::btree_control_bytes::<K, V>(1).unwrap_err();
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget.charge_btree_entry::<K, V>().unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(format!("{error:?}"), format!("{expected:?}"));
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::alloc::LayoutError>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(foreign.failure()?, None);
+
+    let alias = error.clone();
+    let foreign_error = foreign.charge_btree_entry::<K, V>().unwrap_err();
+    assert_ne!(error, foreign_error);
+    assert_eq!(foreign.failure()?, Some(foreign_error.clone()));
+    drop(foreign_error);
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+
+    drop(error);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+    drop(alias);
+    assert_eq!(authority.used.load(Ordering::SeqCst), foreign_initial);
+    drop(foreign_scope);
+    drop(foreign);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+struct PrebornAuthority {
+    loans: Mutex<std::collections::VecDeque<(u64, ResourceLoan)>>,
+    calls: AtomicU64,
+}
+
+impl DecodeResourceAuthority for PrebornAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        Ok(())
+    }
+
+    fn reserve(&self, bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (expected, loan) = self.loans.lock().unwrap().pop_front().unwrap();
+        assert_eq!(bytes, expected);
+        Ok(loan)
+    }
+}
+
+#[test]
+fn vector_capacity_refusal_keeps_actual_typed_source_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    // Vec rejects this real capacity before attempting a backing allocation.
+    // This component authority has a finite logical allowance, not native RAM.
+    let additional = isize::MAX as usize + 1;
+    let receipt_growth = 4 * std::mem::size_of::<ResourceLoan>() as u64;
+    let requests = [
+        DecodeBudget::account_bytes(),
+        PrepaidRefusals::peak_bytes(),
+        receipt_growth,
+        additional as u64 + receipt_growth,
+    ];
+    let used = Arc::new(AtomicU64::new(0));
+    let mut loans = std::collections::VecDeque::new();
+    // Each provider-owned loan needs independent control storage in addition
+    // to the payload admitted to the decode account.
+    let control_bytes = ResourceLoan::allocation_bytes::<Credit>();
+    let maximum = requests
+        .iter()
+        .try_fold(0u64, |total, bytes| {
+            total.checked_add(bytes.checked_add(control_bytes)?)
+        })
+        .unwrap();
+    for bytes in requests {
+        let charged = bytes.checked_add(control_bytes).unwrap();
+        used.fetch_add(charged, Ordering::SeqCst);
+        loans.push_back((
+            bytes,
+            ResourceLoan::new(Credit {
+                used: used.clone(),
+                bytes: charged,
+            }),
+        ));
+    }
+    let provider = Arc::new(PrebornAuthority {
+        loans: Mutex::new(loans),
+        calls: AtomicU64::new(0),
+    });
+    let budget = DecodeBudget::new(provider.clone(), maximum)?;
+    budget.charge_bytes(0)?;
+    let scope = budget.enter();
+    let mut values = Vec::<u8>::new();
+    let expected = Vec::<u8>::new().try_reserve_exact(additional).unwrap_err();
+    let before = used.load(Ordering::SeqCst);
+
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            reserve_vec(&mut values, additional).unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(values.capacity(), 0);
+    assert!(values.is_empty());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
+    assert!(provider.loans.lock().unwrap().is_empty());
+    assert_eq!(used.load(Ordering::SeqCst), before);
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", DecodeAdmissionError::new(expected.clone()))
+    );
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(budget.failure()?, None);
+
+    let alias = error.clone();
+    assert_eq!(error, alias);
+    drop(scope);
+    drop(budget);
+    let retained = PrepaidRefusals::peak_bytes() + control_bytes;
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(error);
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(alias);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn unscoped_vector_capacity_refusal_preserves_the_actual_source() {
+    assert!(current_budget().is_none());
+    let additional = isize::MAX as usize + 1;
+    let expected = Vec::<u8>::new().try_reserve_exact(additional).unwrap_err();
+    let mut values = Vec::<u8>::new();
+
+    let error = reserve_vec(&mut values, additional).unwrap_err();
+
+    assert_eq!(values.capacity(), 0);
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(error.to_string(), expected.to_string());
+}
+
+#[test]
+fn receipt_vector_allocator_refusal_is_prepaid_sticky_and_returns_unused_credit()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::alloc::Layout;
+
+    let layout = Layout::array::<ResourceLoan>(4).unwrap();
+    let receipt_growth = layout.size() as u64;
+    let control_bytes = ResourceLoan::allocation_bytes::<Credit>();
+    let requests = [
+        DecodeBudget::account_bytes(),
+        PrepaidRefusals::peak_bytes(),
+        receipt_growth,
+    ];
+    let used = Arc::new(AtomicU64::new(0));
+    let mut loans = std::collections::VecDeque::new();
+    let maximum = requests
+        .iter()
+        .try_fold(0u64, |total, bytes| {
+            total.checked_add(bytes.checked_add(control_bytes)?)
+        })
+        .unwrap();
+    for bytes in requests {
+        let charged = bytes.checked_add(control_bytes).unwrap();
+        used.fetch_add(charged, Ordering::SeqCst);
+        loans.push_back((
+            bytes,
+            ResourceLoan::new(Credit {
+                used: used.clone(),
+                bytes: charged,
+            }),
+        ));
+    }
+    let provider = Arc::new(PrebornAuthority {
+        loans: Mutex::new(loans),
+        calls: AtomicU64::new(0),
+    });
+    let budget = DecodeBudget::new(provider.clone(), maximum)?;
+    let initial = used_bytes(&budget)?;
+    let before = used.load(Ordering::SeqCst);
+    let (expected, reference_reached) =
+        TestAllocationObserver::refuse_one_allocation(layout, || {
+            Vec::<ResourceLoan>::new().try_reserve(1).unwrap_err()
+        })
+        .unwrap();
+    assert!(reference_reached);
+
+    let ((error, counts), reached) = TestAllocationObserver::refuse_one_allocation(layout, || {
+        TestAllocationObserver::count(|| budget.charge_bytes(0).unwrap_err())
+    })
+    .unwrap();
+
+    assert!(reached);
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    assert!(provider.loans.lock().unwrap().is_empty());
+    assert_eq!(
+        used.load(Ordering::SeqCst),
+        before - receipt_growth - control_bytes
+    );
+    assert_eq!(used_bytes(&budget)?, initial);
+    {
+        let state = budget.0.state.lock().unwrap();
+        assert!(state.receipts.is_empty());
+        assert_eq!(state.receipts.capacity(), 0);
+    }
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", DecodeAdmissionError::new(expected.clone()))
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    let (repeated, counts) = TestAllocationObserver::count(|| budget.charge_bytes(1));
+    assert_eq!(repeated, Err(error.clone()));
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    drop(repeated);
+
+    let alias = error.clone();
+    drop(budget);
+    let retained = PrepaidRefusals::peak_bytes() + control_bytes;
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(error);
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(alias);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
+    Ok(())
+}

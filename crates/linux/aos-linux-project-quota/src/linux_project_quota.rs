@@ -20,10 +20,19 @@ use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::open;
 use rustix::fs::{FileType, Mode, OFlags, RawDir, fstat, fstatfs, fsync, openat};
 use rustix::ioctl::{Getter, Setter, ioctl, opcode};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
+
+mod binding;
+mod control;
+mod descendants;
+pub use binding::{
+    AuditedProjectQuotaBinding, LinuxProjectQuotaBinding, QuotaAudit, QuotaAuditRefusal,
+};
+pub use control::LinuxProjectQuotaController;
+use control::QuotaControlState;
 
 const EXT4_QUOTA_BLOCK_BYTES: u64 = 1 << 10;
 const PROJECT_QUOTA_TYPE: u32 = 2;
@@ -45,6 +54,9 @@ pub struct LinuxProjectQuotaLimits {
 }
 
 impl LinuxProjectQuotaLimits {
+    /// Bounds inode inventory and cleanup work for one project.
+    pub const MAXIMUM_INODES: u64 = MAX_PROJECT_QUOTA_INODES;
+
     /// Converts a byte ceiling to the conservative ext4 quota-block boundary.
     ///
     /// The quota interface expresses hard space limits in 1,024-byte blocks.
@@ -94,8 +106,9 @@ impl LinuxProjectQuotaLimits {
 #[derive(Debug)]
 #[must_use = "release the project quota after process reap or retain it in quarantine"]
 pub struct LinuxProjectQuotaReservation {
-    filesystem: Option<OwnedFd>,
-    directory: Option<OwnedFd>,
+    filesystem: Option<Arc<OwnedFd>>,
+    directory: Option<Arc<OwnedFd>>,
+    control: Option<Arc<Mutex<QuotaControlState>>>,
     path: PathBuf,
     project_id: u32,
     limits: LinuxProjectQuotaLimits,
@@ -159,8 +172,9 @@ impl LinuxProjectQuotaReservation {
         }
 
         let mut reservation = Self {
-            filesystem: Some(filesystem),
-            directory: Some(directory),
+            filesystem: Some(Arc::new(filesystem)),
+            directory: Some(Arc::new(directory)),
+            control: None,
             path,
             project_id,
             limits,
@@ -182,7 +196,7 @@ impl LinuxProjectQuotaReservation {
         self.project_id
     }
 
-    /// Returns the exact admitted and kernel-rounded limits.
+    /// Returns the initial admitted and kernel-rounded limits.
     #[must_use]
     pub const fn limits(&self) -> LinuxProjectQuotaLimits {
         self.limits
@@ -199,7 +213,7 @@ impl LinuxProjectQuotaReservation {
     /// the pinned directory authority.
     pub fn directory(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.directory
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| LinuxProjectQuotaError::MissingAuthority {
                 path: self.path.clone(),
             })
@@ -220,7 +234,7 @@ impl LinuxProjectQuotaReservation {
             self.filesystem()?,
             &self.path,
             self.project_id,
-            self.limits,
+            self.current_control_limits()?,
         )
     }
 
@@ -266,6 +280,7 @@ impl LinuxProjectQuotaReservation {
     }
 
     fn release_in_place(&mut self) -> Result<(), LinuxProjectQuotaError> {
+        self.retire_controller();
         if self.released {
             return Ok(());
         }
@@ -299,7 +314,7 @@ impl LinuxProjectQuotaReservation {
 
     fn filesystem(&self) -> Result<&OwnedFd, LinuxProjectQuotaError> {
         self.filesystem
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| LinuxProjectQuotaError::MissingAuthority {
                 path: self.path.clone(),
             })
@@ -327,98 +342,17 @@ pub fn validate_project_quota_root(
     Ok(())
 }
 
-/// Pinned authority for one operator-installed ext4 project quota.
-#[derive(Debug)]
-pub struct LinuxProjectQuotaBinding {
-    directory: OwnedFd,
-    path: PathBuf,
-    device: u64,
-    inode: u64,
-    project_id: u32,
-    limits: LinuxProjectQuotaLimits,
-}
-
-impl LinuxProjectQuotaBinding {
-    /// Pins and verifies one already configured project-quota directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxProjectQuotaError`] when the project identifier or
-    /// limits are unsupported, the directory cannot be pinned, or its exact
-    /// filesystem, assignment, limits, or current usage fail verification.
-    pub fn bind_existing(
-        root: &Path,
-        project_id: u32,
-        maximum_physical_bytes: u64,
-        maximum_inodes: u64,
-    ) -> Result<Self, LinuxProjectQuotaError> {
-        if !project_id_is_supported(project_id) {
-            return Err(LinuxProjectQuotaError::InvalidProjectId);
-        }
-        let limits = LinuxProjectQuotaLimits::new(maximum_physical_bytes, maximum_inodes)?;
-        let directory = open(
-            root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "open-physical-quota-root",
-            path: root.to_owned(),
-            source: source.into(),
-        })?;
-        validate_ext4_filesystem(&directory, &directory, root)?;
-        project_quota_info(&directory, root)?;
-        verify_assigned_project(&directory, root, project_id)?;
-        verify_project_quota(&directory, root, project_id, limits)?;
-        verify_project_usage_within_limit(&directory, root, project_id, limits)?;
-        let identity = fstat(&directory).map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "identify-physical-quota-root",
-            path: root.to_owned(),
-            source: source.into(),
-        })?;
-        Ok(Self {
-            directory,
-            path: root.to_owned(),
-            device: identity.st_dev,
-            inode: identity.st_ino,
-            project_id,
-            limits,
-        })
-    }
-
-    /// Reauthenticates the pinned directory and its installed quota.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinuxProjectQuotaError`] when the named directory no longer
-    /// matches the pin or its assignment, limits, or usage changed.
-    pub fn verify(&self) -> Result<(), LinuxProjectQuotaError> {
-        let current = open(
-            &self.path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "reopen-physical-quota-root",
-            path: self.path.clone(),
-            source: source.into(),
-        })?;
-        let current_identity = fstat(&current).map_err(|source| LinuxProjectQuotaError::Io {
-            operation: "reauthenticate-physical-quota-root",
-            path: self.path.clone(),
-            source: source.into(),
-        })?;
-        if current_identity.st_dev != self.device || current_identity.st_ino != self.inode {
-            return Err(LinuxProjectQuotaError::FilesystemIdentity {
-                path: self.path.clone(),
-            });
-        }
-
-        validate_ext4_filesystem(&self.directory, &self.directory, &self.path)?;
-        verify_assigned_project(&self.directory, &self.path, self.project_id)?;
-        verify_project_quota(&self.directory, &self.path, self.project_id, self.limits)?;
-        verify_project_usage_within_limit(&self.directory, &self.path, self.project_id, self.limits)
-    }
+/// Verifies that project-quota state can be queried through a pinned filesystem.
+///
+/// This reads existing kernel state and installs no quota or namespace lease.
+///
+/// # Errors
+/// Returns a kernel error or refuses a filesystem without active project quotas.
+pub fn verify_project_quotas_enabled(
+    directory: &OwnedFd,
+    path: &Path,
+) -> Result<(), LinuxProjectQuotaError> {
+    project_quota_info(directory, path).map(|_| ())
 }
 
 fn verify_assigned_project(
@@ -438,6 +372,7 @@ fn verify_assigned_project(
 
 impl Drop for LinuxProjectQuotaReservation {
     fn drop(&mut self) {
+        self.retire_controller();
         if self.released {
             return;
         }
@@ -526,9 +461,24 @@ impl LinuxProjectQuotaReleaseError {
 /// Stable project-quota validation or kernel-operation failure.
 #[derive(Debug, Error)]
 pub enum LinuxProjectQuotaError {
+    /// The caller retains the actual reason its cooperative audit refused.
+    #[error(transparent)]
+    AuditRefused(#[from] QuotaAuditRefusal),
+    /// A namespace entry escapes the bounded inherited quota inventory.
+    #[error("project-quota namespace is unsafe or exceeds its traversal bounds: {path}")]
+    UnsafeNamespace {
+        /// Diagnostic path inside the pinned namespace.
+        path: PathBuf,
+    },
     /// Aggregate bytes or inode bounds cannot be enforced safely.
     #[error("project-quota limits are outside the supported range")]
     InvalidLimits,
+    /// A live controller cannot increase its retained ceiling.
+    #[error("project-quota tightening cannot increase the current limit")]
+    LimitIncrease,
+    /// Controller authority was retired or failed an uncertain kernel update.
+    #[error("project-quota tightening authority is retired")]
+    RetiredController,
     /// Project ID is zero or cannot fit the signed `quotactl_fd` argument.
     #[error("project-quota identifier must fit the positive signed 32-bit range")]
     InvalidProjectId,

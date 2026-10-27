@@ -117,6 +117,7 @@ impl NodeFaultPayloadV1 {
                 (P4, Ty::Bool),
                 (P5, Ty::U64),
                 (P6, Ty::Bytes),
+                (P7, Ty::Bytes),
             ][..],
             FaultCommandKind::ClockTransform => &[
                 (P1, Ty::Hash),
@@ -315,7 +316,7 @@ impl NodeFaultPayloadV1 {
             FaultCommandKind::MemoryAccessTransform => &[P7],
             FaultCommandKind::MemoryEccEvent => &[P7],
             FaultCommandKind::MemoryRegionState => &[P4],
-            FaultCommandKind::MemoryService => &[P6],
+            FaultCommandKind::MemoryService => &[P6, P7],
             FaultCommandKind::ClockSourceState => &[P2, P3],
             FaultCommandKind::AcceleratorResultTransform => &[P1, P2],
             FaultCommandKind::AcceleratorService => &[P6],

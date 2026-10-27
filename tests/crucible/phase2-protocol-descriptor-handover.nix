@@ -8,7 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   protocolCargo = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/Cargo.toml;
-  protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
+  ]);
   descriptorTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   crateSpec = builtins.readFile ../../docs/rfcs/0010-crucible/27-crate-structure.md;

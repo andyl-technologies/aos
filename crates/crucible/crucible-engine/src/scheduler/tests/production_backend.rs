@@ -15,6 +15,9 @@ use crate::{
 
 #[test]
 fn backend_quantum_loop_applies_resolved_preemption_before_run() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(
         vec![test_scenario_node(
             "vm-a",
@@ -56,6 +59,9 @@ fn backend_quantum_loop_applies_resolved_preemption_before_run() {
 
 #[test]
 fn quantum_loop_trait_is_object_safe() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     struct StubLoop;
 
     impl QuantumLoop for StubLoop {
@@ -76,6 +82,7 @@ fn quantum_loop_trait_is_object_safe() {
                 event_log_segment_hash: None,
                 event_log_offset: EventLogOffset::default(),
                 scheduler_quiescence: None,
+                event_log_custody: Default::default(),
             })
         }
     }
@@ -101,6 +108,9 @@ fn quantum_loop_trait_is_object_safe() {
 
 #[test]
 fn production_scenario_binding_preserves_the_submitted_configuration_identity() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scenario = ScenarioDef::from_canonical_material_with_seed(
         "crucible.test.scheduler.production-binding",
         "scenario=production-binding",
@@ -123,6 +133,9 @@ fn production_scenario_binding_preserves_the_submitted_configuration_identity() 
 
 #[test]
 fn live_app_random_consumes_an_exact_parent_campaign_selection() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let configuration = scheduler.configuration().clone();
     let node = NodeId {
@@ -179,6 +192,9 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
 
 #[test]
 fn lifecycle_activity_requirement_rejects_release_before_scheduler_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -208,6 +224,9 @@ fn lifecycle_activity_requirement_rejects_release_before_scheduler_publication()
 
 #[test]
 fn admitted_ready_counter_is_the_scheduler_epoch() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let backend_node = NodeId {
         name: String::from("node-a"),
@@ -262,6 +281,9 @@ fn admitted_ready_counter_is_the_scheduler_epoch() {
 
 #[test]
 fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     #[derive(Clone)]
     struct BoundaryLoop {
         event_log: EventLog,
@@ -297,6 +319,7 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
                 event_log_segment_hash: append.segment_hash,
                 event_log_offset: append.offset,
                 scheduler_quiescence: None,
+                event_log_custody: append.event_log_custody,
             })
         }
 
@@ -424,6 +447,9 @@ fn backend_quantum_loop_buffers_observations_at_an_ahead_node_poll_boundary() {
 
 #[test]
 fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     struct ShutdownDecisionBackend {
         inner: MockSimulationBackend,
         evidence: Vec<BackendRngEvidence>,
@@ -507,6 +533,9 @@ fn shutdown_rejects_causal_decisions_without_a_discovery_handoff() {
 
 #[test]
 fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let parent = scheduler.configuration().clone();
     let frontier = scheduler.frontier();
@@ -549,6 +578,9 @@ fn signal_fault_branch_admission_requires_the_exact_typed_boundary() {
 
 #[test]
 fn external_selection_advances_the_authoritative_scheduler_frontier() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     let prior = scheduler
         .append_observable_events([ObservableEvent::console_output(
@@ -637,6 +669,9 @@ fn external_selection_advances_the_authoritative_scheduler_frontier() {
 
 #[test]
 fn paused_selection_rebases_physical_output_only_after_reply_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = NodeId {
         name: String::from("node-a"),
     };
@@ -760,6 +795,9 @@ fn paused_selection_rebases_physical_output_only_after_reply_publication() {
 
 #[test]
 fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     fn app_random_decisions(
         seed: Seed,
     ) -> (Vec<Decision>, Vec<crucible_campaign::ChoiceDiscovery>) {
@@ -852,6 +890,9 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
 }
 #[test]
 fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     #[derive(Default)]
     struct GdbBackend {
         opened: Vec<(NodeId, String)>,

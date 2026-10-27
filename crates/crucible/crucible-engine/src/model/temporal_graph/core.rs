@@ -14,6 +14,8 @@ pub struct GenesisCheckpoint {
 pub struct World {
     /// The world content address.
     pub id: ContentHash,
+    // Constructor-derived topology identity remains independent of the recorded handle.
+    pub(in crate::model) canonical_id: ContentHash,
     pub(in crate::model) topology_nodes: Vec<WorldNodeDef>,
     pub(in crate::model) links: Vec<LinkDef>,
     pub(in crate::model) fault_topology: WorldFaultTopology,

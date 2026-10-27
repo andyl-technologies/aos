@@ -49,15 +49,29 @@ use crate::{
     stage_prepared_checkpoint_result,
 };
 
-mod diagnostics;
-use diagnostics::{record_phase, record_queued_phase, record_retained_publication};
+mod worker_custody;
+pub(crate) use worker_custody::{
+    ExecutorWorkerCustody, PreparedExecutorWorkers, WorkerRetirementRefusal,
+};
 
+mod diagnostics;
+mod host_admission;
+#[cfg(feature = "private-measurement-domain")]
+mod original_ingress;
+use diagnostics::{record_phase, record_queued_phase, record_retained_publication};
+pub(crate) use host_admission::{CampaignActorPort, PreparedExecutorActor};
+
+mod checkpoint;
 mod completion;
+pub(crate) mod original_retirement;
+use checkpoint::{observe_promoted_checkpoint, reconcile_checkpoint_result};
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
 mod promotion;
-use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue, promotion_worker_loop};
-pub(crate) use promotion::{LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker};
+use promotion::{DisabledCheckpointPromotionWorker, PromotionQueue};
+pub(crate) use promotion::{
+    LocalCheckpointPromotionWorker, ProductionCheckpointPromotionWorker, promotion_control_bytes,
+};
 pub use promotion::{MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE, MAX_LOCAL_CHECKPOINT_PROMOTION_WORKERS};
 
 /// Maximum execution threads accepted by one local executor pool.
@@ -107,6 +121,8 @@ pub(crate) trait PausedCheckpointObserver: Send + Sync {
 /// Cloneable checked component service backed by one fixed worker pool.
 pub struct LocalExecutorPoolService<L, V> {
     shared: Arc<SharedExecutor<L, V>>,
+    #[cfg(feature = "private-measurement-domain")]
+    original: Option<Arc<crucible_host_resources::host_supervision::HostOperationGuard>>,
 }
 
 /// Bounded process-owned executor activity captured under the actor mutex.
@@ -121,6 +137,8 @@ impl<L, V> Clone for LocalExecutorPoolService<L, V> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
+            #[cfg(feature = "private-measurement-domain")]
+            original: self.original.clone(),
         }
     }
 }
@@ -130,6 +148,31 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator + Send + Sync,
 {
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn require_running_for_call(&self) -> Result<(), LocalExecutorPoolServiceError<L::Error>> {
+        self.shared.require_running()
+    }
+
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn lock_executor_for_call(
+        &self,
+        changes_ownership: bool,
+    ) -> Result<
+        MutexGuard<'_, LocalExecutorCapabilityService<L, V>>,
+        LocalExecutorPoolServiceError<L::Error>,
+    > {
+        if changes_ownership {
+            self.shared.lock_executor()
+        } else {
+            self.shared.lock_executor_read_only()
+        }
+    }
+
+    #[cfg(not(feature = "private-measurement-domain"))]
+    fn poison_for_call(&self) {
+        self.shared.poison();
+    }
+
     /// Durably requests cancellation of one exact local execution.
     ///
     /// Capacity remains charged while its worker is physically in flight. The
@@ -144,7 +187,7 @@ where
         key: AttemptExecutionKey,
         execution: crucible_campaign::ExecutionId,
     ) -> Result<crate::CancellationOutcome, LocalExecutorPoolServiceError<L::Error>> {
-        let mut executor = self.shared.lock_executor()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         executor
             .supervisor_mut()
             .cancel_execution(key, execution)
@@ -155,11 +198,16 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error when supervisor ownership is poisoned.
+    /// Returns an error when supervisor ownership is poisoned or the direct
+    /// original-bound component alias does not support operational reporting.
     pub fn report(
         &self,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolServiceError<L::Error>> {
-        let executor = self.shared.lock_executor_read_only()?;
+        #[cfg(feature = "private-measurement-domain")]
+        if self.original.is_some() {
+            return Err(LocalExecutorPoolServiceError::OriginalReportUnavailable);
+        }
+        let executor = self.lock_executor_for_call(false)?;
         Ok(self.shared.report(executor.supervisor()))
     }
 
@@ -167,8 +215,8 @@ where
     pub(crate) fn operational_snapshot(
         &self,
     ) -> Result<LocalExecutorOperationalSnapshot, LocalExecutorPoolServiceError<L::Error>> {
-        self.shared.require_running()?;
-        let executor = self.shared.lock_executor_read_only()?;
+        self.require_running_for_call()?;
+        let executor = self.lock_executor_for_call(false)?;
         let revision = self.shared.ownership_revision.load(Ordering::Acquire);
         if revision == u64::MAX {
             return Err(LocalExecutorPoolServiceError::ObservationRevisionExhausted);
@@ -193,9 +241,9 @@ where
         &mut self,
         request: &SubmitAttemptRequest,
     ) -> Result<SubmitAttemptResponse, Self::Error> {
-        self.shared.require_running()?;
+        self.require_running_for_call()?;
         let preflight = {
-            let mut executor = self.shared.lock_executor()?;
+            let mut executor = self.lock_executor_for_call(true)?;
             executor
                 .supervisor_mut()
                 .preflight_submit(request)
@@ -213,12 +261,12 @@ where
         })) {
             Ok(validation) => validation,
             Err(_) => {
-                self.shared.poison();
+                self.poison_for_call();
                 return Err(LocalExecutorPoolServiceError::WorkerPanicked);
             }
         };
-        self.shared.require_running()?;
-        let mut executor = self.shared.lock_executor()?;
+        self.require_running_for_call()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         let response = executor
             .supervisor_mut()
             .submit_after_validation(request, validation)
@@ -236,9 +284,8 @@ where
     V: AttemptAdmissionValidator + Send + Sync,
 {
     fn describe_executor(&mut self) -> Result<ExecutorDescription, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor_read_only()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(false)?
             .describe_executor()
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -247,9 +294,8 @@ where
         &mut self,
         request: &WatchExecutorCapacityRequest,
     ) -> Result<ExecutorCapacityReport, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .watch_capacity(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -264,9 +310,8 @@ where
         &mut self,
         request: &GetAttemptExecutionRequest,
     ) -> Result<GetAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor_read_only()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(false)?
             .get_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -281,9 +326,8 @@ where
         &mut self,
         request: &CheckpointAttemptExecutionRequest,
     ) -> Result<CheckpointAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .checkpoint_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -292,9 +336,8 @@ where
         &mut self,
         request: &CancelAttemptExecutionRequest,
     ) -> Result<CancelAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
-        self.shared
-            .lock_executor()?
+        self.require_running_for_call()?;
+        self.lock_executor_for_call(true)?
             .cancel_attempt_execution(request)
             .map_err(LocalExecutorPoolServiceError::Supervisor)
     }
@@ -309,7 +352,7 @@ where
         &mut self,
         request: &ResumeAttemptExecutionRequest,
     ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
-        self.shared.require_running()?;
+        self.require_running_for_call()?;
         let assignment = request
             .assignment_request()
             .map_err(LocalExecutorError::from)
@@ -322,12 +365,12 @@ where
         })) {
             Ok(validation) => validation,
             Err(_) => {
-                self.shared.poison();
+                self.poison_for_call();
                 return Err(LocalExecutorPoolServiceError::WorkerPanicked);
             }
         };
-        self.shared.require_running()?;
-        let mut executor = self.shared.lock_executor()?;
+        self.require_running_for_call()?;
+        let mut executor = self.lock_executor_for_call(true)?;
         let response = executor
             .supervisor_mut()
             .resume_after_validation(request, validation)
@@ -342,7 +385,15 @@ where
 /// Fixed owner of local execution threads and their shared supervisor actor.
 pub struct LocalExecutorWorkerPool<L, V> {
     service: LocalExecutorPoolService<L, V>,
-    workers: Vec<JoinHandle<()>>,
+    worker_custody: Arc<ExecutorWorkerCustody>,
+    original_retired: bool,
+}
+
+/// Retains the authorities published together with one worker pool.
+struct PoolPublicationContext<L, V> {
+    checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
+    prepared_results: Option<PreparedResultJournalConfig>,
+    prepared_admission: Option<Arc<host_admission::HostAdmission<L, V>>>,
 }
 
 impl<L, V> LocalExecutorWorkerPool<L, V>
@@ -369,19 +420,24 @@ where
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
     {
         Self::start_inner(
             executor,
             store,
             checkpoints,
-            workers,
+            PreparedExecutorWorkers::component(workers, 0),
             Vec::<DisabledCheckpointPromotionWorker>::new(),
-            None,
-            None,
+            PoolPublicationContext {
+                checkpoint_observer: None,
+                prepared_results: None,
+                prepared_admission: None,
+            },
         )
     }
 
     /// Starts fixed semantic workers with one durable paused-root owner.
+    #[cfg(test)]
     pub(crate) fn start_with_checkpoint_observer<W>(
         executor: LocalExecutorCapabilityService<L, V>,
         store: CampaignExecutorStore,
@@ -392,60 +448,79 @@ where
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
     {
         Self::start_inner(
             executor,
             store,
             checkpoints,
-            workers,
+            PreparedExecutorWorkers::component(workers, 0),
             Vec::<DisabledCheckpointPromotionWorker>::new(),
-            Some(checkpoint_observer),
-            prepared_results,
+            PoolPublicationContext {
+                checkpoint_observer: Some(checkpoint_observer),
+                prepared_results,
+                prepared_admission: None,
+            },
         )
     }
 
-    /// Starts fixed semantic and promotion workers with one paused-root owner.
-    pub(crate) fn start_with_checkpoint_promotions_and_observer<W, P>(
-        executor: LocalExecutorCapabilityService<L, V>,
+    /// Starts an already charged preparation actor without replacing its ledger.
+    ///
+    /// # Errors
+    /// Refuses invalid worker or description bounds, uncertain admission
+    /// routing, and worker spawn failures before publishing a pool service.
+    pub(crate) fn start_prepared_with_observer<W, P>(
+        prepared: (PreparedExecutorActor<L, V>, ExecutorDescription),
         store: CampaignExecutorStore,
         checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
+        workers: PreparedExecutorWorkers<W>,
         promotion_workers: Vec<P>,
         checkpoint_observer: Arc<dyn PausedCheckpointObserver>,
         prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
         P: LocalCheckpointPromotionWorker + Send + 'static,
     {
-        if promotion_workers.is_empty() {
-            return Err(LocalExecutorPoolConfigError::ZeroPromotionWorkers);
-        }
+        let (prepared, description) = prepared;
+        let (executor, admission) = prepared.into_parts(description)?;
         Self::start_inner(
             executor,
             store,
             checkpoints,
             workers,
             promotion_workers,
-            Some(checkpoint_observer),
-            prepared_results,
+            PoolPublicationContext {
+                checkpoint_observer: Some(checkpoint_observer),
+                prepared_results,
+                prepared_admission: Some(admission),
+            },
         )
     }
 
     fn start_inner<W, P>(
-        executor: LocalExecutorCapabilityService<L, V>,
+        executor: impl Into<host_admission::ActorAllocation<L, V>>,
         store: CampaignExecutorStore,
         checkpoints: Arc<ExactCheckpointStore>,
-        workers: Vec<W>,
+        workers: PreparedExecutorWorkers<W>,
         promotion_workers: Vec<P>,
-        checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
-        prepared_results: Option<PreparedResultJournalConfig>,
+        publication: PoolPublicationContext<L, V>,
     ) -> Result<Self, LocalExecutorPoolConfigError>
     where
         W: LocalAttemptWorker + Send + 'static,
+        W::Error: Send + 'static,
         P: LocalCheckpointPromotionWorker + Send + 'static,
     {
-        let worker_count = workers.len();
+        let PoolPublicationContext {
+            checkpoint_observer,
+            prepared_results,
+            prepared_admission,
+        } = publication;
+        let executor = executor.into();
+        let (worker_cells, worker_custody) = workers.into_cells();
+        let _startup = worker_custody::WorkerStartup(Arc::clone(&worker_custody));
+        let worker_count = worker_cells.len();
         if worker_count == 0 {
             return Err(LocalExecutorPoolConfigError::ZeroWorkers);
         }
@@ -454,6 +529,9 @@ where
         }
         let maximum_slots = usize::try_from(
             executor
+                .actor
+                .lock()
+                .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?
                 .supervisor()
                 .capacity()
                 .maximum_concurrent_executions(),
@@ -475,6 +553,9 @@ where
         let mut restart_overflow = false;
         if promotion_worker_count != 0 {
             executor
+                .actor
+                .lock()
+                .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?
                 .supervisor()
                 .visit_checkpoint_promotion_restart_work(&mut |work| {
                     if restart_work.len() < MAX_LOCAL_CHECKPOINT_PROMOTION_QUEUE {
@@ -498,51 +579,71 @@ where
             checkpoint_observer,
             prepared_results,
         ));
-        let total_workers = worker_count
-            .checked_add(promotion_worker_count)
-            .ok_or(LocalExecutorPoolConfigError::TooManyPromotionWorkers)?;
-        let mut joins: Vec<JoinHandle<()>> = Vec::with_capacity(total_workers);
-        for (slot, worker) in workers.into_iter().enumerate() {
+        if let Some(admission) = prepared_admission {
+            admission
+                .bind(&shared)
+                .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?;
+        } else {
+            let admission = Arc::new(host_admission::HostAdmission::running(&shared));
+            admission.install_terminal_hook(&shared);
+            shared
+                .executor
+                .lock()
+                .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?
+                .supervisor()
+                .host_operational_registry()
+                .attach_admission(admission)
+                .map_err(|_| LocalExecutorPoolConfigError::HostOperationalAdmission)?;
+        }
+        for (slot, worker) in worker_cells.into_iter().enumerate() {
             let worker_shared = Arc::clone(&shared);
             let worker_store = store.clone();
+            worker.scheduled();
+            let worker_for_thread = Arc::clone(&worker);
+            let retained_by_main = worker_custody.has_funded_workers();
             let join = match thread::Builder::new()
                 .name(format!("crucible-executor-{slot}"))
                 .spawn(move || {
                     let _completion = WorkerCompletion::new(&worker_shared.completion);
-                    worker_loop(worker_shared, worker_store, worker);
+                    worker_for_thread.run(worker_shared, worker_store, retained_by_main);
                 }) {
                 Ok(join) => join,
                 Err(source) => {
+                    worker.spawn_failed();
                     shared.request_shutdown();
                     // Already-started workers own their exact state. A spawn
                     // failure must not wait forever on their reconciliation.
-                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
-            joins.push(join);
+            worker_custody.retain_thread(join);
         }
         for (slot, worker) in promotion_workers.into_iter().enumerate() {
-            let worker_shared = Arc::clone(&shared);
+            let capture = promotion::PromotionThreadCapture {
+                shared: Arc::clone(&shared),
+                worker,
+            };
             let join = match thread::Builder::new()
-                .name(format!("crucible-checkpoint-promotion-{slot}"))
-                .spawn(move || {
-                    let _completion = WorkerCompletion::new(&worker_shared.completion);
-                    promotion_worker_loop(worker_shared, worker);
-                }) {
+                .name(promotion::promotion_thread_name(slot))
+                .spawn(move || capture.run())
+            {
                 Ok(join) => join,
                 Err(source) => {
                     shared.request_shutdown();
-                    drop(joins);
                     return Err(LocalExecutorPoolConfigError::Spawn { source });
                 }
             };
-            joins.push(join);
+            worker_custody.retain_thread(join);
         }
 
         Ok(Self {
-            service: LocalExecutorPoolService { shared },
-            workers: joins,
+            service: LocalExecutorPoolService {
+                shared,
+                #[cfg(feature = "private-measurement-domain")]
+                original: None,
+            },
+            worker_custody,
+            original_retired: false,
         })
     }
 
@@ -593,25 +694,32 @@ where
     }
 
     pub(crate) fn shutdown_and_join_with_timeout(
-        mut self,
+        self,
         timeout: Duration,
     ) -> Result<LocalExecutorPoolReport, LocalExecutorPoolShutdownError> {
         self.request_shutdown();
         if !self.service.shared.completion.wait_for_cleanup(timeout) {
             return Err(LocalExecutorPoolShutdownError::CleanupPending);
         }
-        let mut outer_panic = false;
-        for worker in self.workers.drain(..) {
-            if worker.join().is_err() {
-                outer_panic = true;
+        let outer_panic = if self.worker_custody.has_funded_workers() {
+            if !self.original_retired {
+                return Err(LocalExecutorPoolShutdownError::CleanupPending);
             }
-        }
+            self.worker_custody.thread_panicked()
+        } else {
+            self.worker_custody.join_components()?
+        };
         if outer_panic {
             return Err(LocalExecutorPoolShutdownError::ThreadPanicked);
         }
         let state = self.service.shared.state.load(Ordering::Acquire);
         if state == POOL_POISONED {
             return Err(LocalExecutorPoolShutdownError::WorkerPanicked);
+        }
+        if self.worker_custody.has_funded_workers() && !self.original_retired {
+            // Joining borrowing threads is not physical model/factory return.
+            // Production must use its same saved Original retirement path.
+            return Err(LocalExecutorPoolShutdownError::CleanupPending);
         }
         let executor = self
             .service
@@ -651,17 +759,32 @@ impl<L, V> LocalExecutorPoolShutdown<L, V> {
 
 impl<L, V> Drop for LocalExecutorWorkerPool<L, V> {
     fn drop(&mut self) {
+        if self.original_retired {
+            // The bounded original path joined every real handle after draining
+            // the actor. Reentering ordinary shutdown would reacquire its locks.
+            return;
+        }
         self.service.shared.request_shutdown();
         // Dropping a JoinHandle detaches without dropping the shared supervisor.
         // Each thread retains the Arc and exact reconciliation token until its
         // cancellation-aware worker exits.
-        self.workers.clear();
+        // Main retains both the actual W cells and same join handles; detached
+        // facade destruction never releases either physical owner.
     }
 }
 
 /// Invalid fixed worker-pool construction.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalExecutorPoolConfigError {
+    /// The live operational resource actor could not be attached safely.
+    #[error("local executor host operational admission is unavailable")]
+    HostOperationalAdmission,
+    /// Actual generic worker/control geometry could not be represented.
+    #[error("local executor worker control geometry overflows")]
+    WorkerControlGeometry,
+    /// The same Main refused the permanent worker bodies before construction.
+    #[error("local executor worker body admission refused: {0}")]
+    WorkerControlAdmission(#[source] crucible_qemu_host::QemuVmRealizationError),
     /// No execution can make progress without a worker.
     #[error("local executor worker count must be nonzero")]
     ZeroWorkers,
@@ -718,6 +841,14 @@ pub enum LocalExecutorPoolConfigError {
 /// Checked component-service failure from a local worker pool.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalExecutorPoolServiceError<E> {
+    /// The component caller's retained original refused further ingress.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("original executor component refused: {0}")]
+    Original(#[from] crucible_host_resources::host_supervision::HostSupervisionError),
+    /// Operational reporting is outside the direct original component contract.
+    #[cfg(feature = "private-measurement-domain")]
+    #[error("operational reporting is unavailable on the original component alias")]
+    OriginalReportUnavailable,
     /// The pool has begun terminal shutdown.
     #[error("local executor worker pool is shutting down")]
     ShuttingDown,
@@ -743,6 +874,9 @@ pub enum LocalExecutorPoolShutdownError {
         "local executor cleanup is pending; worker resources and endpoint ownership remain retained"
     )]
     CleanupPending,
+    /// Permanent worker model/factory cleanup remains occupied or reports history.
+    #[error("local executor worker model resources remain retained or reported failure")]
+    WorkerResources,
     /// A worker panicked outside the pool's guarded model call.
     #[error("local executor worker thread panicked")]
     ThreadPanicked,
@@ -1029,7 +1163,8 @@ impl LocalExecutorPoolReport {
 }
 
 struct SharedExecutor<L, V> {
-    executor: Mutex<LocalExecutorCapabilityService<L, V>>,
+    executor: host_admission::SharedActor<L, V>,
+    terminal_hook: Mutex<Option<host_admission::custody::TerminalHook>>,
     validator: Arc<V>,
     checkpoints: Arc<ExactCheckpointStore>,
     ready: Condvar,
@@ -1046,9 +1181,17 @@ struct SharedExecutor<L, V> {
     last_promotion_failure: Mutex<Option<LocalExecutorPromotionFailure>>,
 }
 
+impl<L, V> Drop for SharedExecutor<L, V> {
+    fn drop(&mut self) {
+        if let Ok(slot) = self.terminal_hook.get_mut() {
+            drop(slot.take());
+        }
+    }
+}
+
 impl<L, V> SharedExecutor<L, V> {
     fn new(
-        executor: LocalExecutorCapabilityService<L, V>,
+        executor: impl Into<host_admission::ActorAllocation<L, V>>,
         checkpoints: Arc<ExactCheckpointStore>,
         worker_count: usize,
         promotion_worker_count: usize,
@@ -1056,9 +1199,11 @@ impl<L, V> SharedExecutor<L, V> {
         checkpoint_observer: Option<Arc<dyn PausedCheckpointObserver>>,
         prepared_results: Option<PreparedResultJournalConfig>,
     ) -> Self {
-        let validator = executor.supervisor().admission_validator();
+        let executor = executor.into();
+        let validator = executor.validator;
         Self {
-            executor: Mutex::new(executor),
+            executor: executor.actor,
+            terminal_hook: Mutex::new(executor.terminal),
             validator,
             checkpoints,
             ready: Condvar::new(),
@@ -1363,7 +1508,7 @@ pub(crate) fn reconcile_stable_prepared_result_journals<L, V>(
     ledger: &L,
     validator: &V,
     config: &PreparedResultJournalConfig,
-    _gc_exclusion: &CampaignRepositoryGcExclusionGuard<'_>,
+    _gc_exclusion: &CampaignRepositoryGcExclusionGuard,
 ) -> Result<(), LocalExecutorPoolConfigError>
 where
     L: AssignmentLedger,
@@ -1504,7 +1649,7 @@ where
 fn worker_loop<L, V, W>(
     shared: Arc<SharedExecutor<L, V>>,
     store: CampaignExecutorStore,
-    mut worker: W,
+    worker: &mut W,
 ) where
     L: AssignmentLedger + Send + 'static,
     V: AttemptAdmissionValidator + Send + Sync + 'static,
@@ -1547,14 +1692,14 @@ fn worker_loop<L, V, W>(
                 if produced_result {
                     reconcile_worker_execution(
                         &shared,
-                        &mut worker,
+                        worker,
                         AttemptExecutionDisposition::Canceled,
                     );
                 }
             }
             Ok(work) => {
                 if let Some(disposition) = reconcile_work_result(&shared, &store, work) {
-                    reconcile_worker_execution(&shared, &mut worker, disposition);
+                    reconcile_worker_execution(&shared, worker, disposition);
                 }
             }
             Err(_) => {
@@ -1586,6 +1731,37 @@ where
     let Some(config) = &shared.prepared_results else {
         return RecoveryDisposition::Runnable(Box::new(queued));
     };
+    let metadata = match store
+        .metadata_resources()
+        .map_err(crucible_engine::owned_decode::DecodeAdmissionError::new)
+        .and_then(crucible_engine::owned_decode::DecodeBudget::for_store)
+    {
+        Ok(metadata) => metadata,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    let _metadata_scope = metadata.enter();
+    let (watchdog, _) = match crate::executor_worker::start_original_assignment(&queued, store) {
+        Ok(watchdog) => watchdog,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    let preparation = match watchdog
+        .supervisor()
+        .begin(crucible_host_resources::host_supervision::HostOperationClass::Preparation)
+    {
+        Ok(preparation) => preparation,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+    };
+    // Journal retries share this one operation and the first assignment cap.
+    // A successful recovery retains the metadata bank through publication.
     loop {
         if queued.cancellation().is_canceled()
             || shared.state.load(Ordering::Acquire) != POOL_RUNNING
@@ -1593,7 +1769,11 @@ where
             reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Canceled(()));
             return RecoveryDisposition::Stopped;
         }
-        match recover_or_remove_staged_journal(shared, config, &queued) {
+        if let Err(source) = preparation.wait_slice() {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return RecoveryDisposition::Stopped;
+        }
+        match recover_or_remove_staged_journal(shared, config, &queued, &preparation) {
             Ok(true) => {}
             Ok(false) => return RecoveryDisposition::Stopped,
             Err(source) => {
@@ -1608,9 +1788,25 @@ where
             queued,
         ) {
             Ok(PreparedAttemptRecoveryOutcome::Missing(queued)) => {
+                if let Err(source) = preparation.complete() {
+                    reconcile_worker_failure(
+                        shared,
+                        *queued,
+                        AttemptWorkerFailure::Terminal(source),
+                    );
+                    return RecoveryDisposition::Stopped;
+                }
                 return RecoveryDisposition::Runnable(queued);
             }
-            Ok(PreparedAttemptRecoveryOutcome::Prepared(prepared)) => {
+            Ok(PreparedAttemptRecoveryOutcome::Prepared(mut prepared)) => {
+                prepared.retain_recovery_metadata(metadata.custody());
+                if let Err(source) = preparation
+                    .complete()
+                    .map_err(std::io::Error::other)
+                    .and_then(|_| prepared.queued().begin_publication())
+                {
+                    retain_forever(shared, (prepared, source));
+                }
                 return RecoveryDisposition::Prepared(prepared);
             }
             Err(error) if recovery_failure_is_retryable(&error.source) => {
@@ -1634,13 +1830,15 @@ fn recover_or_remove_staged_journal<L, V>(
     shared: &SharedExecutor<L, V>,
     config: &PreparedResultJournalConfig,
     queued: &QueuedAttempt,
-) -> Result<bool, PreparedResultJournalError>
+    preparation: &crucible_host_resources::host_supervision::HostOperationGuard,
+) -> Result<bool, RecoveryPreparationError>
 where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
     let key = AttemptExecutionKey::for_request(queued.request());
     loop {
+        preparation.wait_slice()?;
         let state = {
             let executor = match shared.executor.lock() {
                 Ok(executor) => executor,
@@ -1671,7 +1869,7 @@ where
                 thread::sleep(WORKER_RETRY_INTERVAL);
                 continue;
             }
-            Err(source) => return Err(source),
+            Err(source) => return Err(source.into()),
         };
         let Some(mut staged) = staged else {
             return Ok(true);
@@ -1694,7 +1892,7 @@ where
                     thread::sleep(WORKER_RETRY_INTERVAL);
                     continue;
                 }
-                Err(source) => return Err(source),
+                Err(source) => return Err(source.into()),
             }
         };
         let journal_observation = staged.result().observation().observation().id();
@@ -1713,9 +1911,17 @@ where
                 increment(&shared.counters.publication_retries);
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
-            Err(source) => return Err(source),
+            Err(source) => return Err(source.into()),
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum RecoveryPreparationError {
+    #[error(transparent)]
+    Journal(#[from] PreparedResultJournalError),
+    #[error(transparent)]
+    Supervision(#[from] crucible_host_resources::host_supervision::HostSupervisionError),
 }
 
 fn recovery_failure_is_retryable(source: &AttemptResultRecoveryFailure) -> bool {
@@ -1781,6 +1987,13 @@ where
     V: AttemptAdmissionValidator,
 {
     let (queued, result) = work.into_parts();
+    let _metadata_scope = match queued.enter_publication_metadata() {
+        Ok(scope) => scope,
+        Err(source) => {
+            reconcile_worker_failure(shared, queued, AttemptWorkerFailure::Terminal(source));
+            return Some(AttemptExecutionDisposition::Failed);
+        }
+    };
     let cancellation = queued.cancellation().clone();
     let execution = queued.execution();
     let work = crate::AttemptWorkResult::new(queued, result);
@@ -2182,6 +2395,7 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    let _metadata_scope = prepared.enter_recovery_metadata();
     let execution = prepared.queued().execution();
     let cancellation = prepared.queued().cancellation().clone();
     record_phase("stage-begin", execution, &cancellation);
@@ -2204,273 +2418,6 @@ where
         ),
     );
     disposition
-}
-
-fn reconcile_checkpoint_result<L, V>(
-    shared: &SharedExecutor<L, V>,
-    mut prepared: PreparedCheckpointResult,
-) -> AttemptExecutionDisposition
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let mut staged = loop {
-        if prepared.queued().cancellation().is_canceled() {
-            abort_checkpoint(
-                shared,
-                CheckpointResultAbortToken::Prepared(Box::new(prepared)),
-            );
-            return AttemptExecutionDisposition::Canceled;
-        }
-        let mut executor = lock_or_retain(shared, &prepared);
-        match stage_prepared_checkpoint_result(executor.supervisor_mut(), prepared) {
-            Ok(CheckpointResultStageOutcome::Publish(staged)) => break staged,
-            Ok(CheckpointResultStageOutcome::Finished {
-                prepared,
-                checkpoint,
-                outcome,
-            }) => {
-                drop(executor);
-                retire_native_checkpoint_source(shared, prepared.native_retirement());
-                record_checkpoint_stage_outcome(shared, checkpoint, outcome);
-                return checkpoint_stage_disposition(checkpoint, outcome);
-            }
-            Err(error) if supervisor_error_is_retryable(&error.source) => {
-                prepared = *error.prepared;
-                increment(&shared.counters.publication_retries);
-                drop(executor);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(error) => {
-                drop(executor);
-                abort_checkpoint(shared, CheckpointResultAbortToken::Prepared(error.prepared));
-                return AttemptExecutionDisposition::Failed;
-            }
-        }
-    };
-
-    let mut published = loop {
-        if staged.queued().cancellation().is_canceled() {
-            abort_checkpoint(shared, CheckpointResultAbortToken::Staged(staged));
-            return AttemptExecutionDisposition::Canceled;
-        }
-        match publish_staged_checkpoint_result(&shared.checkpoints, *staged) {
-            Ok(published) => break Box::new(published),
-            Err(error) if error.source.is_retryable() => {
-                staged = error.staged;
-                increment(&shared.counters.publication_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(error) => {
-                abort_checkpoint(shared, CheckpointResultAbortToken::Staged(error.staged));
-                return AttemptExecutionDisposition::Failed;
-            }
-        }
-    };
-
-    loop {
-        if published.queued().cancellation().is_canceled() {
-            abort_checkpoint(shared, CheckpointResultAbortToken::Published(published));
-            return AttemptExecutionDisposition::Canceled;
-        }
-        let key = AttemptExecutionKey::for_request(published.queued().request());
-        let checkpoint = published.root();
-        let mut executor = lock_or_retain(shared, &published);
-        match reconcile_published_checkpoint_result(executor.supervisor_mut(), *published) {
-            Ok(crate::CheckpointCompletionOutcome::Paused)
-            | Ok(crate::CheckpointCompletionOutcome::AlreadyPaused) => {
-                increment(&shared.counters.checkpoints_paused);
-                drop(executor);
-                if !observe_paused_checkpoint(shared, checkpoint) {
-                    return AttemptExecutionDisposition::ExactCheckpoint(checkpoint);
-                }
-                enqueue_paused_checkpoint_promotion(shared, key);
-                return AttemptExecutionDisposition::ExactCheckpoint(checkpoint);
-            }
-            Ok(crate::CheckpointCompletionOutcome::NotCurrent) => {
-                increment(&shared.counters.checkpoints_discarded);
-                return AttemptExecutionDisposition::Failed;
-            }
-            Err(error) if supervisor_error_is_retryable(&error.source) => {
-                published = error.published;
-                increment(&shared.counters.publication_retries);
-                drop(executor);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(error) => {
-                drop(executor);
-                abort_checkpoint(
-                    shared,
-                    CheckpointResultAbortToken::Published(error.published),
-                );
-                return AttemptExecutionDisposition::Failed;
-            }
-        }
-    }
-}
-
-fn checkpoint_stage_disposition(
-    checkpoint: ExactCheckpointId,
-    outcome: CheckpointPublicationOutcome,
-) -> AttemptExecutionDisposition {
-    match outcome {
-        CheckpointPublicationOutcome::AlreadyPaused => {
-            AttemptExecutionDisposition::ExactCheckpoint(checkpoint)
-        }
-        CheckpointPublicationOutcome::NotCurrent
-        | CheckpointPublicationOutcome::Staged
-        | CheckpointPublicationOutcome::AlreadyStaged => AttemptExecutionDisposition::Failed,
-    }
-}
-
-fn enqueue_paused_checkpoint_promotion<L, V>(
-    shared: &SharedExecutor<L, V>,
-    key: AttemptExecutionKey,
-) where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    if shared.promotion_worker_count == 0 {
-        return;
-    }
-    loop {
-        if shared.state.load(Ordering::Acquire) != POOL_RUNNING {
-            return;
-        }
-        let executor = match shared.executor.lock() {
-            Ok(executor) => executor,
-            Err(poisoned) => {
-                drop(poisoned.into_inner());
-                shared.fail_closed();
-                return;
-            }
-        };
-        shared.bump_ownership_revision();
-        match executor
-            .supervisor()
-            .paused_checkpoint_promotion_recovery(key)
-        {
-            Ok(Some(recovery)) => {
-                drop(executor);
-                shared.promotions.enqueue(
-                    shared,
-                    crate::CheckpointPromotionRestartWork::Paused(recovery),
-                );
-                return;
-            }
-            Ok(None) => return,
-            Err(error) if supervisor_error_is_retryable(&error) => {
-                increment(&shared.counters.promotion_retries);
-                drop(executor);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => {
-                increment(&shared.counters.promotion_failures);
-                return;
-            }
-        }
-    }
-}
-
-fn abort_checkpoint<L, V>(shared: &SharedExecutor<L, V>, mut token: CheckpointResultAbortToken)
-where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let native_retirement = token.native_retirement();
-    loop {
-        let mut executor = lock_or_retain(shared, &token);
-        match abort_checkpoint_result(executor.supervisor_mut(), token) {
-            Ok(_) => {
-                drop(executor);
-                retire_native_checkpoint_source(shared, native_retirement);
-                increment(&shared.counters.checkpoints_discarded);
-                increment(&shared.counters.terminal_stops);
-                return;
-            }
-            Err(error) if supervisor_error_is_retryable(&error.source) => {
-                token = error.token;
-                increment(&shared.counters.publication_retries);
-                drop(executor);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(error) => {
-                drop(executor);
-                retain_forever(shared, error.token);
-            }
-        }
-    }
-}
-
-fn retire_native_checkpoint_source<L, V>(
-    shared: &SharedExecutor<L, V>,
-    retirement: Option<ProductionExactCheckpointRetirement>,
-) where
-    L: AssignmentLedger,
-    V: AttemptAdmissionValidator,
-{
-    let Some(retirement) = retirement else {
-        return;
-    };
-    loop {
-        match retire_production_exact_checkpoint_catalog(&retirement) {
-            Ok(_) => return,
-            Err(error) if error.is_retryable() => {
-                increment(&shared.counters.publication_retries);
-                thread::sleep(WORKER_RETRY_INTERVAL);
-            }
-            Err(_) => retain_forever(shared, retirement),
-        }
-    }
-}
-
-fn record_checkpoint_stage_outcome<L, V>(
-    shared: &SharedExecutor<L, V>,
-    checkpoint: ExactCheckpointId,
-    outcome: crate::CheckpointPublicationOutcome,
-) {
-    match outcome {
-        crate::CheckpointPublicationOutcome::AlreadyPaused => {
-            increment(&shared.counters.checkpoints_paused);
-            let _ = observe_paused_checkpoint(shared, checkpoint);
-        }
-        crate::CheckpointPublicationOutcome::NotCurrent => {
-            increment(&shared.counters.checkpoints_discarded);
-        }
-        crate::CheckpointPublicationOutcome::Staged
-        | crate::CheckpointPublicationOutcome::AlreadyStaged => {
-            shared.poison();
-        }
-    }
-}
-
-fn observe_paused_checkpoint<L, V>(
-    shared: &SharedExecutor<L, V>,
-    checkpoint: ExactCheckpointId,
-) -> bool {
-    let Some(observer) = shared.checkpoint_observer.as_ref() else {
-        return true;
-    };
-    if observer.checkpoint_paused(checkpoint).is_err() {
-        shared.poison();
-        return false;
-    }
-    true
-}
-
-fn observe_promoted_checkpoint<L, V>(
-    shared: &SharedExecutor<L, V>,
-    source: ExactCheckpointId,
-    promoted: ExactCheckpointId,
-) -> bool {
-    let Some(observer) = shared.checkpoint_observer.as_ref() else {
-        return true;
-    };
-    if observer.checkpoint_promoted(source, promoted).is_err() {
-        shared.poison();
-        return false;
-    }
-    true
 }
 
 enum StageDisposition {

@@ -4,6 +4,8 @@ use super::*;
 
 #[test]
 fn failed_observation_retains_terminal_boundary_without_replacing_semantic_result() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
     let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
         .expect("terminal checkpoint fixture");
@@ -80,6 +82,8 @@ fn failed_observation_retains_terminal_boundary_without_replacing_semantic_resul
 
 #[test]
 fn passed_trigger_retains_checker_failed_observation_boundary() {
+    let _metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("terminal checkpoint fixture directory");
     let fixture = crate::build_exact_ram_production_checkpoint_codec_fixture(directory.path())
         .expect("terminal checkpoint fixture");

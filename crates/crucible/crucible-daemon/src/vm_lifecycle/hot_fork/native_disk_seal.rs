@@ -15,7 +15,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// Native seal request and independently authenticated open file custody.
-pub(super) struct ProductionVmHotForkDiskCustody {
+pub(in crate::vm_lifecycle) struct ProductionVmHotForkDiskCustody {
     source_process: QemuProcessIdentity,
     source_generation: ProductionVmNodeGeneration,
     request: QmpHotForkBlockSealRequest,
@@ -311,7 +311,7 @@ impl ProductionVmLifecycleLoop {
             .map_err(|error| {
                 hot_fork_boundary_error(format!("read hot-fork source process: {error}"))
             })?;
-        let first = self
+        let (first, original) = self
             .inner
             .backend_mut()
             .begin_hot_fork_disk_seal(node)
@@ -367,6 +367,7 @@ impl ProductionVmLifecycleLoop {
         })?;
         let (detached, detached_path) = lease
             .prepare_hot_fork_detached_root_overlay(
+                &original,
                 first.graph_mutation_generation(),
                 candidate.virtual_size(),
             )

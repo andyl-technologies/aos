@@ -4,6 +4,8 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use crucible_control_api::admitted_output::test_support::integration_budget as output_budget;
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 

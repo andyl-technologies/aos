@@ -27,9 +27,8 @@ confinement	crates/crucible/crucible-daemon/src/planner_loopback.rs	public expor
 confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
 confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	const		4
 confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		18
+confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	fn		17
 confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	struct		9
-confinement	crates/crucible/crucible-qemu-host/src/linux_cgroup.rs	public export from nondeterministic boundary source	use		1
 confinement	crates/crucible/crucible-qemu-host/src/live_plugin_gate/support.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	4
 confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	const		5
 confinement	crates/crucible/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs	public export from nondeterministic boundary source	enum		1

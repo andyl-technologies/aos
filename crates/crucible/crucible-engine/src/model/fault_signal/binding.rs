@@ -126,7 +126,7 @@ impl ResolvedTargetSet {
         for target in &targets {
             target.validate().map_err(BindingError::Target)?;
         }
-        targets.sort();
+        targets.sort_unstable();
         if targets.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(BindingError::DuplicateTarget);
         }
@@ -147,6 +147,10 @@ impl ResolvedTargetSet {
     #[must_use]
     pub fn targets(&self) -> &[ResolvedFaultTarget] {
         &self.targets
+    }
+
+    pub(crate) fn into_parts(self) -> (Vec<ResolvedFaultTarget>, bool) {
+        (self.targets, self.allow_empty)
     }
 
     /// Returns whether no matches were explicitly permitted.
@@ -318,6 +322,8 @@ impl Default for BindingObservabilityPolicy {
 /// Admission failure for a signal-to-effect binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingError {
+    /// Original artifact authority refused binding validation or ownership.
+    OriginalAdmission(crate::owned_decode::DecodeAdmissionError),
     /// Selector unexpectedly resolved no targets.
     EmptySelector,
     /// Selector exceeded the hard target limit.
@@ -395,4 +401,11 @@ impl fmt::Display for BindingError {
     }
 }
 
-impl Error for BindingError {}
+impl Error for BindingError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::OriginalAdmission(source) => Some(source),
+            _ => None,
+        }
+    }
+}

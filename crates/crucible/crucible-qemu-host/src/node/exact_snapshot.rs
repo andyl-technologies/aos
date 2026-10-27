@@ -17,9 +17,26 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod capture;
+#[cfg(target_os = "linux")]
+pub(crate) mod capture_original;
+#[cfg(target_os = "linux")]
+pub use capture_original::{
+    CheckpointArmLoan, CheckpointOriginalCause, CheckpointOriginalError, CheckpointOriginalLoan,
+    CheckpointTransportCause,
+};
+#[cfg(target_os = "linux")]
+mod paged_capture;
+
+#[cfg(all(test, target_os = "linux"))]
+mod frontier_identity_tests;
+#[cfg(target_os = "linux")]
+mod topology_preflight;
+#[cfg(target_os = "linux")]
+pub use paged_capture::{CaptureReadError, QemuCapturedRamPage};
+#[cfg(target_os = "linux")]
+use topology_preflight::read_capture_topology;
 
 const EXACT_RAM_TARGET_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
-const EXACT_RAM_FRONTIER_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
 
 /// Typed immutable provenance for one production exact-checkpoint capture.
 struct QemuExactCheckpointCaptureBasis<'a> {
@@ -149,18 +166,12 @@ impl<'a> QemuExactCheckpointCaptureBasis<'a> {
                 self.fault_identity.to_hex(),
             ),
         );
-        let scheduler_bytes = self.scheduler.canonical_bytes().map_err(|error| {
-            QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
-        })?;
-        let mut scheduler_hex = String::with_capacity(scheduler_bytes.len().saturating_mul(2));
-        use std::fmt::Write as _;
-        for byte in scheduler_bytes {
-            let _ = write!(scheduler_hex, "{byte:02x}");
-        }
-        let frontier = ContentHash::from_canonical_material(
-            EXACT_RAM_FRONTIER_IDENTITY_DOMAIN,
-            &scheduler_hex,
-        );
+        let frontier = self
+            .scheduler
+            .exact_ram_frontier_identity()
+            .map_err(|error| {
+                QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
+            })?;
         Ok(crate::QmpCheckpointIdentity::new(
             self.checkpoint.id,
             target,
@@ -187,62 +198,65 @@ pub struct QemuExactCheckpointCaptureAdmission {
     request: crate::QmpCheckpointCaptureRequest,
     ram: File,
     device: File,
+    publication_preflight: Option<RamPublicationPreflight>,
+}
+
+#[cfg(target_os = "linux")]
+type RamPublicationCallback =
+    dyn FnOnce(&crucible_ram::RootRecord) -> Result<(), std::io::Error> + Send;
+
+#[cfg(target_os = "linux")]
+struct RamPublicationPreflight(Box<RamPublicationCallback>);
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for RamPublicationPreflight {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RamPublicationPreflight")
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl QemuExactCheckpointCaptureAdmission {
-    /// Admits one checkpoint-bound direct capture and its owned output handles.
+    /// Installs destination graph admission before any native RAM page spool.
     ///
-    /// # Errors
-    ///
-    /// Returns [`QemuNodeError`] when the identity belongs to another checkpoint,
-    /// the request bounds are invalid, either descriptor is not a writable
-    /// regular file, or the descriptors alias.
-    pub fn admit_direct(
-        boundary: QemuExactCheckpointCaptureBoundary<'_>,
-        outputs: QemuExactCheckpointCaptureOutputs<'_>,
-    ) -> Result<Self, QemuNodeError> {
-        let basis = QemuExactCheckpointCaptureBasis::admit(boundary)?;
-        let QemuExactCheckpointCaptureOutputs {
-            maximum_ram_bytes,
-            maximum_device_bytes,
-            ram: ram_output,
-            device: device_output,
-        } = outputs;
-        let identity = basis.derive_identity()?;
-        let request = crate::QmpCheckpointCaptureRequest::direct(
-            identity,
-            capture_descriptor("crucible-checkpoint-ram")?,
-            capture_descriptor("crucible-checkpoint-device")?,
-            capture_descriptor("crucible-checkpoint-cancel")?,
-            maximum_ram_bytes,
-            maximum_device_bytes,
-        )
-        .map_err(|error| {
-            QemuNodeError::checkpoint(format!("build exact capture request: {error}"))
-        })?;
-        Self::admit(
-            basis.checkpoint,
-            basis.node.clone(),
-            request,
-            ram_output,
-            device_output,
-        )
+    /// The callback receives authenticated bounded metadata at the paused
+    /// capture boundary. It must check the actual backend used for publication;
+    /// the check does not replace later per-object capacity enforcement.
+    #[must_use]
+    pub fn with_ram_publication_preflight(
+        mut self,
+        preflight: impl FnOnce(&crucible_ram::RootRecord) -> Result<(), std::io::Error> + Send + 'static,
+    ) -> Self {
+        self.publication_preflight = Some(RamPublicationPreflight(Box::new(preflight)));
+        self
     }
 
-    /// Admits one checkpoint-bound delta capture and its owned output handles.
+    /// Admits one coherent page capture and its retained output descriptors.
+    ///
+    /// `initial_required` requests complete logical pages independently of
+    /// the expected committed parent. Incremental capture requires that parent.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the child or parent identity is invalid,
-    /// the request bounds are invalid, either descriptor is not a writable
-    /// regular file, or the descriptors alias.
-    pub fn admit_delta(
+    /// Returns an error for mismatched provenance, an absent incremental parent,
+    /// invalid output bounds, nonwritable files, or aliased descriptors.
+    pub fn admit_paged(
         boundary: QemuExactCheckpointCaptureBoundary<'_>,
-        parent: crate::QmpCheckpointIdentity,
+        parent: Option<crate::QmpCheckpointIdentity>,
         outputs: QemuExactCheckpointCaptureOutputs<'_>,
+        initial_required: bool,
     ) -> Result<Self, QemuNodeError> {
         let basis = QemuExactCheckpointCaptureBasis::admit(boundary)?;
+        if !initial_required && parent.is_none() {
+            return Err(QemuNodeError::checkpoint(
+                "incremental page capture requires committed epoch authority",
+            ));
+        }
+        if parent.is_some_and(|parent| basis.checkpoint.parent != Some(parent.checkpoint())) {
+            return Err(QemuNodeError::checkpoint(
+                "page capture parent does not match the modeled checkpoint parent",
+            ));
+        }
         let QemuExactCheckpointCaptureOutputs {
             maximum_ram_bytes,
             maximum_device_bytes,
@@ -250,22 +264,20 @@ impl QemuExactCheckpointCaptureAdmission {
             device: device_output,
         } = outputs;
         let identity = basis.derive_identity()?;
-        if basis.checkpoint.parent != Some(parent.checkpoint()) {
-            return Err(QemuNodeError::checkpoint(
-                "exact checkpoint delta parent does not match the modeled checkpoint parent",
-            ));
-        }
-        let request = crate::QmpCheckpointCaptureRequest::delta(
+        let request = crate::QmpCheckpointCaptureRequest::paged(
             identity,
             parent,
-            capture_descriptor("crucible-checkpoint-ram")?,
-            capture_descriptor("crucible-checkpoint-device")?,
-            capture_descriptor("crucible-checkpoint-cancel")?,
-            maximum_ram_bytes,
-            maximum_device_bytes,
+            initial_required,
+            crate::qmp::QmpCheckpointCaptureOutputs {
+                ram_descriptor: capture_descriptor("crucible-checkpoint-pages")?,
+                device_descriptor: capture_descriptor("crucible-checkpoint-device")?,
+                cancellation_descriptor: capture_descriptor("crucible-checkpoint-cancel")?,
+                maximum_ram_bytes,
+                maximum_device_bytes,
+            },
         )
         .map_err(|error| {
-            QemuNodeError::checkpoint(format!("build exact capture request: {error}"))
+            QemuNodeError::checkpoint(format!("build coherent page capture request: {error}"))
         })?;
         Self::admit(
             basis.checkpoint,
@@ -300,6 +312,7 @@ impl QemuExactCheckpointCaptureAdmission {
             request,
             ram,
             device,
+            publication_preflight: None,
         })
     }
 }
@@ -424,22 +437,56 @@ pub struct QemuExactCheckpointCaptureResult {
     snapshot: crate::QemuVmSnapshot,
     qemu: crate::QmpCheckpointCapture,
     parent: Option<crate::QmpCheckpointIdentity>,
-    ram: File,
+    paged: paged_capture::QemuPagedRamCapture,
     device: File,
 }
 
 #[cfg(target_os = "linux")]
 impl QemuExactCheckpointCaptureResult {
+    /// Returns the complete immutable exact RAM record captured after pre-save.
+    #[must_use]
+    pub fn paged_record(&self) -> &crucible_ram::RootRecord {
+        self.paged.record()
+    }
+
+    /// Returns the positive operational capture generation retained by QEMU.
+    #[must_use]
+    pub const fn capture_generation(&self) -> u64 {
+        self.paged.generation()
+    }
+
+    /// Returns whether the stream covers every logical page of the captured root.
+    #[must_use]
+    pub const fn initial_capture(&self) -> bool {
+        self.paged.initial()
+    }
+
+    /// Reads the next immutable page version without acknowledging dirty state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, unordered, truncated, or excessive
+    /// records, or an I/O or allocation failure.
+    pub fn read_next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, CaptureReadError> {
+        self.paged.next_page()
+    }
+
+    /// Borrows device bytes under the same retained checkpoint original.
+    ///
+    /// # Errors
+    /// Refuses a capture without its admitted original owner.
+    pub fn device_output_mut(&mut self) -> Result<QemuCheckpointDeviceReader<'_>, QemuNodeError> {
+        let original = self.paged.original_loan()?;
+        Ok(QemuCheckpointDeviceReader {
+            file: &mut self.device,
+            original,
+        })
+    }
+
     /// Returns the captured Apache host continuation.
     #[must_use]
     pub const fn snapshot(&self) -> &crate::QemuVmSnapshot {
         &self.snapshot
-    }
-
-    /// Returns whether QEMU emitted complete or parent-relative RAM.
-    #[must_use]
-    pub const fn ram_kind(&self) -> crate::QmpCheckpointRamKind {
-        self.qemu.kind()
     }
 
     /// Returns the checkpoint, target, and scheduler-frontier identity.
@@ -448,7 +495,7 @@ impl QemuExactCheckpointCaptureResult {
         self.qemu.identity()
     }
 
-    /// Returns the exact committed parent used for a delta capture.
+    /// Returns the exact committed parent whose operational epoch is preserved.
     #[must_use]
     pub const fn parent(&self) -> Option<crate::QmpCheckpointIdentity> {
         self.parent
@@ -456,8 +503,10 @@ impl QemuExactCheckpointCaptureResult {
 
     /// Returns the canonical RAMBlock topology identity.
     #[must_use]
-    pub const fn topology(&self) -> crucible_engine::ContentHash {
-        self.qemu.topology()
+    pub fn topology(&self) -> crucible_engine::ContentHash {
+        crucible_engine::ContentHash {
+            bytes: *self.paged.record().topology().digest().as_bytes(),
+        }
     }
 
     /// Returns the number of canonical RAM regions in the artifact.
@@ -483,22 +532,13 @@ impl QemuExactCheckpointCaptureResult {
     pub const fn device_bytes(&self) -> u64 {
         self.qemu.device_bytes()
     }
-
-    /// Returns the pinned RAM and device-state outputs written by QEMU.
-    ///
-    /// The files continue to name the admitted inodes even if an attacker
-    /// replaces either staging pathname after capture. Callers must read these
-    /// handles, rather than reopen the paths, through durable publication.
-    #[must_use]
-    pub fn output_files_mut(&mut self) -> (&mut File, &mut File) {
-        (&mut self.ram, &mut self.device)
-    }
 }
 
 #[cfg(target_os = "linux")]
 struct ExactRamCapture<'a> {
-    request: &'a crate::QmpCheckpointCaptureRequest,
+    request: &'a mut crate::QmpCheckpointCaptureRequest,
     descriptors: QemuExactCheckpointCaptureDescriptors<'a>,
+    publication_preflight: RamPublicationPreflight,
 }
 
 enum SnapshotCapture<'a> {
@@ -660,5 +700,65 @@ mod capture_admission_tests {
 
         assert!(error.to_string().contains("another modeled node"));
         Ok(())
+    }
+}
+
+/// Reads retained device bytes without exporting an unchecked file handle.
+///
+/// Each physical read, seek and metadata observation checks the same original
+/// before and after the effect. The capture continues to own the descriptor.
+#[cfg(target_os = "linux")]
+pub struct QemuCheckpointDeviceReader<'a> {
+    file: &'a mut File,
+    original: CheckpointOriginalLoan,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+#[error("{source}; checkpoint original postcut: {original_after}")]
+struct DeviceReadPostcut {
+    #[source]
+    source: std::io::Error,
+    original_after: crucible_host_resources::host_supervision::HostSupervisionError,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuCheckpointDeviceReader<'_> {
+    fn with_original<T>(
+        &mut self,
+        effect: impl FnOnce(&mut File) -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.original.check().map_err(std::io::Error::other)?;
+        let work = effect(self.file);
+        match (work, self.original.check().err()) {
+            (Err(source), Some(original_after)) => Err(std::io::Error::other(DeviceReadPostcut {
+                source,
+                original_after,
+            })),
+            (Ok(_), Some(source)) => Err(std::io::Error::other(source)),
+            (work, None) => work,
+        }
+    }
+
+    /// Observes retained device length under the same checkpoint original.
+    ///
+    /// # Errors
+    /// Refuses the original boundary or the actual file metadata operation.
+    pub fn metadata(&mut self) -> std::io::Result<std::fs::Metadata> {
+        self.with_original(|file| file.metadata())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::io::Read for QemuCheckpointDeviceReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.with_original(|file| std::io::Read::read(file, bytes))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl std::io::Seek for QemuCheckpointDeviceReader<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.with_original(|file| std::io::Seek::seek(file, position))
     }
 }

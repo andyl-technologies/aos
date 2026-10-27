@@ -1,0 +1,313 @@
+//! Retains the installing invocation's original Source and exact third owner.
+//!
+//! Installation borrows the same frame/control/roles already consumed by native
+//! preinit. Every supported launch requires the current authenticated carrier.
+//! Native installation scope and the matched shipped module authenticate either
+//! route. Descriptor metadata, symbols and caller scalars never issue authority.
+//! Failed acquisition keeps the same custody through process containment.
+// SPDX-License-Identifier: GPL-2.0-only
+
+use std::os::fd::{AsFd, BorrowedFd};
+#[cfg(test)]
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::time::Duration;
+
+mod control_channel;
+mod control_purpose;
+pub(crate) use control_channel::SetupControlSocket;
+mod descriptor;
+mod native_setup;
+pub(crate) use descriptor::SetupDescriptor;
+pub(crate) use native_setup::{NativeSetupBorrow, selected as native_setup_selected};
+pub(crate) mod runtime_purpose;
+mod setup_exchange;
+mod setup_mapping;
+
+#[cfg(test)]
+type Acquire = extern "C" fn(u64, i32) -> i32;
+type Check = extern "C" fn(u64) -> i32;
+type QuerySlice = extern "C" fn(u64, *mut u64) -> i32;
+type RegistrationComplete = extern "C" fn(u64, i32) -> i32;
+
+/// An unformatted refusal of the actual installing Source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StartupSourceError {
+    /// The matched native implementation lacks a compulsory entry point.
+    #[error("native startup Source entry point {symbol} is unavailable")]
+    Unavailable {
+        /// Literal required symbol.
+        symbol: &'static str,
+    },
+    /// Native returned its original signed refusal without errno conversion.
+    #[error("native startup Source refused ({status})")]
+    NativeStatus {
+        /// Exact nonzero status from the native installing owner.
+        status: i32,
+    },
+    /// The retained owner cannot accept another action.
+    #[error("startup Source owner is invalid: {reason}")]
+    Ownership {
+        /// Fixed rule that refused the action.
+        reason: &'static str,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct NativeStartupApi {
+    #[cfg(test)]
+    acquire: Acquire,
+    check: Check,
+    query_slice: QuerySlice,
+    registration_complete: RegistrationComplete,
+}
+
+/// Inline custody prepared before native acquisition, with no fallible birth.
+pub(crate) struct InstallerStartupSource {
+    control_reservation: control_purpose::ControlReservation,
+    runtime_reservation: runtime_purpose::RuntimeReservation,
+    setup_mapping: std::sync::Mutex<setup_mapping::SetupMapping>,
+    setup_exchange: std::sync::Mutex<setup_exchange::SetupExchange>,
+    plan: Option<SetupDescriptor>,
+    native_setup: Option<NativeSetupBorrow>,
+    plugin_id: u64,
+    api: Option<NativeStartupApi>,
+    #[cfg(test)]
+    model_api: Option<NativeStartupApi>,
+    #[cfg(test)]
+    model_setup: Option<test_support::ModelSetup>,
+    first_status: AtomicI32,
+    invalid_slice: AtomicBool,
+    acquisition_attempted: bool,
+    acquired: bool,
+    registration_completed: bool,
+}
+
+impl InstallerStartupSource {
+    // Isolated Source status fixtures own their model descriptor; production
+    // installation obtains only the current authentic native borrow.
+    #[cfg(test)]
+    pub(super) fn retain_received_plan(plugin_id: u64, plan: OwnedFd) -> Self {
+        Self {
+            control_reservation: control_purpose::ControlReservation::default(),
+            runtime_reservation: runtime_purpose::RuntimeReservation::default(),
+            setup_mapping: Default::default(),
+            setup_exchange: Default::default(),
+            plan: Some(plan.into()),
+            native_setup: None,
+            plugin_id,
+            api: None,
+            #[cfg(test)]
+            model_api: None,
+            #[cfg(test)]
+            model_setup: None,
+            first_status: AtomicI32::new(0),
+            invalid_slice: AtomicBool::new(false),
+            acquisition_attempted: false,
+            acquired: false,
+            registration_completed: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_model(&mut self, model: test_support::InstallerStartupSourceModel) {
+        assert!(!self.acquisition_attempted);
+        assert!(self.model_api.is_none());
+        self.model_api = Some(model.api);
+        self.model_setup = model.setup;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_setup_model(&self) -> bool {
+        self.model_setup.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn acquire_was_attempted_for_test(&self) -> bool {
+        self.acquisition_attempted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_model_plan_fd_for_test(&self) -> Option<i32> {
+        self.model_setup
+            .as_ref()
+            .map(test_support::ModelSetup::plan_fd)
+    }
+
+    #[cfg(test)]
+    pub(super) fn acquire(&mut self) -> Result<(), StartupSourceError> {
+        if self.acquisition_attempted {
+            return Err(StartupSourceError::Ownership {
+                reason: "acquisition cannot be repeated",
+            });
+        }
+        self.acquisition_attempted = true;
+        #[cfg(not(test))]
+        let api = resolve_api()?;
+        #[cfg(test)]
+        let api = self.model_api.take().map(Ok).unwrap_or_else(resolve_api)?;
+        // Store the resolved table before the effect: any ambiguous refusal
+        // remains terminal and cannot reopen this same retained invocation.
+        self.api = Some(api);
+        self.accept_status((api.acquire)(self.plugin_id, self.plan_fd()?.as_raw_fd()))?;
+        self.acquired = true;
+        self.check()
+    }
+
+    pub(crate) fn plan_fd(&self) -> Result<BorrowedFd<'_>, StartupSourceError> {
+        self.plan
+            .as_ref()
+            .map(AsFd::as_fd)
+            .ok_or(StartupSourceError::Ownership {
+                reason: "the actual third descriptor is absent",
+            })
+    }
+
+    pub(crate) fn check(&self) -> Result<(), StartupSourceError> {
+        let api = self.live_api()?;
+        self.accept_status((api.check)(self.plugin_id))?;
+        if let Some(setup) = self.native_setup.as_ref() {
+            setup.check_current(self.plugin_id)?;
+        }
+        Ok(())
+    }
+
+    /// Rechecks the same preissued fixed-control purpose before managed births.
+    ///
+    /// # Errors
+    /// Preserves the original Source refusal or a missing/refused native holder.
+    pub(crate) fn require_installer_control_purpose(
+        &self,
+    ) -> Result<(), crate::ram_error::RamError> {
+        self.check_installer_control_purpose()
+            .map_err(crate::ram_error::RamError::InstallerSource)
+    }
+
+    pub(crate) fn wait_slice(&self) -> Result<Duration, StartupSourceError> {
+        let api = self.live_api()?;
+        let mut bounded_ns = 0;
+        self.accept_status((api.query_slice)(self.plugin_id, &mut bounded_ns))?;
+        if bounded_ns == 0 {
+            self.invalid_slice.store(true, Ordering::Release);
+            return Err(StartupSourceError::Ownership {
+                reason: "native returned an empty successful observation slice",
+            });
+        }
+        Ok(Duration::from_nanos(bounded_ns))
+    }
+
+    pub(crate) fn registration_complete(&mut self) -> Result<(), StartupSourceError> {
+        if self.registration_completed {
+            return Err(StartupSourceError::Ownership {
+                reason: "registration completion cannot be repeated",
+            });
+        }
+        let api = self.live_api()?;
+        // Completion records registration once. The native event/module and
+        // actual plan owner remain retained; this neither grants Cleanup nor
+        // completes the host's later first-prime operation.
+        self.registration_completed = true;
+        self.accept_status((api.registration_complete)(self.plugin_id, 0))
+    }
+
+    pub(crate) fn retained_ram_error(error: StartupSourceError) -> crate::ram_error::RamError {
+        match error {
+            StartupSourceError::NativeStatus { status } => crate::ram_error::RamError::Native {
+                operation: "original installer startup",
+                status,
+            },
+            StartupSourceError::Unavailable { symbol } => {
+                crate::ram_error::RamError::Invariant(symbol)
+            }
+            StartupSourceError::Ownership { reason } => {
+                crate::ram_error::RamError::Invariant(reason)
+            }
+        }
+    }
+
+    fn live_api(&self) -> Result<NativeStartupApi, StartupSourceError> {
+        let status = self.first_status.load(Ordering::Acquire);
+        if status != 0 {
+            return Err(StartupSourceError::NativeStatus { status });
+        }
+        if self.invalid_slice.load(Ordering::Acquire) {
+            return Err(StartupSourceError::Ownership {
+                reason: "native returned an empty successful observation slice",
+            });
+        }
+        if !self.acquired {
+            return Err(StartupSourceError::Ownership {
+                reason: "original acquisition did not succeed",
+            });
+        }
+        self.api.ok_or(StartupSourceError::Ownership {
+            reason: "acquired native entry points are absent",
+        })
+    }
+
+    fn accept_status(&self, status: i32) -> Result<(), StartupSourceError> {
+        if status != 0 {
+            let first =
+                self.first_status
+                    .compare_exchange(0, status, Ordering::AcqRel, Ordering::Acquire);
+            return Err(StartupSourceError::NativeStatus {
+                status: first.err().unwrap_or(status),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Drop for InstallerStartupSource {
+    fn drop(&mut self) {
+        // Initial acceptance or its refusal may retain a native borrower.
+        // There is no disposal ABI or independently paid Cleanup cut yet.
+        // Keep the actual owner to process exit rather than retrying a numeric
+        // fd close or inferring retirement from registration completion.
+        if let Some(plan) = self.plan.take() {
+            plan.retain_until_process_exit();
+        }
+    }
+}
+
+fn resolve_api() -> Result<NativeStartupApi, StartupSourceError> {
+    macro_rules! resolve {
+        ($name:literal, $signature:ty) => {{
+            // SAFETY: these GPL-private declarations are literal paired scalar
+            // C APIs. Resolution does not attest the caller or issue Source.
+            let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, $name.as_ptr()) };
+            if symbol.is_null() {
+                return Err(StartupSourceError::Unavailable {
+                    symbol: $name.to_str().map_err(|_| StartupSourceError::Ownership {
+                        reason: "required native symbol is not ASCII",
+                    })?,
+                });
+            }
+            // SAFETY: matched native code declares this exact C signature.
+            unsafe { std::mem::transmute::<*mut libc::c_void, $signature>(symbol) }
+        }};
+    }
+
+    Ok(NativeStartupApi {
+        #[cfg(test)]
+        acquire: resolve!(c"qemu_plugin_crucible_startup_source_acquire_v1", Acquire),
+        check: resolve!(c"qemu_plugin_crucible_startup_source_check_v1", Check),
+        query_slice: resolve!(
+            c"qemu_plugin_crucible_startup_source_query_slice_v1",
+            QuerySlice
+        ),
+        registration_complete: resolve!(
+            c"qemu_plugin_crucible_startup_source_registration_complete_v1",
+            RegistrationComplete
+        ),
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod prebirth_tests;

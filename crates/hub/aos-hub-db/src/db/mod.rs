@@ -593,20 +593,28 @@ pub fn migration_statements() -> Vec<String> {
 /// Returns a MySQL migration statement that is safe to replay after DDL's
 /// implicit commit boundary.
 fn mysql_replay_safe_migration_sql(sql: &str) -> String {
-    if sql.contains("CREATE TABLE ") && !sql.contains("CREATE TABLE IF NOT EXISTS ") {
-        return sql.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1);
-    }
-    if sql.contains("CREATE VIEW ") {
-        return sql.replacen("CREATE VIEW ", "CREATE OR REPLACE VIEW ", 1);
-    }
-    if sql.contains("ALTER TABLE ")
-        && sql.contains("ADD COLUMN ")
-        && !sql.contains("ADD COLUMN IF NOT EXISTS ")
+    use crate::dialect::replace_word_sequence;
+
+    // Migration comments and seed literals can contain SQL examples. Match
+    // only executable words, so replay changes the statement itself and
+    // preserves operator-owned text and already idempotent forms.
+    let contains_words = |words: &[&str]| replace_word_sequence(sql, words, "") != sql;
+    if contains_words(&["CREATE", "TABLE"])
+        && !contains_words(&["CREATE", "TABLE", "IF", "NOT", "EXISTS"])
     {
-        return sql.replacen("ADD COLUMN ", "ADD COLUMN IF NOT EXISTS ", 1);
+        return replace_word_sequence(sql, &["CREATE", "TABLE"], "CREATE TABLE IF NOT EXISTS");
     }
-    if sql.contains("INSERT INTO ") && !sql.contains("ON CONFLICT") {
-        return sql.replacen("INSERT INTO ", "INSERT IGNORE INTO ", 1);
+    if contains_words(&["CREATE", "VIEW"]) {
+        return replace_word_sequence(sql, &["CREATE", "VIEW"], "CREATE OR REPLACE VIEW");
+    }
+    if contains_words(&["ALTER", "TABLE"])
+        && contains_words(&["ADD", "COLUMN"])
+        && !contains_words(&["ADD", "COLUMN", "IF", "NOT", "EXISTS"])
+    {
+        return replace_word_sequence(sql, &["ADD", "COLUMN"], "ADD COLUMN IF NOT EXISTS");
+    }
+    if contains_words(&["INSERT", "INTO"]) && !contains_words(&["ON", "CONFLICT"]) {
+        return replace_word_sequence(sql, &["INSERT", "INTO"], "INSERT IGNORE INTO");
     }
     sql.to_string()
 }

@@ -37,7 +37,7 @@ impl ProductionVmLifecycleLoop {
                 .inner
                 .loop_impl_mut()
                 .append_fault_observations(storage_observations)?;
-            merge_event_log_append(&mut outcome, append);
+            merge_event_log_append(&mut outcome, append)?;
         }
         drop(queued);
 
@@ -61,9 +61,9 @@ impl ProductionVmLifecycleLoop {
             prefix_discoveries.extend(std::mem::take(&mut outcome.discovered_choices));
             outcome.discovered_choices = prefix_discoveries;
         }
-        prepend_event_log_appends(&mut outcome, appends);
+        prepend_event_log_appends(&mut outcome, appends)?;
         for append in self.settle_trigger_graph()? {
-            merge_event_log_append(&mut outcome, append);
+            merge_event_log_append(&mut outcome, append)?;
         }
         self.append_live_signal_fault_campaign_discoveries(
             signal_fault_frontier_start,

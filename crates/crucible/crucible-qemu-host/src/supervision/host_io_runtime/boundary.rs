@@ -8,6 +8,8 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn outbound_write_index(&mut self) -> Result<u64, QemuAsyncDriverRuntimeError> {
         let rings = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .node_directed_ring_pair_mut(
                 self.vm_slot,
                 self.vm_slot,
@@ -34,6 +36,8 @@ impl QemuLiveHostIoRuntime {
         }
         let rings = self
             .region
+            .as_mut()
+            .ok_or_else(region_missing)?
             .node_directed_ring_pair_mut(
                 self.vm_slot,
                 self.vm_slot,
@@ -56,7 +60,7 @@ impl QemuLiveHostIoRuntime {
             .header
             .peek(rings.first.entries)
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("observe network output stop", source.to_string())
+                QemuAsyncDriverRuntimeError::network_ring("observe network output stop", source)
             })?
         else {
             return Ok(None);
@@ -66,6 +70,8 @@ impl QemuLiveHostIoRuntime {
         // coherent publication, rather than rejecting a valid newer event.
         let observed = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
@@ -73,16 +79,10 @@ impl QemuLiveHostIoRuntime {
             return Ok(None);
         }
         if frame.src_node != self.vm_slot || frame.delivery_icount != snapshot.current_icount {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "observe network output stop",
-                format!(
-                    "frame {} from slot {} at {} does not match stopped slot {} at {}",
-                    frame.seq,
-                    frame.src_node,
-                    frame.delivery_icount,
-                    self.vm_slot,
-                    snapshot.current_icount,
-                ),
+            return Err(QemuAsyncDriverRuntimeError::network_output_stop(
+                &frame,
+                self.vm_slot,
+                snapshot.current_icount,
             ));
         }
         Ok(Some(write_index))
@@ -121,6 +121,8 @@ impl QemuLiveHostIoRuntime {
             .and_then(QemuLiveAcceleratorServicer::next_completion_icount);
         let deadline = [block, ninep, accelerator].into_iter().flatten().min();
         self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .store_device_completion_deadline_tick(deadline.unwrap_or(0));
@@ -220,19 +222,18 @@ pub(super) fn checkpoint_pause_requires_control_doorbell(
 ///
 /// Other runtime operations may complete their own handshakes while an advance
 /// is polling. Consequently, the observed odd token may be a later
-/// acknowledgement rather than the request's immediate successor. Tokens use
-/// wrapping serial-number order: an odd value less than half the `u32` space
-/// ahead of `request` acknowledges it, while the odd predecessor is stale.
+/// acknowledgement rather than the request's immediate successor. Issuance
+/// stops at exhaustion, so ordinary increasing order distinguishes completion
+/// from a stale token. Zero is never an issued request in this incarnation.
 pub(super) fn control_boundary_request_is_acknowledged(
     request: PendingControlBoundary,
     snapshot: &crucible_qemu_shmem::NodeSlotSnapshot,
 ) -> bool {
     let observed = snapshot.control_boundary_ack;
-    let forward_distance = observed.wrapping_sub(request.generation);
-    request.generation & 1 == 0
+    request.generation != 0
+        && request.generation & 1 == 0
         && observed & 1 == 1
-        && forward_distance != 0
-        && forward_distance < (1_u32 << 31)
+        && observed > request.generation
         && snapshot.control_boundary_fault_command_frontier == request.fault_command_frontier
         && snapshot.control_boundary_capture_request
             == request.fingerprint_capture_request.unwrap_or(0)

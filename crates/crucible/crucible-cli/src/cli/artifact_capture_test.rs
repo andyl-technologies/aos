@@ -38,6 +38,8 @@ fn report_without_final_snapshot(
         acknowledged_commands: Vec::new(),
         reproduction_commands: Vec::new(),
         watch_statuses: Vec::new(),
+        input_custody: crucible_session::engine::owned_decode::current_custody(),
+        output_custody: Vec::new(),
     }
 }
 

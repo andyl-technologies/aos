@@ -18,6 +18,9 @@ pub(super) enum ReplayStep {
 }
 
 /// Validates a complete event prefix and extracts the local physical replay plan.
+///
+/// Authentication keeps original model admission failures as infrastructure
+/// errors; only successfully checked mismatches reject the checkpoint itself.
 pub(super) fn authenticated_replay_steps(
     world: &World,
     configuration: &Configuration,
@@ -56,7 +59,11 @@ pub(super) fn authenticated_replay_steps(
     let mut inbound = 0_u64;
     for entry in scheduler.retained_event_log_entries() {
         if entry.sequence() != next_sequence
-            || !entry.has_valid_content_hash()
+            || !entry.has_valid_content_hash().map_err(|source| {
+                QemuVmRealizationError::ModelCopy {
+                    source: Box::new(source),
+                }
+            })?
             || !entry.class_matches_catalog()
         {
             return Err(invalid_input(

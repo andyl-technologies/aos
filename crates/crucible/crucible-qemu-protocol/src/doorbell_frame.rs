@@ -71,6 +71,78 @@ impl WhiteboxDoorbellFrame {
         bytes: &[u8],
         max_payload_len: usize,
     ) -> Result<Self, WhiteboxDoorbellFrameDecodeError> {
+        let frame = WhiteboxDoorbellFrameView::decode_bounded(bytes, max_payload_len)?;
+        Ok(Self {
+            kind: frame.kind(),
+            payload: frame.payload().to_vec(),
+        })
+    }
+
+    /// Borrows this decoded frame's kind and original payload storage.
+    #[must_use]
+    pub fn as_view(&self) -> WhiteboxDoorbellFrameView<'_> {
+        WhiteboxDoorbellFrameView {
+            kind: self.kind,
+            payload: &self.payload,
+        }
+    }
+
+    /// Encodes this frame into its canonical fixed-header byte representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhiteboxDoorbellFrameEncodeError::PayloadTooLarge`] when the
+    /// payload cannot fit in the fixed `u32` payload-length field.
+    pub fn encode(&self) -> Result<Vec<u8>, WhiteboxDoorbellFrameEncodeError> {
+        encode_whitebox_doorbell_frame(self.kind, &self.payload)
+    }
+
+    /// Returns the marker kind carried by the frame.
+    #[must_use]
+    pub const fn kind(&self) -> u16 {
+        self.kind
+    }
+
+    /// Returns the kind-specific payload bytes.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+/// Borrows the kind and payload of a validated white-box doorbell frame.
+///
+/// The view retains the original payload slice. Decoding checks the same fixed
+/// header, declared length and caller bound as [`WhiteboxDoorbellFrame`], without
+/// allocating payload storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WhiteboxDoorbellFrameView<'a> {
+    kind: u16,
+    payload: &'a [u8],
+}
+
+impl<'a> WhiteboxDoorbellFrameView<'a> {
+    /// Borrows one fixed-header little-endian doorbell frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhiteboxDoorbellFrameDecodeError`] for truncated headers, bad
+    /// magic, unsupported versions or mismatched payload lengths.
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, WhiteboxDoorbellFrameDecodeError> {
+        Self::decode_bounded(bytes, u32::MAX as usize)
+    }
+
+    /// Borrows one frame after checking its declared payload against a bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhiteboxDoorbellFrameDecodeError`] for truncated headers, bad
+    /// magic, unsupported versions, declarations above `max_payload_len` or
+    /// mismatched payload lengths, in that order.
+    pub fn decode_bounded(
+        bytes: &'a [u8],
+        max_payload_len: usize,
+    ) -> Result<Self, WhiteboxDoorbellFrameDecodeError> {
         if bytes.len() < WHITEBOX_DOORBELL_FRAME_HEADER_LEN {
             return Err(WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
                 len: bytes.len(),
@@ -114,30 +186,20 @@ impl WhiteboxDoorbellFrame {
 
         Ok(Self {
             kind,
-            payload: bytes[WHITEBOX_DOORBELL_FRAME_HEADER_LEN..].to_vec(),
+            payload: &bytes[WHITEBOX_DOORBELL_FRAME_HEADER_LEN..],
         })
-    }
-
-    /// Encodes this frame into its canonical fixed-header byte representation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WhiteboxDoorbellFrameEncodeError::PayloadTooLarge`] when the
-    /// payload cannot fit in the fixed `u32` payload-length field.
-    pub fn encode(&self) -> Result<Vec<u8>, WhiteboxDoorbellFrameEncodeError> {
-        encode_whitebox_doorbell_frame(self.kind, &self.payload)
     }
 
     /// Returns the marker kind carried by the frame.
     #[must_use]
-    pub const fn kind(&self) -> u16 {
+    pub const fn kind(self) -> u16 {
         self.kind
     }
 
-    /// Returns the kind-specific payload bytes.
+    /// Returns the original kind-specific payload slice.
     #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
+    pub const fn payload(self) -> &'a [u8] {
+        self.payload
     }
 }
 
@@ -265,3 +327,6 @@ pub const GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS: [WhiteboxDoorbellFrameGoldenVe
         ],
     },
 ];
+
+#[cfg(test)]
+mod tests;

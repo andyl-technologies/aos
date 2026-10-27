@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl MappedSetupRegion {
+impl MappedSetupView {
     pub(super) fn base_ptr(&self) -> *mut u8 {
         // SAFETY: `getpid` has no pointer preconditions and cannot fail.
         // `MADV_DONTFORK` removes the source mapping while the Rust owner is
@@ -44,9 +44,9 @@ impl MappedSetupRegion {
     /// mapping owner is dropped.
     #[must_use]
     pub fn header(&self) -> &RegionHeader {
-        // SAFETY: `mmap_setup_region` validates that the live mapping is large
-        // enough and correctly aligned for `RegionHeader` before constructing
-        // `Self`. The returned borrow cannot outlive this mapping owner.
+        // SAFETY: both constructors validate header extent and alignment. The
+        // external owner's constructor contract retains initialized backing
+        // while this view and its tied references are used.
         unsafe { &*self.base_ptr().cast::<RegionHeader>() }
     }
 

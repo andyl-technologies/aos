@@ -29,6 +29,8 @@ impl QemuNodeSet {
     ///
     /// The caller creates detached overlays only after this exact pause and
     /// must keep the same source process through native sealing and PREPARE.
+    /// The returned loan retains that node's entered checkpoint Original and
+    /// installed Source binding for the late helper; it starts no new clock.
     ///
     /// # Errors
     ///
@@ -38,17 +40,31 @@ impl QemuNodeSet {
     pub fn begin_hot_fork_disk_seal(
         &mut self,
         node: &NodeId,
-    ) -> Result<crate::QmpHotForkBlockSealState, BackendError> {
+    ) -> Result<
+        (
+            crate::QmpHotForkBlockSealState,
+            crate::QemuHotForkSourceOriginal,
+        ),
+        BackendError,
+    > {
         self.node_mut(node)?
             .pause_for_hot_fork_template()
             .map_err(|error| BackendError::Rejected {
                 message: format!("pause hot-fork disk source: {error}"),
             })?;
-        self.node_mut(node)?
+        let original = self
+            .node_mut(node)?
+            .hot_fork_source_original()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("retain hot-fork Source original: {error}"),
+            })?;
+        let state = self
+            .node_mut(node)?
             .query_hot_fork_block_seal()
             .map_err(|error| BackendError::Rejected {
                 message: format!("query current hot-fork disk roots: {error}"),
-            })
+            })?;
+        Ok((state, original))
     }
 
     /// Opens one caller-owned empty qcow2 file as a detached native node.

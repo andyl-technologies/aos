@@ -7,10 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiLifecycle = import ./_crucible-control-source.nix {
-    inherit lib;
-    component = "vm_lifecycle";
-  };
+  apiLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle.rs;
   daemonLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   daemonLauncher = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher.rs;
   bakedReplay = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;

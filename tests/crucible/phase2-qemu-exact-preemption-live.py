@@ -42,7 +42,7 @@ class Qmp:
         self.connection.close()
 
 
-def common_command(binary, plugin, architecture):
+def common_command(binary, plugin, resident_plugin, architecture):
     machine = "pc" if architecture == "x86" else "virt"
     command = [
         str(binary), "-machine", machine, "-m", "64M", "-smp", "2",
@@ -52,7 +52,7 @@ def common_command(binary, plugin, architecture):
     ]
     if architecture == "arm":
         command.extend(["-cpu", "max,pmu=off"])
-    command.extend(["-plugin", str(plugin)])
+    command.extend(["-plugin", str(resident_plugin), "-plugin", str(plugin)])
     return command
 
 
@@ -100,10 +100,10 @@ def wait_for_migration(qmp, label):
     raise TimeoutError(f"{label} migration did not complete")
 
 
-def snapshot_and_restore(arm_binary, plugin, directory):
+def snapshot_and_restore(arm_binary, plugin, resident_plugin, directory):
     socket_path = directory / "source.sock"
     vmstate_path = directory / "pending.vmstate"
-    source_command = common_command(arm_binary, plugin, "arm")
+    source_command = common_command(arm_binary, plugin, resident_plugin, "arm")
     source_command[-1] += ",mode=snapshot-source"
     source_command.extend([
         "-qmp", f"unix:{socket_path},server=on,wait=off",
@@ -144,7 +144,7 @@ def snapshot_and_restore(arm_binary, plugin, directory):
             source.kill()
             source.communicate()
 
-    destination_command = common_command(arm_binary, plugin, "arm")
+    destination_command = common_command(arm_binary, plugin, resident_plugin, "arm")
     destination_command[-1] += ",mode=snapshot-destination"
     destination_socket = directory / "destination.sock"
     destination_command.extend([
@@ -180,9 +180,9 @@ def snapshot_and_restore(arm_binary, plugin, directory):
     require_handoff(destination_output)
 
 
-def interrupt_at_exact_tick(x86_binary, plugin, directory):
+def interrupt_at_exact_tick(x86_binary, plugin, resident_plugin, directory):
     socket_path = directory / "interrupt.sock"
-    command = common_command(x86_binary, plugin, "x86")
+    command = common_command(x86_binary, plugin, resident_plugin, "x86")
     command[-1] += ",mode=interrupt"
     command.extend(["-qmp", f"unix:{socket_path},server=on,wait=off"])
 
@@ -231,10 +231,11 @@ def main():
     parser.add_argument("--x86", type=Path, required=True)
     parser.add_argument("--arm", type=Path, required=True)
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument("--resident-plugin", type=Path, required=True)
     args = parser.parse_args()
 
     direct = subprocess.run(
-        common_command(args.x86, args.plugin, "x86"),
+        common_command(args.x86, args.plugin, args.resident_plugin, "x86"),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=10, check=False,
     )
@@ -246,8 +247,8 @@ def main():
     require_rejections(direct.stdout, 0)
 
     with tempfile.TemporaryDirectory(prefix="crucible-exact-preemption-") as path:
-        snapshot_and_restore(args.arm, args.plugin, Path(path))
-        interrupt_at_exact_tick(args.x86, args.plugin, Path(path))
+        snapshot_and_restore(args.arm, args.plugin, args.resident_plugin, Path(path))
+        interrupt_at_exact_tick(args.x86, args.plugin, args.resident_plugin, Path(path))
     print("PASS exact preemption at 10 ps with raw 0, restored pending command, and LAPIC interrupt")
 
 

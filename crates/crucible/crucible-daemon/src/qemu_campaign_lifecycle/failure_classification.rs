@@ -1,4 +1,4 @@
-//! Classification of production lifecycle and replay failures for executor retry policy.
+//! Classification of production lifecycle failures for executor retry policy.
 
 use super::*;
 
@@ -37,184 +37,310 @@ pub(crate) fn production_lifecycle_failure_class(
     }
 
     match error {
-        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-            QemuVmRealizationError::ExecutorUnavailable { .. },
-        ) => SchedulerOperationalFailureClass::Retryable,
-        QemuAttemptProductionVmLifecycleError::ResourceInstallation(
-            QemuVmRealizationError::Canceled { .. },
-        ) => SchedulerOperationalFailureClass::Canceled,
+        QemuAttemptProductionVmLifecycleError::PreparedSource(report) => report
+            .with_first_error(prepared_source_first_class)
+            .unwrap_or(SchedulerOperationalFailureClass::Terminal),
+        QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report) => {
+            if report.was_quarantined() {
+                return SchedulerOperationalFailureClass::Terminal;
+            }
+            resource_installation_failure_class(report.first_error())
+        }
+        QemuAttemptProductionVmLifecycleError::ModelCopy(_) => {
+            SchedulerOperationalFailureClass::Retryable
+        }
+        QemuAttemptProductionVmLifecycleError::ResourceInstallation(error) => {
+            resource_installation_failure_class(error)
+        }
         QemuAttemptProductionVmLifecycleError::ResumeCheckpointUnsupported(_)
         | QemuAttemptProductionVmLifecycleError::ScenarioIdentityMismatch
         | QemuAttemptProductionVmLifecycleError::InvalidNodeCount(_)
         | QemuAttemptProductionVmLifecycleError::ResourceRefusal(_)
+        | QemuAttemptProductionVmLifecycleError::HostRamAdmission(_)
         | QemuAttemptProductionVmLifecycleError::HostWatchdogExpired
         | QemuAttemptProductionVmLifecycleError::InvalidResumeBoundary
         | QemuAttemptProductionVmLifecycleError::InvalidAppRandomBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidNetworkBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidSignalFaultBranchReplay(_)
         | QemuAttemptProductionVmLifecycleError::InvalidContinuationInput
-        | QemuAttemptProductionVmLifecycleError::ResourceInstallation(_)
         | QemuAttemptProductionVmLifecycleError::ResourceContractMismatch
         | QemuAttemptProductionVmLifecycleError::ResourceContractCleanup(_)
         | QemuAttemptProductionVmLifecycleError::Lifecycle(_)
+        | QemuAttemptProductionVmLifecycleError::SourceMainPreparation(_)
+        | QemuAttemptProductionVmLifecycleError::SourceInstallRetained { .. }
+        | QemuAttemptProductionVmLifecycleError::SourceCleanupHistory(_)
+        | QemuAttemptProductionVmLifecycleError::SourceGenerationStorage(_)
         | QemuAttemptProductionVmLifecycleError::CheckpointRestore(_) => {
             SchedulerOperationalFailureClass::Terminal
         }
     }
 }
 
-/// Wraps a replay budget failure as a terminal worker result.
-pub(super) fn start_replay_limit_failure<F, D>(
-    limit: &'static str,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
-        QemuFreshStartReplayError::LimitExceeded { limit },
-    ))
-}
-
-/// Preserves scheduler retry and cancellation classes during start replay.
-pub(super) fn map_start_replay_scheduler_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
+fn prepared_source_first_class(
+    first: crate::LifecycleFailureRef<'_>,
+) -> SchedulerOperationalFailureClass {
+    let crate::LifecycleFailureRef::Lifecycle(first) = first else {
+        // Later cleanup history cannot authorize another initiating attempt.
+        return SchedulerOperationalFailureClass::Terminal;
     };
-    let error =
-        QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::Scheduler(error));
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
+    if matches!(
+        first,
+        QemuAttemptProductionVmLifecycleError::PreparedSource(_)
+    ) {
+        // Refuse a nested report without recursively locking its same Main.
+        return SchedulerOperationalFailureClass::Terminal;
+    }
+    production_lifecycle_failure_class(first)
+}
+
+fn resource_installation_failure_class(
+    error: &QemuVmRealizationError,
+) -> SchedulerOperationalFailureClass {
+    match error {
+        QemuVmRealizationError::ExecutorUnavailable { .. } => {
+            SchedulerOperationalFailureClass::Retryable
         }
+        QemuVmRealizationError::Canceled { .. } => SchedulerOperationalFailureClass::Canceled,
+        #[cfg(target_os = "linux")]
+        QemuVmRealizationError::TargetDispatcherRetirement { source }
+            if source.dispatcher_error().is_some() && source.is_retryable() =>
+        {
+            // Source installation historically retries dispatcher I/O/namespace
+            // failures, but its pool-only ModelCopy category remains terminal.
+            SchedulerOperationalFailureClass::Retryable
+        }
+        _ => SchedulerOperationalFailureClass::Terminal,
     }
 }
 
-/// Preserves scheduler failure classes while attributing checkpoint capture failures.
-pub(super) fn map_checkpoint_capture_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
-    let error = QemuFreshExecutionRunnerError::CheckpointCapture(error);
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
 
-/// Preserves scheduler failure classes while attributing terminal fingerprint failures.
-pub(super) fn map_terminal_fingerprint_capture_failure<F, D>(
-    error: SchedulerError,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
-    let error = QemuFreshExecutionRunnerError::TerminalFingerprintCapture(error);
-    match class {
-        Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),
-        Some(SchedulerOperationalFailureClass::Canceled) => AttemptWorkerFailure::Canceled(error),
-        Some(SchedulerOperationalFailureClass::Terminal) | None => {
-            AttemptWorkerFailure::Terminal(error)
-        }
+    #[test]
+    fn admitted_model_copy_refusal_remains_typed_operational_failure() {
+        let source = crucible_engine::owned_decode::DecodeAdmissionError::new(
+            std::io::Error::other("explicit fixture metadata refusal"),
+        );
+        let error = QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(source));
+        let failure = classify_production_lifecycle_failure(error);
+        let AttemptWorkerFailure::Retryable(error) = failure else {
+            panic!("metadata exhaustion must remain infrastructure failure");
+        };
+        let source = error
+            .source()
+            .unwrap_or_else(|| panic!("typed cause is retained"));
+        assert!(
+            source
+                .downcast_ref::<crucible_engine::owned_decode::DecodeAdmissionError>()
+                .is_some()
+        );
+        assert!(
+            source
+                .source()
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .is_some()
+        );
     }
-}
 
-/// Retains worker retry classes while attributing checkpoint handoff failures.
-pub(super) fn map_checkpoint_handoff_failure<F, D>(
-    failure: AttemptWorkerFailure<CheckpointHandoffFailure>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::CheckpointHandoff(error))
-        }
-    }
-}
-
-/// Retains worker retry classes while attributing lifecycle failures.
-pub(super) fn map_fresh_lifecycle_failure<F, D>(
-    failure: AttemptWorkerFailure<F>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Lifecycle(error))
-        }
-    }
-}
-
-/// Retains worker retry classes while attributing modeled driver failures.
-pub(super) fn map_fresh_driver_failure<F, D>(
-    failure: AttemptWorkerFailure<D>,
-) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => {
-            AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
-        }
-        AttemptWorkerFailure::Canceled(error) => {
-            AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
-        }
-        AttemptWorkerFailure::Terminal(error) => {
-            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
-        }
-    }
-}
-
-/// Retains the primary runner failure alongside cleanup failure and bounded diagnostics.
-pub(super) fn cleanup_after_fresh_runner_failure<F, D>(
-    failure: AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
-    cleanup: SchedulerError,
-) -> QemuFreshExecutionRunnerError<F, D>
-where
-    D: std::fmt::Display,
-{
-    let driver = match failure {
-        AttemptWorkerFailure::Retryable(QemuFreshExecutionRunnerError::Driver(error))
-        | AttemptWorkerFailure::Canceled(QemuFreshExecutionRunnerError::Driver(error))
-        | AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error)) => error,
-        AttemptWorkerFailure::Retryable(error)
-        | AttemptWorkerFailure::Canceled(error)
-        | AttemptWorkerFailure::Terminal(error) => {
-            return QemuFreshExecutionRunnerError::CleanupAfterRunner {
-                failure: Box::new(error),
+    #[test]
+    fn typed_begin_rollback_history_is_terminal_without_replacing_canceled_first() {
+        let first = QemuVmRealizationError::Canceled {
+            operation: "component initiating cancellation",
+        };
+        let cleanup = QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component rollback",
+            message: String::from("actual independent refusal"),
+        };
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::rollback(
+            first,
+            crate::crucible_qemu_session::QemuAttemptResourceGuardCleanupFailure::quarantined(
                 cleanup,
-            };
+            ),
+        );
+        let (report, _) = failure.into_parts();
+        let failure = classify_production_lifecycle_failure(
+            QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report),
+        );
+
+        let AttemptWorkerFailure::Terminal(
+            QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report),
+        ) = failure
+        else {
+            panic!("quarantine cannot become cancel success or an ordinary retry");
+        };
+        assert!(matches!(
+            report.first_error(),
+            QemuVmRealizationError::Canceled {
+                operation: "component initiating cancellation"
+            }
+        ));
+        assert!(matches!(
+            report.cleanup_error(),
+            Some(QemuVmRealizationError::ExecutorUnavailable {
+                operation: "component rollback",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn retained_cleanup_keeps_factory_refusal_terminal_policy() {
+        for error in [
+            LifecycleApiError::CleanupRetained,
+            LifecycleApiError::LoopFactory {
+                message: String::from("component cleanup refusal"),
+            },
+        ] {
+            assert!(matches!(
+                classify_production_lifecycle_failure(
+                    QemuAttemptProductionVmLifecycleError::Lifecycle(error),
+                ),
+                AttemptWorkerFailure::Terminal(_)
+            ));
         }
-    };
-    let driver_diagnostic = bounded_driver_failure(&driver);
-    QemuFreshExecutionRunnerError::CleanupAfterDriver {
-        driver,
-        driver_diagnostic,
-        cleanup,
+    }
+
+    #[test]
+    fn single_begin_reports_preserve_unavailability_and_cancellation() {
+        let unavailable = QemuVmRealizationError::ExecutorUnavailable {
+            operation: "component admission",
+            message: String::from("temporarily unavailable"),
+        };
+        let canceled = QemuVmRealizationError::Canceled {
+            operation: "component cancellation",
+        };
+
+        assert!(matches!(
+            classify_production_lifecycle_failure(
+                QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(
+                    unavailable.into()
+                ),
+            ),
+            AttemptWorkerFailure::Retryable(_)
+        ));
+        assert!(matches!(
+            classify_production_lifecycle_failure(
+                QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(canceled.into()),
+            ),
+            AttemptWorkerFailure::Canceled(_)
+        ));
+    }
+
+    #[test]
+    fn retained_member_cleanup_stays_terminal_in_both_installation_paths() {
+        for begin in [false, true] {
+            let source = QemuVmRealizationError::CleanupRetained {
+                operation: "finish hot-fork World member",
+            };
+            let error = if begin {
+                QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(source.into())
+            } else {
+                QemuAttemptProductionVmLifecycleError::ResourceInstallation(source)
+            };
+            assert!(matches!(
+                production_lifecycle_failure_class(&error),
+                SchedulerOperationalFailureClass::Terminal
+            ));
+        }
+    }
+
+    #[test]
+    fn source_resource_model_copy_stays_terminal_in_both_installation_paths() {
+        for begin in [false, true] {
+            let source = QemuVmRealizationError::ModelCopy {
+                source: Box::new(std::io::Error::other("actual model-copy refusal")),
+            };
+            let error = if begin {
+                QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(source.into())
+            } else {
+                QemuAttemptProductionVmLifecycleError::ResourceInstallation(source)
+            };
+
+            assert!(matches!(
+                classify_production_lifecycle_failure(error),
+                AttemptWorkerFailure::Terminal(_)
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod protected_first_tests {
+    use super::*;
+
+    #[test]
+    fn protected_first_projection_preserves_actual_request_retry_and_cancel_classes() {
+        let retry = QemuAttemptProductionVmLifecycleError::ModelCopy(Box::new(
+            std::io::Error::other("actual model copy refusal"),
+        ));
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&retry)),
+            SchedulerOperationalFailureClass::Retryable
+        );
+
+        let canceled = QemuAttemptProductionVmLifecycleError::CheckpointRestore(Box::new(
+            ProductionAttemptCheckpointRestoreError::Canceled,
+        ));
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&canceled)),
+            SchedulerOperationalFailureClass::Canceled
+        );
+
+        // Actual report constructors transport typed status only. They issue
+        // no World and establish no physical quarantine or return evidence.
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::before_checkpoint_claim(
+            QemuVmRealizationError::Canceled { operation: "component raw begin" },
+            None,
+        );
+        let (report, _) = failure.into_parts();
+        let canceled = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&canceled)),
+            SchedulerOperationalFailureClass::Canceled
+        );
+
+        let failure = crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure::rollback(
+            QemuVmRealizationError::Canceled {
+                operation: "component raw begin",
+            },
+            crate::QemuAttemptResourceGuardCleanupFailure::quarantined(
+                QemuVmRealizationError::Canceled {
+                    operation: "component raw rollback",
+                },
+            ),
+        );
+        let (report, _) = failure.into_parts();
+        let quarantined = QemuAttemptProductionVmLifecycleError::ResourceBeginInstallation(report);
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Lifecycle(&quarantined)),
+            SchedulerOperationalFailureClass::Terminal
+        );
+    }
+
+    #[test]
+    fn cleanup_or_foreign_projection_cannot_bless_a_new_request() {
+        let cleanup = QemuVmRealizationError::ExecutorUnavailable {
+            operation: "later cleanup only",
+            message: String::from("same native cleanup leaf"),
+        };
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &cleanup else {
+            panic!("unexpected fixture variant");
+        };
+        let pointer = message.as_ptr();
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Realization(&cleanup)),
+            SchedulerOperationalFailureClass::Terminal
+        );
+        let QemuVmRealizationError::ExecutorUnavailable { message, .. } = &cleanup else {
+            panic!("cleanup cause was replaced");
+        };
+        assert_eq!(message.as_ptr(), pointer);
+        let foreign = std::io::Error::other("unrecognized projection");
+        assert_eq!(
+            prepared_source_first_class(crate::LifecycleFailureRef::Io(&foreign)),
+            SchedulerOperationalFailureClass::Terminal
+        );
     }
 }

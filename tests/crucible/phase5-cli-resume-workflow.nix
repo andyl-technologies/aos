@@ -24,7 +24,7 @@
   };
   apiVmLifecycle = import ./_crucible-control-source.nix {
     inherit lib;
-    component = "vm_lifecycle";
+    entry = ../../crates/crucible/crucible-daemon/src/vm_lifecycle.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 

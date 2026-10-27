@@ -251,7 +251,9 @@ pub(crate) fn bind_qemu_triage_evidence(
     }
     match &mut failure {
         FailureClusterReportFailure::Property(record) => {
-            record.violation.reproduction_artifact = finding.artifact.id();
+            let mut violation = record.violation.try_clone_admitted()?;
+            violation.reproduction_artifact = finding.artifact.id();
+            record.violation = violation.into_shared()?;
         }
         FailureClusterReportFailure::Timeout(record) => {
             record.reproduction_artifact = finding.artifact.id();

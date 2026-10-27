@@ -17,9 +17,10 @@ use super::{
     QmpCheckpointIdentity, QmpCheckpointRestore, QmpCheckpointRestoreRequest, QmpClient,
     QmpCommandComplete, QmpDescriptorName, QmpError, QmpHotForkAsyncWorkerBarrierState,
     QmpHotForkBlockBarrierState, QmpHotForkBlockSnapshotBinding, QmpHotForkChildProcessState,
-    QmpHotForkChildRuntimeState, QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory,
-    QmpHotForkRcuBarrierState, QmpHotForkRequest, QmpHotForkState, QmpHotForkTemplateState,
-    QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
+    QmpHotForkChildRamNames, QmpHotForkChildRamState, QmpHotForkChildRuntimeState,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginResourceInventory, QmpHotForkRcuBarrierState,
+    QmpHotForkRequest, QmpHotForkState, QmpHotForkTemplateState, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag, QmpTimeoutStream,
 };
 #[cfg(target_os = "linux")]
 use crate::QemuHotForkCommandError;
@@ -43,6 +44,162 @@ impl<S> QemuQmpVmStateControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_stopped_generation(
+        &mut self,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<u64, QmpError> {
+        self.client.parent_park_stopped_generation(actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn prepare_parent_park_begin(
+        &mut self,
+        binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        stopped: u64,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::QmpError> {
+        self.client
+            .prepare_parent_park_begin(binding, stopped, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_begin(
+        &mut self,
+        request: super::parent_park_drain::ParentParkRequest<'_>,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<super::parent_park_drain::QmpParentParkResult, QmpError> {
+        self.client
+            .parent_park_begin_under_originals(&request, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_return_under_originals(
+        &mut self,
+        binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        self.client
+            .parent_park_return_under_originals(binding, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_return(
+        &mut self,
+        binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        cleanup: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<super::parent_park_drain::QmpParentParkResult, QmpError> {
+        self.client
+            .parent_park_return_under_cleanup(binding, cleanup)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn parent_park_import(
+        &mut self,
+        imports: &crate::OriginalActorParkImports,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QmpError> {
+        use std::os::fd::AsFd;
+        self.client.install_parent_park_descriptor_under_originals(
+            &imports.basis_name,
+            imports.basis.as_fd(),
+            actor,
+            family,
+        )?;
+        self.client.install_parent_park_descriptor_under_originals(
+            &imports.cancellation_name,
+            imports.cancellation.as_fd(),
+            actor,
+            family,
+        )
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    pub(crate) fn capture_readonly_backing<'host, 'owner>(
+        &mut self,
+        observation: crate::linux_attempt_host::OriginalBoundBackingObservation<'host, 'owner>,
+        visitor: &mut dyn for<'event> FnMut(
+            super::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<super::QmpReadOnlyBackingReceipt, crate::QemuReadOnlyBackingError<'owner>> {
+        observation.capture(&mut self.client, visitor)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn discover_kernel_swap_admission(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, QmpError> {
+        cancellation.discover_admission(&mut self.client, generation, original)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn observe_kernel_swap_residency(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        generation: u64,
+        topology_generation: u64,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, QmpError> {
+        cancellation.observe(&mut self.client, generation, topology_generation, original)
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) fn close_kernel_swap_cancellation(
+        &mut self,
+        cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        cleanup: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        cancellation.close_after_failure(&mut self.client, cleanup)
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub(crate) fn reset_selectable_under_original(
+        &mut self,
+        pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpSelectableResetComplete, QmpError> {
+        self.client
+            .reset_selectable_under_original(pending, original)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .bind_checkpoint_original(original)
+            .map_err(|source| {
+                QemuNodeChannelError::new("bind checkpoint original", source.to_string())
+            })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .begin_checkpoint_receiving(receipt)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    /// Attaches the independently owned target execution's live class budgets.
+    pub fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) {
+        self.client.set_host_operation_supervisor(supervisor);
+    }
+
     /// Builds a VMState control channel over an already-negotiated QMP client.
     #[must_use]
     pub const fn new(client: QmpClient<S>) -> Self {
@@ -51,6 +208,38 @@ where
             debug_guest_activation_stream: None,
             guarded_launch_fdsets_pending: false,
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cpu_write_observation(
+        &mut self,
+        guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+        resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuCpuWriteObservation, QemuNodeChannelError> {
+        self.client
+            .cpu_write_observation(guard, resident)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn performance_observation(
+        &mut self,
+        guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+        resident: crucible_ram::ResourceLoan,
+    ) -> Result<super::QemuPerformanceObservation, QemuNodeChannelError> {
+        self.client
+            .performance_observation(guard, resident)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn query_paused_cpu(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+    ) -> Result<super::QmpPausedCpu, QemuNodeChannelError> {
+        self.client
+            .query_paused_cpu(vcpu, generation)
+            .map_err(QemuNodeChannelError::from)
     }
 
     pub(crate) fn query_fingerprint_projection_manifest(
@@ -123,6 +312,15 @@ where
             .map_err(QemuNodeChannelError::from)
     }
 
+    pub(crate) fn prepare_exact_checkpoint_topology(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<super::QmpCheckpointTopology, QemuNodeChannelError> {
+        self.client
+            .prepare_checkpoint_topology(request)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Restores one authenticated direct-plus-delta exact checkpoint chain.
     ///
     /// # Errors
@@ -147,9 +345,10 @@ where
     pub(crate) fn commit_exact_checkpoint(
         &mut self,
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
     ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
         self.client
-            .commit_checkpoint(identity)
+            .commit_checkpoint(identity, capture_generation)
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -162,11 +361,12 @@ where
     pub(crate) fn abort_exact_checkpoint(
         &mut self,
         identity: QmpCheckpointIdentity,
+        capture_generation: u64,
         expected_committed: Option<QmpCheckpointIdentity>,
     ) -> Result<QmpCheckpointEpochState, QemuNodeChannelError> {
         let state = self
             .client
-            .abort_checkpoint(identity)
+            .abort_checkpoint(identity, capture_generation)
             .map_err(QemuNodeChannelError::from)?;
         if state.committed() != expected_committed {
             return Err(QemuNodeChannelError::new(
@@ -240,6 +440,15 @@ where
         Ok(!state.running && state.status == crate::QmpRunStateKind::Paused)
     }
 
+    pub(crate) fn is_stopped_for_transfer(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<bool, QemuNodeChannelError> {
+        self.client
+            .is_stopped_for_transfer(original)
+            .map_err(QemuNodeChannelError::from)
+    }
+
     /// Stops guest execution for an exact checkpoint transaction.
     ///
     /// # Errors
@@ -269,6 +478,45 @@ where
         self.client
             .cont_acknowledged()
             .map(|_complete| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub(crate) fn resume_guest_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.client
+            .exchange_under(super::QmpCommand::Cont, original)
+            .map(|_| ())
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn stage_hot_fork_child_ram(
+        &mut self,
+        names: &QmpHotForkChildRamNames,
+        template: u64,
+        contract: u64,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .stage_hot_fork_child_ram(names, template, contract)
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn query_hot_fork_child_ram(
+        &mut self,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .query_hot_fork_child_ram()
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    pub(crate) fn release_hot_fork_child_ram(
+        &mut self,
+        generation: u64,
+    ) -> Result<QmpHotForkChildRamState, QemuNodeChannelError> {
+        self.client
+            .release_hot_fork_child_ram(generation)
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -592,6 +840,17 @@ where
                 identity,
                 private_ring_generation,
             )
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    pub(crate) fn probe_native_source_alias_for_test(
+        &mut self,
+        kind: crate::node::QemuTestNativeAliasKind,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
+        self.client
+            .probe_native_source_alias(kind, descriptor)
             .map_err(QemuNodeChannelError::from)
     }
 
@@ -919,5 +1178,18 @@ where
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QemuNodeChannelError> {
         self.client.quit().map_err(QemuNodeChannelError::from)
+    }
+
+    /// Uses the same cleanup Original through the complete quit exchange.
+    ///
+    /// # Errors
+    /// Returns the actual transport, response or same-Original refusal.
+    pub(crate) fn quit_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QemuNodeChannelError> {
+        self.client
+            .quit_under_original(original)
+            .map_err(QemuNodeChannelError::from)
     }
 }

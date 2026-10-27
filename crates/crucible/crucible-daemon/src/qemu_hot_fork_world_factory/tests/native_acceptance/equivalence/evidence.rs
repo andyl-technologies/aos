@@ -63,24 +63,12 @@ pub(super) enum EquivalenceTopology {
     SingleNode,
 }
 
-pub(super) fn drive_to_pending_boundary(
-    lifecycle: &mut impl QemuFreshAttemptLifecycleOwner,
-    source: &crucible_engine::ScenarioDefForm,
-    topology: EquivalenceTopology,
-) -> BoundaryEvidence {
-    drive_configuration_to_pending_boundary(
-        lifecycle,
-        source,
-        Configuration::genesis(source.scenario_def()),
-        topology,
-    )
-}
-
 pub(super) fn drive_configuration_to_pending_boundary(
     lifecycle: &mut impl QemuFreshAttemptLifecycleOwner,
     source: &crucible_engine::ScenarioDefForm,
     mut configuration: Configuration,
     topology: EquivalenceTopology,
+    context: &AttemptExecutionContext,
 ) -> BoundaryEvidence {
     let mut observed_http = false;
     let mut observed_block = false;
@@ -92,6 +80,9 @@ pub(super) fn drive_configuration_to_pending_boundary(
     let mut pending = None;
 
     for _ in 0..MAX_SOURCE_QUANTA {
+        context
+            .charge_execution_quantum()
+            .expect("original admitted native quantum budget");
         let outcome = lifecycle
             .drive_quantum(QuantumRequest {
                 configuration,
@@ -294,7 +285,7 @@ pub(super) fn prepared_world_evidence(
     world: &ProductionVmHotForkSourceWorld,
     topology: EquivalenceTopology,
 ) -> PreparedWorldEvidence {
-    let continuation = world.continuation();
+    let continuation = world.continuation().unwrap();
     assert_eq!(continuation.selectable_catalog_count(), 1);
     assert!(continuation.event_log_object_count() > 0);
     match topology {
@@ -492,6 +483,7 @@ pub(super) fn continue_from_pending(
     source: &crucible_engine::ScenarioDefForm,
     mut configuration: Configuration,
     pending: QemuNodeSelectablePendingRequest,
+    context: &AttemptExecutionContext,
 ) -> ContinuationEvidence {
     let discovery = resolve_guest_selectable(
         crucible_campaign::ScenarioDefId::from_hash(crucible_campaign::CampaignHash::from_bytes(
@@ -535,6 +527,9 @@ pub(super) fn continue_from_pending(
     let mut observed_reactivated_progress = false;
     let requires_reactivation = source.world().vm_nodes().len() > 1;
     for _ in 0..POST_CHOICE_QUANTA {
+        context
+            .charge_execution_quantum()
+            .expect("original admitted continuation quantum budget");
         let outcome = lifecycle
             .drive_quantum(QuantumRequest {
                 configuration,

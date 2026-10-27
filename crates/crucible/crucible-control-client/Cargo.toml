@@ -10,6 +10,8 @@ description = "Crucible HTTP/2 RPC clients and typed transport interfaces"
 workspace = true
 
 [dependencies]
+rustls-pemfile = { workspace = true }
+crucible-host-resources = { workspace = true }
 crucible-engine = { path = "../crucible-engine" }
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 crucible-session = { path = "../crucible-session" }
@@ -22,6 +24,8 @@ tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+crucible-control-api = { path = "../crucible-control-api", features = ["test-support"] }
+crucible-host-resources = { workspace = true, features = ["test-support"] }
 axum = { workspace = true }
 crucible-control-server = { path = "../crucible-control-server" }
 crucible-engine = { path = "../crucible-engine", features = ["test-double", "test-support"] }

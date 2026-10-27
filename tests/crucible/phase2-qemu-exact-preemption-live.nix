@@ -31,6 +31,7 @@ pkgs.mkDerivation {
           --x86 ${qemuPackage}/bin/qemu-system-x86_64 \
           --arm ${qemuPackage}/bin/qemu-system-aarch64 \
           --plugin "$PWD/exact-preemption-plugin.so" \
+          --resident-plugin ${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so \
           > result
 
         mkdir -p "$out"

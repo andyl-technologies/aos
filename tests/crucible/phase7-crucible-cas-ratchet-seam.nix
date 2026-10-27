@@ -22,8 +22,8 @@
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
-        label = "future home";
-        needle = "RFC-0007 is the future home";
+        label = "future shared-store integration";
+        needle = "Future shared-store integration may supply a shared";
       }
       {
         label = "narrow interface put";
@@ -59,7 +59,7 @@
       }
       {
         label = "no current dependency";
-        needle = "no RFC-0007 dependency";
+        needle = "no ratchet dependency";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

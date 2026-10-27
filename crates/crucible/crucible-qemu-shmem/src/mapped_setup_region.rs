@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 
 use thiserror::Error;
 
-use crate::region::{helpers::directed_rings, layout_from_setup_region_header};
+use crate::region::{helpers::directed_ring_descriptors, layout_from_setup_region_header};
 
 use super::{
     ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry, AcceleratorRingDirection,
@@ -28,6 +28,9 @@ mod views;
 
 pub use views::*;
 use views::{AcceleratorRingPairMut, GuestIntrospectionRawRingMut, GuestIntrospectionRingPairMut};
+
+#[path = "mapped_setup_region/owned_access.rs"]
+mod owned_access;
 
 #[path = "mapped_setup_region/basic_access.rs"]
 mod basic_access;
@@ -126,14 +129,18 @@ pub fn mmap_setup_region(
         });
     }
 
-    Ok(MappedSetupRegion {
-        address: ptr.as_ptr() as usize,
-        len,
-        region_len,
-        backing_identity,
-        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
-        mapping_process_id: unsafe { libc::getpid() },
-    })
+    // SAFETY: this owner just created the entire writable mapping. It retains
+    // the VMA until Drop, and the descriptor checks prevent backing shrink.
+    let view = unsafe {
+        MappedSetupView::from_retained_mapping(ptr.as_ptr(), region_len, backing_identity)
+    };
+    match view {
+        Ok(view) => Ok(MappedSetupRegion { view }),
+        Err(error) => {
+            unmap_setup_region(raw, len);
+            Err(error)
+        }
+    }
 }
 
 #[path = "mapped_setup_region/errors.rs"]
@@ -153,6 +160,77 @@ mod tests {
     use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
     use super::*;
+
+    #[test]
+    fn borrowed_view_drop_preserves_real_mapping_and_owner_disposition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let region_len = REGION_HEADER_SIZE as u64;
+        let fd = prepared_test_memfd(region_len)?;
+        let owner = mmap_setup_region(fd.as_fd(), region_len)?;
+        {
+            // SAFETY: the real mapping owner remains live and solely retains its
+            // VMA. This control uses only geometry, without interpreting zeroed bytes.
+            let view = unsafe {
+                MappedSetupView::from_retained_mapping(
+                    owner.mapping_start() as *mut u8,
+                    region_len,
+                    owner.backing_identity(),
+                )?
+            };
+            assert_eq!(view.mapping_start(), owner.mapping_start());
+            assert_eq!(view.backing_identity(), owner.backing_identity());
+            assert!(!std::mem::needs_drop::<MappedSetupView>());
+        }
+
+        let mut residency = 0_u8;
+        // SAFETY: the owned one-page header mapping remains live; mincore writes
+        // one residency byte. A mistakenly owning view Drop would cause ENOMEM.
+        let result = unsafe {
+            libc::mincore(
+                owner.mapping_start() as *mut libc::c_void,
+                region_len as usize,
+                &mut residency,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        owner.exclude_from_hot_fork_child()?;
+        owner.restore_hot_fork_parent_inheritance()?;
+        Ok(())
+    }
+
+    #[test]
+    fn owned_mutable_wire_access_publishes_and_consumes_without_replacing_view()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::FileExt;
+
+        let allocation = crate::RegionAllocation::new(crate::RegionConfig::new(1, 4))?;
+        let image = allocation.setup_region_bytes()?;
+        let fd = prepared_test_memfd(allocation.layout().region_size)?;
+        let file = std::fs::File::from(fd);
+        file.write_all_at(&image, 0)?;
+        let mut owner = mmap_setup_region(file.as_fd(), allocation.layout().region_size)?;
+        let identity = owner.backing_identity();
+        let address = owner.mapping_start();
+        let entry = CoverageEntry::new(42, 0, 0x1000, 4, 7)?;
+
+        {
+            let ring = owner.coverage_ring_mut(0)?;
+            ring.header.enqueue_coverage(ring.entries, entry)?;
+        }
+        {
+            let ring = owner.coverage_ring_mut(0)?;
+            assert_eq!(ring.header.dequeue_coverage(ring.entries)?, Some(entry));
+            assert_eq!(ring.header.dequeue_coverage(ring.entries)?, None);
+        }
+
+        assert_eq!(owner.mapping_start(), address);
+        assert_eq!(owner.backing_identity(), identity);
+        owner.exclude_from_hot_fork_child()?;
+        owner.restore_hot_fork_parent_inheritance()?;
+        Ok(())
+    }
 
     #[test]
     fn owned_mapping_can_move_to_a_session_thread() {

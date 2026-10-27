@@ -575,6 +575,38 @@ pub enum SignalValue {
 }
 
 impl SignalValue {
+    /// Returns a scalar type without copying named enum or event schemas.
+    fn scalar_type(&self) -> Option<SignalValueType> {
+        match self {
+            Self::Enum { .. } | Self::Event { .. } | Self::Vector2(_) | Self::Vector3(_) => None,
+            _ => self.value_type(),
+        }
+    }
+
+    /// Compares a literal's type without allocating schema copies.
+    pub(super) fn has_type(&self, expected: &SignalValueType) -> bool {
+        match (self, expected) {
+            (Self::Enum { schema, .. }, SignalValueType::Enum(expected)) => schema == expected,
+            (Self::Event { schema, payload }, SignalValueType::Event(expected)) => {
+                schema == expected && payload.len() <= HARD_SIGNAL_LITERAL_BYTES_PER_VALUE
+            }
+            (Self::Vector2(values), SignalValueType::Vector2(element)) if values.len() == 2 => {
+                values
+                    .iter()
+                    .all(|value| value.has_type(&element.value_type()))
+            }
+            (Self::Vector3(values), SignalValueType::Vector3(element)) if values.len() == 3 => {
+                values
+                    .iter()
+                    .all(|value| value.has_type(&element.value_type()))
+            }
+            (Self::Enum { .. } | Self::Event { .. } | Self::Vector2(_) | Self::Vector3(_), _) => {
+                false
+            }
+            _ => self.value_type().as_ref() == Some(expected),
+        }
+    }
+
     /// Returns the closed value type when this literal is structurally valid.
     #[must_use]
     pub fn value_type(&self) -> Option<SignalValueType> {
@@ -1846,7 +1878,8 @@ impl SignalProgram {
     ///
     /// Returns [`SignalProgramError`] when identifiers, types, units, limits,
     /// parameter tables, graph edges, cycles, depth, or reachability violate the
-    /// closed evaluator contract.
+    /// closed evaluator contract, or when the original resource account refuses
+    /// the exact canonical text allocation.
     pub fn new(
         nodes: Vec<SignalNode>,
         exported_outputs: Vec<SignalId>,
@@ -1861,7 +1894,7 @@ impl SignalProgram {
                 id: pair[0].clone(),
             });
         }
-        let material = program_material(&canonical, &exports, limits);
+        let material = program_material(&canonical, &exports, limits)?;
         let id = ContentHash::from_canonical_material("crucible.signal-program.v2", &material);
         Ok(Self {
             nodes: canonical,

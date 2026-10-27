@@ -14,27 +14,33 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
+use crucible_qemu_protocol::{
+    SELECTABLE_MESSAGE_MAX_BYTES, WHITEBOX_DOORBELL_KIND_LIFECYCLE, WhiteboxDoorbellFrameView,
+    decode_whitebox_marker_payload_view,
+};
 use crucible_qemu_shmem::MAX_FRAME_DATA;
 
 use crate::coverage::LiveTbTranslationConsumer;
 use crate::{
-    GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
+    GuestMemoryAddressSpace, GuestMemoryRange,
     PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuPluginId,
     QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WhiteboxDoorbellCapabilities, WhiteboxDoorbellFrame, WhiteboxDoorbellRegistrationPlan,
+    WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan,
     WhiteboxDoorbellSetupResources, WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent,
-    WhiteboxMarkerPayload, WhiteboxMarkerSinkError, decode_whitebox_marker_payload,
-    handle_whitebox_doorbell_callback,
+    WhiteboxMarkerPayload, WhiteboxMarkerSinkError,
 };
 
 mod api;
 mod app_random;
+mod diagnostic;
 mod error;
 mod guest_introspection;
+mod guest_memory;
 mod location;
 mod marker;
+mod ready_marker;
 mod selectable;
 #[cfg(test)]
 mod test_restore;
@@ -49,8 +55,8 @@ use app_random::LiveAppRandomState;
 use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_qemu_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 use crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan;
-pub use error::LiveWhiteboxError;
-use error::write_stderr;
+pub use error::{GuestIntrospectionTransportError, LiveWhiteboxError};
+use guest_memory::LiveGuestMemoryReader;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
@@ -61,7 +67,6 @@ pub(super) use test_restore::install_app_random_restore_state_for_test;
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
-const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
 
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
 static LIVE_APP_RANDOM_STATE: AtomicPtr<LiveAppRandomState> = AtomicPtr::new(std::ptr::null_mut());
@@ -123,17 +128,27 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
     let state = unsafe { state.as_mut() };
     let completed = state.selectable.as_mut().map_or(Ok(None), |selectable| {
         let mut writer = selectable::LiveSelectableGuestMemoryWriter::new(
-            state.apis,
+            state.apis.write_memory_vaddr_for_vcpu,
             vcpu_index,
             current_icount,
         );
-        selectable.deliver_reply(current_icount, vcpu_index, &mut writer)
+        selectable.deliver_reply(
+            current_icount,
+            vcpu_index,
+            &mut writer,
+            &mut state.selectable_reply_buffer,
+        )
     })?;
     if let Some(reply) = completed {
         state
             .marker_sink
             .output
-            .record_selectable_completed(current_icount, vcpu_index, &reply)?;
+            .record_selectable_completed(
+                current_icount,
+                vcpu_index,
+                &reply,
+                &mut state.selectable_reply_buffer,
+            )?;
     }
     Ok(())
 }
@@ -268,6 +283,8 @@ pub(crate) struct LiveWhiteboxState {
     campaign_marker_parking: bool,
     app_random: Option<LiveAppRandomState>,
     selectable: Option<selectable::LiveSelectableState>,
+    // Serialized trap and resume callbacks borrow this containing paid body.
+    selectable_reply_buffer: [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     guest_introspection: guest_introspection::LiveGuestIntrospectionState,
 }
 
@@ -320,6 +337,23 @@ impl<'a> LiveWhiteboxLaunchPlans<'a> {
             selectable_catalog_plan,
             campaign_marker_parking,
         }
+    }
+
+    /// Rejects branch decisions that have no matching launch producer.
+    fn validate_app_random_producer(&self) -> Result<(), LiveWhiteboxError> {
+        if self.app_random_config.is_none() && !self.app_random_branch_plan.entries().is_empty() {
+            return Err(LiveWhiteboxError::AppRandomBranchProducerMissing);
+        }
+
+        if self.app_random_config.is_some_and(|config| {
+            self.app_random_branch_plan.entries().iter().any(|entry| {
+                !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
+            })
+        }) {
+            return Err(LiveWhiteboxError::AppRandomBranchNodeMismatch);
+        }
+
+        Ok(())
     }
 }
 
@@ -430,36 +464,12 @@ impl LiveWhiteboxState {
         let capabilities = WhiteboxDoorbellCapabilities::bidirectional();
         let plan = doorbell
             .registration_plan(capabilities, validation)
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         if !matches!(plan, WhiteboxDoorbellRegistrationPlan::Install { .. }) {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "enabled live white-box plan did not install a trap".to_owned(),
-            });
+            return Err(LiveWhiteboxError::TrapInstallationMissing);
         }
 
-        if launch_plans.app_random_config.is_none()
-            && !launch_plans.app_random_branch_plan.entries().is_empty()
-        {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "app-random branch plan requires an enabled app-random producer"
-                    .to_owned(),
-            });
-        }
-        if launch_plans.app_random_config.is_some_and(|config| {
-            launch_plans
-                .app_random_branch_plan
-                .entries()
-                .iter()
-                .any(|entry| {
-                    !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
-                })
-        }) {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "app-random branch plan names another producer node".to_owned(),
-            });
-        }
+        launch_plans.validate_app_random_producer()?;
         let app_random = launch_plans
             .app_random_config
             .map(|config| {
@@ -474,14 +484,10 @@ impl LiveWhiteboxState {
                     })
             })
             .transpose()
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         let guest_input_capability = doorbell
             .require_guest_input_capability(capabilities)
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         let selectable = launch_plans
             .selectable_catalog_plan
             .map(|plan| {
@@ -494,18 +500,13 @@ impl LiveWhiteboxState {
                 )
             })
             .transpose()
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::CatalogRegistration { source })?;
 
         #[cfg(not(test))]
         let raw_icount_observed =
             Some(crate::abi::resolve_qemu_icount_raw_symbol().ok_or_else(|| {
-                LiveWhiteboxError::RegistrationPlan {
-                    message: format!(
-                        "required QEMU capability {} is unavailable",
-                        crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL
-                    ),
+                LiveWhiteboxError::RegistrationCapabilityUnavailable {
+                    symbol: crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL,
                 }
             })?);
         #[cfg(test)]
@@ -514,11 +515,8 @@ impl LiveWhiteboxState {
         #[cfg(not(test))]
         let sim_tick_observed = Some(
             crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or_else(|| {
-                LiveWhiteboxError::RegistrationPlan {
-                    message: format!(
-                        "required QEMU capability {} is unavailable",
-                        crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL
-                    ),
+                LiveWhiteboxError::RegistrationCapabilityUnavailable {
+                    symbol: crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL,
                 }
             })?,
         );
@@ -541,6 +539,7 @@ impl LiveWhiteboxState {
             campaign_marker_parking: launch_plans.campaign_marker_parking,
             app_random,
             selectable,
+            selectable_reply_buffer: [0; SELECTABLE_MESSAGE_MAX_BYTES],
             guest_introspection: guest_introspection::LiveGuestIntrospectionState::new(
                 shmem.guest_introspection_rings,
                 guest_input_capability,
@@ -567,6 +566,9 @@ impl LiveWhiteboxState {
                 Ordering::Acquire,
             )
             .map_err(|_existing| LiveWhiteboxError::StateAlreadyPublished)?;
+        if let Some(selectable) = self.selectable.as_mut() {
+            selectable.register_reset_owner(plugin_id)?;
+        }
         if let Some(app_random) = self.app_random.as_mut() {
             LIVE_APP_RANDOM_STATE.store(std::ptr::from_mut(app_random), Ordering::Release);
         }
@@ -675,26 +677,34 @@ impl LiveWhiteboxState {
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, address, len),
         );
         let mut reader = LiveGuestMemoryReader { apis: self.apis };
-        let payload = reader
-            .read_guest_memory(
-                event.vcpu_index(),
-                event.current_icount(),
-                event.payload_range(),
-            )
-            .map_err(|source| LiveWhiteboxError::Callback {
-                message: source.to_string(),
-            })?;
-        if guest_introspection::is_exchange(&payload) {
-            self.handle_guest_introspection(&mut reader, event, &payload)
-        } else if app_random::is_request(&payload) {
-            self.handle_app_random(&mut reader, event, raw_icount, trap_tick_ps, vcpu_index)
-        } else if selectable::is_message(&payload) {
+        let buffer = reader
+            .borrow_guest_memory(event.payload_range())
+            .map_err(|source| LiveWhiteboxError::GuestMemoryRead { source })?;
+        let payload = buffer.bytes();
+        if guest_introspection::is_exchange(payload) {
+            self.handle_guest_introspection(&mut reader, event, payload)
+        } else if app_random::is_request(payload) {
+            self.handle_app_random(payload, event, raw_icount, trap_tick_ps, vcpu_index)
+        } else if selectable::is_message(payload) {
             let selectable = self
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            let outcome =
-                selectable.handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)?;
+            let prepared = selectable::prepare_trap_snapshot(
+                &self.doorbell,
+                event,
+                trap_tick_ps,
+                payload,
+            )?;
+            // Pending selection can defer VMStop. Release the native snapshot
+            // after complete decode and before entering that service.
+            drop(buffer);
+            let outcome = selectable.handle(
+                prepared,
+                self.apis,
+                event,
+                &mut self.selectable_reply_buffer,
+            )?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>
@@ -703,6 +713,7 @@ impl LiveWhiteboxState {
                         trap_tick_ps,
                         vcpu_index as u32,
                         &registration,
+                        &mut self.selectable_reply_buffer,
                     )?;
                 }
                 crate::SelectableDoorbellOutcome::Pending { .. } => {
@@ -711,13 +722,15 @@ impl LiveWhiteboxState {
                         trap_tick_ps,
                         vcpu_index as u32,
                         &record,
+                        &mut self.selectable_reply_buffer,
                     )?;
                 }
                 _ => {}
             }
             Ok(())
         } else {
-            if is_setup_complete_marker(&payload)
+            let setup_complete = is_setup_complete_marker(payload);
+            if setup_complete
                 && let Some(selectable) = self.selectable.as_mut()
             {
                 // Reconcile required declarations before the readiness marker
@@ -726,56 +739,29 @@ impl LiveWhiteboxState {
             }
             self.marker_sink
                 .bind_callback_coordinate(raw_icount, trap_tick_ps);
-            let marker_result = handle_whitebox_doorbell_callback(
-                &self.doorbell,
-                &mut reader,
+            let marker_result = self.doorbell.service_trap_snapshot(
                 &mut self.marker_sink,
                 event,
+                payload,
             );
             self.marker_sink.clear_callback_coordinate();
-            let marker = marker_result.map_err(|source| LiveWhiteboxError::Callback {
-                message: source.to_string(),
-            })?;
-            if let WhiteboxMarkerPayload::Event(event) = marker.decoded_payload() {
-                let status = (self.apis.fault_ready_marker)(
-                    event.name.as_ptr().cast(),
-                    event.name.len(),
+            // Recording has finished with the snapshot. Return it before any
+            // readiness callback can defer VMStop work.
+            drop(buffer);
+            let marker =
+                marker_result.map_err(|source| LiveWhiteboxError::DoorbellCallback { source })?;
+            if let WhiteboxMarkerPayload::Event(event) = marker.into_decoded_payload() {
+                // The event already owns its decoded name. Move that allocation
+                // into a refusal instead of formatting another callback payload.
+                ready_marker::observe(
+                    event.name,
                     observed_raw_icount,
-                );
-                if status < 0 {
-                    return Err(LiveWhiteboxError::Callback {
-                        message: format!(
-                            "QEMU rejected ready-marker observation `{}` with status {status}",
-                            event.name
-                        ),
-                    });
-                }
-                if self.campaign_marker_parking
-                    && CAMPAIGN_BOUNDARY_MARKERS.contains(&event.name.as_str())
-                {
-                    match self
-                        .campaign_marker_vmstop
-                        .defer_campaign_marker(self.apis.force_vcpu_tb_exit)
-                    {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            return Err(LiveWhiteboxError::Callback {
-                                message: format!(
-                                    "campaign boundary `{}` collided with another deferred VMStop",
-                                    event.name
-                                ),
-                            });
-                        }
-                        Err(status) => {
-                            return Err(LiveWhiteboxError::Callback {
-                                message: format!(
-                                    "QEMU rejected campaign boundary `{}` TB exit with status {status}",
-                                    event.name
-                                ),
-                            });
-                        }
-                    }
-                }
+                    self.apis.fault_ready_marker,
+                    self.campaign_marker_parking.then_some((
+                        self.campaign_marker_vmstop.as_ref(),
+                        self.apis.force_vcpu_tb_exit,
+                    )),
+                )?;
             }
             Ok(())
         }
@@ -801,9 +787,9 @@ impl LiveWhiteboxState {
     }
 
     fn fail_loud(&self, error: &LiveWhiteboxError) {
-        let message = format!("crucible-qemu-plugin: live white-box callback failed: {error}\n");
-        let _written = write_stderr(message.as_bytes());
-        (self.request_shutdown)(1);
+        let _written = diagnostic::report_failure(error, diagnostic::write_stderr, || {
+            (self.request_shutdown)(1);
+        });
     }
 }
 
@@ -811,53 +797,15 @@ impl LiveWhiteboxState {
 mod tests;
 
 fn is_setup_complete_marker(payload: &[u8]) -> bool {
-    WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
-        .ok()
-        .and_then(|frame| decode_whitebox_marker_payload(&frame).ok())
-        == Some(WhiteboxMarkerPayload::Lifecycle(
-            crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
-        ))
-}
-
-struct LiveGuestMemoryReader {
-    apis: LiveWhiteboxApis,
-}
-
-impl GuestMemoryReader for LiveGuestMemoryReader {
-    fn read_guest_memory(
-        &mut self,
-        _vcpu_index: u32,
-        _current_icount: u64,
-        range: GuestMemoryRange,
-    ) -> Result<Vec<u8>, GuestMemoryReadError> {
-        if !matches!(range.address_space(), GuestMemoryAddressSpace::Virtual) {
-            return Err(GuestMemoryReadError::new(
-                "live white-box adapter requires a virtual payload range",
-            ));
-        }
-        let array = (self.apis.g_byte_array_new)();
-        let Some(array) = NonNull::new(array) else {
-            return Err(GuestMemoryReadError::new(
-                "GLib byte-array allocation failed",
-            ));
-        };
-        let read =
-            (self.apis.read_memory_vaddr)(range.guest_address(), array.as_ptr(), range.len());
-        if !read {
-            (self.apis.g_byte_array_free)(array.as_ptr(), true);
-            return Err(GuestMemoryReadError::new(
-                "qemu_plugin_read_memory_vaddr failed",
-            ));
-        }
-        let bytes = {
-            // The returned bytes are copied before the GLib array is freed.
-            // SAFETY: QEMU sets `data` and `len` to the initialized memory result.
-            unsafe { std::slice::from_raw_parts(array.as_ref().data, array.as_ref().len as usize) }
-        }
-        .to_vec();
-        (self.apis.g_byte_array_free)(array.as_ptr(), true);
-        Ok(bytes)
-    }
+    WhiteboxDoorbellFrameView::decode_bounded(payload, MAX_FRAME_DATA).is_ok_and(|frame| {
+        // Decode only lifecycle bodies: probing an unrelated marker must not
+        // construct its owned strings, details or measurement vectors.
+        frame.kind() == WHITEBOX_DOORBELL_KIND_LIFECYCLE
+            && decode_whitebox_marker_payload_view(frame)
+                == Ok(WhiteboxMarkerPayload::Lifecycle(
+                    crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
+                ))
+    })
 }
 
 extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(

@@ -22,6 +22,8 @@
 //! signal-coordinator capabilities are never shared across worlds; the child
 //! retains only the requirement for a fresh branch-local coordinator.
 
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+use std::borrow::Cow;
 use std::fs::File;
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;
@@ -42,6 +44,7 @@ use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
 use crate::console_observation::QemuConsoleObservationReader;
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
+#[cfg(any(test, feature = "test-support"))]
 use crate::supervision::HostSupervisionDeadline;
 use crate::{
     QemuAdvanceCompletionFence, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
@@ -50,10 +53,15 @@ use crate::{
 use deadline::{AdvanceWaitDeadline, DEFAULT_POLL_INTERVAL};
 
 mod boundary;
+mod checkpoint_pause;
 mod control;
 mod deadline;
 mod device_service;
+mod fingerprint_capture;
+pub(crate) mod operational_wait;
 mod performance;
+use crucible_host_resources::host_supervision::HostOperationClass;
+use operational_wait::OperationPollBudget;
 mod wait_observation;
 use boundary::*;
 
@@ -67,7 +75,13 @@ use boundary::*;
 /// is driven once per advance poll so a guest blocked on real block I/O can make
 /// progress.
 pub struct QemuLiveHostIoRuntime {
-    region: MappedSetupRegion,
+    ram_control_registration: Option<crate::ram_control::RamControlRegistration>,
+    host_operation_supervisor:
+        Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
+    region: Option<MappedSetupRegion>,
+    source_supervision: Option<crate::spawn::source_supervision::ActionSourceProducer>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_action: Option<crucible_qemu_protocol::boundary_action::ActionBinding>,
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
@@ -96,8 +110,14 @@ pub struct QemuLiveHostIoRuntime {
     fault_event_canonical_current_offset: usize,
     /// Plan-authored aggregate event-record ceiling reported by LIMIT-2.
     fault_event_configured_limit: usize,
+    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
+mod action;
+mod action_scope;
+#[cfg(test)]
+#[path = "host_io_runtime/component_tests.rs"]
+pub(crate) mod component;
 mod servicing;
 use servicing::{BlockIoServicing, NinepIoServicing};
 
@@ -152,6 +172,87 @@ pub trait QemuNinepFaultCoordinator: Send {
 }
 
 impl QemuLiveHostIoRuntime {
+    fn private_hot_fork_ring_alias(
+        &self,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<bool, rustix::io::Errno> {
+        let metadata = rustix::fs::fstat(descriptor)?;
+        let source = self
+            .region
+            .as_ref()
+            .ok_or(rustix::io::Errno::INVAL)?
+            .backing_identity();
+        Ok(metadata.st_dev == source.device() && metadata.st_ino == source.inode())
+    }
+
+    fn validate_private_hot_fork_ring(
+        &self,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let aliases = self
+            .private_hot_fork_ring_alias(descriptor)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::new(
+                    "clone hot-fork host-I/O continuation",
+                    format!("cannot authenticate child ring identity: {error}"),
+                )
+            })?;
+        if aliases {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "child host-I/O ring aliases the retained source mapping",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_launch_cleanup(
+        mut self,
+        cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    ) -> Self {
+        self.launch_cleanup = cleanup;
+        self
+    }
+    /// Retains the admitted RAM owner until all physical cleanup completes.
+    #[must_use]
+    pub fn with_ram_control_registration(
+        mut self,
+        registration: crate::ram_control::RamControlRegistration,
+    ) -> Self {
+        self.ram_control_registration = Some(registration);
+        self
+    }
+
+    /// Attaches the execution owner's original-start live operation supervisor.
+    #[must_use]
+    pub fn with_host_operation_supervisor(
+        mut self,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.host_operation_supervisor = Some(supervisor);
+        self
+    }
+
+    pub(crate) fn with_source_supervision(
+        mut self,
+        source: crate::spawn::source_supervision::OriginalSourceSupervision,
+    ) -> Result<Self, QemuAsyncDriverRuntimeError> {
+        let source = source
+            .bind_action_mapping(
+                self.region.as_ref().ok_or_else(region_missing)?,
+                self.vm_slot,
+                Arc::clone(&self.wake),
+            )
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::operational_supervision(
+                    "bind action Source mapping",
+                    error,
+                )
+            })?;
+        self.source_supervision = Some(source);
+        Ok(self)
+    }
+
     fn wait_for_poll_interval(&mut self, remaining: Duration) {
         self.performance.pending_sleep();
         thread::sleep(self.poll_interval.min(remaining));
@@ -231,10 +332,15 @@ impl QemuLiveHostIoRuntime {
             .map(File::from)
             .map_err(|source| QemuLiveHostIoRuntimeError::CloneWakeFd { source })?;
         Ok(Self {
-            region,
+            region: Some(region),
+            source_supervision: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_action: None,
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
+            host_operation_supervisor: None,
+            ram_control_registration: None,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
@@ -251,6 +357,7 @@ impl QemuLiveHostIoRuntime {
             fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
             fault_event_canonical_current_offset: 0,
             fault_event_configured_limit: HARD_FAULT_EVENT_CAPACITY as usize,
+            launch_cleanup: None,
         })
     }
 
@@ -329,7 +436,18 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        if !self.advance_wait_deadline.start(timeout) {
+        self.poll_advance_completion_with_original(timeout, None)
+    }
+
+    fn poll_advance_completion_with_original(
+        &mut self,
+        timeout: Duration,
+        original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let deadline = original
+            .map(|guard| OperationPollBudget::borrow_original(guard, "original quantum wake"))
+            .transpose()?;
+        if original.is_none() && !self.advance_wait_deadline.start(timeout) {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "start advance completion deadline",
                 "timeout deadline overflow",
@@ -337,12 +455,17 @@ impl QemuLiveHostIoRuntime {
         }
         let initial = self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
         self.wait_observation.begin(timeout);
         self.device_wake_publish_generation = None;
         self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&initial);
+        if let Some(deadline) = &deadline {
+            deadline.complete("original quantum wake")?;
+        }
         if self.checkpoint_idle_coordinate.is_some() {
             // A QMP-resumed checkpoint retains the plugin's completed
             // all-halted edge. An acknowledged control boundary republishes
@@ -352,7 +475,10 @@ impl QemuLiveHostIoRuntime {
         } else {
             self.write_wake_doorbell()?;
         }
-        self.repoll_advance_completion(timeout)
+        if let Some(deadline) = &deadline {
+            deadline.complete("original quantum wake")?;
+        }
+        self.repoll_advance_completion_with_original(timeout, original)
     }
 
     /// Polls for a quantum boundary after the initial plugin wake was sent.
@@ -366,7 +492,22 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+        self.repoll_advance_completion_with_original(timeout, None)
+    }
+
+    fn repoll_advance_completion_with_original(
+        &mut self,
+        timeout: Duration,
+        original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let deadline = original
+            .map(|guard| OperationPollBudget::borrow_original(guard, "original quantum poll"))
+            .transpose()?;
+        let remaining = match &deadline {
+            Some(deadline) => deadline.remaining("original quantum poll")?,
+            None => self.advance_wait_deadline.remaining(),
+        }
+        .ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(
                 "repoll advance completion",
                 "initial await did not establish a deadline",
@@ -378,7 +519,11 @@ impl QemuLiveHostIoRuntime {
         }
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         for attempt in 0..attempts {
-            let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+            let remaining = match &deadline {
+                Some(deadline) => deadline.remaining("original quantum poll")?,
+                None => self.advance_wait_deadline.remaining(),
+            }
+            .ok_or_else(|| {
                 QemuAsyncDriverRuntimeError::new(
                     "repoll advance completion",
                     "initial await did not establish a deadline",
@@ -389,9 +534,14 @@ impl QemuLiveHostIoRuntime {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
 
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             self.service_console_output()?;
             let snapshot = self
                 .region
+                .as_ref()
+                .ok_or_else(region_missing)?
                 .node_slot(self.vm_slot)
                 .map_err(map_slot_error)?
                 .snapshot();
@@ -420,13 +570,25 @@ impl QemuLiveHostIoRuntime {
             // on a probe read cannot reach the ceiling until its response is
             // delivered, so draining and delivering at the observed icount is what
             // lets the advance make progress.
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let block_progress = self.service_block_io(&snapshot)?;
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let ninep_progress = self.service_ninep_io(&snapshot)?;
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
+            }
             let accelerator_progress = self.service_accelerator_io(&snapshot)?;
             if (block_progress || ninep_progress || accelerator_progress)
                 && self.device_wake_publish_generation.is_none()
             {
                 self.device_wake_publish_generation = Some(snapshot.publish_gen);
+            }
+            if let Some(deadline) = &deadline {
+                deadline.complete("original quantum poll")?;
             }
             self.publish_device_completion_deadline()?;
             let idle = idle_state_from_snapshot(snapshot);
@@ -453,18 +615,30 @@ impl QemuLiveHostIoRuntime {
                 QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
                     self.scheduler_input_publish_generation = None;
                     self.checkpoint_idle_coordinate = None;
-                    self.clamp_completed_quantum(&snapshot, timeout)?;
+                    self.clamp_completed_quantum_with_original(&snapshot, timeout, original)?;
                     self.completed_outbound_write_index = self.outbound_write_index()?;
+                    if let Some(deadline) = &deadline {
+                        deadline.complete("original quantum poll")?;
+                    }
                     self.service_console_output()?;
+                    if let Some(deadline) = &deadline {
+                        deadline.complete("original quantum poll")?;
+                    }
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
                 QuantumBoundary::Pending => {
                     if snapshot.status == STATUS_DONE {
                         self.device_wake_publish_generation = None;
                         self.checkpoint_idle_coordinate = None;
+                        if let Some(deadline) = &deadline {
+                            deadline.complete("original quantum poll")?;
+                        }
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
                     if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
+                        if let Some(deadline) = &deadline {
+                            deadline.complete("original quantum poll")?;
+                        }
                         if checkpoint_idle_unreleased {
                             let _request = self.signal_wake(None)?;
                         } else {
@@ -474,7 +648,11 @@ impl QemuLiveHostIoRuntime {
                 }
             }
             if attempt + 1 < attempts {
-                let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+                let remaining = match &deadline {
+                    Some(deadline) => deadline.remaining("original quantum poll")?,
+                    None => self.advance_wait_deadline.remaining(),
+                }
+                .ok_or_else(|| {
                     QemuAsyncDriverRuntimeError::new(
                         "repoll advance completion",
                         "initial await did not establish a deadline",
@@ -485,14 +663,225 @@ impl QemuLiveHostIoRuntime {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
                 self.observe_pending_wait("advance-pending", &snapshot, None, remaining);
-                self.wait_for_poll_interval(remaining);
+                if let Some(deadline) = &deadline {
+                    self.performance.pending_sleep();
+                    deadline.wait(self.poll_interval, "original quantum poll")?;
+                } else {
+                    self.wait_for_poll_interval(remaining);
+                }
             }
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
     }
 }
 
+impl Drop for QemuLiveHostIoRuntime {
+    fn drop(&mut self) {
+        if let (Some(source), Some(region)) = (&mut self.source_supervision, &self.region) {
+            // Only the still-owned producer can attempt its unpublished cut.
+            // Failure or attempted publication keeps the original mapping debt.
+            let _ = source.return_unpublished_action(region, self.vm_slot);
+        }
+        if let Some(source) = &self.source_supervision
+            && source.action_is_pending()
+            && let Some(region) = self.region.take()
+        {
+            source.retain_uncertain_mapping(region);
+        }
+        let Some(cleanup) = &self.launch_cleanup else {
+            return;
+        };
+        if !cleanup.is_published() || !cleanup.cleanup_proven() {
+            return;
+        }
+        if let Some(registration) = &self.ram_control_registration {
+            // Node fields reap the child and join its source before this
+            // runtime drops. Closing registry custody releases no capacity;
+            // final cleanup custody follows local descriptor/lease disposal.
+            let _ = registration
+                .registrar
+                .prepare_retirement_after_cleanup(registration.target);
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+fn reader_probe_error(message: impl Into<Cow<'static, str>>) -> crate::QemuNodeChannelError {
+    crate::QemuNodeChannelError::new("probe retained host reader ownership", message)
+}
+
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn quantum_publication<'operation>(
+        &'operation mut self,
+        original: Option<&'operation crucible_host_resources::host_supervision::HostOperationGuard>,
+    ) -> Result<Option<crate::QemuQuantumPublication<'operation>>, QemuAsyncDriverRuntimeError>
+    {
+        let Some(source) = self.source_supervision.as_mut() else {
+            return Ok(None);
+        };
+        let original = original.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "borrow actual Quantum publisher",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            )
+        })?;
+        let mapping = self.region.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "borrow actual Quantum mapping",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            )
+        })?;
+        Ok(Some(crate::QemuQuantumPublication::new(
+            source,
+            mapping,
+            self.vm_slot,
+            original,
+        )))
+    }
+
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        self.ram_control_registration.as_ref()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn host_service_allocator_for_test(
+        &self,
+    ) -> Option<crucible_host_resources::host_services::HostServiceAllocator> {
+        self.ram_control_registration
+            .as_ref()
+            .map(|registration| registration.host_services.clone())
+    }
+
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_hot_fork_reader_alias_for_test(
+        &mut self,
+        descriptor: BorrowedFd<'_>,
+        ninep: bool,
+    ) -> Result<crate::QemuNodeChannelError, crate::QemuNodeChannelError> {
+        if ninep {
+            let servicer = self
+                .ninep
+                .as_ref()
+                .ok_or_else(|| reader_probe_error("source has no actual 9p reader"))?;
+            return match servicer
+                .servicer
+                .validate_private_hot_fork_reader(descriptor)
+            {
+                Err(
+                    error @ super::ninep_io_servicer::QemuLive9pIoServicerError::SourceMappingAlias,
+                ) => Ok(reader_probe_error(error.to_string())),
+                Err(error) => Err(reader_probe_error(error.to_string())),
+                Ok(()) => Err(reader_probe_error("9p reader accepted the source mapping")),
+            };
+        }
+
+        if !self
+            .private_hot_fork_ring_alias(descriptor)
+            .map_err(|error| reader_probe_error(error.to_string()))?
+        {
+            return Err(reader_probe_error(
+                "network continuation candidate is not the source mapping",
+            ));
+        }
+        match self.validate_private_hot_fork_ring(descriptor) {
+            Err(error) => Ok(reader_probe_error(error.to_string())),
+            Ok(()) => Err(reader_probe_error(
+                "network continuation accepted the source mapping",
+            )),
+        }
+    }
+
+    fn reserve_fault_manifest_metadata(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::QemuFaultManifestMetadataLease, QemuAsyncDriverRuntimeError> {
+        let registration = self.ram_control_registration.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "runtime has no admitted node service allocator",
+            )
+        })?;
+        let cleanup = self.launch_cleanup.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "runtime has no retained native cleanup authority",
+            )
+        })?;
+        if bytes == 0 {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "reserve fault manifest metadata",
+                "metadata request is empty",
+            ));
+        }
+        let charged = bytes
+            .checked_add(crucible_host_resources::host_services::HostServiceLease::metadata_bytes())
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new(
+                    "reserve fault manifest metadata",
+                    "metadata loan accounting overflows",
+                )
+            })?;
+        let service = registration
+            .host_services
+            .reserve_resources(0, 0, charged)
+            .map_err(|error| {
+                QemuAsyncDriverRuntimeError::new(
+                    "reserve fault manifest metadata",
+                    error.to_string(),
+                )
+            })?;
+        Ok(crate::QemuFaultManifestMetadataLease::new(
+            service,
+            cleanup.clone(),
+        ))
+    }
+
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        if let Some(cleanup) = &self.launch_cleanup {
+            if !progress.bind(cleanup) {
+                return (
+                    false,
+                    Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+                );
+            }
+            match cleanup.publication() {
+                Ok(false) => return (true, Ok(())),
+                Ok(true) => {}
+                Err(first) => return progress.refuse_publication(first),
+            }
+        }
+        let Some(registration) = &self.ram_control_registration else {
+            return (true, Ok(()));
+        };
+        let (returned, status) = progress.return_controller(registration, original);
+        if returned {
+            // Actual controller return precedes independent failure reporting.
+            self.ram_control_registration = None;
+        }
+        (returned, status)
+    }
+
+    fn set_host_operation_supervisor(
+        &mut self,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.host_operation_supervisor = Some(supervisor);
+        Ok(())
+    }
+
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_host_resources::host_supervision::HostOperationSupervisor> {
+        self.host_operation_supervisor.as_ref()
+    }
+
     fn renew_advance_completion_poll(
         &mut self,
         timeout: Duration,
@@ -527,6 +916,17 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         region_len: u64,
         console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
+        self.validate_private_hot_fork_ring(shmem_fd)?;
+        if self
+            .source_supervision
+            .as_ref()
+            .is_some_and(|source| source.action_is_pending())
+        {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "clone hot-fork host-I/O continuation",
+                "the actual action loan still retains native physical borrowers",
+            ));
+        }
         if self.console.is_some() != console.is_some() {
             return Err(QemuAsyncDriverRuntimeError::new(
                 "clone hot-fork host-I/O continuation",
@@ -543,6 +943,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
         if self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .pending_capture_request_v1()
@@ -687,6 +1089,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
     fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
         Ok(self
             .region
+            .as_ref()
+            .ok_or_else(region_missing)?
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot()
@@ -698,161 +1102,56 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "probe checkpoint device boundary",
-                "checkpoint device probe timeout is zero",
-            ));
-        }
-        let request = self.signal_wake(None)?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
-        let deadline = HostSupervisionDeadline::start(timeout);
-        let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline.has_time_remaining() {
-                break;
-            }
-
-            self.drain_fault_events_for_pump(
-                self.fault_event_staging_limit,
-                &deadline,
-                timeout,
-                "probe checkpoint device boundary",
-            )?;
-            self.service_console_output()?;
-            let snapshot = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(map_slot_error)?
-                .snapshot();
-            let block_progress = self.service_block_io(&snapshot)?;
-            let ninep_progress = self.service_ninep_io(&snapshot)?;
-            let accelerator_progress = self.service_accelerator_io(&snapshot)?;
-            let device_progress = block_progress || ninep_progress || accelerator_progress;
-            self.publish_device_completion_deadline()?;
-            last_observed = Some((
-                snapshot.control_boundary_ack,
-                snapshot.current_icount,
-                snapshot.device_io_active,
-                device_progress,
-            ));
-            if control_boundary_request_is_acknowledged(request, &snapshot) {
-                return Ok(!device_progress && snapshot.device_io_active == 0);
-            }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
-                self.wait_for_poll_interval(remaining);
-            }
-        }
-        Err(QemuAsyncDriverRuntimeError::new(
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::Quiescence,
+            timeout,
             "probe checkpoint device boundary",
-            format!(
-                "QEMU did not acknowledge control token {} within {timeout:?}; last observation {}",
-                request.generation,
-                last_observed.map_or_else(
-                    || String::from("none"),
-                    |(ack, current, active, progress)| format!(
-                        "token {ack}, current icount {current}, device I/O active {active}, device progress {progress}"
-                    ),
-                )
-            ),
-        ))
+        )?;
+        self.probe_checkpoint_device_boundary(&deadline, timeout)
     }
 
     fn publish_current_execution_fingerprint(
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "publish current execution fingerprint",
-                "execution fingerprint control-boundary timeout is zero",
-            ));
-        }
-
-        let fingerprint_request = self
-            .region
-            .fingerprint_sample(self.vm_slot)
-            .map_err(map_slot_error)?
-            .request_capture_v1();
-        let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
-        let request = self.signal_wake(Some(fingerprint_request))?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
-        let deadline = HostSupervisionDeadline::start(timeout);
-        let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline.has_time_remaining() {
-                break;
-            }
-
-            self.drain_fault_events_for_pump(
-                self.fault_event_staging_limit,
-                &deadline,
-                timeout,
-                "publish current execution fingerprint",
-            )?;
-            self.service_console_output()?;
-            let snapshot = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(map_slot_error)?
-                .snapshot();
-            let fingerprint_ack = self
-                .region
-                .fingerprint_sample(self.vm_slot)
-                .map_err(map_slot_error)?
-                .capture_request_generation();
-            last_observed = Some((
-                snapshot.control_boundary_ack,
-                snapshot.current_icount,
-                snapshot.status,
-                fingerprint_ack,
-            ));
-            if control_boundary_request_is_acknowledged(request, &snapshot) {
-                if fingerprint_ack == fingerprint_acknowledgement {
-                    // The digest worker publishes the sample before its release
-                    // acknowledgement. This acquire load therefore makes the
-                    // exact sample visible through the independent mapping.
-                    return Ok(());
-                }
-                if fingerprint_ack != fingerprint_request {
-                    return Err(QemuAsyncDriverRuntimeError::new(
-                        "publish current execution fingerprint",
-                        format!(
-                            "plugin acknowledged control token {} for fingerprint request {fingerprint_request}, but observed unrelated fingerprint generation {fingerprint_ack}",
-                            request.generation,
-                        ),
-                    ));
-                }
-            }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
-                if attempt % 16 == 15 {
-                    self.write_wake_doorbell()?;
-                }
-                self.wait_for_poll_interval(remaining);
-            }
-        }
-
-        Err(QemuAsyncDriverRuntimeError::new(
+        self.settle_previous_action()?;
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::FingerprintUpdate,
+            timeout,
             "publish current execution fingerprint",
-            format!(
-                "QEMU did not acknowledge fingerprint control token {} within {timeout:?}; last observation {}",
-                request.generation,
-                last_observed.map_or_else(
-                    || String::from("none"),
-                    |(ack, current, status, fingerprint)| {
-                        format!(
-                            "token {ack}, current icount {current}, status {status}, fingerprint generation {fingerprint}"
-                        )
-                    },
-                )
-            ),
-        ))
+        )?;
+
+        self.capture_execution_fingerprint(&deadline, timeout)
+    }
+
+    fn publish_current_execution_fingerprint_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "publish current execution fingerprint";
+        self.settle_previous_action()?;
+        let deadline = OperationPollBudget::borrow_original(original, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
+        })?;
+        self.capture_execution_fingerprint(&deadline, remaining)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn publish_current_execution_fingerprint_under_originals(
+        &mut self,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "publish current execution fingerprint";
+        self.settle_previous_action()?;
+        let deadline = OperationPollBudget::borrow_quiescence_pair(actor, family, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "paired original operation has expired")
+        })?;
+        self.capture_execution_fingerprint(&deadline, remaining)
     }
 
     /// Requests an exact plugin boundary and hands QEMU's execution path to QMP.
@@ -860,238 +1159,87 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if timeout.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "quiesce for checkpoint",
-                "checkpoint pause timeout is zero",
-            ));
-        }
-        let mut deadline = AdvanceWaitDeadline::default();
-        if !deadline.start(timeout) {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "quiesce for checkpoint",
-                "checkpoint pause timeout exceeds the host supervision clock range",
-            ));
-        }
-        let mut initial_snapshot = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
-        let reached_boundary_control_wake = initial_snapshot.status != STATUS_IDLE;
+        let deadline = OperationPollBudget::begin(
+            self.host_operation_supervisor.as_ref(),
+            HostOperationClass::Quiescence,
+            timeout,
+            "quiesce for checkpoint",
+        )?;
+        self.pause_checkpoint_boundary(&deadline, timeout, None)
+    }
 
-        if reached_boundary_control_wake {
-            // Warm realization pulses the main-loop doorbell while connecting
-            // QMP. Its final two-pass callback can still own QEMU's coalescing
-            // token after the primer thread joins. Fence that ordinary control
-            // work before publishing pause; otherwise the old callback can run
-            // before pause is visible, clear the token, and strand the reached-
-            // ceiling vCPU on its condition variable indefinitely.
-            self.probe_checkpoint_device_io(timeout)?;
-            initial_snapshot = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(map_slot_error)?
-                .snapshot();
-        }
-        let remaining = deadline.remaining().unwrap_or_default();
-        if remaining.is_zero() {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "quiesce for checkpoint",
-                "pre-pause control fence exhausted the checkpoint pause timeout",
-            ));
-        }
-        let slot = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?;
-        let initial_publish_gen = initial_snapshot.publish_gen;
-        if let Err(source) = self.region.header().request_pause([slot]) {
-            return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-                "request checkpoint pause",
-                source.to_string(),
-            ));
-        }
-        // Revoke the unused tail of the preceding quantum. Publishing this
-        // ceiling also wakes the scheduler futex, so the plugin observes the
-        // already-visible pause without a main-loop eventfd wake. A later
-        // normal quantum must publish a fresh ceiling.
-        let checkpoint_ceiling = authorize_advance_ceiling(
-            initial_snapshot.current_icount,
-            initial_snapshot.current_icount,
-            None,
-        )
-        .map_err(|source| {
-            QemuAsyncDriverRuntimeError::new("clamp checkpoint ceiling", source.to_string())
-        });
-        let checkpoint_ceiling = match checkpoint_ceiling {
-            Ok(ceiling) => ceiling,
-            Err(source) => return self.fail_checkpoint_pause(source),
-        };
-        if let Err(source) = slot.publish_scheduler_advance(
-            checkpoint_ceiling,
-            crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
-        ) {
-            return self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-                "publish checkpoint ceiling",
-                source.to_string(),
-            ));
-        }
-        let device_servicers_attached =
-            self.block.is_some() || self.ninep.is_some() || self.accelerator.is_some();
-        let zero_length_idle_control_wake = device_servicers_attached
-            && initial_snapshot.status == STATUS_IDLE
-            && initial_snapshot.idle_wake_icount == initial_snapshot.current_icount;
-        let tokenized_checkpoint_control_wake =
-            reached_boundary_control_wake || zero_length_idle_control_wake;
-        if tokenized_checkpoint_control_wake
-            || checkpoint_pause_requires_control_doorbell(
-                &initial_snapshot,
-                device_servicers_attached,
-            )
-        {
-            // A reached-ceiling publication is parked on QEMU's condition
-            // variable rather than the scheduler futex, so the clamped ceiling
-            // cannot make it observe the pause. The pre-pause fence publishes
-            // an idle-looking control boundary without changing that underlying
-            // wait, so preserve the original reached-state provenance here.
-            // Ring the main-loop doorbell in that state even with devices
-            // attached: QEMU's two-pass control boundary orders any resulting
-            // device bottom half before it publishes quiescence. An originally
-            // idle device VM with a future deadline retains the stricter
-            // no-doorbell path to avoid admitting a latent waiter. A zero-length
-            // idle publication has no futex edge left to observe pause and uses
-            // the same tokenized two-pass handoff as a reached boundary.
-            let wake = if tokenized_checkpoint_control_wake {
-                // The paired token makes a vCPU resume callback yield without
-                // interpreting this control edge as guest authorization.
-                self.signal_wake(None).map(|_request| ())
-            } else {
-                self.write_wake_doorbell()
-            };
-            if let Err(source) = wake {
-                return self.fail_checkpoint_pause(source);
-            }
-        }
-        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
-        let mut last_observed = None;
-        for attempt in 0..attempts {
-            if !deadline
-                .remaining()
-                .is_some_and(|remaining| !remaining.is_zero())
-            {
-                break;
-            }
+    fn quiesce_for_checkpoint_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "quiesce for checkpoint";
+        let deadline = OperationPollBudget::borrow_checkpoint_original(original, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "original operation has expired")
+        })?;
+        self.pause_checkpoint_boundary(&deadline, remaining, Some(original))
+    }
 
-            let snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error) {
-                Ok(slot) => slot.snapshot(),
-                Err(source) => return self.fail_checkpoint_pause(source),
-            };
-            // A request can enter QEMU's device coroutine in the main-loop
-            // slice between the plugin's exact pause publication and native
-            // stop consuming its queued request. The RR fence prevents any
-            // further guest dispatch, while servicing here lets QEMU's normal
-            // block/ninep/accelerator drain reach the same quiescent boundary.
-            let block_progress = match self.service_block_io(&snapshot) {
-                Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
-            };
-            let ninep_progress = match self.service_ninep_io(&snapshot) {
-                Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
-            };
-            let accelerator_progress = match self.service_accelerator_io(&snapshot) {
-                Ok(progress) => progress,
-                Err(source) => return self.fail_checkpoint_pause(source),
-            };
-            let device_progress = block_progress || ninep_progress || accelerator_progress;
-            if let Err(source) = self.publish_device_completion_deadline() {
-                return self.fail_checkpoint_pause(source);
-            }
-            // Servicing a device or publishing its next completion deadline can
-            // wake QEMU and cause a fresh plugin boundary after `snapshot` was
-            // read. Decide only from a post-service acquire snapshot; using the
-            // stale pre-service state allowed checkpoint assembly to observe a
-            // transient reached slot immediately after this method returned.
-            let settled_snapshot = match self.region.node_slot(self.vm_slot).map_err(map_slot_error)
-            {
-                Ok(slot) => slot.snapshot(),
-                Err(source) => return self.fail_checkpoint_pause(source),
-            };
-            last_observed = Some((
-                settled_snapshot.publish_gen,
-                settled_snapshot.status,
-                settled_snapshot.current_icount,
-                settled_snapshot.idle_wake_icount,
-                settled_snapshot.device_io_active,
-                settled_snapshot.control_boundary_ack,
-                self.region.header().pause_requested(),
-            ));
-            if settled_snapshot.publish_gen != initial_publish_gen
-                && !device_progress
-                && settled_snapshot.status == crucible_qemu_shmem::STATUS_IDLE
-                && settled_snapshot.idle_wake_icount == settled_snapshot.current_icount
-                && settled_snapshot.device_io_active == 0
-            {
-                // The plugin has queued native VM stop from the exact futex
-                // callback. Wake QEMU's main loop so it can consume that
-                // request and release the BQL to QMP. The patched block driver
-                // suppresses request-coroutine wakeups while this stop is
-                // pending, so the handoff cannot admit post-pause I/O.
-                self.write_wake_doorbell()?;
-                return Ok(());
-            }
-            if attempt + 1 < attempts {
-                let Some(remaining) = deadline.remaining() else {
-                    break;
-                };
-                // Publishing the clamped ceiling already wakes the plugin's
-                // scheduler futex. Do not ring the main-loop eventfd here: a
-                // control-only wake can admit a latent block poll after the
-                // readiness probe and create a future completion that cannot
-                // retire at the frozen checkpoint coordinate. A reached
-                // boundary is different: QMP-connect wake pulsing may have
-                // consumed the coalesced callback token just before the pause
-                // request. Re-publish its acknowledged token periodically so
-                // coalescing cannot lose the required handoff.
-                if tokenized_checkpoint_control_wake
-                    && attempt % 16 == 15
-                    && let Err(source) = self.signal_wake(None)
-                {
-                    return self.fail_checkpoint_pause(source);
-                }
-                self.wait_for_poll_interval(remaining);
-            }
-        }
-        let detail = last_observed.map_or_else(
-            || String::from("no node-slot snapshot was observed"),
-            |(
-                publish_gen,
-                status,
-                current_icount,
-                idle_wake_icount,
-                device_io_active,
-                control_ack,
-                pause_requested,
-            )| {
-                format!(
-                    "initial publish generation {initial_publish_gen}, last publish generation {publish_gen}, status {status}, current icount {current_icount}, idle wake icount {idle_wake_icount}, device I/O active {device_io_active}, control serial {control_ack}, pause requested {pause_requested}"
-                )
-            },
-        );
-        self.fail_checkpoint_pause(QemuAsyncDriverRuntimeError::new(
-            "await checkpoint pause",
-            format!("plugin did not acknowledge an exact boundary within {remaining:?}: {detail}"),
-        ))
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn quiesce_for_parent_park_under_originals(
+        &mut self,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let operation = "quiesce for parent park/drain";
+        let deadline = OperationPollBudget::borrow_quiescence_pair(actor, family, operation)?;
+        let remaining = deadline.remaining(operation)?.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(operation, "original pair has expired")
+        })?;
+        self.pause_checkpoint_boundary(&deadline, remaining, Some(actor))
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn begin_parent_park_action(
+        &mut self,
+        correlation: u64,
+        actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crucible_qemu_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        self.retain_parent_park_request(correlation, actor, family)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn current_parent_park_action(
+        &self,
+    ) -> Result<crucible_qemu_protocol::boundary_action::ActionBinding, QemuAsyncDriverRuntimeError>
+    {
+        self.observe_parent_park_request()
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn retained_parent_park_action(
+        &self,
+    ) -> Option<crucible_qemu_protocol::boundary_action::ActionBinding> {
+        self.parent_park_action
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn finish_parent_park_action(
+        &mut self,
+        closed: &crate::QmpParentParkClosedRequest,
+    ) -> Result<bool, crucible_host_resources::host_supervision::HostSupervisionError> {
+        self.return_parent_park_request(closed)
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.require_unbound_control_path("authorize stopped checkpoint Pause clear")?;
         // QMP has already confirmed RUN_STATE_PAUSED. Clearing the protocol
         // flag is sufficient for the later `cont`; waking either the shared
         // futex or QEMU's doorbell here can re-enter the vCPU-idle callback
         // while the VM remains stopped. That callback waits with the BQL held,
         // which would prevent the intervening VMState QMP job from running.
-        self.region.header().clear_pause();
+        self.region
+            .as_ref()
+            .ok_or_else(region_missing)?
+            .header()
+            .clear_pause();
         Ok(())
     }
 
@@ -1522,6 +1670,50 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
     }
 
+    fn await_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        if wait != QemuAsyncWait::AdvanceCompletion {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "original quantum wait",
+                "unsupported wait class",
+            ));
+        }
+        let deadline = OperationPollBudget::borrow_original(original, "original quantum wait")?;
+        let timeout = deadline
+            .remaining("original quantum wait")?
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("original quantum wait", "expired original")
+            })?;
+        self.poll_advance_completion_with_original(timeout, Some(original))
+    }
+
+    fn repoll_child_under_original(
+        &mut self,
+        wait: QemuAsyncWait,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        if wait != QemuAsyncWait::AdvanceCompletion {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "original quantum repoll",
+                "unsupported wait class",
+            ));
+        }
+        let deadline = OperationPollBudget::borrow_original(original, "original quantum repoll")?;
+        let timeout = deadline
+            .remaining("original quantum repoll")?
+            .ok_or_else(|| {
+                QemuAsyncDriverRuntimeError::new("original quantum repoll", "expired original")
+            })?;
+        self.repoll_advance_completion_with_original(timeout, Some(original))
+    }
+
+    fn settle_pending_control_action(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.settle_previous_action()
+    }
+
     fn await_fault_result(
         &mut self,
         timeout: Duration,
@@ -1567,3 +1759,10 @@ mod fault_result;
 #[cfg(test)]
 #[path = "host_io_runtime_tests.rs"]
 pub(crate) mod tests;
+
+fn region_missing() -> QemuAsyncDriverRuntimeError {
+    QemuAsyncDriverRuntimeError::new(
+        "use host runtime mapping",
+        "mapping retained by uncertain action custody",
+    )
+}

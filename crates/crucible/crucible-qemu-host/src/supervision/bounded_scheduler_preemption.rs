@@ -453,7 +453,7 @@ impl BoundedSchedulerPreemption {
             return Ok(false);
         };
         let pending_at_stop = match target.finish_quantum(pending) {
-            Err(source) if source.retryable => true,
+            Err(source) if source.is_retryable() => true,
             Ok(completion) => return Err(completed_quantum_at_first_stop(&completion)),
             Err(source) => {
                 return Err(BoundedSchedulerPreemptionError::QuantumInspection { source });

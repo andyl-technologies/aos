@@ -50,6 +50,7 @@ fn lifecycle(
 ) -> Option<PropertyLifecycleState> {
     evaluator
         .lifecycle_states()
+        .unwrap_or_else(|error| panic!("finite component lifecycle output: {error}"))
         .into_iter()
         .find(|state| state.assertion.name == assertion)
         .map(|state| state.state)
@@ -88,6 +89,9 @@ fn lifecycle_oracle(state: ObservedState<'_>, leaf: ConditionLeaf<'_>) -> bool {
 
 #[test]
 fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satisfied() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "after-terminal",
@@ -123,14 +127,17 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
             },
         ),
     ]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(lifecycle_oracle);
 
     assert_eq!(
         lifecycle_or_panic(&evaluator, "after-terminal"),
         PropertyLifecycleState::Declared
     );
-    evaluator.observe_prefix(&prefix(1), &mut oracle);
+    evaluator
+        .observe_prefix(&prefix(1), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(
         lifecycle_or_panic(&evaluator, "after-terminal"),
@@ -153,7 +160,9 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
         PropertyLifecycleState::Passing
     );
 
-    let report = evaluator.finalize_prefix(&prefix(3), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&prefix(3), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(report.outcomes().len(), 5);
@@ -185,6 +194,9 @@ fn lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satis
 
 #[test]
 fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "eventually-open",
         Property::Eventually {
@@ -195,12 +207,16 @@ fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
     )]);
     let first_prefix = prefix(1);
     let final_prefix = prefix(3);
-    let mut original = HostAssertionEvaluator::new(&properties);
+    let mut original = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut original_oracle = linted_host_oracle(lifecycle_oracle);
-    original.observe_prefix(&first_prefix, &mut original_oracle);
+    original
+        .observe_prefix(&first_prefix, &mut original_oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     let encoded = original
         .checkpoint()
+        .unwrap_or_else(|error| panic!("finite component assertion checkpoint: {error}"))
         .canonical_bytes()
         .expect("encode assertion continuation");
     let checkpoint =
@@ -213,19 +229,27 @@ fn assertion_checkpoint_round_trip_preserves_temporal_continuation() {
         encoded
     );
 
-    let mut restored = HostAssertionEvaluator::new(&properties);
+    let mut restored = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     checkpoint
         .restore_into(&mut restored, &first_prefix)
         .expect("restore assertion continuation");
     let mut restored_oracle = linted_host_oracle(lifecycle_oracle);
     assert_eq!(
-        restored.finalize_prefix(&final_prefix, &mut restored_oracle),
-        original.finalize_prefix(&final_prefix, &mut original_oracle)
+        restored
+            .finalize_prefix(&final_prefix, &mut restored_oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}")),
+        original
+            .finalize_prefix(&final_prefix, &mut original_oracle)
+            .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"))
     );
 }
 
 #[test]
 fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![
         assertion(
             "eventually-never-triggered",
@@ -260,7 +284,8 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
             },
         ),
     ]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle =
         linted_host_oracle(
             |_state: ObservedState<'_>, leaf: ConditionLeaf<'_>| match leaf {
@@ -272,7 +297,9 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
             },
         );
 
-    let report = evaluator.finalize_prefix(&prefix(1), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&prefix(1), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert!(report.verdict().is_failed());
     assert_eq!(
@@ -312,16 +339,22 @@ fn edge_outcomes_carry_lifecycle_and_verdict_disposition() {
 
 #[test]
 fn empty_log_always_remains_declared_and_reports_never_evaluated() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let properties = properties(vec![assertion(
         "always-empty-scope",
         Property::Always {
             predicate: Predicate::named("unused"),
         },
     )]);
-    let mut evaluator = HostAssertionEvaluator::new(&properties);
+    let mut evaluator = HostAssertionEvaluator::new(&properties)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"));
     let mut oracle = linted_host_oracle(|_state: ObservedState<'_>, _leaf: ConditionLeaf<'_>| true);
 
-    let report = evaluator.finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle);
+    let report = evaluator
+        .finalize_prefix(&ConditionEventLogPrefix::genesis(), &mut oracle)
+        .unwrap_or_else(|error| panic!("fixture assertion prefix: {error}"));
 
     assert_eq!(report.verdict(), &AssertionRunVerdict::Passed);
     assert_eq!(

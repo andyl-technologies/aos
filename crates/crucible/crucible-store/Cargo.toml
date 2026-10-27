@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [features]
+private-measurement-domain = []
 destructive-recovery-faults = []
 test-support = []
 
@@ -17,8 +18,11 @@ name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
 
 [dependencies]
+crucible-sqlite-heap = { path = "../crucible-sqlite-heap" }
 aes-gcm = { workspace = true, features = ["zeroize"] }
 blake3 = { workspace = true }
+crucible-ram = { path = "../crucible-ram" }
+crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 rustix = { workspace = true }
 rusqlite = { workspace = true, features = ["blob"] }
 thiserror = { workspace = true }
@@ -26,6 +30,8 @@ zeroize = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+crucible-store = { path = ".", features = ["test-support"] }
+crucible-host-resources = { path = "../crucible-host-resources", default-features = false, features = ["test-support"] }
 tempfile = { workspace = true }
 
 [[test]]

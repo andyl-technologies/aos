@@ -1,6 +1,6 @@
 //! HTTP/2 clients and transport-independent Crucible control interfaces.
 //!
-//! Spec index: RFC-0010 files 21.
+//! Implementation contract: Control client transport, authenticated requests, and admitted response decoding.
 //!
 //! Module map: client owns typed request dispatch, RPC receivers, and debugger
 //! operations. Local stream traits let server-side adapters implement the same

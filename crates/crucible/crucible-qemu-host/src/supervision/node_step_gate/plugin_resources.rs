@@ -3,6 +3,12 @@
 use super::{FaultResourceLimits, QemuLiveNodeStepGateConfig};
 
 impl QemuLiveNodeStepGateConfig {
+    /// Returns the immutable native process generation used for launch ownership.
+    #[must_use]
+    pub const fn process_generation(&self) -> u64 {
+        self.process_generation
+    }
+
     /// Returns this configuration with its immutable process generation.
     #[must_use]
     pub const fn with_process_generation(mut self, process_generation: u64) -> Self {

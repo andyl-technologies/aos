@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("bounded resume workspace");
     let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
     let mut plan = default_resume_plan(&evidence, temporary.path());
@@ -64,6 +65,7 @@ fn resume_authenticates_attempt_timeout_and_bounded_primary_frontier() {
 
 #[test]
 fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume route workspace");
     let supported = Schedule::from_decisions([
         crucible_engine::Decision::DeliveryOrder(crucible_engine::DeliveryOrderDecision {
@@ -139,6 +141,7 @@ fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
 
 #[test]
 fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume projection workspace");
     let source_frontier = VirtualTime { ticks: 5 };
     let schedule = Schedule::empty();
@@ -219,6 +222,7 @@ fn campaign_resume_projection_preserves_source_oracle_watch_and_cleanup() {
 
 #[test]
 fn campaign_resume_projects_quiescence_observation() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume observation workspace");
     let evidence = resume_evidence(Schedule::empty(), VirtualTime { ticks: 5 });
     let mut plan = default_resume_plan(&evidence, temporary.path());
@@ -249,6 +253,7 @@ fn campaign_resume_projects_quiescence_observation() {
 
 #[test]
 fn campaign_resume_projects_property_violation_observation() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume property workspace");
     let scenario = fixed_checkpoint_scenario_form();
     let evidence =
@@ -291,6 +296,7 @@ fn campaign_resume_projects_property_violation_observation() {
 
 #[test]
 fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume no-rewind workspace");
     let source_frontier = VirtualTime { ticks: 5 };
     let evidence = resume_evidence(Schedule::empty(), source_frontier);
@@ -335,6 +341,7 @@ fn campaign_resume_projection_does_not_rewind_for_an_earlier_deadline() {
 
 #[test]
 fn campaign_resume_frontier_validation_binds_reached_deadlines_only() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume frontier workspace");
     let source_frontier = VirtualTime { ticks: 5 };
     let evidence = resume_evidence(Schedule::empty(), source_frontier);
@@ -379,6 +386,7 @@ fn campaign_resume_frontier_validation_binds_reached_deadlines_only() {
 
 #[test]
 fn campaign_resume_terminal_outcomes_bypass_the_requested_future_deadline() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("resume terminal outcome workspace");
     let source_frontier = VirtualTime { ticks: 5 };
     let evidence = resume_evidence(Schedule::empty(), source_frontier);
@@ -421,6 +429,7 @@ fn campaign_resume_terminal_outcomes_bypass_the_requested_future_deadline() {
 
 #[test]
 fn transient_checkpoint_cleanup_preserves_the_execution_error() {
+    let _component_scope = crate::tests::component_decode_scope();
     let temporary = TempDir::new().or_panic("cleanup workspace");
     let checkpoint_directory = tempfile::Builder::new()
         .prefix("transient-resume-error-")
@@ -432,7 +441,8 @@ fn transient_checkpoint_cleanup_preserves_the_execution_error() {
         &checkpoint_root,
     ));
     let checkpoints = Arc::new(
-        ExactCheckpointStore::new(backend, 1024 * 1024).or_panic("exact checkpoint store"),
+        open_transient_checkpoint_store(backend, 1024 * 1024, &checkpoint_root)
+            .or_panic("exact checkpoint store"),
     );
     let expected = "injected campaign resume failure";
     let result: Result<(), CliError> = Err(backend_error(expected));

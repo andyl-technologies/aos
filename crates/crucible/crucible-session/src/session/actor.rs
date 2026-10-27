@@ -1,6 +1,7 @@
 //! Asynchronous session actor, mailbox scheduling, and live state mirrors.
 
 use super::*;
+use crate::session_engine::OwnedQuantumLoop;
 use std::time::Duration;
 
 #[path = "actor/terminal.rs"]
@@ -16,9 +17,9 @@ pub enum SessionError {
     #[error("session command is invalid in the current engine state")]
     InvalidTransition {
         /// The state that rejected the command.
-        state: Box<EngineState>,
-        /// The command that was rejected.
-        command: Box<SessionCommand>,
+        state: LifecycleStateKind,
+        /// The kind of command that was rejected, excluding request-owned history.
+        command: SessionCommandKind,
     },
     /// A direct engine operation was called in the wrong state.
     #[error("engine operation {operation} is invalid in the current state")]
@@ -371,7 +372,7 @@ pub struct BreakpointFiring {
 /// `SessionActor` owns the [`Engine`], polls the command mailbox at state
 /// boundaries, drives at most one scheduler quantum per running-loop iteration,
 /// and yields after each applied command or scheduler quantum.
-pub struct SessionActor<L> {
+pub struct SessionActor<L: QuantumLoop> {
     pub(super) engine: Engine<L>,
     pub(super) mailbox: mpsc::Receiver<SessionCommand>,
     pub(super) live: Arc<LiveSnapshot>,
@@ -380,7 +381,7 @@ pub struct SessionActor<L> {
     pub(super) state_transitions: SessionStateTransitionBus,
     pub(super) last_published_state: EngineState,
     pub(super) fork_loop_factory: Option<SessionForkLoopFactory<L>>,
-    pub(super) condition_event_log: Vec<SchedulerEventLogEntry>,
+    pub(super) condition_event_log: AdmittedEventEntries,
     pub(super) debug_event_coordinates: BTreeMap<u64, Configuration>,
     pub(super) debug_history_floor: u64,
     pub(super) debug_index_configuration: Configuration,
@@ -393,7 +394,7 @@ pub struct SessionActor<L> {
     pub(super) gdb_run_control_stop: Option<Vec<u8>>,
 }
 
-impl<L> SessionActor<L> {
+impl<L: QuantumLoop> SessionActor<L> {
     /// Creates a session actor from an engine and command mailbox.
     #[must_use]
     pub fn new(engine: Engine<L>, mailbox: mpsc::Receiver<SessionCommand>) -> Self {
@@ -435,7 +436,7 @@ impl<L> SessionActor<L> {
             state_transitions: SessionStateTransitionBus::new(),
             last_published_state,
             fork_loop_factory,
-            condition_event_log: Vec::new(),
+            condition_event_log: AdmittedEventEntries::default(),
             debug_event_coordinates: BTreeMap::new(),
             debug_history_floor,
             debug_index_configuration,
@@ -630,41 +631,41 @@ impl<L> SessionActor<L> {
 
     pub(super) fn append_event_log_entries(
         &mut self,
-        entries: &[SchedulerEventLogEntry],
+        entries: &AdmittedEventEntries,
     ) -> Result<(), SessionError> {
         self.append_event_log_entries_with_history_policy(entries, false)
     }
 
     pub(super) fn append_event_log_entries_preserving_debug_history(
         &mut self,
-        entries: &[SchedulerEventLogEntry],
+        entries: &AdmittedEventEntries,
     ) -> Result<(), SessionError> {
         self.append_event_log_entries_with_history_policy(entries, true)
     }
 
     fn append_event_log_entries_with_history_policy(
         &mut self,
-        entries: &[SchedulerEventLogEntry],
+        entries: &AdmittedEventEntries,
         preserve_debug_history: bool,
     ) -> Result<(), SessionError> {
+        let _original = entries.enter_original_scope();
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
         let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
         if !preserve_debug_history && !entries.is_empty() {
-            self.condition_event_log
-                .retain(|entry| entry.sequence() < base_sequence);
+            self.condition_event_log.retain_before(base_sequence);
             self.debug_event_coordinates
                 .retain(|sequence, _| *sequence < base_sequence);
         }
-        self.event_log.append_entries(entries);
+        self.event_log.append_entries(entries)?;
         let current = self.engine.snapshot().configuration;
         if preserve_debug_history {
             self.debug_index_configuration = current;
             return Ok(());
         }
-        self.condition_event_log.extend(entries.iter().cloned());
+        self.condition_event_log.append_copies(entries)?;
         let mut coordinate = self.debug_index_configuration.clone();
-        for entry in entries {
+        for entry in entries.iter() {
             if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
                 && current.schedule.decisions().get(coordinate.schedule.len()) == Some(decision)
             {
@@ -698,12 +699,15 @@ impl<L> SessionActor<L> {
             .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
-    fn condition_event_log_prefix(&self) -> Vec<SchedulerEventLogEntry> {
-        self.condition_event_log
-            .iter()
-            .take(self.engine.event_log_len())
-            .cloned()
-            .collect()
+    fn condition_event_log_prefix(&self) -> Result<AdmittedEventEntries, SessionError> {
+        let _original = self.condition_event_log.enter_original_scope();
+        let length = self
+            .condition_event_log
+            .len()
+            .min(self.engine.event_log_len());
+        Ok(AdmittedEventEntries::copied(
+            &self.condition_event_log[..length],
+        )?)
     }
 
     fn sync_reproduction_log(&self) {
@@ -990,13 +994,16 @@ where
     }
 
     async fn poll_gdb_run_control(&mut self) -> Result<bool, SessionError> {
-        let Some(packet) = self.engine.quantum_loop.poll_gdb_run_control()? else {
+        let Some(packet) = self.engine.quantum_loop.get_mut()?.poll_gdb_run_control()? else {
             return Ok(false);
         };
         let command = match gdb_run_control_command(&packet) {
             Some(command) => command,
             None => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E01")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E01")?;
                 return Ok(true);
             }
         };
@@ -1007,12 +1014,18 @@ where
                 Ok(true)
             }
             Err(error @ SessionError::DebugNonCanonicalBranchRequired { .. }) => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E31")?;
                 let _ = error;
                 Ok(true)
             }
             Err(error) => {
-                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                self.engine
+                    .quantum_loop
+                    .get_mut()?
+                    .complete_gdb_run_control(b"E31")?;
                 Err(error)
             }
         }
@@ -1022,7 +1035,10 @@ where
         if !matches!(self.engine.state(), EngineState::Running)
             && let Some(stop) = self.gdb_run_control_stop.as_ref()
         {
-            self.engine.quantum_loop.complete_gdb_run_control(stop)?;
+            self.engine
+                .quantum_loop
+                .get_mut()?
+                .complete_gdb_run_control(stop)?;
             self.gdb_run_control_stop = None;
         }
         Ok(())
@@ -1030,7 +1046,11 @@ where
 
     fn fail_pending_gdb_run_control(&mut self) {
         if self.gdb_run_control_stop.take().is_some() {
-            let _ = self.engine.quantum_loop.complete_gdb_run_control(b"E31");
+            let _ = self
+                .engine
+                .quantum_loop
+                .get_mut()
+                .and_then(|quantum_loop| quantum_loop.complete_gdb_run_control(b"E31"));
         }
     }
 
@@ -1084,9 +1104,9 @@ where
         &mut self,
         command: SessionCommand,
     ) -> Result<(), SessionError> {
-        let command_for_recovery = command.clone();
+        let command_for_recovery = CommandRejectionKind::from_command(&command);
         match self.apply_command(command).await {
-            Err(error) if is_recoverable_command_rejection(&command_for_recovery, &error) => Ok(()),
+            Err(error) if is_recoverable_command_rejection(command_for_recovery, &error) => Ok(()),
             result => result,
         }
     }
@@ -1095,9 +1115,9 @@ where
         &mut self,
         command: SessionCommand,
     ) -> Result<(), SessionError> {
-        let command_for_recovery = command.clone();
+        let command_for_recovery = CommandRejectionKind::from_command(&command);
         match self.apply_command_without_spawning_forks(command).await {
-            Err(error) if is_recoverable_command_rejection(&command_for_recovery, &error) => Ok(()),
+            Err(error) if is_recoverable_command_rejection(command_for_recovery, &error) => Ok(()),
             result => result,
         }
     }
@@ -1112,7 +1132,8 @@ where
         let quantum_ack = matches!(self.engine.state(), EngineState::Running)
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
-        let condition_event_log = self.condition_event_log_prefix();
+        let condition_event_log = self.condition_event_log_prefix()?;
+        let mut request_credit = None;
         let mut command = command;
         match &mut command {
             SessionCommand::DebugGoto { request, .. } => {
@@ -1121,7 +1142,13 @@ where
             }
             SessionCommand::DebugReverseStep { request, .. } => {
                 request.current = self.engine.snapshot().configuration;
-                request.event_log.clone_from(&condition_event_log);
+                let copied = {
+                    let _original = condition_event_log.enter_original_scope();
+                    AdmittedEventEntries::copied(&condition_event_log)?
+                };
+                let (entries, credit) = copied.into_parts();
+                request.event_log = entries;
+                request_credit = Some(credit);
                 request.event_coordinates = self.debug_event_coordinates.clone();
                 if let Some(sequence) = self.debug_current_event_limit(&request.current) {
                     request.current_event_sequence = Some(sequence);
@@ -1129,7 +1156,13 @@ where
             }
             SessionCommand::DebugReverseContinue { request, .. } => {
                 request.current = self.engine.snapshot().configuration;
-                request.event_log.clone_from(&condition_event_log);
+                let copied = {
+                    let _original = condition_event_log.enter_original_scope();
+                    AdmittedEventEntries::copied(&condition_event_log)?
+                };
+                let (entries, credit) = copied.into_parts();
+                request.event_log = entries;
+                request_credit = Some(credit);
                 request.event_coordinates = self.debug_event_coordinates.clone();
                 if let Some(sequence) = self.debug_current_event_limit(&request.current) {
                     request.current_event_sequence = Some(sequence);
@@ -1166,11 +1199,15 @@ where
             complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
-        if let Err(error) = self
-            .engine
-            .apply_command_with_event_log(command.clone(), &condition_event_log)
-        {
+        let dispatch = {
+            let _original = condition_event_log.enter_original_scope();
+            self.engine
+                .apply_borrowed_command_with_event_log(&command, &condition_event_log)
+        };
+        if let Err(error) = dispatch {
             command.complete_error(error.clone());
+            drop(command);
+            drop(request_credit);
             complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
@@ -1180,6 +1217,8 @@ where
                 | SessionCommand::DebugReverseStep { .. }
                 | SessionCommand::DebugReverseContinue { .. }
         );
+        drop(command);
+        drop(request_credit);
         let entries = self.engine.drain_event_log_entries();
         if preserve_debug_history {
             self.append_event_log_entries_preserving_debug_history(&entries)?;
@@ -1213,10 +1252,10 @@ where
         command: SessionCommand,
     ) -> Result<(), SessionError> {
         let SessionCommand::Fork { from, reply } = command.clone() else {
-            return Err(self.engine.invalid_transition(command));
+            return Err(self.engine.invalid_transition(&command));
         };
         let Some(factory) = self.fork_loop_factory.clone() else {
-            let error = self.engine.invalid_transition(command);
+            let error = self.engine.invalid_transition(&command);
             reply.complete(Err(error.clone()));
             return Err(error);
         };
@@ -1233,7 +1272,7 @@ where
                 }
             }
             EngineState::Loaded => {
-                let error = self.engine.invalid_transition(command.clone());
+                let error = self.engine.invalid_transition(&command);
                 command.complete_error(error.clone());
                 return Err(error);
             }
@@ -1244,7 +1283,7 @@ where
             checkpoint: checkpoint.id,
             configuration: checkpoint.configuration,
         };
-        let child_quantum_loop = factory(request);
+        let child_quantum_loop = OwnedQuantumLoop::new(factory(request));
         let fork = match self.engine.build_checkpoint_child(
             parent_state.clone(),
             checkpoint.id,
@@ -1290,7 +1329,7 @@ where
                     self.apply_command(command).await?;
                 }
                 Ok(command) => {
-                    let error = self.engine.invalid_transition(command.clone());
+                    let error = self.engine.invalid_transition(&command);
                     command.complete_error(error);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
@@ -1311,7 +1350,7 @@ where
                     self.apply_command(command).await?;
                 }
                 Some(command) => {
-                    let error = self.engine.invalid_transition(command.clone());
+                    let error = self.engine.invalid_transition(&command);
                     command.complete_error(error);
                 }
                 None => return Ok(()),
@@ -1326,7 +1365,7 @@ where
                     self.apply_command_without_spawning_forks(command).await?;
                 }
                 Ok(command) => {
-                    let error = self.engine.invalid_transition(command.clone());
+                    let error = self.engine.invalid_transition(&command);
                     command.complete_error(error);
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),

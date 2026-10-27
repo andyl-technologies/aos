@@ -1,5 +1,6 @@
 //! Branch-private console endpoint staging for a retained QEMU template.
 
+use std::borrow::Cow;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
@@ -496,7 +497,7 @@ impl QemuNode {
     }
 }
 
-fn console_rejected(message: impl Into<String>) -> QemuHotForkChildConsoleStageError {
+fn console_rejected(message: impl Into<Cow<'static, str>>) -> QemuHotForkChildConsoleStageError {
     console_rejected_source(QemuNodeChannelError::new(
         "stage hot-fork child console",
         message,

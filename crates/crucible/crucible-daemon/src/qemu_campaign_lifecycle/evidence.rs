@@ -351,6 +351,22 @@ pub struct QemuObservedFreshAttemptLifecycleFactory<F> {
     evidence: QemuAttemptExecutionEvidence,
 }
 
+impl<F: crate::completed_reproduction::PrepareCompletedReproduction>
+    crate::completed_reproduction::PrepareCompletedReproduction
+    for QemuObservedFreshAttemptLifecycleFactory<F>
+{
+    fn prepare_completed_reproduction(
+        &mut self,
+    ) -> Result<
+        crate::lifecycle_cleanup::ServiceMainHandle,
+        crate::QemuAttemptProductionVmLifecycleError,
+    > {
+        crate::completed_reproduction::PrepareCompletedReproduction::prepare_completed_reproduction(
+            &mut self.inner,
+        )
+    }
+}
+
 impl<F> QemuObservedFreshAttemptLifecycleFactory<F> {
     /// Wraps a fresh factory and returns its read-only evidence handle.
     #[must_use]
@@ -526,6 +542,15 @@ where
             .map_err(map_terminal_evidence_inner_failure)
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .try_retire_original(original)
+            .map_err(QemuTerminalEvidenceExecutionRunnerError::Inner)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         self.inner.quarantine_pending_execution();
     }
@@ -548,6 +573,20 @@ where
 {
     type Lifecycle = QemuObservedFreshAttemptLifecycle<F::Lifecycle>;
     type Error = QemuObservedFreshAttemptLifecycleFactoryError<F::Error>;
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let (lifecycle, _, _) = lifecycle.into_recovery_parts();
+        QemuFreshAttemptLifecycleFactory::retire_lifecycle(&mut self.inner, lifecycle)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        QemuFreshAttemptLifecycleFactory::try_retire_original(&mut self.inner, original)
+            .map_err(QemuObservedFreshAttemptLifecycleFactoryError::Inner)
+    }
 
     fn configure_attempt_continuation(
         &mut self,
@@ -628,14 +667,7 @@ fn map_terminal_evidence_inner_failure<E>(
 fn map_terminal_evidence_snapshot_failure<E>(
     error: SchedulerError,
 ) -> AttemptWorkerFailure<QemuTerminalEvidenceExecutionRunnerError<E>> {
-    let class = match &error {
-        SchedulerError::OperationalBoundary { class, .. } => Some(*class),
-        SchedulerError::Backend(_)
-        | SchedulerError::BoundaryViolation { .. }
-        | SchedulerError::ResourceLimit { .. }
-        | SchedulerError::TimeConversion(_)
-        | SchedulerError::TopologyActivationInPast { .. } => None,
-    };
+    let class = error.operational_failure_class();
     let error = QemuTerminalEvidenceExecutionRunnerError::Evidence(error);
     match class {
         Some(SchedulerOperationalFailureClass::Retryable) => AttemptWorkerFailure::Retryable(error),

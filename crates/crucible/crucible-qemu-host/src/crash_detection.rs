@@ -1,6 +1,6 @@
 //! Typed QEMU node crash detection.
 //!
-//! RFC-0010 QEMU-32 requires infrastructure failures around a QEMU child to be
+//! Infrastructure failures around a QEMU child must be
 //! surfaced as a crashed-node status, not retried or conflated with an intended
 //! scenario fault. This module provides both the scheduler-facing status model
 //! and the host-side hooks used to classify child-exit, plugin-IPC, and QMP I/O
@@ -226,6 +226,30 @@ impl QemuCrashHandling {
     }
 }
 
+/// Retains node identity and handling beside an initiating channel failure.
+///
+/// The channel error already retains the original operation and timeout. This
+/// disposition keeps the independent crash classification without duplicating
+/// those details in a second owned cause. It grants no retry or cleanup authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuChannelCrashDisposition {
+    /// Stable identifier of the node whose bounded channel wait expired.
+    pub node_id: Box<str>,
+    /// Original crash handling policy, retained before independent cleanup.
+    pub handling: QemuCrashHandling,
+}
+
+impl QemuChannelCrashDisposition {
+    /// Moves the same classification and independently retained cause into a status.
+    pub(crate) fn into_status(self, cause: QemuCrashCause) -> QemuNodeRunStatus {
+        QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus {
+            node_id: self.node_id.into_string(),
+            cause,
+            handling: self.handling,
+        })
+    }
+}
+
 /// Crash detector for one QEMU-backed node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuCrashDetector {
@@ -305,6 +329,14 @@ impl QemuCrashDetector {
         )))
     }
 
+    /// Captures the same node classification before independent channel cleanup.
+    pub(crate) fn channel_crash_disposition(&self) -> QemuChannelCrashDisposition {
+        QemuChannelCrashDisposition {
+            node_id: Box::from(self.node_id.as_str()),
+            handling: QemuCrashHandling::ReportAndLocalize,
+        }
+    }
+
     /// Reports a bounded child-infrastructure await timeout as an infrastructure crash.
     #[must_use]
     pub fn bounded_await_timeout(
@@ -353,4 +385,57 @@ fn exit_signal(status: &ExitStatus) -> Option<i32> {
 #[cfg(not(unix))]
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::alloc::Layout;
+    use std::time::Duration;
+
+    #[test]
+    fn channel_disposition_preserves_the_original_name_allocation_and_policy() {
+        let detector = QemuCrashDetector::new("original-node-identity");
+        let layout = Layout::array::<u8>(detector.node_id.len()).unwrap();
+        let (old_name, old_allocation, old_counts) =
+            TestAllocationObserver::capture_layout_and_count(layout, || detector.node_id.clone());
+
+        let (disposition, allocation, counts) =
+            TestAllocationObserver::capture_layout_and_count(layout, || {
+                detector.channel_crash_disposition()
+            });
+
+        assert!(old_allocation.is_some());
+        assert!(allocation.is_some());
+        assert_eq!(counts, old_counts);
+        assert_eq!(counts.allocations, 1);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(disposition.node_id.as_ref(), old_name.as_str());
+        assert_eq!(disposition.handling, QemuCrashHandling::ReportAndLocalize);
+        let original_pointer = disposition.node_id.as_ptr();
+        let cause = QemuCrashCause::BoundedAwaitTimeout(QemuBoundedAwaitTimeout::new(
+            "observe original channel",
+            Duration::from_millis(17),
+        ));
+
+        let (status, counts) = TestAllocationObserver::count(|| disposition.into_status(cause));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        let QemuNodeRunStatus::Crashed(status) = status else {
+            panic!("bounded channel failure retains its original crash classification");
+        };
+        assert_eq!(status.node_id.as_ptr(), original_pointer);
+        assert_eq!(status.node_id, old_name);
+        assert_eq!(status.handling, QemuCrashHandling::ReportAndLocalize);
+        assert!(!status.handling.retry_on_determinism_gate());
+        let QemuCrashCause::BoundedAwaitTimeout(cause) = status.cause else {
+            panic!("the original bounded timeout must remain the cause");
+        };
+        assert_eq!(cause.operation, "observe original channel");
+        assert_eq!(cause.timeout, Duration::from_millis(17));
+    }
 }

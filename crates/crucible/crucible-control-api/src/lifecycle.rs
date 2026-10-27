@@ -20,8 +20,13 @@ use thiserror::Error;
 
 use crate::rpc_abi::RpcAbiError;
 
+#[cfg(test)]
 mod hex;
+#[cfg(test)]
 use hex::{hex_string, optional_hex_string};
+mod backend_error;
+mod reproduction_display;
+pub use backend_error::LifecycleBackendConstructionError;
 mod resource_limit;
 pub use resource_limit::LifecycleResourceLimit;
 mod session_contract;
@@ -107,6 +112,15 @@ pub struct DebugRepositionResult {
 /// Error returned by lifecycle unary API methods.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LifecycleApiError {
+    /// The launcher cannot lend empty storage admitted before its first effects.
+    #[error("prepaid lifecycle construction custody is unavailable")]
+    ConstructionCustodyUnavailable,
+    /// Cleanup transferred resources to quarantine without attesting their return.
+    #[error("lifecycle resources remain retained in quarantine")]
+    CleanupRetained,
+    /// The actual retained parent park phase excludes this lifecycle effect.
+    #[error("parent park owns the source")]
+    ParentParkHeld,
     /// Protocol negotiation failed.
     #[error("lifecycle API RPC ABI negotiation failed: {source}")]
     RpcAbi {
@@ -232,11 +246,21 @@ pub enum LifecycleApiError {
     /// A production resource reservation exceeded its authored or compiled bound.
     #[error(transparent)]
     ResourceLimit(#[from] LifecycleResourceLimit),
+    /// Original input authority refused an owning lifecycle input copy.
+    #[error(transparent)]
+    ConfigurationCopy(crucible_engine::owned_decode::DecodeAdmissionError),
     /// The delegated execution backend could not be constructed.
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {
         /// Deterministic backend-construction failure detail.
         message: String,
+    },
+    /// Backend construction failed while retaining native cleanup custody.
+    #[error("session execution backend construction failed: {source}")]
+    BackendConstruction {
+        /// Shared original typed failure, retained through the last error clone.
+        #[source]
+        source: LifecycleBackendConstructionError,
     },
     /// Attempt-scoped resource enforcement stopped lifecycle progress.
     #[error("attempt operational boundary failed: {message}")]

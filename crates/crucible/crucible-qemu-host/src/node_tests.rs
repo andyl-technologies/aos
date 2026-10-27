@@ -30,6 +30,8 @@ use super::*;
 mod child_exit;
 #[path = "node/tests/fault_command.rs"]
 mod fault_command;
+#[path = "node/tests/fault_fingerprint.rs"]
+mod fault_fingerprint;
 #[path = "node/tests/host_io_runtime.rs"]
 pub(crate) mod host_io_runtime;
 #[path = "node/tests/hot_fork.rs"]
@@ -44,6 +46,10 @@ mod selectable_node_set;
 mod sequence_restore;
 #[path = "node/tests/shutdown_and_preemption.rs"]
 mod shutdown_and_preemption;
+
+#[cfg(target_os = "linux")]
+#[path = "node_tests/checkpoint_ownership.rs"]
+mod checkpoint_ownership;
 
 type SharedLog = Arc<Mutex<Vec<ChannelCall>>>;
 
@@ -220,6 +226,8 @@ struct ScriptedPendingQuantum {
 
 #[derive(Clone)]
 struct ScriptedHostIoRuntime {
+    #[cfg(target_os = "linux")]
+    checkpoint: Option<Arc<checkpoint_ownership::Ownership>>,
     log: SharedLog,
     outcomes: VecDeque<QemuAsyncWaitOutcome>,
     fault_results: VecDeque<DequeuedFaultResult>,
@@ -230,6 +238,8 @@ struct ScriptedHostIoRuntime {
 
 #[derive(Clone)]
 struct ScriptedQmpMachineControl {
+    #[cfg(target_os = "linux")]
+    checkpoint: Option<Arc<checkpoint_ownership::Ownership>>,
     log: SharedLog,
     track_process_endpoint_retirement: bool,
     fail_stop: bool,
@@ -529,6 +539,20 @@ impl QemuPluginIpcControlChannel for ScriptedPluginControl {
         if self.fail_quit {
             return Err(QemuNodeChannelError::new("send_quit", "control closed"));
         }
+        Ok(())
+    }
+
+    fn send_quit_supervised(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        original
+            .wait_slice()
+            .map_err(|error| QemuNodeChannelError::new("send_quit", error.to_string()))?;
+        self.send_quit()?;
+        original
+            .wait_slice()
+            .map_err(|error| QemuNodeChannelError::new("send_quit", error.to_string()))?;
         Ok(())
     }
 }
@@ -892,6 +916,61 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    #[cfg(target_os = "linux")]
+    fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
+        self.checkpoint.as_ref().map(|owner| &owner.registration)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        let Some(owner) = self.checkpoint.as_ref() else {
+            return (true, Ok(()));
+        };
+        if !progress.bind(&owner.cleanup.cleanup) {
+            return (
+                false,
+                Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+            );
+        }
+        let (returned, status) = progress.return_controller(&owner.registration, original);
+        if returned {
+            self.checkpoint = None;
+        }
+        (returned, status)
+    }
+
+    fn host_operation_supervisor(
+        &self,
+    ) -> Option<&crucible_host_resources::host_supervision::HostOperationSupervisor> {
+        #[cfg(target_os = "linux")]
+        if let Some(owner) = &self.checkpoint {
+            return Some(&owner.supervisor);
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn quiesce_for_checkpoint_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        let owner = self.checkpoint.clone().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new("quiesce for checkpoint", "missing scripted original")
+        })?;
+        owner.check(original)?;
+        self.quiesce_for_checkpoint(original.wait_slice().map_err(|error| {
+            QemuAsyncDriverRuntimeError::operational_supervision("quiesce for checkpoint", error)
+        })?)?;
+        owner.check(original)
+    }
+
     fn quiesce_for_checkpoint(
         &mut self,
         _timeout: Duration,
@@ -922,7 +1001,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
                 "injected unsupported live endpoint",
             ));
         }
-        Ok(Box::new(self.clone()))
+        let mut continuation = self.clone();
+        // This fixture lends source checkpoint custody, not a new child's RAM owner.
+        continuation.checkpoint = None;
+        Ok(Box::new(continuation))
     }
 
     fn set_fault_event_staging_limit(
@@ -961,6 +1043,15 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
             self.staged_fault_events.push(event);
         }
         Ok(())
+    }
+
+    fn publish_fresh_execution_fingerprint_for_test(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        // This scripted runtime owns no real sample slot. Mapped receiver tests
+        // separately exercise fresh request generations and exact sample ACKs.
+        self.publish_current_execution_fingerprint(timeout)
     }
 
     fn clear_checkpoint_pause_while_stopped(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
@@ -1705,18 +1796,17 @@ fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessCont
 }
 
 #[test]
-fn failed_node_surrenders_its_direct_child_wait_authority() -> Result<(), Box<dyn Error>> {
+fn failed_node_keeps_its_complete_owner_through_actual_reap() -> Result<(), Box<dyn Error>> {
     let node = scripted_node(shared_log(), false, false, false)?;
     let process_id = node.child.process_id();
 
-    let mut child = node
-        .into_direct_child_for_quarantine()
-        .expect("fixture node owns a direct child");
+    let mut owner = crate::QemuFailedLaunchOwner::node(node);
 
-    assert_eq!(child.process_id(), process_id);
-    assert!(!child.reaped());
-    child.force_kill_and_reap_failed_realization()?;
-    assert!(child.reaped());
+    assert_eq!(owner.process_id(), Some(process_id));
+    assert!(!owner.child_reaped());
+    owner.retry_cleanup()?;
+    assert!(owner.child_reaped());
+    assert_eq!(owner.process_id(), Some(process_id));
     Ok(())
 }
 
@@ -1988,6 +2078,8 @@ fn scripted_hot_fork_capture_node(
     plugin_barriers: impl IntoIterator<Item = crate::QmpHotForkPluginBarrierState>,
     descriptor_script: DescriptorScript,
 ) -> Result<QemuNode, Box<dyn Error>> {
+    #[cfg(target_os = "linux")]
+    let checkpoint = checkpoint_ownership::Ownership::new(false)?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let channels = QemuNodeChannels::new(
         ScriptedPluginControl {
@@ -2009,6 +2101,8 @@ fn scripted_hot_fork_capture_node(
             hot_fork_ring_image: Some((host_barrier, image)),
         },
         ScriptedQmpMachineControl {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(checkpoint.clone()),
             log: Arc::clone(&log),
             track_process_endpoint_retirement: false,
             fail_stop: false,
@@ -2075,13 +2169,15 @@ fn scripted_hot_fork_capture_node(
             },
         },
     );
-    Ok(QemuNode::new(
+    let mut node = QemuNode::new(
         QemuNodeChild::new(child),
         channels,
         node_shutdown_policy(),
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("vm-a"),
         ScriptedHostIoRuntime {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(checkpoint.clone()),
             log,
             outcomes: if matches!(
                 descriptor_script,
@@ -2097,7 +2193,18 @@ fn scripted_hot_fork_capture_node(
             fail_hot_fork_clone: matches!(descriptor_script, DescriptorScript::HostIoCloneFailure),
         },
         2,
-    ))
+    );
+    #[cfg(target_os = "linux")]
+    node.install_checkpoint_cancellation(checkpoint.cancellation()?);
+    Ok(node)
+}
+
+/// Builds the existing owned-child fixture for bounded continuation controls.
+///
+/// # Errors
+/// Returns the actual fixture process or channel construction failure.
+pub(super) fn shutdown_continuation_fixture() -> Result<QemuNode, Box<dyn Error>> {
+    scripted_node(shared_log(), false, false, false)
 }
 
 fn scripted_node(
@@ -2125,6 +2232,8 @@ fn scripted_node_with_runtime(
     scripted_node_with_options(
         log,
         ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: None,
             fail_plugin_quit,
             fail_shmem_advance,
             fail_qmp_stop: false,
@@ -2139,8 +2248,10 @@ fn scripted_node_with_runtime(
     )
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ScriptedNodeOptions {
+    #[cfg(target_os = "linux")]
+    checkpoint: Option<Arc<checkpoint_ownership::Ownership>>,
     fail_plugin_quit: bool,
     fail_shmem_advance: bool,
     fail_qmp_stop: bool,
@@ -2201,6 +2312,8 @@ fn scripted_node_with_fault_events(
             hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
+            #[cfg(target_os = "linux")]
+            checkpoint: None,
             log: Arc::clone(&log),
             track_process_endpoint_retirement: false,
             fail_stop: false,
@@ -2238,6 +2351,8 @@ fn scripted_node_with_fault_events(
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("vm-a"),
         ScriptedHostIoRuntime {
+            #[cfg(target_os = "linux")]
+            checkpoint: None,
             log,
             outcomes: VecDeque::new(),
             fault_results: VecDeque::new(),
@@ -2309,6 +2424,8 @@ fn scripted_node_with_coverage(
             hot_fork_ring_image: None,
         },
         ScriptedQmpMachineControl {
+            #[cfg(target_os = "linux")]
+            checkpoint: options.checkpoint.clone(),
             log: Arc::clone(&log),
             track_process_endpoint_retirement: options.track_process_endpoint_retirement,
             fail_stop: options.fail_qmp_stop,
@@ -2339,13 +2456,15 @@ fn scripted_node_with_coverage(
             hot_fork_script: HotForkScript::Rejected,
         },
     );
-    Ok(QemuNode::new(
+    let mut node = QemuNode::new(
         QemuNodeChild::new(child),
         channels,
         node_shutdown_policy(),
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("vm-a"),
         ScriptedHostIoRuntime {
+            #[cfg(target_os = "linux")]
+            checkpoint: options.checkpoint.clone(),
             log,
             outcomes: runtime_outcomes.into_iter().collect(),
             fault_results: VecDeque::new(),
@@ -2356,7 +2475,12 @@ fn scripted_node_with_coverage(
             fail_hot_fork_clone: false,
         },
         2,
-    ))
+    );
+    #[cfg(target_os = "linux")]
+    if let Some(checkpoint) = options.checkpoint {
+        node.install_checkpoint_cancellation(checkpoint.cancellation()?);
+    }
+    Ok(node)
 }
 
 fn node_shutdown_policy() -> QemuShutdownPolicy {

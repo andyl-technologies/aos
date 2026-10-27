@@ -451,6 +451,42 @@ pub(super) fn live_count(
 /// An error produced by the per-node advance-ceiling slot.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NodeSlotError {
+    /// The node report is being written or changed during a bounded observation.
+    #[error("node report generation changed from {expected} to {observed}")]
+    NodeReportChanged {
+        /// Node report generation observed before reading its fields.
+        expected: u32,
+        /// Actual node report generation that refused the observation.
+        observed: u32,
+    },
+    /// The scheduler publication has no fresh complete even successor.
+    #[error("scheduler advance generation {sequence} is exhausted")]
+    AdvanceGenerationExhausted {
+        /// Last complete publication sequence, retained without reuse.
+        sequence: u64,
+    },
+    /// Another writer holds or changed the scheduler publication sequence.
+    #[error("scheduler advance generation changed from {expected} to {observed}")]
+    AdvancePublicationOccupied {
+        /// Sequence selected for this exact publication attempt.
+        expected: u64,
+        /// Actual sequence that refused the attempted reservation.
+        observed: u64,
+    },
+    /// The final acknowledged control generation has no fresh successor.
+    #[error("control-boundary generation {acknowledged} is exhausted")]
+    ControlBoundaryGenerationExhausted {
+        /// Last acknowledged generation, retained without reuse.
+        acknowledged: u32,
+    },
+    /// Another publication changed the token after the producer's single cut.
+    #[error("control-boundary generation changed from {expected} to {observed} during publication")]
+    ControlBoundaryGenerationChanged {
+        /// Acknowledged generation selected before the producer cut.
+        expected: u32,
+        /// Actual generation that rejected this attempted publication.
+        observed: u32,
+    },
     /// A peer published an unknown current-ABI advance-stop condition.
     #[error("invalid scheduler advance-stop condition encoding {encoded}")]
     InvalidAdvanceStopCondition {

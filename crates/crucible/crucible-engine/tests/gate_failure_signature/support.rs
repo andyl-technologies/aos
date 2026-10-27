@@ -32,14 +32,16 @@ pub(super) fn recorded_event_log_with_assertion_time(
             0,
             VirtualTime { ticks: 1 },
             crucible_engine::SchedulerEventLogPayload::Decision(decision),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible_engine::test_support::condition_payload_entry_for_test(
             1,
             VirtualTime {
                 ticks: assertion_ticks,
             },
             SchedulerEventLogPayload::Observable(observed_marker.payload().clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         condition_observation_entry_for_test(
             2,
             &ObservableEvent::assertion_state_changed(
@@ -49,7 +51,8 @@ pub(super) fn recorded_event_log_with_assertion_time(
                 assertion_id("no-forbidden-marker"),
                 AssertionPhase::Violated,
             ),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -66,14 +69,16 @@ pub(super) fn recorded_node_divergence_event_log(
             0,
             VirtualTime { ticks: 1 },
             SchedulerEventLogPayload::Decision(decision),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         crucible_engine::test_support::condition_open_payload_entry_for_test(
             1,
             VirtualTime { ticks: 8 },
             SchedulerEventLogClass::Causal,
             EventPayload::new("node_state", BTreeMap::new()),
             SchedulerEventLogPayload::Observable(node_state.payload().clone()),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ]
 }
 
@@ -83,7 +88,8 @@ pub(super) fn recorded_event_log_for_finding(
 ) -> Result<FailureRecordedEventLog, EngineError> {
     let event_log_artifact = finding
         .artifact
-        .event_log_debug_artifact(EventLogOffset::new(ContentHash::default(), 0, 0), entries);
+        .event_log_debug_artifact(EventLogOffset::new(ContentHash::default(), 0, 0), entries)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     FailureRecordedEventLog::from_recorded_artifact(finding, &event_log_artifact, entries)
 }
 
@@ -118,9 +124,11 @@ pub(super) fn property_violation_record_for_entries(
         .iter()
         .find(|violation| violation.assertion == assertion_id("no-forbidden-marker"))
         .expect("failure-signature fixture must violate declared property")
-        .clone();
+        .try_clone_admitted()
+        .unwrap_or_else(|error| panic!("finite component violation copy: {error}"));
     violation.reproduction_artifact = reproduction_artifact;
     FailurePropertyViolationRecord::new(violation)
+        .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))
 }
 
 pub(super) fn finding_artifact(

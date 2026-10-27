@@ -110,6 +110,11 @@ pub struct NodeSlot {
     pub(crate) timer_witness_reserved: AtomicU32,
     pub(crate) advance_publication_sequence: AtomicU64,
     pub(crate) _pad4: [u8; 40],
+    pub(crate) boundary_action_hold: AtomicU64,
+    pub(crate) boundary_action_return: [AtomicU64; 24],
+    pub(crate) _pad5: [u8; 56],
+    pub(crate) parent_park_return: [AtomicU64; 24],
+    pub(crate) _pad6: [u8; 64],
 }
 
 impl Clone for NodeSlot {
@@ -199,6 +204,13 @@ impl Clone for NodeSlot {
             ),
             advance_publication_sequence: AtomicU64::new(advance_publication_sequence),
             _pad4: [0; 40],
+            // Observation copies never duplicate the assigned Source's
+            // physical ownership or publish a possibly torn return journal.
+            boundary_action_hold: AtomicU64::new(0),
+            boundary_action_return: [const { AtomicU64::new(0) }; 24],
+            _pad5: [0; 56],
+            parent_park_return: [const { AtomicU64::new(0) }; 24],
+            _pad6: [0; 64],
         }
     }
 }
@@ -355,5 +367,18 @@ const _: () = assert!(NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET == 200);
 const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);
 const _: () = assert!(NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET == 208);
 const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 216);
-const _: () = assert!(NODE_SLOT_SIZE == 256);
+
+/// Offset of the Host-owned retained command-frontier sequence.
+pub const NODE_SLOT_ACTION_HOLD_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, boundary_action_hold);
+/// Offset of the Native-written independent physical-return journal.
+pub const NODE_SLOT_ACTION_RETURN_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, boundary_action_return);
+const _: () = assert!(NODE_SLOT_ACTION_HOLD_OFFSET == 256);
+const _: () = assert!(NODE_SLOT_ACTION_RETURN_OFFSET == 264);
+
+/// Byte offset of the separate protected MODULE ParentPark return journal.
+pub const NODE_SLOT_PARK_RETURN_OFFSET: usize = core::mem::offset_of!(NodeSlot, parent_park_return);
+const _: () = assert!(NODE_SLOT_PARK_RETURN_OFFSET == 512);
+const _: () = assert!(NODE_SLOT_SIZE == 768);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);

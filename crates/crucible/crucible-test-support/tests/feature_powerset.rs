@@ -25,6 +25,11 @@ fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Erro
 
     for case in feature_cases() {
         let mut command = Command::new(env!("CARGO"));
+        // Cargo records its real executable, so repeat the outer AOS wrapper's
+        // verified vendor configuration for this independent target directory.
+        if let Some(config) = std::env::var_os("AOS_CARGO_SOURCE_CONFIG") {
+            command.arg("--config").arg(config);
+        }
         command
             .arg("check")
             .arg("--manifest-path")
@@ -73,8 +78,24 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu-host",
         &[
             ("default", &[][..]),
-            ("test-support", &["crucible-engine/test-double"][..]),
+            ("kernel-swap-measurement", &[][..]),
+            (
+                "private-measurement-domain",
+                &[
+                    "crucible-host-resources/private-measurement-domain",
+                    "crucible-store/private-measurement-domain",
+                ][..],
+            ),
+            (
+                "test-support",
+                &["crucible-engine/test-double", "crucible-ram/test-support"][..],
+            ),
         ],
+    );
+    assert_features(
+        &manifests,
+        "crucible-ram",
+        &[("test-support", &["dep:sha2", "dep:serde_json"][..])],
     );
     assert_features(&manifests, "crucible-device", &[("default", &[][..])]);
 
@@ -408,6 +429,18 @@ fn feature_cases() -> &'static [FeatureCase] {
         FeatureCase {
             name: "crucible-qemu test support",
             package: "crucible-qemu-host",
+            no_default_features: true,
+            features: &["test-support"],
+        },
+        FeatureCase {
+            name: "crucible-ram production",
+            package: "crucible-ram",
+            no_default_features: true,
+            features: &[],
+        },
+        FeatureCase {
+            name: "crucible-ram offline measurements",
+            package: "crucible-ram",
             no_default_features: true,
             features: &["test-support"],
         },

@@ -22,7 +22,7 @@ impl EventLog {
                     ticks: observation.coordinate.virtual_ticks,
                 },
                 SchedulerEventLogPayload::FaultObservation(observation),
-            ));
+            )?);
         }
         self.append_entries(entries)
     }
@@ -45,7 +45,7 @@ impl EventLog {
                 sequence,
                 event.at(),
                 SchedulerEventLogPayload::Observable(event.payload().clone()),
-            ));
+            )?);
         }
         self.append_entries(entries)
     }
@@ -70,14 +70,14 @@ impl EventLog {
                 sequence,
                 event.at(),
                 SchedulerEventLogPayload::Observable(event.payload().clone()),
-            ));
+            )?);
         }
         let sequence = self.next_sequence(entries.len())?;
         entries.push(scheduler_event_log_entry(
             sequence,
             at,
             SchedulerEventLogPayload::EvaluationBoundary(kind),
-        ));
+        )?);
         self.append_entries(entries)
     }
 
@@ -98,6 +98,6 @@ impl EventLog {
             sequence,
             at,
             SchedulerEventLogPayload::EvaluationBoundary(kind),
-        )])
+        )?])
     }
 }

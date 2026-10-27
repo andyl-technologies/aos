@@ -19,7 +19,11 @@
     + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs;
   shmemHeader = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/generated_abi_header.rs;
-  protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
+  ]);
   protocolGoldenVectors = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
   apiAbiGate = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
@@ -102,6 +106,7 @@
     libcap-ng = null;
     libusb1 = null;
     libgcrypt = null;
+    blake3-c = null;
     gnutls = null;
     fuse3 = null;
     gcc-libs = "/aos-gcc-libs";

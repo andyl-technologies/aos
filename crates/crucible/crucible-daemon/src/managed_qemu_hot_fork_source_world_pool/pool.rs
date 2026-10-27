@@ -621,20 +621,32 @@ where
         &mut self,
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<QemuHotForkSourceWorldLease>, Self::Error> {
-        self.checkout_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, key)
-            .map(|source| {
-                source.map(|source| {
-                    QemuHotForkSourceWorldLease::exclusive(manager_source_key(key), source)
-                })
-            })
+        let Some((source, identity)) = self.checkout_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, key)?
+        else {
+            return Ok(None);
+        };
+        match QemuHotForkSourceWorldLease::exclusive(manager_source_key(key), source, identity) {
+            Ok(lease) => Ok(Some(lease)),
+            Err(source) => {
+                if let Some(world) = self.worlds.get_mut(&manager_source_key(key)) {
+                    world.source = Some(source);
+                    world.invalidated = true;
+                } else {
+                    drop(source);
+                }
+                Err(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned)
+            }
+        }
     }
 
     fn restore(&mut self, source: QemuHotForkSourceWorldLease) {
         match source.into_exclusive_source() {
             Ok(source) => self.restore_for(DIRECT_SOURCE_WORLD_PROVIDER_ID, source),
             Err(source) => {
-                let _retained_for_process_lifetime = Box::leak(source);
                 self.abandon_for(DIRECT_SOURCE_WORLD_PROVIDER_ID);
+                // An exclusive lease has its actual Main return owner; a
+                // borrowed lease only releases its own allocation alias.
+                drop(source);
             }
         }
     }
@@ -649,12 +661,58 @@ where
     D: HotCheckpointTemplateDemotionSink<ManagedQemuHotForkSourceWorld>,
     R: HotCheckpointFallbackRetentionStore,
 {
+    fn retry_returned_source_for(&mut self, provider: u64) {
+        let Some((template, _, _)) = self.checked_out.get(&provider) else {
+            return;
+        };
+        let Some(world) = self.worlds.get_mut(template) else {
+            return;
+        };
+        if world.invalidated || world.parent_park_owned() || world.fork_target_owned() {
+            return;
+        }
+        let Some(source) = world.source.take() else {
+            return;
+        };
+        self.restore_for(provider, source);
+    }
+
+    fn retry_returned_lease_for(&mut self, provider: u64) {
+        let Some(record) = self.leased_out.get(&provider) else {
+            return;
+        };
+        if record.abandoned || record.returned_lease.is_none() {
+            return;
+        }
+        let Some(world) = self.worlds.get(&record.template) else {
+            return;
+        };
+        if world.invalidated || world.parent_park_owned() || world.fork_target_owned() {
+            return;
+        }
+        let Some(lease) = self
+            .leased_out
+            .get_mut(&provider)
+            .and_then(|record| record.returned_lease.take())
+        else {
+            return;
+        };
+        self.restore_lease_for(provider, lease);
+    }
+
     fn checkout_for(
         &mut self,
         provider: u64,
         key: &QemuHotForkSourceWorldKey,
-    ) -> Result<Option<ProductionVmHotForkSourceWorld>, ManagedQemuHotForkSourceWorldCheckoutError>
-    {
+    ) -> Result<
+        Option<(
+            ProductionVmHotForkSourceWorld,
+            QemuHotForkSourceWorldCheckoutIdentity,
+        )>,
+        ManagedQemuHotForkSourceWorldCheckoutError,
+    > {
+        self.retry_returned_source_for(provider);
+        self.retry_returned_lease_for(provider);
         if self.checked_out.contains_key(&provider) || self.leased_out.contains_key(&provider) {
             return Err(ManagedQemuHotForkSourceWorldCheckoutError::PriorCheckoutPending);
         }
@@ -674,13 +732,17 @@ where
             .manager
             .admit_fork(tick)
             .map_err(ManagedQemuHotForkSourceWorldCheckoutError::ForkRate)?;
+        let Some(retained) = world.source.as_ref() else {
+            return Ok(None);
+        };
+        let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(retained)
+            .map_err(ManagedQemuHotForkSourceWorldCheckoutError::Continuation)?;
         let Some(source) = world.take() else {
             return Ok(None);
         };
-        let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
         self.checked_out
-            .insert(provider, (template, identity, permit));
-        Ok(Some(source))
+            .insert(provider, (template, identity.clone(), permit));
+        Ok(Some((source, identity)))
     }
 
     pub(super) fn checkout_lease_for(
@@ -689,6 +751,8 @@ where
         key: &QemuHotForkSourceWorldKey,
     ) -> Result<Option<QemuHotForkSourceWorldLease>, ManagedQemuHotForkSourceWorldCheckoutError>
     {
+        self.retry_returned_source_for(provider);
+        self.retry_returned_lease_for(provider);
         if self.checked_out.contains_key(&provider) || self.leased_out.contains_key(&provider) {
             return Err(ManagedQemuHotForkSourceWorldCheckoutError::PriorCheckoutPending);
         }
@@ -731,9 +795,10 @@ where
             });
         }
 
+        // Exhaustion must refuse before converting the exclusive Source into
+        // shared custody. Commit this prospective identity only at publication.
         let lease = self.next_lease;
-        self.next_lease = self
-            .next_lease
+        let next_lease = lease
             .checked_add(1)
             .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::LeaseIdentityExhausted)?;
         let source = self
@@ -741,30 +806,44 @@ where
             .get_mut(&template)
             .and_then(ManagedQemuHotForkSourceWorld::begin_lease)
             .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned)?;
-        let identity = match source.lock() {
-            Ok(mut source) => {
-                let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
-                let authenticated = identity.matches(&source) && source.fork_continuation().is_ok();
-                if !authenticated {
-                    drop(source);
-                    if let Some(world) = self.worlds.get_mut(&template) {
-                        world.invalidate();
-                    }
-                    return Ok(None);
-                }
-                identity
-            }
+        let mut source_guard = match source.try_lock() {
+            Ok(source) => source,
             Err(_error) => {
-                if let Some(world) = self.worlds.get_mut(&template) {
-                    world.invalidate();
-                }
+                // The existing world retains this exact Source and every prior
+                // lease. Unobservable custody cannot authorize another child.
                 return Err(ManagedQemuHotForkSourceWorldCheckoutError::SourcePoisoned);
             }
         };
+        if source_guard.fork_target_is_owned() {
+            return Ok(None);
+        }
+        let identity = match QemuHotForkSourceWorldCheckoutIdentity::capture(&source_guard) {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(source_guard);
+                if let Some(world) = self.worlds.get_mut(&template) {
+                    world.invalidate();
+                }
+                return Err(ManagedQemuHotForkSourceWorldCheckoutError::Continuation(
+                    error,
+                ));
+            }
+        };
+        let authenticated =
+            identity.matches(&source_guard) && source_guard.fork_continuation().is_ok();
+        if !authenticated {
+            drop(source_guard);
+            if let Some(world) = self.worlds.get_mut(&template) {
+                world.invalidate();
+            }
+            return Ok(None);
+        }
+
         let tick = self.fork_rate_clock.elapsed_nanos();
         let permit = match self.manager.admit_fork(tick) {
             Ok(permit) => permit,
             Err(error) => {
+                drop(source_guard);
                 drop(source);
                 if !self
                     .leased_out
@@ -778,6 +857,9 @@ where
             }
         };
 
+        // Keep the same actual Source guard through admission and publication
+        // so another alias cannot lend Target custody between these steps.
+        self.next_lease = next_lease;
         self.lease_usage = projected_lease_usage;
         self.leased_out.insert(
             provider,
@@ -788,23 +870,36 @@ where
                 source: Arc::downgrade(&source),
                 resources,
                 _permit: permit,
+                returned_lease: None,
+                abandoned: false,
             },
         );
+        drop(source_guard);
         Ok(Some(QemuHotForkSourceWorldLease {
             managed_lease: Some(lease),
             template,
             identity,
-            source,
+            source: LeaseSource::Borrowed(source),
         }))
     }
 
-    fn restore_for(&mut self, provider: u64, source: ProductionVmHotForkSourceWorld) {
+    fn restore_for(&mut self, provider: u64, mut source: ProductionVmHotForkSourceWorld) {
         let Some((_, identity, _)) = self.checked_out.get(&provider) else {
             let _ = source.retire();
             return;
         };
         if !identity.matches(&source) {
             let _ = source.retire();
+            return;
+        }
+        if source.fork_target_is_owned() {
+            if let Some((template, _, _)) = self.checked_out.get(&provider)
+                && let Some(world) = self.worlds.get_mut(template)
+            {
+                world.source = Some(source);
+            } else {
+                drop(source);
+            }
             return;
         }
         let Some((key, _identity, _permit)) = self.checked_out.remove(&provider) else {
@@ -820,8 +915,17 @@ where
     }
 
     pub(super) fn restore_lease_for(&mut self, provider: u64, lease: QemuHotForkSourceWorldLease) {
+        if self
+            .worlds
+            .get(&lease.template)
+            .is_some_and(ManagedQemuHotForkSourceWorld::parent_park_owned)
+        {
+            // Keep the actual record, permit and reservation. The pool's gate
+            // retains the complete source even if this caller drops its facade.
+            return;
+        }
         let Some(record) = self.leased_out.get(&provider) else {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             return;
         };
         let record_lease = record.lease;
@@ -831,28 +935,60 @@ where
         let matching_receipt = Some(record.lease) == lease.managed_lease
             && record.template == lease.template
             && record.identity == lease.identity;
-        let matching_source = record
-            .source
-            .upgrade()
-            .is_some_and(|source| Arc::ptr_eq(&source, &lease.source));
+        let matching_source = record.source.upgrade().is_some_and(|source| {
+            lease
+                .source_owner_ref()
+                .is_some_and(|actual| Arc::ptr_eq(&source, actual))
+        });
         if !matching_receipt || !matching_source {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             self.abandon_lease_for(provider);
             return;
         }
 
-        let source_reusable = match lease.source.lock() {
-            Ok(mut source) => {
-                record_identity.matches(&source) && source.fork_continuation().is_ok()
+        let abandoned = record.abandoned;
+        let Some(source_owner) = lease.source_owner() else {
+            if let Some(record) = self.leased_out.get_mut(&provider)
+                && record.returned_lease.is_none()
+            {
+                record.returned_lease = Some(lease);
             }
-            Err(_error) => false,
+            return;
         };
+        let mut source = match source_owner.try_lock() {
+            Ok(source) => source,
+            Err(_error) => {
+                // Contention and poison leave physical custody unobservable.
+                // Retain the exact returned receipt, permit and resource charge.
+                if let Some(record) = self.leased_out.get_mut(&provider)
+                    && record.returned_lease.is_none()
+                {
+                    record.returned_lease = Some(lease);
+                }
+                return;
+            }
+        };
+        if abandoned || source.fork_target_is_owned() {
+            drop(source);
+            if let Some(record) = self.leased_out.get_mut(&provider)
+                && record.returned_lease.is_none()
+            {
+                record.returned_lease = Some(lease);
+            }
+            return;
+        }
+
+        // Authenticate and restore while holding the same guard that excluded
+        // Target custody. A second acquisition could lose that observation.
+        let source_reusable = record_identity.matches(&source)
+            && source.restore_retained_service_supervisor().is_ok()
+            && source.fork_continuation().is_ok();
         if self
             .leased_out
             .remove(&provider)
             .is_none_or(|record| record.lease != record_lease)
         {
-            let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+            drop(lease);
             if let Some(world) = self.worlds.get_mut(&template) {
                 world.invalidate();
             }
@@ -864,10 +1000,12 @@ where
                 if let Some(world) = self.worlds.get_mut(&template) {
                     world.invalidate();
                 }
-                let _retained_for_process_lifetime = Box::leak(Box::new(lease.source));
+                drop(lease);
                 return;
             }
         };
+        drop(source);
+        drop(source_owner);
         drop(lease);
 
         let sibling_lease_remains = self
@@ -885,6 +1023,18 @@ where
     }
 
     fn abandon_for(&mut self, provider: u64) {
+        if let Some((template, _, _)) = self.checked_out.get(&provider)
+            && self.worlds.get(template).is_some_and(|world| {
+                world.fork_target_owned()
+                    || (world.source.is_none() && world.leased_source.is_none())
+            })
+        {
+            let template = *template;
+            if let Some(world) = self.worlds.get_mut(&template) {
+                world.invalidate();
+            }
+            return;
+        }
         let Some((key, _identity, _permit)) = self.checked_out.remove(&provider) else {
             return;
         };
@@ -894,12 +1044,47 @@ where
     }
 
     pub(super) fn abandon_lease_for(&mut self, provider: u64) {
+        let Some(record) = self.leased_out.get(&provider) else {
+            return;
+        };
+        let template = record.template;
+        if self
+            .worlds
+            .get(&template)
+            .is_some_and(ManagedQemuHotForkSourceWorld::parent_park_owned)
+        {
+            return;
+        }
+
+        let source_owner = record.source.upgrade();
+        let source_guard = source_owner
+            .as_ref()
+            .and_then(|source| source.try_lock().ok());
+        if source_guard
+            .as_ref()
+            .is_none_or(|source| source.fork_target_is_owned())
+        {
+            // A held or unobservable Target keeps its exact loan record and
+            // permit. Abandonment quarantines the same Source without refund.
+            if let Some(record) = self.leased_out.get_mut(&provider) {
+                record.abandoned = true;
+            }
+            if let Some(world) = self.worlds.get_mut(&template) {
+                world.invalidate();
+            }
+            return;
+        }
+
+        // Retain this same actual Source guard through record removal and
+        // invalidation so another alias cannot lend Target in that interval.
         let Some(record) = self.leased_out.remove(&provider) else {
             return;
         };
         if let Some(world) = self.worlds.get_mut(&record.template) {
             world.invalidate();
         }
+        drop(source_guard);
+        drop(source_owner);
 
         // An abandoned child may still own live resources in quarantine. Its
         // reservation remains charged so another source cannot over-admit work.

@@ -13,13 +13,14 @@ use crucible_engine::{
     Backend, Checkpoint, CheckpointKind, ContentHash, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
+use crucible_host_resources::test_support::TestAllocationObserver;
 use crucible_qemu_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig,
 };
 use crucible_qemu_shmem::{ABI_VERSION, RegionConfig, RegionLayout, SLOT_NET_ROUTER};
 use serde_json::Value;
 
-use crate::spawn::create_test_spawn_resource_pair;
+use crate::spawn::{create_test_spawn_resource_pair, prepare_test_preexec_setup};
 use crate::{
     QMP_CAPABILITIES_COMMAND, QMP_JOB_DISMISS_COMMAND, QMP_QUERY_JOBS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
@@ -92,7 +93,8 @@ fn qmp_node_control_saves_deletes_and_quits() -> Result<(), Box<dyn Error>> {
 fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
     });
@@ -109,12 +111,13 @@ fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dy
         r#"{"return":{}}"#,
     ]))?;
 
-    let mut node = build_qemu_node_from_completed_setup(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        node_factory_runtime(),
-    )?;
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
+    build_qemu_node_from_completed_setup(&mut owner, setup, qmp, node_factory_runtime())?;
+    let (node, allocations) = TestAllocationObserver::count(|| owner.take_assembled_node());
+    assert_eq!(allocations.allocations, 0);
+    assert_eq!(allocations.reallocations, 0);
+    assert!(!allocations.overflow);
+    let mut node = node.ok_or("factory did not assemble its retained Node")?;
 
     assert_eq!(
         node.channel_roles(),
@@ -154,7 +157,8 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
 -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
     });
@@ -194,16 +198,16 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         host_io,
         continuation,
     )?;
-    let ram_layer = crate::QmpCheckpointRestoreLayer::new(
-        crate::QmpDescriptorName::new("restore-ram")?,
-        ContentHash::from_bytes(b"RAM content"),
-        4096,
-    )?;
-    let restore_request = crate::QmpCheckpointRestoreRequest::new(
-        vec![ram_layer],
-        crate::QmpDescriptorName::new("restore-device")?,
+    let source = crate::qmp::ram_restore::fixture_source()?;
+    let restore_request = crate::QmpCheckpointRestoreRequest::new_paged(
+        source.root_record(),
+        source.binding(),
+        crate::qmp::ram_restore::QmpCheckpointRestoreDescriptorNames {
+            root: crate::QmpDescriptorName::new("restore-root")?,
+            device: crate::QmpDescriptorName::new("restore-device")?,
+            cancellation: crate::QmpDescriptorName::new("restore-cancel")?,
+        },
         ContentHash::from_bytes(b"device content"),
-        crate::QmpDescriptorName::new("restore-cancel")?,
         crate::QmpCheckpointIdentity::new(
             ContentHash::from_bytes(b"foreign checkpoint"),
             ContentHash::from_bytes(b"target"),
@@ -214,9 +218,8 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
     let mut descriptor_input = crate::QemuExactCheckpointInputMaterialization::new(1)?;
     descriptor_input.write_all(b"x")?;
     let descriptor = descriptor_input.finish()?;
-    let ram_descriptors = [descriptor.as_fd()];
     let descriptors = QemuExactCheckpointRestoreDescriptors::new(
-        &ram_descriptors,
+        descriptor.as_fd(),
         descriptor.as_fd(),
         descriptor.as_fd(),
     );
@@ -224,11 +227,13 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         &snapshot,
         &restore_request,
         descriptors,
-        ContentHash::from_bytes(b"RAM topology"),
+        restore_request.topology(),
+        &source,
     );
 
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
     let result = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
+        &mut owner,
         setup,
         qmp,
         restore,
@@ -258,7 +263,8 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
 fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(2, 4);
     let layout = RegionLayout::for_config(config)?;
-    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    prepare_test_preexec_setup(&mut resources, config)?;
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
     });
@@ -274,8 +280,9 @@ fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), B
         r#"{"return":{}}"#,
     ]))?;
 
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
     let error = build_qemu_node_from_completed_setup(
-        QemuNodeChild::new(child),
+        &mut owner,
         setup,
         qmp,
         node_factory_runtime_for_slot(1),
@@ -358,6 +365,8 @@ fn plugin_peer_complete_setup(
     plugin_socket: UnixStream,
     after_run: PluginPeerAfterRun,
 ) -> Result<crucible_qemu_shmem::ValidatedSetupRegion, String> {
+    let setup = crucible_qemu_protocol::recv_setup_with_descriptors(plugin_socket.as_raw_fd())
+        .map_err(|error| error.to_string())?;
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
         .map_err(|error| error.to_string())?;
     let negotiated = plugin
@@ -373,8 +382,8 @@ fn plugin_peer_complete_setup(
         ));
     }
 
-    let setup = plugin
-        .plugin_recv_setup_with_descriptors()
+    plugin
+        .plugin_commit_preexec_setup()
         .map_err(|error| error.to_string())?;
     let mut mapped = crucible_qemu_shmem::mmap_setup_region(
         setup.descriptors.shmem_fd.as_fd(),

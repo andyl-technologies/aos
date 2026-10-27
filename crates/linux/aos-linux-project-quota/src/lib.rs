@@ -23,7 +23,8 @@
 mod linux_project_quota;
 
 pub use linux_project_quota::{
-    LinuxProjectQuotaBinding, LinuxProjectQuotaError, LinuxProjectQuotaInstallError,
-    LinuxProjectQuotaLimits, LinuxProjectQuotaReleaseError, LinuxProjectQuotaReservation,
-    validate_project_quota_root,
+    AuditedProjectQuotaBinding, LinuxProjectQuotaBinding, LinuxProjectQuotaController,
+    LinuxProjectQuotaError, LinuxProjectQuotaInstallError, LinuxProjectQuotaLimits,
+    LinuxProjectQuotaReleaseError, LinuxProjectQuotaReservation, QuotaAudit, QuotaAuditRefusal,
+    validate_project_quota_root, verify_project_quotas_enabled,
 };

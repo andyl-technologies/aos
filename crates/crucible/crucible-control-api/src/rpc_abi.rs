@@ -1,6 +1,6 @@
 //! Versioned control-plane RPC ABI and frozen golden vectors.
 //!
-//! The current corpus is the ABI-conformance seed for RFC-0010 file 21. It
+//! The current corpus seeds ABI conformance for typed lifecycle messages. It
 //! deliberately freezes a small canonical envelope vocabulary before the full
 //! reference client lands: explicit `Hello` version negotiation, `Attached`
 //! version echoing, mutating request/response pairs including breakpoint
@@ -22,14 +22,14 @@ use crate::open_set::OPEN_SET_CAPABILITY_CATEGORIES;
 
 /// RPC protocol major version for wire-incompatible changes.
 ///
-/// Version 8 carries exact event ticks and optional raw retired witnesses.
-pub const RPC_PROTOCOL_MAJOR: u16 = 8;
+/// Version 9 adds independently authenticated host RAM and supervision controls.
+pub const RPC_PROTOCOL_MAJOR: u16 = 9;
 /// RPC protocol minor version.
 pub const RPC_PROTOCOL_MINOR: u16 = 0;
 /// RPC protocol patch version.
 pub const RPC_PROTOCOL_PATCH: u16 = 0;
 /// RPC protocol build identifier recorded in `Hello` and `Attached`.
-pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v8";
+pub const RPC_PROTOCOL_BUILD: &str = "crucible-rpc-abi-v9";
 
 /// Current control-plane RPC protocol version.
 pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
@@ -41,10 +41,10 @@ pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
 
 /// RPC protocol version for which the golden-vector corpus was generated.
 pub const GOLDEN_VECTOR_RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
-    major: 8,
+    major: 9,
     minor: 0,
     patch: 0,
-    build: "crucible-rpc-abi-v8",
+    build: "crucible-rpc-abi-v9",
 };
 
 /// Regeneration rule for the RPC golden-vector corpus.

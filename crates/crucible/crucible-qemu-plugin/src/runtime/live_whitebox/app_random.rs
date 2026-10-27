@@ -7,25 +7,25 @@ use crucible_qemu_protocol::app_random_transport::{
     BackendRngEvidenceTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
     app_random_stream_name,
 };
-use crucible_qemu_protocol::{WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WhiteboxDoorbellFrame};
+use crucible_qemu_protocol::{WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WhiteboxDoorbellFrameView};
 use crucible_qemu_shmem::MAX_FRAME_DATA;
 
 use super::*;
 use crate::{
     AppRandomDoorbellOutcome, BackendRngEvidenceError, BackendRngEvidenceRecord,
     BackendRngEvidenceSource, WhiteboxGuestInputCapability, WhiteboxGuestInputWriteError,
-    WhiteboxGuestInputWriter, handle_whitebox_app_random_callback,
+    WhiteboxGuestInputWriter, handle_whitebox_app_random_payload,
 };
 
 pub(super) fn is_request(payload: &[u8]) -> bool {
-    WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
+    WhiteboxDoorbellFrameView::decode_bounded(payload, MAX_FRAME_DATA)
         .is_ok_and(|frame| frame.kind() == WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST)
 }
 
 impl LiveWhiteboxState {
     pub(super) fn handle_app_random(
         &mut self,
-        reader: &mut LiveGuestMemoryReader,
+        payload: &[u8],
         event: WhiteboxDoorbellTrapEvent,
         raw_icount: u64,
         trap_tick_ps: u64,
@@ -35,19 +35,15 @@ impl LiveWhiteboxState {
             .app_random
             .as_mut()
             .ok_or(LiveWhiteboxError::AppRandomNotConfigured)?;
-        let mut writer = LiveGuestMemoryWriter {
-            apis: self.apis,
-            current_icount: raw_icount,
-        };
-        let node_name = app_random.decisions.node_name().to_owned();
-        let outcome = handle_whitebox_app_random_callback(
+        let mut writer = LiveGuestMemoryWriter::new(self.apis.write_memory_vaddr, raw_icount);
+        let outcome = handle_whitebox_app_random_payload(
             &self.doorbell,
             &app_random.capability,
-            reader,
             &mut app_random.decisions,
             &mut writer,
-            &node_name,
+            &app_random.node_name,
             event,
+            payload,
         )
         .map_err(callback_error)?;
         if let AppRandomDoorbellOutcome::Served(service) = outcome {
@@ -90,14 +86,17 @@ impl LiveWhiteboxMarkerShmemProducer {
 }
 
 pub(super) struct LiveGuestMemoryWriter {
-    apis: LiveWhiteboxApis,
+    write_memory: super::api::QemuWriteMemoryVaddrFn,
     current_icount: u64,
 }
 
 impl LiveGuestMemoryWriter {
-    pub(super) const fn new(apis: LiveWhiteboxApis, current_icount: u64) -> Self {
+    pub(super) const fn new(
+        write_memory: super::api::QemuWriteMemoryVaddrFn,
+        current_icount: u64,
+    ) -> Self {
         Self {
-            apis,
+            write_memory,
             current_icount,
         }
     }
@@ -111,18 +110,18 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
         payload: &[u8],
     ) -> Result<(), WhiteboxGuestInputWriteError> {
         if delivery_icount != self.current_icount {
-            return Err(WhiteboxGuestInputWriteError::new(format!(
-                "delivery icount {delivery_icount} differs from callback icount {}",
-                self.current_icount
-            )));
+            return Err(WhiteboxGuestInputWriteError::CallbackIcountMismatch {
+                delivery_icount,
+                callback_icount: self.current_icount,
+            });
         }
         if !matches!(range.address_space(), GuestMemoryAddressSpace::Virtual) {
-            return Err(WhiteboxGuestInputWriteError::new(
+            return Err(WhiteboxGuestInputWriteError::from_static(
                 "live white-box writer requires a virtual reply range",
             ));
         }
-        if !(self.apis.write_memory_vaddr)(range.guest_address(), payload.as_ptr(), payload.len()) {
-            return Err(WhiteboxGuestInputWriteError::new(
+        if !(self.write_memory)(range.guest_address(), payload.as_ptr(), payload.len()) {
+            return Err(WhiteboxGuestInputWriteError::from_static(
                 "qemu_plugin_crucible_write_memory_vaddr failed",
             ));
         }
@@ -131,6 +130,9 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
 }
 
 pub(super) struct LiveAppRandomState {
+    // Identity belongs to the service, so callbacks borrow it independently of
+    // the mutable draw state and logical restore retains the same allocation.
+    node_name: String,
     capability: WhiteboxGuestInputCapability,
     decisions: LiveBackendRngEvidenceSource,
     restore_decisions: Option<LiveBackendRngEvidenceSource>,
@@ -143,6 +145,7 @@ impl LiveAppRandomState {
         capability: WhiteboxGuestInputCapability,
     ) -> Self {
         Self {
+            node_name: config.node_name().to_owned(),
             capability,
             decisions: LiveBackendRngEvidenceSource::new(config, branch_plan),
             // Restore launches execute a throwaway boot-barrier quantum before
@@ -183,7 +186,6 @@ fn restore_app_random_decisions(
 struct LiveBackendRngEvidenceSource {
     root_seed: u64,
     streams: BTreeMap<String, PluginDecisionStream>,
-    node_name: String,
     draw_cap: u64,
     draws: u64,
     branch_reseeds: Vec<(u64, u64)>,
@@ -209,7 +211,6 @@ impl LiveBackendRngEvidenceSource {
         Self {
             root_seed: config.root_seed(),
             streams,
-            node_name: config.node_name().to_owned(),
             draw_cap: config.draw_cap(),
             draws: config.draw_offset(),
             branch_reseeds: config.branch_reseeds().to_vec(),
@@ -217,10 +218,6 @@ impl LiveBackendRngEvidenceSource {
             branch_plan: branch_plan.clone(),
             next_branch_plan_entry,
         }
-    }
-
-    fn node_name(&self) -> &str {
-        &self.node_name
     }
 
     fn apply_branch_reseed_if_due(&mut self) {

@@ -46,12 +46,15 @@ members = [
     "crucible/crucible-device",
     "crucible/crucible-engine",
     "crucible/crucible-guest",
+    "crucible/crucible-host-resources",
     "crucible/crucible-qemu-debug-gateway",
     "crucible/crucible-qemu-host",
     "crucible/crucible-qemu-plugin",
     "crucible/crucible-qemu-protocol",
     "crucible/crucible-qemu-shmem",
+    "crucible/crucible-ram",
     "crucible/crucible-session",
+    "crucible/crucible-sqlite-heap",
     "crucible/crucible-store",
     "crucible/crucible-store-s3",
     "crucible/crucible-test-support",
@@ -100,6 +103,11 @@ members = [
 license = "Apache-2.0"
 
 [workspace.dependencies]
+regex-syntax = "=0.8.11"
+regex-automata = "=0.4.14"
+crucible-ram = { path = "crucible/crucible-ram" }
+crucible-host-resources = { path = "crucible/crucible-host-resources" }
+crucible-sqlite-heap = { path = "crucible/crucible-sqlite-heap" }
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"

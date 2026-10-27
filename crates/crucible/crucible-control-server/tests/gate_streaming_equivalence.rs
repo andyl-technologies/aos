@@ -4,6 +4,8 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use crucible_control_api::admitted_output::test_support::integration_budget as output_budget;
+
 use std::time::Duration;
 
 use crucible_control_api::{
@@ -440,6 +442,10 @@ struct StreamingFixture {
 
 impl StreamingFixture {
     async fn spawn_loaded(seed: u64) -> Self {
+        let budget = output_budget();
+        // Construction is synchronous; the actor restores this same account on
+        // every later poll, and the streaming handle retains it independently.
+        let _scope = budget.enter();
         let scenario = generated_scenario(seed);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
@@ -450,7 +456,8 @@ impl StreamingFixture {
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
-        let actor_task = tokio::spawn(async move { actor.run().await });
+        let actor_task = crucible_control_server::spawn_admitted_session_actor(actor, budget.clone())
+            .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
         let session = SessionRef::new(SessionId::new(seed), seed, scenario.seed());
         let api = InProcessStreamingSession::new(
             session,
@@ -497,6 +504,7 @@ impl QuantumLoop for StreamingLoop {
             event_log_segment_hash: None,
             event_log_offset: EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }

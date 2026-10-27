@@ -1,4 +1,4 @@
-##! crucible — RFC-0010 Crucible Rust workspace and CLI
+##! crucible — Deterministic simulation workspace and CLI
 {
   lib,
   stdenv,
@@ -26,6 +26,8 @@
   openssh,
   buildPackages,
   controllerOnly ? false,
+  privateNativeObservation ? false,
+  pagingQualificationReceipt ? null,
 }: let
   version = "0.1.0";
   platformSupport = {
@@ -87,6 +89,8 @@
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
   workspaceCargoFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
+  nativeCliTests = import ./_native-cli-tests.nix {inherit lib;};
+  nextestDiagnostics = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";
   docPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
@@ -258,11 +262,26 @@
     cargoNextestOpenFilesLimit = 4096;
     # The shared Cargo check phase disables interactive progress. Leave the
     # failed test and its captured output at the end of the controller log.
-    nextestFlags = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";
+    # Installed quota and deployed-owner cases run in their exact registered
+    # kernel gates. Every ordinary test in the same binaries remains selected.
+    nextestFlags = "${nextestDiagnostics} --filter-expr ${lib.escapeShellArg nativeCliTests.nextestFilter}";
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
+      inherit pagingQualificationReceipt;
+      nativeCliTestAssignments = nativeCliTests.assignments;
+      nativeCliCargoSkipFlags = nativeCliTests.cargoSkipFlags;
     };
+
+    # Only a successful kernel flight can supply this build input. Embed its
+    # bounded data without retaining a runtime path to the flight's GPL closure.
+    preBuild = lib.optionalString (pagingQualificationReceipt != null) ''
+      receipt_file=${pagingQualificationReceipt}/qualification.json
+      test -f "$receipt_file"
+      test "$(${coreutils}/bin/wc -c < "$receipt_file")" -le 16384
+      export CRUCIBLE_PAGING_QUALIFICATION_JSON="$(${coreutils}/bin/cat "$receipt_file")"
+      test -n "$CRUCIBLE_PAGING_QUALIFICATION_JSON"
+    '';
 
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
@@ -282,7 +301,7 @@
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
-    # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
+    # tests/crucible/ so harness lints can read specifications and AOS check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
       ${
@@ -360,7 +379,7 @@
         --offline \
         -j$NIX_BUILD_CORES \
         -p crucible-cli \
-        --bin crucible
+        --bin crucible ${lib.optionalString privateNativeObservation "--features crucible-cli/private-native-observation"}
       cargo build \
         --release \
         --frozen \

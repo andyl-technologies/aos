@@ -15,6 +15,23 @@ pub struct BlockResponse {
     pub data: Vec<u8>,
 }
 
+/// Borrows a validated response payload for identity and status checks.
+///
+/// The owning input remains live through every use; validation never copies its
+/// bytes or constructs a replacement response buffer.
+pub(crate) struct BorrowedBlockResponse<'a> {
+    pub(crate) status: BlockStatus,
+    epoch: u64,
+    request_id: u32,
+    data: &'a [u8],
+}
+
+impl BorrowedBlockResponse<'_> {
+    pub(crate) const fn identity(&self) -> BlockRequestIdentity {
+        BlockRequestIdentity::new(self.epoch, self.request_id)
+    }
+}
+
 impl BlockResponse {
     /// Builds an ok response carrying `data`.
     ///
@@ -110,12 +127,7 @@ impl BlockResponse {
     /// Returns [`BlockCodecError::InvalidResetPayload`] unless this is a reset
     /// response with the exact closed payload shape.
     pub fn transport_reset_directive(&self) -> Result<BlockTransportReset, BlockCodecError> {
-        if self.status != BlockStatus::TransportReset {
-            return Err(BlockCodecError::InvalidResetPayload {
-                len: self.data.len(),
-            });
-        }
-        BlockTransportReset::decode(&self.data)
+        decode_transport_reset(self.status, &self.data)
     }
 
     /// Returns the complete epoch-scoped request identity.
@@ -139,17 +151,7 @@ impl BlockResponse {
     /// Returns [`BlockCodecError::InvalidErrorPayload`] unless this is an error
     /// response with exactly one defined typed-result byte.
     pub fn error_code(&self) -> Result<BlockErrorCode, BlockCodecError> {
-        if !matches!(
-            self.status,
-            BlockStatus::Error | BlockStatus::DuplicateProtocolError
-        ) || self.data.len() != 1
-        {
-            return Err(BlockCodecError::InvalidErrorPayload {
-                status: self.status.to_wire(),
-                len: self.data.len(),
-            });
-        }
-        BlockErrorCode::from_wire(self.data[0])
+        decode_error_code(self.status, &self.data)
     }
 
     /// Encodes this response into its little-endian wire bytes.
@@ -191,50 +193,103 @@ impl BlockResponse {
     /// - [`BlockCodecError::CountExceedsPayload`] when the declared `count`
     ///   exceeds the bytes after the header.
     pub fn decode(bytes: &[u8]) -> Result<Self, BlockCodecError> {
-        let header = bytes
-            .get(..RESPONSE_HEADER_LEN)
-            .ok_or(BlockCodecError::ShortHeader {
-                needed: RESPONSE_HEADER_LEN,
-                got: bytes.len(),
-            })?;
-        let status = BlockStatus::from_wire(header[0])?;
-        let version = header[1];
-        if version != BLOCK_ABI_VERSION {
-            return Err(BlockCodecError::VersionMismatch {
-                expected: BLOCK_ABI_VERSION,
-                found: version,
-            });
-        }
-        let reserved = u16::from_le_bytes([header[2], header[3]]);
-        if reserved != 0 {
-            return Err(BlockCodecError::NonZeroReserved { reserved });
-        }
-        let epoch = u64_le(header, 4);
-        let request_id = u32_le(header, 12);
-        let count = u32_le(header, 16);
-
-        let want = count as usize;
-        let payload = &bytes[RESPONSE_HEADER_LEN..];
-        if payload.len() < want {
-            return Err(BlockCodecError::CountExceedsPayload {
-                count,
-                available: payload.len(),
-            });
-        }
+        let borrowed = decode_response_fields(bytes)?;
         let response = Self {
-            status,
-            epoch,
-            request_id,
-            data: payload[..want].to_vec(),
+            status: borrowed.status,
+            epoch: borrowed.epoch,
+            request_id: borrowed.request_id,
+            data: borrowed.data.to_vec(),
         };
-        if matches!(
-            status,
-            BlockStatus::Error | BlockStatus::DuplicateProtocolError
-        ) {
-            response.error_code()?;
-        } else if status == BlockStatus::TransportReset {
-            response.transport_reset_directive()?;
-        }
+        // Preserve the owned API's copy-before-typed-payload-validation order.
+        validate_response_payload(response.status, &response.data)?;
         Ok(response)
     }
+
+    /// Validates the same grammar while borrowing the original encoded bytes.
+    pub(crate) fn decode_borrowed(
+        bytes: &[u8],
+    ) -> Result<BorrowedBlockResponse<'_>, BlockCodecError> {
+        let borrowed = decode_response_fields(bytes)?;
+        validate_response_payload(borrowed.status, borrowed.data)?;
+        Ok(borrowed)
+    }
 }
+
+fn decode_response_fields(bytes: &[u8]) -> Result<BorrowedBlockResponse<'_>, BlockCodecError> {
+    let header = bytes
+        .get(..RESPONSE_HEADER_LEN)
+        .ok_or(BlockCodecError::ShortHeader {
+            needed: RESPONSE_HEADER_LEN,
+            got: bytes.len(),
+        })?;
+    let status = BlockStatus::from_wire(header[0])?;
+    let version = header[1];
+    if version != BLOCK_ABI_VERSION {
+        return Err(BlockCodecError::VersionMismatch {
+            expected: BLOCK_ABI_VERSION,
+            found: version,
+        });
+    }
+    let reserved = u16::from_le_bytes([header[2], header[3]]);
+    if reserved != 0 {
+        return Err(BlockCodecError::NonZeroReserved { reserved });
+    }
+    let epoch = u64_le(header, 4);
+    let request_id = u32_le(header, 12);
+    let count = u32_le(header, 16);
+
+    let want = count as usize;
+    let payload = &bytes[RESPONSE_HEADER_LEN..];
+    if payload.len() < want {
+        return Err(BlockCodecError::CountExceedsPayload {
+            count,
+            available: payload.len(),
+        });
+    }
+    Ok(BorrowedBlockResponse {
+        status,
+        epoch,
+        request_id,
+        data: &payload[..want],
+    })
+}
+
+fn validate_response_payload(status: BlockStatus, data: &[u8]) -> Result<(), BlockCodecError> {
+    if matches!(
+        status,
+        BlockStatus::Error | BlockStatus::DuplicateProtocolError
+    ) {
+        decode_error_code(status, data)?;
+    } else if status == BlockStatus::TransportReset {
+        decode_transport_reset(status, data)?;
+    }
+    Ok(())
+}
+
+fn decode_error_code(status: BlockStatus, data: &[u8]) -> Result<BlockErrorCode, BlockCodecError> {
+    if !matches!(
+        status,
+        BlockStatus::Error | BlockStatus::DuplicateProtocolError
+    ) || data.len() != 1
+    {
+        return Err(BlockCodecError::InvalidErrorPayload {
+            status: status.to_wire(),
+            len: data.len(),
+        });
+    }
+    BlockErrorCode::from_wire(data[0])
+}
+
+fn decode_transport_reset(
+    status: BlockStatus,
+    data: &[u8],
+) -> Result<BlockTransportReset, BlockCodecError> {
+    if status != BlockStatus::TransportReset {
+        return Err(BlockCodecError::InvalidResetPayload { len: data.len() });
+    }
+    BlockTransportReset::decode(data)
+}
+
+#[cfg(test)]
+#[path = "response/borrowed_tests.rs"]
+mod borrowed_tests;

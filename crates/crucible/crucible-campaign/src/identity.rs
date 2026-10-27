@@ -75,11 +75,8 @@ impl CampaignHash {
             let low = hex_nibble(pair[1]).ok_or(CampaignCodecError::InvalidHex)?;
             bytes[index] = (high << 4) | low;
         }
-        let hash = Self(bytes);
-        if hash.to_hex() != value {
-            return Err(CampaignCodecError::InvalidHex);
-        }
-        Ok(hash)
+        // Exact length and lowercase-only nibbles already prove canonical text.
+        Ok(Self(bytes))
     }
 }
 
@@ -366,19 +363,21 @@ content_object_id!(
 content_object_id!(
     ExactCheckpointId,
     ObjectKind::ExactManifest,
-    5,
+    6,
     "crucible.executor.exact-checkpoint-root",
     "Identifies one durable exact-checkpoint closure; current roots carry complete campaign continuation state."
 );
 content_object_id!(
     CampaignArchiveManifestId,
     ObjectKind::Projection,
+    2,
     "crucible.campaign.archive-manifest",
     "Identifies one authenticated campaign archive boundary."
 );
 content_object_id!(
     CampaignArchiveInventoryPageId,
     ObjectKind::Projection,
+    2,
     "crucible.campaign.archive-inventory-page",
     "Identifies one bounded page of an authenticated campaign archive inventory."
 );

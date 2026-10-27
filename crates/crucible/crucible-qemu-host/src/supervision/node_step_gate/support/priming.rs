@@ -101,7 +101,7 @@ pub(in crate::supervision::node_step_gate) fn prepare_guest_prime(
 /// setup-time device request fails, or the guest does not reach its ceiling.
 pub(in crate::supervision::node_step_gate) fn complete_guest_prime(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    supervisor: &HostOperationSupervisor,
     prepared: PreparedGuestPrime,
     block: Option<&mut QemuLiveBlockIoServicer>,
     ninep: Option<&mut QemuLive9pIoServicer>,
@@ -114,7 +114,7 @@ pub(in crate::supervision::node_step_gate) fn complete_guest_prime(
     } = prepared;
     let emitted_frames = poll_mapped_prime_chain(
         setup,
-        timeout,
+        supervisor,
         &mut hot_path,
         pending,
         prime_ceiling,
@@ -187,7 +187,7 @@ pub(in crate::supervision::node_step_gate) struct BootNetworkBackpressureContinu
 
 pub(in crate::supervision::node_step_gate) fn continue_boot_network_backpressure_capture(
     setup: &crate::QemuHostPluginSetup,
-    timeout: Duration,
+    supervisor: &HostOperationSupervisor,
     identity: QemuLiveNodeIdentity<'_>,
     coverage: QemuLaunchPluginSwitch,
     continuation: BootNetworkBackpressureContinuation<'_>,
@@ -235,7 +235,7 @@ pub(in crate::supervision::node_step_gate) fn continue_boot_network_backpressure
     )?;
     let continued = drive_mapped_prime_chain(
         setup,
-        timeout,
+        supervisor,
         &mut hot_path,
         capture_icount,
         block,

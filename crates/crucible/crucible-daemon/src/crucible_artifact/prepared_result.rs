@@ -792,6 +792,12 @@ fn validate_measurement_evidence(
                     || !crate::crucible_measurement::verify_assertion_failure_boundary(
                         leaf, boundary,
                     )
+                    .map_err(|source| {
+                        CrucibleArtifactError::InvalidPayload {
+                            artifact: "assertion failure boundary",
+                            source: Box::new(source),
+                        }
+                    })?
                 {
                     return Err(inconsistent("finding assertion boundary"));
                 }

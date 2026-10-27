@@ -175,10 +175,18 @@ impl QemuLiveHostIoRuntime {
     }
 
     fn wait_ring_indices(&mut self) -> RingIndices {
+        let Some(region) = self.region.as_mut() else {
+            return RingIndices {
+                tx: None,
+                rx: None,
+                fault_command: None,
+                fault_event: None,
+                fault_result: None,
+            };
+        };
         // These existing accessors validate the owned mapping before exposing
         // headers. Only cursors are read; no peek/dequeue or payload inspection.
-        let network = self
-            .region
+        let network = region
             .node_directed_ring_pair_mut(
                 self.vm_slot,
                 self.vm_slot,
@@ -199,18 +207,15 @@ impl QemuLiveHostIoRuntime {
                     ),
                 )
             });
-        let fault_command = self
-            .region
+        let fault_command = region
             .fault_command_transport_mut(self.vm_slot)
             .ok()
             .map(|transport| (transport.ring.read_index(), transport.ring.write_index()));
-        let fault_event = self
-            .region
+        let fault_event = region
             .fault_event_transport_mut(self.vm_slot)
             .ok()
             .map(|transport| (transport.ring.read_index(), transport.ring.write_index()));
-        let fault_result = self
-            .region
+        let fault_result = region
             .fault_result_transport_mut(self.vm_slot)
             .ok()
             .map(|transport| (transport.ring.read_index(), transport.ring.write_index()));

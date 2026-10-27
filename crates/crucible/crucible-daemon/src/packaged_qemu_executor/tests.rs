@@ -3,6 +3,9 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for failure localization.
 #![allow(clippy::expect_used)]
 
+mod guarded_owner;
+mod provider_error_bootstrap;
+
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -28,6 +31,7 @@ use crucible_engine::{
     Properties, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogEntry, Seed, VirtualTime, World,
 };
+
 use crucible_qemu_host::{
     QemuChildProcessContract, QemuLaunchArtifactIdentityError, QemuLaunchResourceRequirements,
     QemuNodeChild, QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker,
@@ -45,7 +49,7 @@ use crate::{
     AttemptExecutionRuntimeBasis, AttemptStateCas, AttemptWorkResult, AttemptWorkerFailure,
     CompletedFindingCandidate, DirectoryAssignmentLedger, DirectoryExactPinMaterializationStore,
     EXACT_PIN_MATERIALIZATION_DIRECTORY, ExactCheckpointStore, ExactPinMaterializationSelection,
-    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    ExecutionCheckpointRequest, HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
     HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, HotCheckpointPoolKey,
     HotCheckpointResourceProfile, LocalAttemptWorker, LoopbackExecutorService,
     QemuAttemptCancellationSignal, QemuFreshAttemptLifecycleFactory,
@@ -202,6 +206,11 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
         metadata.uid().checked_add(1).expect("child user ID"),
         metadata.gid().checked_add(1).expect("child group ID"),
         32,
+        TEST_HOST_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_TASKS,
+        TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+        TEST_HOST_SERVICE_RESIDENT_BYTES,
+        TEST_WATCHER_SERVICE_RESIDENT_BYTES,
         1024,
         Duration::from_secs(1),
     )
@@ -213,8 +222,9 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
         directory.path().join("ledger"),
         1024 * 1024,
         DaemonEpoch::from_bytes([0x61; 16]).expect("daemon epoch"),
-        ExecutorCapacity::new(2, 2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+        ExecutorCapacity::new(2, 10, 2560 * 1024 * 1024, 5 * 1024 * 1024 * 1024, 250_000)
             .expect("executor capacity"),
+        fixture_host_operational_capacity(),
         worker_count,
         "x86_64",
         "deterministic-tcg-v1",
@@ -229,6 +239,58 @@ fn config(directory: &tempfile::TempDir, worker_count: usize) -> PackagedQemuExe
         host,
     )
     .expect("packaged executor config")
+    .with_host_operation_budgets(
+        crucible_control_api::host_operational::HostOperationBudgets {
+            classes: [crucible_control_api::host_operational::HostOperationBudget::finite(
+                Duration::from_secs(300),
+            );
+                crucible_control_api::host_operational::HostOperationClass::ALL.len()],
+        },
+    )
+    .expect("explicit finite component fixture roster for every host operation")
+    .with_ram_catalog(fixture_ram_catalog_config(directory))
+    .expect("authored retained RAM catalog policy")
+    .with_operational_registry_resources(
+        crucible_control_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 * 1024 * 1024,
+            backing_peak_bytes: 16 * 1024 * 1024,
+            metadata_bytes: 64 * 1024 * 1024,
+            staging_bytes: 8 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        },
+    )
+    .expect("explicit independently charged operator registry service")
+    .with_operational_registry_quota(31000, 65536)
+    .expect("explicit distinct component registry project and inode entitlement")
+    .with_assignment_resources(
+        crucible_control_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 513 * 1024 * 1024,
+            backing_peak_bytes: 1024 * 1024 * 1024,
+            metadata_bytes: 128 * 1024 * 1024,
+            staging_bytes: 16 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 37,
+            file_descriptors: 1056,
+        },
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 1024 * 1024 * 1024, 50_000)
+            .expect("original assignment request limits"),
+    )
+    .expect("authored assignment resource ceiling")
+    .with_retained_template_resources(crucible_control_api::host_operational::HostResourceVector {
+        resident_peak_bytes: 513 * 1024 * 1024,
+        backing_peak_bytes: 1024 * 1024 * 1024,
+        metadata_bytes: 128 * 1024 * 1024,
+        staging_bytes: 16 * 1024 * 1024,
+        paging_io_slots: 1,
+        cpu_slots: 2,
+        task_slots: 37,
+        file_descriptors: 1056,
+    })
+    .expect("independent full-world replay Service ceiling")
 }
 
 fn hot_fork_retention(
@@ -283,7 +345,7 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
     let description = client.describe_executor().expect("describe executor");
     assert_eq!(description.daemon_epoch().as_bytes(), [0x61; 16]);
     assert_eq!(description.capabilities().maximum_slots(), 2);
-    assert_eq!(description.capabilities().resource_ceiling(), resources());
+    assert_eq!(description.capabilities().assignment_limits(), resources());
     assert_eq!(
         description.capabilities().materialization(),
         &BTreeSet::from([ExecutorMaterializationCapability::ThinReplay])
@@ -301,28 +363,69 @@ fn packaged_executor_serves_the_exact_composed_description_and_joins() {
 fn packaged_startup_completes_pending_observation_and_finding_handoff() {
     let directory = tempfile::tempdir().expect("packaged restart directory");
     let mut config = config(&directory, 1);
-    config.lifecycle = ProductionVmLifecycleConfig::new(
+    config.lifecycle = Arc::new(ProductionVmLifecycleConfig::new(
         "qemu",
         "plugin",
         "kernel",
         "root",
         directory.path().join("run-state"),
-    );
+    ));
     let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
     let (key, candidate) = retain_packaged_pending_finding(&repository, config.ledger_root());
+    let storage = PackagedQemuExecutorStorage::new(
+        Arc::clone(&repository),
+        Arc::new(DirectoryBlobBackend::new(
+            "packaged-restart-checkpoints",
+            directory.path().join("checkpoints"),
+        )),
+    );
+    let basis = PackagedCampaignBasis {
+        profile: profile(),
+        scenarios: BTreeSet::from([scenario_artifact()]),
+        sources: BTreeMap::new(),
+    };
+    let preparation = crate::packaged_qemu_executor::preparation::prepare_component_runtime(
+        &repository,
+        Arc::clone(&storage.checkpoint_backend),
+        &basis,
+        &config,
+    )
+    .expect("reconcile through the original component startup owner");
+    let acknowledged = preparation
+        .actor
+        .with_startup_supervisor(|supervisor| {
+            supervisor.ledger().load_attempt(key).map(|state| {
+                matches!(
+                    state,
+                    Some(AttemptRuntimeState::Completed {
+                        finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
+                        ..
+                    }) if retained == candidate
+                )
+            })
+        })
+        .expect("loan the same exclusive startup writer")
+        .expect("read the one reconciled durable acknowledgment");
+    assert!(acknowledged);
 
-    let service = compose_packaged_qemu_executor(
-        PackagedQemuExecutorStorage::new(
-            Arc::clone(&repository),
-            Arc::new(DirectoryBlobBackend::new(
-                "packaged-restart-checkpoints",
-                directory.path().join("checkpoints"),
-            )),
-        ),
-        profile(),
-        scenario_artifact(),
+    let service = compose_packaged_qemu_executor_with_promotion_builder(
+        storage,
+        basis,
         config.clone(),
-        UnusedHostFactory,
+        SharedQemuAttemptHostResourceFactory::new(UnusedHostFactory),
+        Some(preparation),
+        UnbuiltPromotions::new(
+            0,
+            0,
+            |_store: &CampaignExecutorStore,
+             _checkpoints: &Arc<ExactCheckpointStore>,
+             _shared: &SharedQemuAttemptHostResourceFactory<UnusedHostFactory>,
+             _root: &Path,
+             _workers: usize,
+             _payer: PromotionControlPayer<'_>| {
+                Ok((Vec::<DisabledPackagedCheckpointPromotionWorker>::new(), ()))
+            },
+        ),
     )
     .expect("packaged startup reconciles pending finding");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -347,15 +450,20 @@ fn packaged_startup_completes_pending_observation_and_finding_handoff() {
         )
         .expect("startup finding remains authenticated");
 
-    let ledger = DirectoryAssignmentLedger::open(config.ledger_root())
-        .expect("reopen reconciled packaged ledger");
-    assert!(matches!(
-        ledger.load_attempt(key).expect("load packaged completion"),
-        Some(AttemptRuntimeState::Completed {
-            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
-            ..
-        }) if retained == candidate
-    ));
+    let error = DirectoryAssignmentLedger::open(config.ledger_root())
+        .err()
+        .expect("durable registry custody must retain original writer exclusion");
+    let crate::AssignmentLedgerError::Io {
+        operation,
+        path,
+        source,
+    } = error
+    else {
+        panic!("the retained original writer must refuse reopening: {error:?}");
+    };
+    assert_eq!(operation, "lock-file");
+    assert_eq!(path, config.ledger_root().join("writer.lock"));
+    assert_eq!(source.kind(), std::io::ErrorKind::WouldBlock);
 }
 
 #[test]
@@ -379,7 +487,8 @@ fn packaged_executor_advertises_exact_restore_with_one_owner_per_worker() {
         },
         config,
         UnusedHostFactory,
-        vec![UnusedPromotionWorker, UnusedPromotionWorker],
+        2,
+        || vec![UnusedPromotionWorker, UnusedPromotionWorker],
     )
     .expect("compose promotion-enabled packaged executor");
     let executor = AttachedPackagedQemuExecutor::start(service).expect("start packaged executor");
@@ -416,6 +525,7 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
         1,
         DaemonEpoch::from_bytes([0x62; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(1, 1, 1, 0, 1).expect("capacity"),
+        fixture_host_operational_capacity(),
         2,
         "x86_64",
         "deterministic-tcg-v1",
@@ -502,6 +612,7 @@ fn packaged_executor_config_rejects_an_empty_campaign_set() {
         1,
         DaemonEpoch::from_bytes([0x63; 16]).expect("daemon epoch"),
         ExecutorCapacity::new(1, 1, 1, 0, 1).expect("capacity"),
+        fixture_host_operational_capacity(),
         1,
         "x86_64",
         "deterministic-tcg-v1",
@@ -534,6 +645,7 @@ fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignR
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     for (name, scenario_label, qemu_build) in campaigns {
         let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
@@ -859,9 +971,18 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
         "packaged-exact-pin-store",
         directory.path().join("objects"),
     ));
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite component RAM-root credit");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        backend,
+        metadata.clone(),
+    );
+    let original = crucible_engine::owned_decode::DecodeBudget::for_store(metadata.clone())
+        .expect("same original exact-pin namespace account");
     let repository = Arc::new(CampaignRepository::new(
         backend.clone(),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Available(original),
     ));
     let scenario = production.source().scenario_def();
     let configuration = production.configuration().clone();
@@ -904,7 +1025,13 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
 
     let checkpoint_backend: Arc<dyn ImmutableBlobBackend> = backend;
     let checkpoints = Arc::new(
-        ExactCheckpointStore::new(checkpoint_backend, 1024 * 1024).expect("exact checkpoint store"),
+        ExactCheckpointStore::new(
+            checkpoint_backend,
+            1024 * 1024,
+            repository.ram_retention_authority(),
+        )
+        .expect("exact checkpoint store")
+        .with_ram_root_resources(metadata),
     );
     let prepared = checkpoints
         .prepare_production_closure(production.closure().clone())
@@ -956,6 +1083,9 @@ fn apply_exact_pin_command(
 
 #[test]
 fn materializer_status_rejects_a_selection_for_a_superseded_pin_fact() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let directory = tempfile::tempdir().expect("packaged exact-pin directory");
     let fixture = exact_pin_materializer_fixture(&directory);
     apply_exact_pin(&fixture);
@@ -1483,19 +1613,16 @@ fn packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_sour
 #[test]
 fn packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error() {
     let execution = ExecutionId::from_bytes([0x98; 16]).expect("execution");
-    let resume_failure = crate::QemuProductionExactResumeExecutionRunnerError::<
-        std::io::Error,
-        std::io::Error,
-    >::CleanupAfterRunner {
-        failure: Box::new(
-            crate::QemuProductionExactResumeExecutionRunnerError::Lifecycle(std::io::Error::other(
-                "original resume failure",
+    let resume_failure =
+        crate::QemuProductionExactResumeExecutionRunnerError::<std::io::Error, std::io::Error> {
+            first: Some(crate::qemu_campaign_resume::ResumeFailure::Lifecycle(
+                std::io::Error::other("original resume failure"),
             )),
-        ),
-        cleanup: SchedulerError::BoundaryViolation {
-            message: String::from("resume cleanup failure"),
-        },
-    };
+            shutdown: Some(SchedulerError::BoundaryViolation {
+                message: String::from("resume cleanup failure"),
+            }),
+            retirement: None,
+        };
     let diagnostic = packaged_attempt_failure_diagnostic(
         execution,
         &AttemptWorkerFailure::Terminal(resume_failure),
@@ -1737,6 +1864,7 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
             1024 * 1024,
         )),
         Arc::new(crucible_store::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
 
     let checkpoint_backend = Arc::new(crucible_store::content_store::MemoryBlobBackend::new(
@@ -1808,3 +1936,150 @@ fn packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound() {
 }
 
 mod lifecycle_recovery;
+mod preparation;
+
+mod hot_fork_native;
+#[cfg(target_os = "linux")]
+mod paging_native;
+pub(crate) use paging_native::run_host_parallel_native;
+pub(crate) use paging_native::{
+    NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,
+    run_atomic_failure_native, run_atomic_world_native, run_dma_borrowers_native,
+    run_equivalence_native,
+};
+
+// These are explicit operational test entitlements, independent of guest vCPUs
+// and per-cgroup task limits; production deployments must supply their own.
+fn fixture_host_operational_capacity() -> crate::HostOperationalCapacity {
+    const PAGING_IO_SLOTS: u64 = 16;
+    const HOST_TASK_SLOTS: u64 = 1024;
+    const HOST_FILE_DESCRIPTORS: u64 = 16_384;
+    const HOST_METADATA_BYTES: u64 = 768 * 1024 * 1024;
+    const HOST_STAGING_BYTES: u64 = 128 * 1024 * 1024;
+    crate::HostOperationalCapacity::new(
+        PAGING_IO_SLOTS,
+        HOST_TASK_SLOTS,
+        HOST_FILE_DESCRIPTORS,
+        HOST_METADATA_BYTES,
+        HOST_STAGING_BYTES,
+    )
+    .expect("explicit finite operational fixture capacity")
+}
+
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;
+
+fn fixture_ram_catalog_config(directory: &tempfile::TempDir) -> crate::PackagedRamCatalogConfig {
+    crate::PackagedRamCatalogConfig::new(
+        directory.path().join("ram-catalogs"),
+        40000,
+        262144,
+        crucible_control_api::host_operational::HostResourceVector {
+            resident_peak_bytes: 128 * 1024 * 1024,
+            backing_peak_bytes: 512 * 1024 * 1024,
+            metadata_bytes: 64 * 1024 * 1024,
+            staging_bytes: 8 * 1024 * 1024,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 128,
+        },
+        8 * 1024 * 1024,
+    )
+    .expect("explicit component catalog service and independent physical quota")
+}
+
+#[test]
+fn promotion_plan_pays_once_before_building_its_owned_worker_paths() {
+    let directory = tempfile::tempdir().expect("component directory");
+    let config = config(&directory, 2);
+    let repository = repository_with_campaigns(&[("packaged", b"shared", "qemu-test")]);
+    let store = CampaignExecutorStore::new(Arc::clone(&repository));
+    let basis = PackagedCampaignBasis {
+        profile: profile(),
+        scenarios: BTreeSet::from([scenario_artifact()]),
+        sources: BTreeMap::new(),
+    };
+    let backend = Arc::new(crucible_store::content_store::DirectoryBlobBackend::new(
+        "promotion-plan-component",
+        directory.path().join("checkpoints"),
+    ));
+    let preparation =
+        super::preparation::prepare_component_runtime(&repository, backend, &basis, &config)
+            .expect("actual component actor and checkpoint metadata");
+    let original = crucible_engine::owned_decode::DecodeBudget::for_store(
+        preparation
+            .checkpoints
+            .metadata_resource_authority()
+            .expect("actual metadata authority"),
+    )
+    .expect("component original account");
+    let admitted = std::cell::Cell::new(false);
+    let built = std::cell::Cell::new(0usize);
+    let plan = UnbuiltPromotions::<PathBuf, (), _>::new(
+        2,
+        0,
+        |_store: &CampaignExecutorStore,
+         _checkpoints: &Arc<ExactCheckpointStore>,
+         _shared: &SharedQemuAttemptHostResourceFactory<UnusedHostFactory>,
+         root: &Path,
+         count: usize,
+         _payer: PromotionControlPayer<'_>| {
+            assert!(admitted.get(), "builder ran before actual original debit");
+            built.set(built.get() + 1);
+            let mut paths = Vec::with_capacity(count);
+            for slot in 0..count {
+                paths.push(promotion_plan::worker_path(root, slot)?);
+            }
+            Ok((paths, ()))
+        },
+    );
+    let bytes = plan
+        .control_bytes(config.lifecycle.run_state_root())
+        .expect("pure query");
+    let calls = std::cell::Cell::new(0usize);
+    let (_, plan) = plan
+        .admit(config.lifecycle.run_state_root(), |requested, count| {
+            assert_eq!(requested, bytes);
+            assert_eq!(count, 2);
+            original.charge_bytes(requested)?;
+            admitted.set(true);
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .expect("actual component metadata admission");
+    assert_eq!(built.get(), 0);
+    let root = promotion_plan::worker_root(config.lifecycle.run_state_root()).expect("paid root");
+    let shared = SharedQemuAttemptHostResourceFactory::new(UnusedHostFactory);
+    let (paths, ()) = plan
+        .build(
+            &store,
+            &preparation.checkpoints,
+            &shared,
+            &root,
+            PromotionControlPayer::Decode(&original),
+        )
+        .expect("deferred component construction");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(built.get(), 1);
+    assert_eq!(paths.len(), 2);
+    assert_eq!(paths.capacity(), 2);
+    assert_eq!(paths[0], root.join("worker-000"));
+    assert_eq!(paths[1], root.join("worker-001"));
+    drop(paths);
+    drop(root);
+    drop(original);
+}

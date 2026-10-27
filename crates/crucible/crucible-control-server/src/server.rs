@@ -43,7 +43,7 @@ use crate::debug_relay::DebugRelayRegistry;
 use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::LifecycleControlPlane;
 use crate::streaming::{ControlStream, WatchStream};
-use crate::transport_security::DebugTransportIdentity;
+use crucible_control_api::DebugTransportIdentity;
 use crucible_control_api::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
     GetReproductionRequest, GetReproductionResponse, LifecycleApiError, ListScenariosResponse,
@@ -138,6 +138,8 @@ impl LifecycleServerMode {
 
 struct Http2LifecycleState<L, F> {
     control_plane: SharedLifecycleControlPlane<L, F>,
+    host_operational_control:
+        Option<crucible_control_api::host_operational::SharedHostOperationalControl>,
     mode: LifecycleServerMode,
     shutdown: watch::Receiver<bool>,
     debug_authorization: DebugAuthorizationPolicy,
@@ -150,6 +152,7 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
     fn clone(&self) -> Self {
         Self {
             control_plane: Arc::clone(&self.control_plane),
+            host_operational_control: self.host_operational_control.clone(),
             mode: self.mode,
             shutdown: self.shutdown.clone(),
             debug_authorization: self.debug_authorization.clone(),
@@ -346,7 +349,9 @@ where
     S: Future<Output = ()> + Send + 'static,
 {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let host_operational_control = control_plane.lock().await.host_operational_control();
     let app = lifecycle_router(Http2LifecycleState {
+        host_operational_control,
         control_plane,
         mode,
         shutdown: shutdown_receiver.clone(),
@@ -451,7 +456,9 @@ where
     S: Future<Output = ()> + Send + 'static,
 {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let host_operational_control = control_plane.lock().await.host_operational_control();
     let app = lifecycle_router(Http2LifecycleState {
+        host_operational_control,
         control_plane,
         mode,
         shutdown: shutdown_receiver.clone(),
@@ -578,6 +585,10 @@ where
     Router::new()
         .route("/crucible.rpc/hello", post(handle_rpc_hello::<L, F>))
         .route(
+            "/crucible.rpc/host-operational",
+            post(host_operational::handle::<L, F>),
+        )
+        .route(
             "/crucible.rpc/list-scenarios",
             post(handle_list_scenarios::<L, F>),
         )
@@ -660,6 +671,7 @@ where
 }
 
 mod debug_handlers;
+mod host_operational;
 
 use debug_handlers::*;
 
@@ -2062,6 +2074,12 @@ use response_wire::*;
 
 fn lifecycle_error_response(error: LifecycleApiError) -> Response {
     match error {
+        LifecycleApiError::ParentParkHeld => typed_rpc_status_response(
+            StatusCode::CONFLICT,
+            RpcStatusCode::InvalidState,
+            "parent-park-held",
+            "parent park disposition remains retained",
+        ),
         LifecycleApiError::EpochMismatch {
             session_id,
             expected,
@@ -2120,6 +2138,10 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
+        | LifecycleApiError::ConstructionCustodyUnavailable
+        | LifecycleApiError::CleanupRetained
+        | LifecycleApiError::BackendConstruction { .. }
+        | LifecycleApiError::ConfigurationCopy(_)
         | LifecycleApiError::AttemptOperational { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
         | LifecycleApiError::SessionRetention { .. }
@@ -2171,7 +2193,8 @@ fn streaming_error_response(error: StreamingApiError) -> Response {
         StreamingApiError::CommandChannelClosed { .. }
         | StreamingApiError::CommandResponseMissing { .. }
         | StreamingApiError::StateDidNotAdvance { .. }
-        | StreamingApiError::EventStreamLagged { .. } => typed_rpc_status_response(
+        | StreamingApiError::EventStreamLagged { .. }
+        | StreamingApiError::OutputAdmission { .. } => typed_rpc_status_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             RpcStatusCode::Internal,
             "internal",

@@ -1,0 +1,539 @@
+{
+  "schema": "crucible.resident.published-comparison.v1",
+  "verdict": "regression_detected",
+  "started_utc": "2026-10-06T20:40:34.371268+00:00",
+  "completed_utc": "2026-10-06T20:53:30.945770+00:00",
+  "sample_count": 480,
+  "primary_observations": 320,
+  "checkpoint_producer_observations": 160,
+  "witness_verified_count": 480,
+  "plan": {
+    "schema": "crucible.resident.confirmation-plan.v1",
+    "bound_utc": "2026-10-06T20:36:52.110192+00:00",
+    "sampling_plan": {
+      "pairs_per_workload_mode": 40,
+      "workloads": [
+        "bios.bin",
+        "io-bios.bin"
+      ],
+      "modes": [
+        "cold",
+        "restored"
+      ],
+      "order": "baseline/current on even trials, current/baseline on odd trials",
+      "retention": "all samples and checkpoint producers; no optional stopping or exclusions"
+    },
+    "cpu": 511,
+    "stop": 240000000,
+    "checkpoint": 120000000,
+    "timeout_seconds": 120,
+    "clock_ticks_per_second": 100,
+    "verdict_criteria": {
+      "primary_groups": "BIOS and POST, cold and restored; checkpoint producers are diagnostic only",
+      "metrics": "wall seconds and process user plus system CPU seconds",
+      "margin": 0,
+      "increase": "any primary paired log-ratio normal 95% interval has lower endpoint greater than 1",
+      "support": "every primary interval upper endpoint is at most 1 and every current raw median and maximum is at most its baseline counterpart",
+      "otherwise": "no_regression_not_demonstrated"
+    },
+    "witness_scope": "All existing original-driver execution witnesses: full register text, exact raw retired count and 50-ps logical tick, SHA256 of the 256-byte physical RAM window at 0x7000, and independent first-eight-byte arithmetic. No whole-RAM canonical identity or managed deployment qualification.",
+    "independence": "New predeclared confirmation dataset; do not pool with previous 72-observation or 40-pair receipts, discard samples, stop early for timing outcomes, or change the zero margin."
+  },
+  "source_baseline_commit": "ee8712f2a6bfb2e63748720068f215a44f293522",
+  "native_current_commit": "0bc0488b5f2aae1a7404a8b42eedfadd97eba10d",
+  "native_current_tree": "a78600c77d0b2d5a63aa25eeeb9c3f9575662f86",
+  "native_current_patch_sha256": "73f9867da16e855de4d61b943cb415f1d023c05a158cdcb80a79c4737dc36690",
+  "native_current_bundle_sha256": "bb0e6c5a1110154a55a29b0a6d54b3a3180c3fbb4569dfb2fe92161fc57d58af",
+  "artifacts": {
+    "baseline": {
+      "qemu_package": "/nix/store/lbmf6sf2hqczks1h8vl86d3y8aj23hk0-qemu-crucible-11.1.1",
+      "qemu_binary_sha256": "4bb772b6198537c265af602eefbd8a28d187c8280acbbf259fff88bad94097d9",
+      "fixture_package": "/nix/store/xygjbb8lckbkl9d0w0gd9gnysy4m6fzp-crucible-tcg-performance-fixtures-0",
+      "plugin_sha256": "aab597df070d0674cf11c01fec2fbd44d1d76364120bb65a5e7f2f2a4aacdb84",
+      "boundary_driver_sha256": "0a69a30b1321d90ae55d7ac8fc05179479a349a7118035d58dc1a53eb958e6a2",
+      "rom_sha256": {
+        "bios.bin": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+        "io-bios.bin": "7e08cc34b6bdc3038d2c824e91bb9ebe9cd0b3e53f2df253379f8c22ca3be5aa"
+      },
+      "build_identity": {
+        "qemu_package": "qemu-crucible",
+        "qemu_version": "11.1.1",
+        "qemu_source_hash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+        "qemu_nix_hash": "9fe53c4daabfca23eaedf830a0cf7fb805a88c34b33584feec145779b43b3a88",
+        "qemu_configure_flags_hash": "85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939",
+        "qemu_configure_target_list": "x86_64-softmmu,aarch64-softmmu",
+        "qemu_atomic_patch_hash": "b7e1a2f9d5e9645de1eee9e8c72858ab6f13ca23be8dea72b951aed6303cad3b",
+        "qemu_patch_branch_ref": "dplecki/cached-tick-observation",
+        "qemu_patch_branch_model": "single-atomic-final-state-integration-commit",
+        "qemu_patch_branch_bundle_hash": "1f2a58084cba5e7c1e4918bbd6f104050be1f047ea903db60f8ea096696a9cae",
+        "qemu_patch_branch_base_commit": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+        "qemu_patch_branch_base_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+        "qemu_patch_branch_head_commit": "33343f63cb5e8749caadcb251c6b8a90ed0482cf",
+        "qemu_patch_branch_material_hash": "f4e6fa2774987af675fb02a00c447ead21917bb31c1cdf8d0843b667b0466371",
+        "qemu_plugins_enabled": "true",
+        "qemu_crucible_atomic_patch_applied": "true",
+        "qemu_sim_capability": "qemu-crucible",
+        "qemu_shmem_abi_version": "30",
+        "qemu_shmem_abi": "crucible-shmem-abi-v30",
+        "qemu_shmem_header": "include/aos/crucible/crucible_shmem_abi.h",
+        "qemu_shmem_header_hash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+        "qemu_combined_work_license": "GPL-2.0-only",
+        "qemu_unmarked_source_default_license": "GPL-2.0-or-later",
+        "qemu_plugin_header_license": "GPL-2.0-or-later",
+        "qemu_shmem_header_license_option": "MIT",
+        "qemu_build_id": "1665535d7366414640ca1b7cf2fd24aab18441282d549d2ccf2d3593e094a1f0"
+      }
+    },
+    "current": {
+      "qemu_package": "/nix/store/3nlbf4b34s52ykbfgpij52f1mna115zn-qemu-crucible-11.1.1",
+      "qemu_binary_sha256": "782acaca5ceeb1a949ca0fc7bf951f038ee032bf8ce172abec12d1102fcbafe1",
+      "fixture_package": "/nix/store/jqzy269s341nrbawsxpb6yf6hvm2lw22-crucible-tcg-performance-fixtures-0",
+      "plugin_sha256": "78510126ff6cf35ba66873cf1a07e0999898672c85d4554eee39dfbf23e8184b",
+      "boundary_driver_sha256": "0a69a30b1321d90ae55d7ac8fc05179479a349a7118035d58dc1a53eb958e6a2",
+      "rom_sha256": {
+        "bios.bin": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+        "io-bios.bin": "7e08cc34b6bdc3038d2c824e91bb9ebe9cd0b3e53f2df253379f8c22ca3be5aa"
+      },
+      "build_identity": {
+        "qemu_package": "qemu-crucible",
+        "qemu_version": "11.1.1",
+        "qemu_source_hash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+        "qemu_nix_hash": "9c839041913c842ea15705d73f4aead0e82dedca8770688edbe006ca9330c55f",
+        "qemu_configure_flags_hash": "85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939",
+        "qemu_configure_target_list": "x86_64-softmmu,aarch64-softmmu",
+        "qemu_atomic_patch_hash": "73f9867da16e855de4d61b943cb415f1d023c05a158cdcb80a79c4737dc36690",
+        "qemu_patch_branch_ref": "dplecki/native-paged-ram",
+        "qemu_patch_branch_model": "single-atomic-final-state-integration-commit",
+        "qemu_patch_branch_bundle_hash": "bb0e6c5a1110154a55a29b0a6d54b3a3180c3fbb4569dfb2fe92161fc57d58af",
+        "qemu_patch_branch_base_commit": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+        "qemu_patch_branch_base_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+        "qemu_patch_branch_head_commit": "0bc0488b5f2aae1a7404a8b42eedfadd97eba10d",
+        "qemu_patch_branch_material_hash": "3363eede09aa2f82f995b0158c17e9ae14e0a5ce87edfb2e64b1438c173e404f",
+        "qemu_plugins_enabled": "true",
+        "qemu_crucible_atomic_patch_applied": "true",
+        "qemu_sim_capability": "qemu-crucible",
+        "qemu_shmem_abi_version": "31",
+        "qemu_shmem_abi": "crucible-shmem-abi-v31",
+        "qemu_shmem_header": "include/aos/crucible/crucible_shmem_abi.h",
+        "qemu_shmem_header_hash": "cc77a2dbcd8ac6d7971a1790bbb9a5adc3678e3dc94c6df355005de0778a36af",
+        "qemu_combined_work_license": "GPL-2.0-only",
+        "qemu_unmarked_source_default_license": "GPL-2.0-or-later",
+        "qemu_plugin_header_license": "GPL-2.0-or-later",
+        "qemu_shmem_header_license_option": "MIT",
+        "qemu_build_id": "f1b9ebb3d6ec48536fb4644899104bd7cce00a638cfccddb13d520c7bad1bbd5"
+      }
+    }
+  },
+  "tools": {
+    "python_package": "/nix/store/snr30nsl21wy1bxfr73xsrvjkbwxaa1q-python3-3.14.3",
+    "measurement_driver": {
+      "repository_path": "tests/crucible/resident-performance-profile.py",
+      "sha256": "4c1a94b9b292c7eee428a4bbf7e8580ae4718615978d2663b494d6979079e0b2"
+    },
+    "summary_evaluator": {
+      "repository_path": "tests/crucible/resident-performance-summary.py",
+      "sha256": "dd368b9bb798b559da6ac5cc893c5215c21059ed03bcb122037f78ac4dddb318"
+    }
+  },
+  "normalized_guest_commands": {
+    "cold": [
+      "/qemu",
+      "-nodefaults",
+      "-no-user-config",
+      "-display",
+      "none",
+      "-monitor",
+      "none",
+      "-serial",
+      "none",
+      "-no-reboot",
+      "-S",
+      "-machine",
+      "pc",
+      "-m",
+      "64M",
+      "-smp",
+      "1",
+      "-accel",
+      "sim,thread=single",
+      "-icount",
+      "shift=0,align=off,sleep=off,rr_switch_quantum=4096",
+      "-cpu",
+      "qemu64,-rdrand,-rdseed",
+      "-rtc",
+      "base=2026-01-01T00:00:00,clock=vm",
+      "-seed",
+      "0x0010c004",
+      "-bios",
+      "/bios",
+      "-plugin",
+      "/fixtures/plugin.so,stop=240000000",
+      "-qmp",
+      "unix:/control,server=on,wait=off"
+    ],
+    "restored": [
+      "/qemu",
+      "-nodefaults",
+      "-no-user-config",
+      "-display",
+      "none",
+      "-monitor",
+      "none",
+      "-serial",
+      "none",
+      "-no-reboot",
+      "-S",
+      "-machine",
+      "pc",
+      "-m",
+      "64M",
+      "-smp",
+      "1",
+      "-accel",
+      "sim,thread=single",
+      "-icount",
+      "shift=0,align=off,sleep=off,rr_switch_quantum=4096",
+      "-cpu",
+      "qemu64,-rdrand,-rdseed",
+      "-rtc",
+      "base=2026-01-01T00:00:00,clock=vm",
+      "-seed",
+      "0x0010c004",
+      "-bios",
+      "/bios",
+      "-plugin",
+      "/fixtures/plugin.so,stop=240000000",
+      "-qmp",
+      "unix:/control,server=on,wait=off",
+      "-incoming",
+      "defer"
+    ]
+  },
+  "host": {
+    "architecture": "x86_64",
+    "kernel_release": "6.18.52",
+    "kernel_version": "#1-NixOS SMP PREEMPT_DYNAMIC Mon Sep 14 11:36:19 UTC 2026",
+    "cpu_model": "AMD EPYC 9755 128-Core Processor"
+  },
+  "scheduling_counters_available": false,
+  "scheduling_interpretation": "Runqueue accounting is disabled. Raw schedstat values are retained but not interpreted; process CPU ticks and wall time remain available.",
+  "metrics": {
+    "bios.bin/cold": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 0.9908623269835647,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9596628400134845,
+          1.0230761368456123
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 0.2637476254021749,
+          "minimum": 0.260737864067778,
+          "maximum": 0.3695143561344594
+        },
+        "current": {
+          "median": 0.264711307361722,
+          "minimum": 0.26176269515417516,
+          "maximum": 0.3469702338334173
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0090313723505642,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.99772824629176,
+          1.0204625499696764
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": true,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 0.25,
+          "minimum": 0.24,
+          "maximum": 0.27
+        },
+        "current": {
+          "median": 0.25,
+          "minimum": 0.25,
+          "maximum": 0.27
+        }
+      }
+    },
+    "bios.bin/source": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 1.01459086860894,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9940660132078083,
+          1.0355395084304626
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 0.13286330248229206,
+          "minimum": 0.1309668249450624,
+          "maximum": 0.16224266006611288
+        },
+        "current": {
+          "median": 0.13379768445156515,
+          "minimum": 0.131934423930943,
+          "maximum": 0.18149826885201037
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0139555880625066,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9901992382228082,
+          1.0382818880050946
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": true,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 0.13,
+          "minimum": 0.12000000000000001,
+          "maximum": 0.14
+        },
+        "current": {
+          "median": 0.13,
+          "minimum": 0.12000000000000001,
+          "maximum": 0.14
+        }
+      }
+    },
+    "bios.bin/restored": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 1.0054935413237152,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.988974584721447,
+          1.0222884159641645
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 0.7389201984042302,
+          "minimum": 0.7148233531042933,
+          "maximum": 0.8361361019778997
+        },
+        "current": {
+          "median": 0.7396425710758194,
+          "minimum": 0.7191423228941858,
+          "maximum": 0.8407889818772674
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0020851860269568,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9911977029263486,
+          1.0130922590821383
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": true,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 0.7,
+          "minimum": 0.6799999999999999,
+          "maximum": 0.75
+        },
+        "current": {
+          "median": 0.6900000000000001,
+          "minimum": 0.68,
+          "maximum": 0.76
+        }
+      }
+    },
+    "io-bios.bin/cold": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 1.0035131263984423,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.997780797924285,
+          1.0092783875465934
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 3.3647761050378904,
+          "minimum": 3.318294513039291,
+          "maximum": 3.532368465093896
+        },
+        "current": {
+          "median": 3.3857264374382794,
+          "minimum": 3.3307641961146146,
+          "maximum": 3.5428294220473617
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0024250733945392,
+        "normal_approximation_95_percent_ratio_interval": [
+          1.0001047371124845,
+          1.0047507930732145
+        ],
+        "interval_classification": "increase_supported",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 3.2,
+          "minimum": 3.19,
+          "maximum": 3.29
+        },
+        "current": {
+          "median": 3.2199999999999998,
+          "minimum": 3.1999999999999997,
+          "maximum": 3.2600000000000002
+        }
+      }
+    },
+    "io-bios.bin/source": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 1.000765425025649,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9914906320853991,
+          1.0101269780232316
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": true,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 1.6885573534527794,
+          "minimum": 1.6570855609606951,
+          "maximum": 1.8117288569919765
+        },
+        "current": {
+          "median": 1.6863567075924948,
+          "minimum": 1.6655718490947038,
+          "maximum": 1.8933996220584959
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0051577567358725,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9998833205058774,
+          1.0104600158897765
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": false,
+        "baseline": {
+          "median": 1.6,
+          "minimum": 1.59,
+          "maximum": 1.68
+        },
+        "current": {
+          "median": 1.61,
+          "minimum": 1.6,
+          "maximum": 1.7
+        }
+      }
+    },
+    "io-bios.bin/restored": {
+      "wall_seconds": {
+        "geometric_mean_ratio": 0.9931211610711805,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9867285224925579,
+          0.9995552151223118
+        ],
+        "interval_classification": "no_increase_supported",
+        "current_median_does_not_increase": true,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 2.7741867270087823,
+          "minimum": 2.6916754320263863,
+          "maximum": 2.9139183319639415
+        },
+        "current": {
+          "median": 2.7613115495769307,
+          "minimum": 2.7077968439552933,
+          "maximum": 2.855852923821658
+        }
+      },
+      "process_cpu_seconds": {
+        "geometric_mean_ratio": 1.0007374614208138,
+        "normal_approximation_95_percent_ratio_interval": [
+          0.9957572430809454,
+          1.0057425880150634
+        ],
+        "interval_classification": "unresolved",
+        "current_median_does_not_increase": false,
+        "current_maximum_does_not_increase": true,
+        "baseline": {
+          "median": 2.62,
+          "minimum": 2.59,
+          "maximum": 2.7600000000000002
+        },
+        "current": {
+          "median": 2.625,
+          "minimum": 2.6,
+          "maximum": 2.68
+        }
+      }
+    }
+  },
+  "execution_witnesses": {
+    "bios.bin/cold": {
+      "raw_icount": 240000000,
+      "logical_tick": 12000000000,
+      "registers": "CPU#0\r\nEAX=f559c2cc EBX=00000000 ECX=020b2891 EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=0000001e EFL=00000086 [--S--P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "5f146652326fa4a639d81d4626c09aa974582cc005ed0a7619d575aaceefc62b",
+      "ram_prefix_hex": "c9b0708b91280b02"
+    },
+    "bios.bin/source": {
+      "raw_icount": 120000000,
+      "logical_tick": 6000000000,
+      "registers": "CPU#0\r\nEAX=e864bc72 EBX=00000000 ECX=01059448 EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000086 [--S--P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "c74f2de58befea01c01f629198397a73cb9426ca37551792a668902b1bfec738",
+      "ram_prefix_hex": "9eb25b2e48940501"
+    },
+    "bios.bin/restored": {
+      "raw_icount": 240000000,
+      "logical_tick": 12000000000,
+      "registers": "CPU#0\r\nEAX=f559c2cc EBX=00000000 ECX=020b2891 EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=0000001e EFL=00000086 [--S--P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "5f146652326fa4a639d81d4626c09aa974582cc005ed0a7619d575aaceefc62b",
+      "ram_prefix_hex": "c9b0708b91280b02"
+    },
+    "io-bios.bin/cold": {
+      "raw_icount": 240000000,
+      "logical_tick": 12000000000,
+      "registers": "CPU#0\r\nEAX=1952a464 EBX=00000000 ECX=01c9c37f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000002 [-------] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "8740891986fb94b94edd67a3872dc217118cb8291d306773d7a2609bb78ad2a8",
+      "ram_prefix_hex": "2e3becee7fc3c901"
+    },
+    "io-bios.bin/source": {
+      "raw_icount": 120000000,
+      "logical_tick": 6000000000,
+      "registers": "CPU#0\r\nEAX=17cee682 EBX=00000000 ECX=00e4e1bf EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "50d12de34f556ff22a3873f3fef4562ec09e43155895e81284395e45d3c0761a",
+      "ram_prefix_hex": "cc4fdcf9bfe1e400"
+    },
+    "io-bios.bin/restored": {
+      "raw_icount": 240000000,
+      "logical_tick": 12000000000,
+      "registers": "CPU#0\r\nEAX=1952a464 EBX=00000000 ECX=01c9c37f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000002 [-------] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+      "ram_sha256": "8740891986fb94b94edd67a3872dc217118cb8291d306773d7a2609bb78ad2a8",
+      "ram_prefix_hex": "2e3becee7fc3c901"
+    }
+  },
+  "raw_file_sha256": {
+    "evidence.json": "feeaeb6238b4351b6a14433d7a0a65d42ea64152e5190afeaef5830396a7ec0d",
+    "samples.jsonl": "e4fef198cb39323cd49964fa1973bd17b1ab472df0b6544e34c09e493d02e755",
+    "summary_json": "99a57a192e01280ba98052b6a0bd6adb4afad6af8ae5d07c17d779710a0db150",
+    "bound_plan_json": "5a7376189ae1b9cbd17fcb1fb96f439dc07a1cde0b4b5cb85989138e3f7be4dd",
+    "published_csv": "37f4857551a787c65d6f0cc31e8c929ef8827532799414101cc174dadc3fb963"
+  },
+  "previous_independent_confirmation": {
+    "manifest_sha256": "bd5bb949c9fe68725f45d5335e3ec66c45d3a4434154d15efe97443260643648",
+    "samples_sha256": "2edc269ac644ca6c3931d33fdc41c2c1ed1d904d0fb9f2a7ba06ecdaf63334ed",
+    "reported_result": "No-regression requirement failed; BIOS cold, POST cold and POST restored wall-time intervals supported an increase.",
+    "pooled_into_this_result": false
+  },
+  "limitations": [
+    "Intervals are individual normal approximations to paired log ratios, assume stable sampling, and have no multiple-comparison adjustment.",
+    "CPU observations are quantized by the recorded process clock tick rate and straddle the original wall ROI.",
+    "Raw median and maximum checks are separate observations; a maximum alone does not identify a CPU regression.",
+    "The four primary groups cover component resident BIOS/POST cold and restored execution, not managed deployment or canonical whole-RAM identity costs.",
+    "Witness RAM coverage is the existing 256-byte physical window at 0x7000 and its eight-byte arithmetic prefix, not a canonical whole-RAM root.",
+    "No managed execution, full-RAM identity/checkpoint cost, kernel pager, or deployment qualification is established by this resident component comparison."
+  ]
+}

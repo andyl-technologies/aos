@@ -5,6 +5,7 @@ use super::*;
 #[test]
 pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
 -> Result<(), Box<dyn Error>> {
+    let _component_scope = crate::tests::component_decode_scope();
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifact dir with spaces");
     let cli = Cli::parse_from([

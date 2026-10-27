@@ -48,6 +48,7 @@ where
                     execution_basis,
                     daemon_epoch,
                     execution,
+                    source_transfer: None,
                     ..
                 }
                 | AttemptRuntimeState::Publishing {
@@ -80,7 +81,11 @@ where
                         && daemon_epoch == self.daemon_epoch
                         && state.origin() == queued.origin
                 }
-                AttemptRuntimeState::CheckpointPromoting { .. } => false,
+                AttemptRuntimeState::Paused {
+                    source_transfer: Some(_),
+                    ..
+                }
+                | AttemptRuntimeState::CheckpointPromoting { .. } => false,
             });
         if !durable_matches {
             return Err(LocalExecutorError::LedgerInvariant {
@@ -182,6 +187,12 @@ where
                 self.validator
                     .validate_completion_artifacts(&active.request, observation, finding_candidate)
                     .map_err(|reason| LocalExecutorError::CompletionValidation { reason })?;
+                #[cfg(test)]
+                let next_completed_count = self.native_completed_transitions.checked_add(1).ok_or(
+                    LocalExecutorError::LedgerInvariant {
+                        reason: "native completion diagnostic counter exhausted",
+                    },
+                )?;
                 let next = AttemptRuntimeState::Completed {
                     execution_basis,
                     origin,
@@ -191,6 +202,11 @@ where
                     finding_candidate: CompletedFindingCandidate::pending(finding_candidate),
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
+                #[cfg(test)]
+                {
+                    self.native_completed_transitions = next_completed_count;
+                }
+
                 self.release_active_if_present(execution)?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
                     return Err(LocalExecutorError::Ledger(error));
@@ -272,6 +288,7 @@ where
                 origin,
                 daemon_epoch,
                 execution: current_execution,
+                source_transfer: None,
                 ..
             }
             | AttemptRuntimeState::CheckpointPromoting {
@@ -357,6 +374,7 @@ where
                 origin,
                 daemon_epoch,
                 execution: current_execution,
+                source_transfer: None,
                 ..
             }
             | AttemptRuntimeState::CheckpointPromoting {

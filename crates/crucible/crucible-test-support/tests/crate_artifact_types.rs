@@ -1,11 +1,16 @@
 //! Checks the Crucible crate artifact-type contract.
 //!
-//! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
+//! The crate ownership inventory fixes the Rust artifact surface before later phases add
 //! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
-//! builds the public `crucible-engine` binary, `crucible-qemu-debug-gateway` builds the
+//! builds the public `crucible` binary, `crucible-qemu-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
 //! emitter binary, `crucible-store` builds the fleet-store binary, and every
-//! other Crucible package remains a library crate.
+//! other Crucible package remains a library crate. The two explicitly named
+//! private measurement binaries require their nondefault feature and retain
+//! their library surface; they are not public CLI entry points. The allocation
+//! observer controls have one separately named test-support-only binary.
+//! The daemon also has one exact build-time workflow author under the private
+//! feature. Its immutable builder execution is separate from installed runtime entries.
 
 #![forbid(unsafe_code)]
 
@@ -26,6 +31,10 @@ enum ExpectedArtifact {
     DebugGatewayBinary,
     FleetStoreBinary,
     GuestEmitter,
+    PrivateMeasurementLibrary {
+        name: &'static str,
+        path: &'static str,
+    },
     Library,
 }
 
@@ -35,84 +44,10 @@ struct ArtifactSpec {
     expected: ExpectedArtifact,
 }
 
-const ARTIFACT_SPECS: &[ArtifactSpec] = &[
-    ArtifactSpec {
-        package: "crucible-determinism",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-store",
-        expected: ExpectedArtifact::FleetStoreBinary,
-    },
-    ArtifactSpec {
-        package: "crucible-store-s3",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-campaign",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-qemu-shmem",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-qemu-protocol",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-device",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-qemu-host",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-qemu-plugin",
-        expected: ExpectedArtifact::CdylibPlugin,
-    },
-    ArtifactSpec {
-        package: "crucible-guest",
-        expected: ExpectedArtifact::GuestEmitter,
-    },
-    ArtifactSpec {
-        package: "crucible-engine",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-session",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-control-client",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-control-server",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-control-api",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-daemon",
-        expected: ExpectedArtifact::Library,
-    },
-    ArtifactSpec {
-        package: "crucible-qemu-debug-gateway",
-        expected: ExpectedArtifact::DebugGatewayBinary,
-    },
-    ArtifactSpec {
-        package: "crucible-cli",
-        expected: ExpectedArtifact::CliBinary,
-    },
-    ArtifactSpec {
-        package: "crucible-test-support",
-        expected: ExpectedArtifact::Library,
-    },
-];
+#[path = "crate_artifact_types/artifact_inventory.rs"]
+mod artifact_inventory;
+
+use artifact_inventory::ARTIFACT_SPECS;
 
 #[test]
 fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Error>> {
@@ -128,6 +63,10 @@ fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Erro
         let layout = PackageLayout::from_package_dir(&package_dir);
 
         failures.extend(artifact_type_failures(spec, &manifest, &layout));
+        failures.extend(artifact_inventory::private_binary_source_failures(
+            spec,
+            &package_dir,
+        )?);
     }
 
     assert!(
@@ -135,6 +74,41 @@ fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Erro
         "Crucible crate artifact-type lint failed:\n{}",
         failures.join("\n")
     );
+
+    Ok(())
+}
+
+#[test]
+fn gateway_command_name_is_independent_of_its_package_name() -> Result<(), Box<dyn Error>> {
+    let spec = ArtifactSpec {
+        package: "crucible-qemu-debug-gateway",
+        expected: ExpectedArtifact::DebugGatewayBinary,
+    };
+    let manifest: Value = r#"
+        [package]
+        name = "crucible-qemu-debug-gateway"
+
+        [[bin]]
+        name = "crucible-debug-gateway"
+        path = "src/main.rs"
+    "#
+    .parse()?;
+    let layout = PackageLayout {
+        has_lib_rs: true,
+        has_main_rs: true,
+        has_src_bin_dir: false,
+    };
+
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    for name in ["crucible-qemu-debug-gateway", "unreviewed-gateway"] {
+        let mut changed = manifest.clone();
+        changed["bin"][0]["name"] = Value::String(name.to_owned());
+        assert!(contains_finding(
+            &artifact_type_failures(&spec, &changed, &layout),
+            "name must be `crucible-debug-gateway`",
+        ));
+    }
 
     Ok(())
 }
@@ -168,7 +142,7 @@ fn artifact_type_rules_reject_extra_or_missing_outputs() -> Result<(), Box<dyn E
         edition = "2024"
 
         [[bin]]
-        name = "crucible-engine"
+        name = "crucible"
         path = "src/main.rs"
 
         [[bin]]
@@ -571,6 +545,79 @@ fn artifact_type_failures(
             if layout.has_src_bin_dir {
                 failures.push(format!(
                     "{}: guest emitter must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::PrivateMeasurementLibrary { name, path } => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: private measurement package must retain its library",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden private library crate-type `{crate_type}`",
+                        spec.package
+                    ));
+                }
+            }
+            let bins = bin_targets(manifest);
+            let expected_count = if spec.package == "crucible-host-resources" {
+                failures.extend(artifact_inventory::allocation_control_target_failures(
+                    manifest,
+                ));
+                2
+            } else if spec.package == "crucible-daemon" {
+                failures.extend(artifact_inventory::workflow_author_target_failures(
+                    manifest,
+                ));
+                2
+            } else {
+                1
+            };
+            if bins.len() != expected_count
+                || bins.first().and_then(|bin| bin.name.as_deref()) != Some(name)
+                || bins.first().and_then(|bin| bin.path.as_deref()) != Some(path)
+            {
+                failures.push(format!(
+                    "{}: private measurement binary must be exactly `{name}` at `{path}`",
+                    spec.package
+                ));
+            }
+            let required = manifest
+                .get("bin")
+                .and_then(Value::as_array)
+                .and_then(|bins| bins.first())
+                .and_then(|bin| bin.get("required-features"))
+                .and_then(Value::as_array);
+            if !required.is_some_and(|features| {
+                features.len() == 1 && features[0].as_str() == Some("private-measurement-domain")
+            }) {
+                failures.push(format!(
+                    "{}: private measurement binary must require its exact nondefault feature",
+                    spec.package
+                ));
+            }
+            let defaults = manifest
+                .get("features")
+                .and_then(|features| features.get("default"))
+                .and_then(Value::as_array);
+            if defaults.is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|feature| feature.as_str() == Some("private-measurement-domain"))
+            }) {
+                failures.push(format!(
+                    "{}: private measurement feature must not be enabled by default",
+                    spec.package
+                ));
+            }
+            if layout.has_main_rs || !layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: private measurement binary must be explicit under src/bin",
                     spec.package
                 ));
             }

@@ -24,7 +24,7 @@ use crate::{
 #[cfg(target_os = "linux")]
 use crate::{
     QemuProductionExactRestoreLaunch, QemuProductionExactRestoreRequest,
-    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+    QemuProductionFreshLaunchAdmission,
 };
 
 use super::{
@@ -321,7 +321,7 @@ mod guarded_launcher_ops {
     ///
     /// This capability receives the exact paired snapshot and the sealed
     /// child-process contract retained by its atomic request. Implementations must reject any snapshot other than
-    /// the one whose authenticated version-nine descriptors were committed into
+    /// the one whose authenticated authenticated paged descriptors were committed into
     /// their prepared run-directory authority, and must use only a guarded
     /// child-spawn path.
     pub(crate) trait Exact {
@@ -365,22 +365,13 @@ use guarded_launcher_ops::{
     Thin as QemuGuardedThinNodeRealizationLauncherOps,
 };
 
-/// Retains a direct child whose post-spawn realization cleanup could not reap it.
-///
-/// Concrete guarded launchers implement this sealed handoff so the attempt
-/// guard can authenticate the child against its cgroup and transfer it to the
-/// nondroppable process-quarantine owner. A launcher with a retained child must
-/// reject another launch until the caller takes that authority.
-trait QemuFailedLaunchChildSource {
-    /// Takes the nonduplicable direct-child handle retained after failed reap.
-    #[must_use]
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild>;
-}
-
 mod admission;
 mod replay_physical;
 use admission::QemuReplayValidationNodeLauncher;
-pub use admission::{QemuReplayValidationExactAdmission, QemuReplayValidationThinAdmission};
+pub use admission::{
+    QemuReplayValidationExactAdmission, QemuReplayValidationRegistrationPreparation,
+    QemuReplayValidationThinAdmission,
+};
 
 /// Realization executor backed by one active QEMU node at a time.
 pub struct QemuReplayValidationExecutor {
@@ -425,17 +416,6 @@ impl QemuReplayValidationExecutor {
     /// reports failure.
     pub fn shutdown_active_node(&mut self) -> Result<(), QemuVmRealizationError> {
         self.shutdown_active_node_for("shutdown active realized QEMU node")
-    }
-
-    /// Takes a direct child retained after a post-spawn launch reap failure.
-    ///
-    /// The caller must authenticate the returned child against the exact
-    /// attempt cgroup and transfer it to the nondroppable process-quarantine
-    /// owner before releasing resources. Until this handoff occurs, concrete
-    /// launchers reject every subsequent launch.
-    #[must_use]
-    pub fn take_failed_launch_child_for_quarantine(&mut self) -> Option<crate::QemuNodeChild> {
-        self.launcher.take_failed_launch_child()
     }
 
     fn shutdown_active_node_for(
@@ -889,12 +869,18 @@ fn runtime_from_scheduled_checkpoint_material(
 
 fn retain_profile_restore_result(
     result: Result<QemuNode, QemuLiveNodeStepGateError>,
-    failed_child: &mut Option<crate::QemuNodeChild>,
+    launch_refusal: &mut Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
     config: &Configuration,
 ) -> Result<QemuNode, QemuVmRealizationError> {
     match result {
         Ok(node) => Ok(node),
-        Err(mut source) => {
+        Err(source) => {
+            if let QemuLiveNodeStepGateError::OriginalNativeLaunch { source: retained } = &source {
+                // The installed issuer already owns the complete failure body.
+                // Retain its same report before any diagnostic construction;
+                // never extract a child or duplicate its cleanup destination.
+                *launch_refusal = Some(retained.clone());
+            }
             let mut detail = source.to_string();
             let mut cause = source.source();
             for _ in 0..4 {
@@ -903,7 +889,6 @@ fn retain_profile_restore_result(
                 detail.push_str(&next.to_string());
                 cause = next.source();
             }
-            *failed_child = source.take_unreaped_child();
             Err(QemuVmRealizationError::Executor {
                 operation: "launch scenario-profile restored QEMU node",
                 message: format!("{detail}; configuration {}", config.id().to_hex()),
@@ -912,14 +897,14 @@ fn retain_profile_restore_result(
     }
 }
 
-fn require_no_failed_launch_child(
-    failed_child: &Option<crate::QemuNodeChild>,
+fn require_no_issued_launch_refusal(
+    launch_refusal: &Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
 ) -> Result<(), QemuVmRealizationError> {
-    if failed_child.is_some() {
+    if launch_refusal.is_some() {
         return Err(QemuVmRealizationError::ReapQuarantined {
             operation: "launch restored QEMU node",
             message: String::from(
-                "a prior failed launch still owns an unreaped direct-child handle",
+                "a prior issued launch retains its permanent refusal and canonical cleanup owner",
             ),
         });
     }

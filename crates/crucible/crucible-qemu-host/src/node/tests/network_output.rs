@@ -150,6 +150,8 @@ fn network_output_source_checkpoint_resume_releases_the_retained_native_stop()
     let mut node = scripted_node_with_options(
         Arc::clone(&log),
         ScriptedNodeOptions {
+            #[cfg(target_os = "linux")]
+            checkpoint: Some(checkpoint_ownership::Ownership::new(false)?),
             network_output: Some(ScriptedNetworkOutput {
                 emit_tick: 11,
                 stopped_tick: 11,

@@ -18,6 +18,8 @@ pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] = &[
     "crucible-qemu-debug-gateway",
     "crucible-qemu-host",
     "crucible-store-s3",
+    "crucible-host-resources",
+    "crucible-qemu-plugin",
 ];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
 pub(super) const BINARY_ENTRY_PACKAGES: &[&str] =

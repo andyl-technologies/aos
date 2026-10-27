@@ -14,6 +14,7 @@
   gcc,
   gccUnwrapped,
   glibc,
+  bash,
   stdenv,
   buildPackages,
 }: let
@@ -67,8 +68,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -142,7 +159,9 @@ in
         then [buildPackages.llvm]
         else []
       );
-    runtimeDeps = [];
+    # String-form pipes, command substitution, and system() invoke the shell
+    # compiled into Perl itself; CONFIG_SHELL cannot override that path.
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     # Reject compiler references and make's recorded build-search paths in
@@ -242,6 +261,9 @@ in
               --libs=pthread,dl,m,util,c \
               -Dar="$AR" \
               -Dnm="$NM" \
+              -Dsh="$CONFIG_SHELL" \
+              -Dtargetsh="${bash}/bin/bash" \
+              -Dstartsh="#!${bash}/bin/bash" \
               -Dosname=darwin \
               -Dosvers=20.0.0 \
               -Darchname=darwin-thread-multi-2level \
@@ -285,8 +307,11 @@ in
               -Dbyteorder=12345678
           ''
           else ''
-            ./Configure \
+            "$CONFIG_SHELL" ./Configure \
               -des \
+              -Dsh="$CONFIG_SHELL" \
+              -Dtargetsh="${bash}/bin/bash" \
+              -Dstartsh="#!${bash}/bin/bash" \
               -Dprefix=$out \
               -Darchname=${archDirectory} \
               -Dvendorprefix=$out \
@@ -373,6 +398,9 @@ in
               "${recordedLibc.dev}" \
               "${recordedLibc.static}" \
             ; do
+              # The configured target shell is an intentional runtime
+              # dependency, even when it also supplies native build helpers.
+              [ "$pattern" = "${bash}" ] && continue
               if [ -n "$pattern" ]; then
                 sed -i "s|$pattern|/no-such-path|g" \
                   "$out"/lib/perl5/*/*/Config.pm \
@@ -422,10 +450,50 @@ in
               find "$out" -type f -print0 \
                 | xargs -0 -r nuke-refs \
                     -e "$out" \
+                    -e "${bash}" \
                     -e "${stdenv.darwinRuntimes}"
             ''
             else ""
           );
+      }
+      {
+        name = "check-runtime-shell";
+        script =
+          if stdenv.isCross
+          then ''
+            # A cross interpreter cannot execute on the construction machine.
+            # Verify the actual compiled shell and its shipped Config instead.
+            grep -F '#define SH_PATH "${bash}/bin/bash"' config.h
+            grep -F "targetsh='${bash}/bin/bash'" \
+              "$out"/lib/perl5/*/*/Config_heavy.pl
+          ''
+          else ''
+            cat > runtime-shell-check.pl <<'PERL'
+            use strict;
+            use warnings;
+            use Config;
+
+            my $expected_shell = shift @ARGV;
+            die "incorrect compiled runtime shell\n"
+              unless $Config{targetsh} eq $expected_shell;
+
+            # Quoting forces Perl's implicit shell path instead of its direct
+            # exec optimization, matching aclocal's autom4te trace pipeline.
+            open my $pipe, "printf '%s\\n' aos-perl-pipe |"
+              or die "cannot open runtime shell pipe: $!\n";
+            my $line = <$pipe>;
+            close $pipe or die "runtime shell pipe failed: $?\n";
+            die "runtime shell pipe returned incorrect bytes\n"
+              unless defined $line && $line eq "aos-perl-pipe\n";
+
+            my $substitution = qx{printf '%s' aos-perl-substitution};
+            die "runtime shell substitution failed\n"
+              unless $? == 0 && $substitution eq 'aos-perl-substitution';
+            system('exit 0;') == 0
+              or die "runtime shell system command failed: $?\n";
+            PERL
+            "$out/bin/perl" runtime-shell-check.pl '${bash}/bin/bash'
+          '';
       }
     ];
 

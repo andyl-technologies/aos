@@ -7,15 +7,17 @@
 //! Packaged composition advertises exact restore only after it has installed
 //! the fixed replay factories under disjoint thin bindings.
 
+use crucible_campaign::ExecutionRetentionIntent;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::crucible_qemu_session::QemuAttemptOperationalBoundary;
 use crate::{
     ProductionBakedSnapshotSet, ProductionVmLifecycleConfig, ProductionVmNodeReplayLaunchProfile,
     ProductionVmReplayExactNodeRestoreAdmission,
 };
-use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent};
+use crucible_campaign::{AttemptResourceLimits, AttemptStartMode};
 use crucible_control_api::LifecycleApiError;
 use crucible_engine::{
     Configuration, ContentHash, NodeId, ScenarioDef, ScenarioDefForm,
@@ -27,17 +29,28 @@ use crucible_qemu_host::{
 };
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::AttemptWorkerFailure;
 use crate::executor_supervisor::SelectedExactCheckpointRoot;
 use crate::{
-    AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
-    CrucibleAttemptExecution, CrucibleExecutionRunner, ExecutionCancellation,
-    ExecutionCheckpointRequest, ProductionPausedCheckpointReplayFactory,
+    AttemptExecutionContext, AttemptExecutionProduct, CrucibleAttemptExecution,
+    CrucibleExecutionRunner, ExecutionCancellation, ProductionPausedCheckpointReplayFactory,
     ProductionPausedCheckpointReplaySession, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmLifecycleFactory, QemuAttemptResourceGuardFactory,
     QemuFreshAttemptLifecycleFactory, QemuFreshExecutionRunner,
     QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError, QemuSavepointReplayProbe,
     QemuSavepointReplayProof, capture_fresh_genesis_checkpoint_candidate,
 };
+
+pub(crate) mod catalog;
+mod imported_replay;
+mod supervised_replay;
+use crate::paused_checkpoint_promotion::{
+    ProductionReplayBeginFailure, ProductionReplayCleanup, ProductionReplayError,
+};
+pub use imported_replay::{ImportedProductionCheckpointReplay, ImportedProductionReplayError};
+use supervised_replay::ProductionCheckpointReplayGuard;
+pub(crate) use supervised_replay::replay_world_control_bytes;
 
 /// One completely authenticated baked-genesis snapshot set.
 ///
@@ -73,6 +86,8 @@ pub(crate) struct ProductionBakedGenesisReplayStore {
 /// It owns no campaign mutation or checkpoint-publication capability.
 struct ProductionBakedGenesisReplayFactory {
     baked: ProductionBakedGenesisCheckpoint,
+    registration_preparation:
+        Option<Arc<dyn crucible_qemu_host::QemuReplayValidationRegistrationPreparation>>,
 }
 
 /// Scenario-routed native baked-genesis replay authority.
@@ -84,9 +99,82 @@ struct ProductionBakedGenesisReplayFactory {
 /// another scenario.
 #[derive(Clone)]
 pub struct ProductionBakedGenesisReplayCatalogFactory<R> {
-    baked_by_basis: BTreeMap<(ContentHash, ContentHash), ProductionBakedGenesisCheckpoint>,
+    baked_by_basis: catalog::PaidBakedCatalog<ProductionBakedGenesisCheckpoint>,
     resources: R,
-    savepoint_replay_config: Option<ProductionVmLifecycleConfig>,
+    savepoint_replay_config: Option<Arc<ProductionVmLifecycleConfig>>,
+    replay_services: Option<crate::packaged_qemu_executor::RetainedTemplateServiceFactory>,
+    replay_basis: Option<ProductionCheckpointReplayBasis>,
+}
+
+/// Authenticated semantic facts projected onto independently admitted replay ownership.
+#[derive(Clone)]
+pub(crate) struct ProductionCheckpointReplayBasis {
+    source: Arc<ScenarioDefForm>,
+    resources: AttemptResourceLimits,
+    runtime_basis: crate::AttemptExecutionRuntimeBasis,
+    start_mode: AttemptStartMode,
+    checkpoint: crucible_campaign::ExactCheckpointId,
+    _decode_custody: crucible_engine::owned_decode::DecodeCustody,
+}
+
+impl ProductionCheckpointReplayBasis {
+    pub(crate) fn new(
+        source: &ScenarioDefForm,
+        resources: AttemptResourceLimits,
+        runtime_basis: crate::AttemptExecutionRuntimeBasis,
+        start_mode: AttemptStartMode,
+        checkpoint: crucible_campaign::ExactCheckpointId,
+    ) -> Result<Self, crucible_engine::EngineError> {
+        let budget = crucible_engine::owned_decode::current_child_budget()
+            .map_err(|source| crucible_engine::EngineError::ArtifactDecodeAdmission { source })?;
+        let _scope = budget
+            .as_ref()
+            .map(crucible_engine::owned_decode::DecodeBudget::enter);
+        crucible_engine::owned_decode::charge_bytes(
+            (std::mem::size_of::<ScenarioDefForm>() + 2 * std::mem::size_of::<usize>()) as u64,
+        )
+        .map_err(|source| crucible_engine::EngineError::ArtifactDecodeAdmission { source })?;
+        let source = Arc::new(source.try_clone_admitted()?);
+        Ok(Self {
+            source,
+            resources,
+            runtime_basis,
+            start_mode,
+            checkpoint,
+            _decode_custody: budget
+                .as_ref()
+                .map(crucible_engine::owned_decode::DecodeBudget::custody)
+                .unwrap_or_default(),
+        })
+    }
+
+    pub(crate) fn source(&self) -> &ScenarioDefForm {
+        &self.source
+    }
+
+    pub(super) fn shared_source(&self) -> Arc<ScenarioDefForm> {
+        Arc::clone(&self.source)
+    }
+
+    pub(super) fn custody(&self) -> crucible_engine::owned_decode::DecodeCustody {
+        self._decode_custody.clone()
+    }
+
+    pub(crate) fn resources(&self) -> AttemptResourceLimits {
+        self.resources
+    }
+
+    pub(crate) fn runtime_basis(&self) -> crate::AttemptExecutionRuntimeBasis {
+        self.runtime_basis
+    }
+
+    pub(crate) fn start_mode(&self) -> AttemptStartMode {
+        self.start_mode
+    }
+
+    pub(crate) fn checkpoint(&self) -> crucible_campaign::ExactCheckpointId {
+        self.checkpoint
+    }
 }
 
 struct ReplayTargetPreparation<'a> {
@@ -95,6 +183,8 @@ struct ReplayTargetPreparation<'a> {
     profile: &'a ProductionVmNodeReplayLaunchProfile,
     world: ContentHash,
     scenario: ContentHash,
+    registration_preparation:
+        Option<Arc<dyn crucible_qemu_host::QemuReplayValidationRegistrationPreparation>>,
 }
 
 impl std::fmt::Debug for ProductionBakedGenesisCheckpoint {
@@ -138,7 +228,7 @@ pub enum ProductionBakedGenesisCaptureError<E> {
 impl ProductionBakedGenesisCheckpoint {
     /// Admits one fresh exact capture as a native baked-genesis checkpoint.
     ///
-    /// Admission requires the production root carrying a version-nine manifest,
+    /// Admission requires the production root carrying a authenticated paged manifest,
     /// complete closure authentication, exact scenario genesis, and exactly one
     /// live target for every VM in the World. No destination or campaign store
     /// is written.
@@ -258,7 +348,10 @@ impl ProductionBakedGenesisReplayStore {
 
 impl ProductionBakedGenesisReplayFactory {
     const fn new(baked: ProductionBakedGenesisCheckpoint) -> Self {
-        Self { baked }
+        Self {
+            baked,
+            registration_preparation: None,
+        }
     }
 }
 
@@ -268,26 +361,55 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
     /// # Errors
     ///
     /// Returns [`ProductionBakedGenesisReplayCatalogError`] when the catalog is
-    /// empty or contains two independently captured entries for one exact
-    /// World/scenario basis.
+    /// empty, repeats a World/scenario basis, lacks finite exact iterator
+    /// geometry, or its explicit original metadata admission refuses.
     pub fn new(
         baked: impl IntoIterator<Item = ProductionBakedGenesisCheckpoint>,
         resources: R,
+        original: &crucible_engine::owned_decode::DecodeBudget,
     ) -> Result<Self, ProductionBakedGenesisReplayCatalogError> {
-        let mut baked_by_basis = BTreeMap::new();
-        for checkpoint in baked {
-            let basis = (checkpoint.world(), checkpoint.scenario());
-            if baked_by_basis.insert(basis, checkpoint).is_some() {
-                return Err(ProductionBakedGenesisReplayCatalogError::DuplicateBasis);
-            }
-        }
-        if baked_by_basis.is_empty() {
-            return Err(ProductionBakedGenesisReplayCatalogError::Empty);
-        }
         Ok(Self {
-            baked_by_basis,
+            baked_by_basis: catalog::PaidBakedCatalog::new_under_original(
+                baked
+                    .into_iter()
+                    .map(|checkpoint| ((checkpoint.world(), checkpoint.scenario()), checkpoint)),
+                original,
+            )?,
             resources,
             savepoint_replay_config: None,
+            replay_services: None,
+            replay_basis: None,
+        })
+    }
+
+    /// Measures the new shared map while moving already-owned checkpoint bodies.
+    ///
+    /// # Errors
+    /// Refuses an empty catalog or checked map/Arc layout overflow.
+    pub(crate) fn catalog_control_bytes(
+        count: usize,
+    ) -> Result<u64, ProductionBakedGenesisReplayCatalogError> {
+        catalog::PaidBakedCatalog::<ProductionBakedGenesisCheckpoint>::control_bytes(count)
+    }
+
+    pub(crate) fn from_paid_catalog(
+        baked: impl IntoIterator<Item = ProductionBakedGenesisCheckpoint>,
+        resources: R,
+        count: usize,
+        payment: catalog::CatalogPayment,
+    ) -> Result<Self, ProductionBakedGenesisReplayCatalogError> {
+        Ok(Self {
+            baked_by_basis: catalog::PaidBakedCatalog::new_prepaid(
+                baked
+                    .into_iter()
+                    .map(|checkpoint| ((checkpoint.world(), checkpoint.scenario()), checkpoint)),
+                count,
+                payment,
+            )?,
+            resources,
+            savepoint_replay_config: None,
+            replay_services: None,
+            replay_basis: None,
         })
     }
 
@@ -295,22 +417,31 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
     #[must_use]
     pub(crate) fn with_savepoint_replay_config(
         mut self,
-        config: ProductionVmLifecycleConfig,
+        config: impl Into<Arc<ProductionVmLifecycleConfig>>,
     ) -> Self {
-        self.savepoint_replay_config = Some(config);
+        self.savepoint_replay_config = Some(config.into());
+        self
+    }
+
+    /// Installs the original actor's independently authored replay Service allocator.
+    pub(crate) fn with_replay_services(
+        mut self,
+        services: crate::packaged_qemu_executor::RetainedTemplateServiceFactory,
+    ) -> Self {
+        self.replay_services = Some(services);
         self
     }
 
     /// Returns the number of exact World/scenario checkpoints in the catalog.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.baked_by_basis.len()
+        self.baked_by_basis.entries.len()
     }
 
     /// Returns whether the catalog contains no checkpoint.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.baked_by_basis.is_empty()
+        self.baked_by_basis.entries.is_empty()
     }
 
     /// Authenticates that this catalog retains one exact World/scenario basis.
@@ -328,13 +459,19 @@ impl<R> ProductionBakedGenesisReplayCatalogFactory<R> {
         world: ContentHash,
         scenario: ContentHash,
     ) -> Result<(), QemuVmRealizationError> {
-        select_baked_catalog_entry(&self.baked_by_basis, world, scenario).map(|_| ())
+        select_baked_catalog_entry(&self.baked_by_basis.entries, world, scenario).map(|_| ())
     }
 }
 
 /// Invalid native baked-genesis replay catalog.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum ProductionBakedGenesisReplayCatalogError {
+    /// Original metadata admission refused before the catalog allocation.
+    #[error(transparent)]
+    Admission(#[from] crucible_engine::owned_decode::DecodeAdmissionError),
+    /// A constructor cannot establish a finite exact input or layout.
+    #[error("production baked-genesis catalog control geometry is invalid")]
+    Geometry,
     /// No scenario checkpoint was supplied.
     #[error("production baked-genesis replay catalog is empty")]
     Empty,
@@ -350,6 +487,7 @@ impl ProductionBakedGenesisReplayFactory {
         configuration: &Configuration,
         target: ProductionVmReplayExactNodeRestoreAdmission,
         guard: &mut G,
+        boundary: &mut impl FnMut(&mut G) -> Result<(), QemuVmRealizationError>,
     ) -> Result<ProductionPausedCheckpointReplaySession, QemuVmRealizationError>
     where
         G: QemuAttemptProcessResourceGuard,
@@ -374,7 +512,7 @@ impl ProductionBakedGenesisReplayFactory {
                 message: String::from("target node has no retained launch profile"),
             })?
             .clone();
-        guard.check_operational_boundary()?;
+        boundary(guard)?;
         let baked_snapshot = self
             .baked
             .snapshot(&node)
@@ -397,8 +535,10 @@ impl ProductionBakedGenesisReplayFactory {
                 profile: &profile,
                 world: self.baked.world(),
                 scenario: self.baked.scenario(),
+                registration_preparation: self.registration_preparation.clone(),
             },
             guard,
+            boundary,
         );
         let (store, executor) = prepared?;
         Ok(ProductionPausedCheckpointReplaySession::new(
@@ -409,20 +549,64 @@ impl ProductionBakedGenesisReplayFactory {
 
 impl<R> ProductionPausedCheckpointReplayFactory for ProductionBakedGenesisReplayCatalogFactory<R>
 where
-    R: QemuAttemptResourceGuardFactory + Clone,
+    R: QemuAttemptResourceGuardFactory + Clone + Send + 'static,
     R::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
 {
-    type Guard = R::Guard;
+    type Guard = ProductionCheckpointReplayGuard<R>;
+    type NativeGuard = R::Guard;
+
+    fn guard_matches(
+        &self,
+        guard: &Self::Guard,
+        resources: AttemptResourceLimits,
+        cancellation: &ExecutionCancellation,
+    ) -> bool {
+        guard.matches(resources, cancellation)
+    }
+
+    fn with_native_guard<T>(
+        &mut self,
+        guard: &mut Self::Guard,
+        apply: impl FnOnce(
+            &mut Self::NativeGuard,
+            Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+        ) -> T,
+    ) -> Result<T, crate::lifecycle_cleanup::PreparedSourceFailure> {
+        let prepared = guard.prepared.clone();
+        let original = guard.operation.as_ref();
+        prepared
+            .with_native(|native| apply(native, original))
+            .map_err(|raw| prepared.failure_with_refusal("borrow actual replay native guard", raw))
+    }
+
+    fn finish_replay(&mut self, guard: &mut Self::Guard) -> Result<(), ProductionReplayCleanup> {
+        guard.finish()
+    }
+
+    fn configure_execution(
+        &mut self,
+        basis: ProductionCheckpointReplayBasis,
+    ) -> Result<(), QemuVmRealizationError> {
+        select_baked_catalog_entry(
+            &self.baked_by_basis.entries,
+            basis.source().world().id,
+            basis.source().scenario_def().id(),
+        )?;
+        self.replay_basis = Some(basis);
+        Ok(())
+    }
+
+    fn target_completed(&mut self, guard: &mut Self::Guard) -> Result<(), ProductionReplayError> {
+        guard.target_completed()
+    }
 
     fn begin_replay(
         &mut self,
         selected_checkpoint: SelectedExactCheckpointRoot,
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
-    ) -> Result<Self::Guard, crate::crucible_qemu_session::QemuAttemptResourceGuardBeginFailure>
-    {
-        self.resources
-            .begin(resources, cancellation.clone(), Some(selected_checkpoint))
+    ) -> Result<Self::Guard, ProductionReplayBeginFailure> {
+        self.begin_supervised_replay(selected_checkpoint, cancellation, resources)
     }
 
     fn begin_target(
@@ -431,11 +615,54 @@ where
         configuration: &Configuration,
         target: ProductionVmReplayExactNodeRestoreAdmission,
         guard: &mut Self::Guard,
-    ) -> Result<ProductionPausedCheckpointReplaySession, QemuVmRealizationError> {
-        let baked =
-            select_baked_catalog_entry(&self.baked_by_basis, world.id, configuration.def.id())?;
+    ) -> Result<ProductionPausedCheckpointReplaySession, ProductionReplayError> {
+        let baked = select_baked_catalog_entry(
+            &self.baked_by_basis.entries,
+            world.id,
+            configuration.def.id(),
+        )?;
         let mut selected = ProductionBakedGenesisReplayFactory::new(baked.clone());
-        selected.begin_target(world, configuration, target, guard)
+        selected.registration_preparation = Some(guard.registration_preparation(target.node())?);
+        let mut original_refusal = None;
+        let prepared = guard.prepared.clone();
+        let original = guard.operation.as_ref();
+        let result = prepared
+            .with_native(|native| {
+                selected.begin_target(world, configuration, target, native, &mut |native| {
+                    match crate::paused_checkpoint_promotion::check_replay_boundary(
+                        original,
+                        || native.check_operational_boundary(),
+                    ) {
+                        Ok(()) => Ok(()),
+                        Err(
+                            crate::paused_checkpoint_promotion::ReplayBoundaryRefusal::Original(
+                                first,
+                            ),
+                        ) => {
+                            original_refusal.get_or_insert(first);
+                            Err(QemuVmRealizationError::ExecutorUnavailable {
+                                operation: "check original checkpoint replay Restore",
+                                message: first.to_string(),
+                            })
+                        }
+                        Err(crate::paused_checkpoint_promotion::ReplayBoundaryRefusal::Native(
+                            first,
+                        )) => Err(first),
+                    }
+                })
+            })
+            .map_err(|raw| {
+                prepared
+                    .failure_with_refusal("prepare target under actual replay native guard", raw)
+            })?;
+        if let Some(original) = original_refusal {
+            return Err(ProductionReplayError::OriginalBoundary {
+                original,
+                comparison: result.err(),
+                node_cleanup: None,
+            });
+        }
+        result.map_err(Into::into)
     }
 
     fn replay_savepoint_capture(
@@ -444,7 +671,8 @@ where
         run_state_root: &std::path::Path,
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
-    ) -> Result<QemuSavepointReplayProof, QemuVmRealizationError> {
+    ) -> Result<QemuSavepointReplayProof, ProductionReplayError> {
+        let _scope = attempt.enter_decode_scope();
         let lifecycle = self
             .savepoint_replay_config
             .as_ref()
@@ -452,22 +680,30 @@ where
                 role: "savepoint capture replay",
                 message: String::from("packaged lifecycle replay configuration is unavailable"),
             })?
-            .clone()
+            .try_clone_admitted()
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?
             .with_run_state_root(run_state_root.join("savepoint-replay"));
-        let factory =
+        let mut factory =
             QemuAttemptProductionVmLifecycleFactory::new(lifecycle, self.resources.clone());
         let (probe, receipt) = QemuSavepointReplayProbe::new();
+        let (mut scope, context) =
+            self.prepare_attempt_replay(&mut factory, cancellation, resources)?;
         let mut runner = QemuFreshExecutionRunner::new(factory, probe);
-        let context = AttemptExecutionContext::new(
-            resources,
-            ExecutionRetentionIntent::Discard,
-            cancellation.clone(),
-            ExecutionCheckpointRequest::default(),
-            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-        );
-        let outcome = runner
-            .execute(attempt, &context)
-            .map_err(map_private_checkpoint_replay_failure)?;
+        let result = runner.execute(attempt, &context);
+        drop(runner);
+        drop(context);
+        let cleanup = scope.finish().err();
+        let outcome = match result {
+            Ok(outcome) => {
+                if let Some(cleanup) = cleanup {
+                    return Err(cleanup.into());
+                }
+                outcome
+            }
+            Err(first) => return Err(ProductionReplayError::Execution { first, cleanup }),
+        };
         match outcome.product() {
             AttemptExecutionProduct::PreparedSemantic(_) => {}
             AttemptExecutionProduct::ExactCheckpoint(_) => {
@@ -476,15 +712,17 @@ where
                     message: String::from(
                         "independent attempt replay did not produce an observation",
                     ),
-                });
+                }
+                .into());
             }
         }
-        receipt
-            .take()
-            .map_err(|error| QemuVmRealizationError::Executor {
+        receipt.take().map_err(|error| {
+            QemuVmRealizationError::Executor {
                 operation: "collect savepoint capture replay proof",
                 message: error.to_string(),
-            })
+            }
+            .into()
+        })
     }
 
     fn replay_checkpoint_boundary(
@@ -494,7 +732,8 @@ where
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
         target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
-    ) -> Result<QemuSavepointReplayProof, QemuVmRealizationError> {
+    ) -> Result<QemuSavepointReplayProof, ProductionReplayError> {
+        let _scope = attempt.enter_decode_scope();
         let lifecycle = self
             .savepoint_replay_config
             .as_ref()
@@ -502,59 +741,33 @@ where
                 role: "checkpoint causal replay",
                 message: String::from("packaged lifecycle replay configuration is unavailable"),
             })?
-            .clone()
+            .try_clone_admitted()
+            .map_err(|source| QemuVmRealizationError::ModelCopy {
+                source: Box::new(source),
+            })?
             .with_run_state_root(run_state_root.join("checkpoint-causal-replay"));
-        let factory =
+        let mut factory =
             QemuAttemptProductionVmLifecycleFactory::new(lifecycle, self.resources.clone());
+        let (mut scope, context) =
+            self.prepare_attempt_replay(&mut factory, cancellation, resources)?;
         let mut runner = QemuFreshExecutionRunner::new(factory, crate::QemuFreshModeledDriver);
-        let context = AttemptExecutionContext::new(
-            resources,
-            ExecutionRetentionIntent::Discard,
-            cancellation.clone(),
-            ExecutionCheckpointRequest::default(),
-            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-        );
-        runner
-            .replay_checkpoint_boundary(attempt, &context, target)
-            .map_err(|failure| map_private_checkpoint_replay_failure(*failure))
+        let result = runner.replay_checkpoint_boundary(attempt, &context, target);
+        drop(runner);
+        drop(context);
+        let cleanup = scope.finish().err();
+        match result {
+            Ok(result) => {
+                if let Some(cleanup) = cleanup {
+                    return Err(cleanup.into());
+                }
+                Ok(result)
+            }
+            Err(first) => Err(ProductionReplayError::Execution {
+                first: *first,
+                cleanup,
+            }),
+        }
     }
-}
-
-fn map_private_checkpoint_replay_failure<E: std::error::Error>(
-    failure: AttemptWorkerFailure<E>,
-) -> QemuVmRealizationError {
-    match failure {
-        AttemptWorkerFailure::Retryable(error) => QemuVmRealizationError::ExecutorUnavailable {
-            operation: "replay private checkpoint attempt",
-            message: private_checkpoint_replay_diagnostic(&error),
-        },
-        AttemptWorkerFailure::Canceled(_) => QemuVmRealizationError::Canceled {
-            operation: "replay private checkpoint attempt",
-        },
-        AttemptWorkerFailure::Terminal(error) => QemuVmRealizationError::Executor {
-            operation: "replay private checkpoint attempt",
-            message: private_checkpoint_replay_diagnostic(&error),
-        },
-    }
-}
-
-/// Retains the original cause before the process-local error becomes stored text.
-fn private_checkpoint_replay_diagnostic<E: std::error::Error + ?Sized>(error: &E) -> String {
-    let mut diagnostic = error.to_string();
-    let mut source = error.source();
-    // A malformed cyclic source chain must not strand promotion reconciliation.
-    for _ in 0..8 {
-        let Some(cause) = source else {
-            return diagnostic;
-        };
-        diagnostic.push_str(": ");
-        diagnostic.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    if source.is_some() {
-        diagnostic.push_str(": [additional error causes omitted]");
-    }
-    diagnostic
 }
 
 fn select_baked_catalog_entry<T>(
@@ -575,6 +788,7 @@ fn select_baked_catalog_entry<T>(
 fn prepare_replay_target_generations<G>(
     preparation: ReplayTargetPreparation<'_>,
     guard: &mut G,
+    boundary: &mut impl FnMut(&mut G) -> Result<(), QemuVmRealizationError>,
 ) -> Result<
     (
         ProductionBakedGenesisReplayStore,
@@ -591,61 +805,64 @@ where
         profile,
         world,
         scenario,
+        registration_preparation,
     } = preparation;
-    guard.check_operational_boundary()?;
+    boundary(guard)?;
     let requirements = profile.resource_requirements();
-    let exact_directory = guard.prepare_generation_run_directory(requirements)?;
+    let exact_directory =
+        guard.prepare_generation_run_directory_for_node(exact.node(), requirements)?;
 
-    guard.check_operational_boundary()?;
-    let mut thin_directory = guard.prepare_generation_run_directory(requirements)?;
-    guard.check_operational_boundary()?;
+    boundary(guard)?;
+    let mut thin_directory =
+        guard.prepare_generation_run_directory_for_node(exact.node(), requirements)?;
+    boundary(guard)?;
 
-    let (exact_config, thin_config) = replay_oracle_launch_configs(
+    let (mut exact_config, mut thin_config) = replay_oracle_launch_configs(
         profile,
         exact_directory.path(),
         thin_directory.path(),
         exact.process_generation(),
     )?;
+    if let Some(preparation) = registration_preparation.as_ref() {
+        exact_config = exact_config.with_host_operation_supervisor(preparation.supervisor());
+        thin_config = thin_config.with_host_operation_supervisor(preparation.supervisor());
+    }
     // The thin leg cold-boots QEMU, so its pinned directory needs the same
     // guarded VMState and root-overlay preparation as an ordinary fresh launch.
     let preparation = thin_directory.prepare_fresh_artifacts_guarded(
         thin_config.qemu_executable(),
         thin_config.root_image(),
-        guard.child_process_contract()?,
+        guard.child_process_contract_for_node(exact.node())?,
     );
     if let Err(mut error) = preparation {
         let message = error.to_string();
-        if let Some(child) = error.take_unreaped_child() {
-            guard.retain_failed_launch_child(child);
-            guard.quarantine();
-            return Err(QemuVmRealizationError::ReapQuarantined {
-                operation: "prepare fresh thin replay artifacts",
-                message,
-            });
-        }
         return Err(QemuVmRealizationError::Executor {
             operation: "prepare fresh thin replay artifacts",
             message,
         });
     }
-    guard.check_operational_boundary()?;
+    boundary(guard)?;
 
     let exact_node = exact.node().clone();
-    let exact_launcher = exact
+    let mut exact_launcher = exact
         .into_replay_admission(
             exact_config,
             exact_directory,
-            guard.child_process_contract()?,
+            guard.child_process_contract_for_node(&exact_node)?,
             "crucible-replay-oracle-exact",
         )
         .map_err(map_replay_admission_error)?;
-    let thin_launcher = QemuReplayValidationThinAdmission::admit(
+    let mut thin_launcher = QemuReplayValidationThinAdmission::admit(
         thin_config,
         thin_directory,
         baked_snapshot,
         exact_node,
         "crucible-replay-oracle-thin",
     )?;
+    if let Some(preparation) = registration_preparation {
+        exact_launcher = exact_launcher.with_registration_preparation(Arc::clone(&preparation));
+        thin_launcher = thin_launcher.with_registration_preparation(preparation);
+    }
     let store = ProductionBakedGenesisReplayStore::new(
         world,
         scenario,
@@ -776,50 +993,63 @@ mod tests {
     }
 
     #[test]
-    fn private_replay_mapping_retains_lifecycle_cause_and_failure_class() {
-        fn construction_failure() -> crate::QemuFreshExecutionRunnerError<
-            crate::QemuAttemptProductionVmLifecycleError,
-            crate::QemuFreshModeledDriverError,
-        > {
-            crate::QemuFreshExecutionRunnerError::Lifecycle(
+    fn private_replay_report_preserves_lifecycle_payload_and_failure_class() {
+        for class in 0..3 {
+            let message = String::from("retained attempt directory rejected");
+            let pointer = message.as_ptr();
+            let first = crate::QemuFreshExecutionRunnerError::Lifecycle(
                 crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(
                     QemuVmRealizationError::Executor {
                         operation: "install private replay resources",
-                        message: String::from("retained attempt directory rejected"),
+                        message,
                     },
                 ),
-            )
-        }
-
-        let terminal = map_private_checkpoint_replay_failure(AttemptWorkerFailure::Terminal(
-            construction_failure(),
-        ));
-        let retryable = map_private_checkpoint_replay_failure(AttemptWorkerFailure::Retryable(
-            construction_failure(),
-        ));
-        for failure in [&terminal, &retryable] {
-            let message = match failure {
-                QemuVmRealizationError::Executor { message, .. }
-                | QemuVmRealizationError::ExecutorUnavailable { message, .. } => message,
-                other => panic!("replay failure changed classification: {other}"),
+            );
+            let first = match class {
+                0 => AttemptWorkerFailure::Terminal(first),
+                1 => AttemptWorkerFailure::Retryable(first),
+                _ => AttemptWorkerFailure::Canceled(first),
             };
-            assert!(message.starts_with("fresh production QEMU lifecycle construction failed"));
-            assert!(message.contains("install private replay resources"));
-            assert!(message.contains("retained attempt directory rejected"));
+
+            let report = ProductionReplayError::Execution {
+                first,
+                cleanup: None,
+            };
+
+            let ProductionReplayError::Execution {
+                first,
+                cleanup: None,
+            } = report
+            else {
+                panic!("the actual execution class and typed cause must remain owned");
+            };
+            assert!(matches!(
+                (&first, class),
+                (AttemptWorkerFailure::Terminal(_), 0)
+                    | (AttemptWorkerFailure::Retryable(_), 1)
+                    | (AttemptWorkerFailure::Canceled(_), 2)
+            ));
+            let first = match first {
+                AttemptWorkerFailure::Terminal(first)
+                | AttemptWorkerFailure::Retryable(first)
+                | AttemptWorkerFailure::Canceled(first) => first,
+            };
+            assert_eq!(
+                first.to_string(),
+                "fresh production QEMU lifecycle construction failed"
+            );
+            let crate::QemuFreshExecutionRunnerError::Lifecycle(
+                crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+                    QemuVmRealizationError::Executor { operation, message },
+                ),
+            ) = first
+            else {
+                panic!("the original nested lifecycle cause changed variant");
+            };
+            assert_eq!(operation, "install private replay resources");
+            assert_eq!(message, "retained attempt directory rejected");
+            assert_eq!(message.as_ptr(), pointer);
         }
-        assert!(matches!(terminal, QemuVmRealizationError::Executor { .. }));
-        assert!(matches!(
-            retryable,
-            QemuVmRealizationError::ExecutorUnavailable { .. }
-        ));
-        assert!(matches!(
-            map_private_checkpoint_replay_failure(AttemptWorkerFailure::Canceled(
-                construction_failure()
-            )),
-            QemuVmRealizationError::Canceled {
-                operation: "replay private checkpoint attempt"
-            }
-        ));
     }
 
     #[test]
@@ -851,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn private_replay_diagnostic_bounds_cyclic_sources() {
+    fn private_replay_reports_preserve_cyclic_sources_without_traversal() {
         #[derive(Debug)]
         struct CyclicSource;
 
@@ -867,11 +1097,43 @@ mod tests {
             }
         }
 
-        let diagnostic = private_checkpoint_replay_diagnostic(&CyclicSource);
-        assert_eq!(diagnostic.matches("cyclic cause").count(), 9);
-        assert!(diagnostic.ends_with("[additional error causes omitted]"));
+        let source = Box::new(CyclicSource);
+        let pointer = source.as_ref() as *const CyclicSource;
+        let first = crate::QemuFreshExecutionRunnerError::Lifecycle(
+            crate::QemuAttemptProductionVmLifecycleError::ModelCopy(source),
+        );
+        let report = ProductionReplayError::Execution {
+            first: AttemptWorkerFailure::Terminal(first),
+            cleanup: None,
+        };
+
+        let diagnostic = report.to_string();
+
         assert_eq!(
-            private_checkpoint_replay_diagnostic(&std::io::Error::other("original refusal")),
+            diagnostic
+                .matches("fresh production QEMU lifecycle construction failed")
+                .count(),
+            1
+        );
+        assert!(!diagnostic.contains("additional error causes omitted"));
+        let ProductionReplayError::Execution {
+            first:
+                AttemptWorkerFailure::Terminal(crate::QemuFreshExecutionRunnerError::Lifecycle(
+                    crate::QemuAttemptProductionVmLifecycleError::ModelCopy(source),
+                )),
+            cleanup: None,
+        } = report
+        else {
+            panic!("the same cyclic source must remain owned");
+        };
+        assert!(std::ptr::eq(
+            source.downcast_ref::<CyclicSource>().unwrap(),
+            pointer
+        ));
+        assert_eq!(source.to_string(), "cyclic cause");
+        assert!(source.source().is_some());
+        assert_eq!(
+            std::io::Error::other("original refusal").to_string(),
             "original refusal"
         );
     }

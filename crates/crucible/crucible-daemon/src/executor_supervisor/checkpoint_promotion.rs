@@ -178,6 +178,7 @@ where
                     execution,
                     checkpoint,
                     promotion_basis: Some(promotion_basis),
+                    source_transfer: None,
                     ..
                 }),
             ) => {
@@ -225,6 +226,7 @@ where
             Some(AttemptRuntimeState::Paused {
                 execution: current,
                 promotion_basis: None,
+                source_transfer: None,
                 ..
             }) if current == execution => true,
             Some(current) => current.execution() != execution,
@@ -257,6 +259,7 @@ where
                 execution,
                 checkpoint,
                 promotion_basis: Some(promotion_basis),
+                source_transfer: None,
                 ..
             }) => Some(PausedCheckpointPromotionRecovery {
                 key,
@@ -294,6 +297,7 @@ where
                     execution,
                     checkpoint,
                     promotion_basis: Some(promotion_basis),
+                    source_transfer: None,
                     ..
                 } => visitor(CheckpointPromotionRestartWork::Paused(
                     PausedCheckpointPromotionRecovery {
@@ -363,6 +367,7 @@ where
                 execution: current_execution,
                 checkpoint,
                 promotion_basis,
+                source_transfer: None,
             } if current_execution == execution && checkpoint == source_checkpoint => {
                 let next = AttemptRuntimeState::CheckpointPromoting {
                     execution_basis,
@@ -397,6 +402,7 @@ where
             AttemptRuntimeState::Paused {
                 execution: current_execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             } if current_execution == execution && checkpoint == promoted_checkpoint => {
                 Ok(CheckpointPromotionStageOutcome::AlreadyPromoted)
@@ -455,6 +461,7 @@ where
                     // restart and contend with the resumed execution for the
                     // same bounded host-resource slots.
                     promotion_basis: None,
+                    source_transfer: None,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -465,6 +472,7 @@ where
             AttemptRuntimeState::Paused {
                 execution: current_execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             } if current_execution == execution && checkpoint == promoted_checkpoint => {
                 Ok(CheckpointPromotionCompletionOutcome::AlreadyPromoted)
@@ -522,6 +530,7 @@ where
                     execution,
                     checkpoint: source_checkpoint,
                     promotion_basis,
+                    source_transfer: None,
                 };
                 let advance = self.advance_attempt(key, current, Some(next))?;
                 if let AttemptAdvance::CommittedAfterError(error) = advance {
@@ -532,6 +541,7 @@ where
             AttemptRuntimeState::Paused {
                 execution: current_execution,
                 checkpoint,
+                source_transfer: None,
                 ..
             } if current_execution == execution && checkpoint == source_checkpoint => {
                 Ok(CheckpointPromotionCompletionOutcome::Reverted)

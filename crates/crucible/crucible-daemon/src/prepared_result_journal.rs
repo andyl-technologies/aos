@@ -1420,6 +1420,9 @@ mod tests {
 
     #[test]
     fn journal_create_reopen_authenticate_and_remove_are_exact() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"main");
@@ -1542,6 +1545,9 @@ mod tests {
 
     #[test]
     fn journal_v2_owns_raw_measurement_leaf() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"measurement-evidence");
@@ -1580,6 +1586,9 @@ mod tests {
 
     #[test]
     fn journal_rejects_corrupt_incomplete_and_nonsemantic_state() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"corrupt");
@@ -1638,6 +1647,9 @@ mod tests {
 
     #[test]
     fn journal_rejects_attempt_mismatch_before_creating_lock_or_staging() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"attempt-binding");
@@ -1664,6 +1676,9 @@ mod tests {
 
     #[test]
     fn ledger_gated_cleanup_recovers_fixed_partial_staging_and_visible_removal() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let key = semantic_key(b"orphan-recovery");
         let execution = ExecutionId::from_bytes([0x91; 16]).expect("execution");
@@ -1727,6 +1742,9 @@ mod tests {
 
     #[test]
     fn hidden_journal_becomes_visible_only_after_commit() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"hidden-publication-root");
@@ -1754,6 +1772,9 @@ mod tests {
 
     #[test]
     fn namespace_owner_and_replacement_fence_runtime_mutation() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let parent = TempDir::new().expect("journal parent");
         let path = parent.path().join("journals");
         fs::create_dir(&path).expect("journal namespace");
@@ -1778,6 +1799,9 @@ mod tests {
 
     #[test]
     fn key_lock_replacement_fences_hidden_commit() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");
         let key = semantic_key(b"replaced-key-lock");
@@ -1801,6 +1825,9 @@ mod tests {
 
     #[test]
     fn journal_rejects_a_replaced_result_child_without_external_access() {
+        let _original_fixture_scope =
+            crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let namespace = TempDir::new().expect("journal namespace");
         let outside = TempDir::new().expect("outside directory");
         let runtime = PreparedResultJournalNamespace::open(namespace.path()).expect("runtime");

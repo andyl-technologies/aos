@@ -4,7 +4,8 @@
 #   1. Build a minimal rootfs ext4 image with Nix store closures
 #      (uses mkfs.ext4 -d — no losetup/mount, sandbox-compatible)
 #   2. Boot Firecracker with --no-api --config-file (no REST API)
-#   3. Init runs assertions from a separate read-only virtio input disk
+#   3. Init reads assertions from a separate read-only virtio input disk;
+#      service fixtures run actual systemd PID 1
 #   4. Serial console (Firecracker stdout) captures test output
 #   5. Init prints TEST_RESULT:PASS or TEST_RESULT:FAIL to /dev/ttyS0
 #   6. Init triggers SysRq reboot (echo b > /proc/sysrq-trigger) for clean FC exit
@@ -67,6 +68,9 @@
     development ? false,
     rootfsDeps,
     extraWritableMiB ? 0,
+    # An actual evaluated system config supplies PID1 units and installed policy.
+    # Shell mode remains for independent low-level probes, not service admission.
+    systemdConfig ? null,
   }: let
     # Callers describe their runtime needs without having to know which
     # packages the harness itself supplies.  Deduplicate at that boundary so
@@ -74,6 +78,7 @@
     # duplicate reference-graph roots.
     allDeps = lib.unique (
       rootfsDeps
+      ++ lib.optionals (systemdConfig != null) [pkgs.systemd]
       ++ [
         bashPkg
         coreutilsPkg
@@ -84,8 +89,35 @@
       ]
     );
 
+    configuredEtc =
+      if systemdConfig == null
+      then []
+      else lib.filter (entry: entry.enable) (lib.attrValues systemdConfig.environment.etc);
+    configuredEtcSources = map (entry: entry.source) configuredEtc;
+    configuredEtcInstall =
+      lib.concatMapStringsSep "\n" (entry: let
+        target = "rootfs/etc/${entry.target}";
+        parent = builtins.dirOf target;
+      in ''
+        mkdir -p ${lib.escapeShellArg parent}
+        ${
+          if entry.target == "systemd/system"
+          then ''
+            mkdir -p ${lib.escapeShellArg target}
+            cp -a ${lib.escapeShellArg (toString entry.source + "/.")} ${lib.escapeShellArg target}
+          ''
+          else if entry.mode == "direct-symlink" || entry.mode == "symlink"
+          then "ln -sfn ${lib.escapeShellArg (toString entry.source)} ${lib.escapeShellArg target}"
+          else ''
+            cp ${lib.escapeShellArg (toString entry.source)} ${lib.escapeShellArg target}
+            chmod ${lib.escapeShellArg entry.mode} ${lib.escapeShellArg target}
+          ''
+        }
+      '')
+      configuredEtc;
+
     regInfo = import ../build/closure-info.nix {inherit pkgs lib;} {
-      rootPaths = allDeps;
+      rootPaths = allDeps ++ configuredEtcSources ++ lib.optionals (systemdConfig != null) [systemdRunner];
       pname = "fc-rootfs-closure-info";
     };
 
@@ -142,6 +174,10 @@
       cp /run/aos-test-input/test /run/aos-vm-test
       chmod 0700 /run/aos-vm-test
 
+      ${lib.optionalString (systemdConfig != null) ''
+        unset LD_LIBRARY_PATH C_INCLUDE_PATH LIBRARY_PATH
+        exec ${pkgs.systemd}/lib/systemd/systemd --system --unit=aos-vm-test.target
+      ''}
       test_result=0
       ${bashPkg}/bin/bash /run/aos-vm-test || test_result=$?
 
@@ -174,6 +210,31 @@
       sleep 0.5
       reboot -f
     '';
+
+    # Keep the generated init and its potentially large user test out of the
+    # rootfs builder's argv. Linux limits each individual exec argument to
+    # MAX_ARG_STRLEN, which realistic lifecycle tests can exceed even though
+    # the total environment remains below ARG_MAX.
+    systemdRunner = pkgs.writeTextFile {
+      name = "fc-systemd-runner";
+      destination = "/bin/aos-vm-test";
+      executable = true;
+      text = ''
+        #!${bashPkg}/bin/bash
+        export PATH="${depPaths}:/bin:/usr/bin:/sbin:/usr/sbin"
+        export HOME=/tmp
+        test_result=0
+        ${bashPkg}/bin/bash /run/aos-vm-test || test_result=$?
+        if [ "$test_result" -eq 0 ]; then
+          echo TEST_RESULT:PASS
+        else
+          echo TEST_RESULT:FAIL
+        fi
+        sync
+        sleep 0.5
+        /sbin/reboot -f
+      '';
+    };
 
     # Keep the stable boot harness separate from the per-test input volume.
     initScriptFile = pkgs.writeTextFile {
@@ -341,6 +402,33 @@
             root:x:0:
             nobody:x:65534:
             GROUP
+
+                        ${lib.optionalString (systemdConfig != null) ''
+                            ${configuredEtcInstall}
+                            test -e rootfs/etc/systemd/system/dbus.service
+                            test -e rootfs/etc/systemd/system/crucible-campaign.service
+                            # Keep the evaluated normal unit/policy intact. The
+                            # fixture adds only its finite external test controller.
+                            mkdir -p rootfs/etc/systemd/system
+                            cat > rootfs/etc/systemd/system/aos-vm-test.target << 'TARGET'
+              [Unit]
+              Description=Disposable normal service qualification
+              Requires=dbus.service aos-vm-test.service
+              After=dbus.service
+              TARGET
+                            cat > rootfs/etc/systemd/system/aos-vm-test.service << 'SERVICE'
+              [Unit]
+              Description=Finite external normal service test controller
+              Requires=dbus.service
+              After=dbus.service
+              [Service]
+              Type=oneshot
+              ExecStart=${systemdRunner}/bin/aos-vm-test
+              StandardOutput=tty
+              StandardError=tty
+              TTYPath=/dev/ttyS0
+              SERVICE
+            ''}
 
                         # Install the generated init script. It is materialized
                         # separately so large lifecycle tests never become one

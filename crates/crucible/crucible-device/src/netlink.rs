@@ -1,6 +1,6 @@
 //! The network-link sub-node: inter-VM frame delivery with deterministic faults.
 //!
-//! This module assembles the network-link sub-node of RFC-0010 §15.4 from two
+//! This module assembles the scheduled network-link sub-node from two
 //! focused submodules and re-exports their public surface:
 //!
 //! - [`fault`]: the effective fault table ([`LinkFaults`]) and the pure,
@@ -21,7 +21,7 @@
 //! # Why the link is special among sub-nodes
 //!
 //! The block and 9p sub-nodes produce *exact* local events; the network link is
-//! the **one source of conservative uncertainty** (§15.4.2). Its base latency
+//! the **one source of conservative uncertainty**. Its base latency
 //! `L(A->B)` is what *sets* the scheduler's lookahead bound, so the floor lives
 //! at the link: a zero-latency link would give a peer zero lookahead and collapse
 //! the system to single-instruction lockstep. A fixed latency fault that raises

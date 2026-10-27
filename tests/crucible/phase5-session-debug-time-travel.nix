@@ -18,7 +18,7 @@
   sessionEventLogStream = builtins.readFile ../../crates/crucible/crucible-session/tests/event_log_stream.rs;
   qemuNode = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node.rs;
   productionDebugLoop = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
-  gatewayOwner = builtins.readFile ../../crates/crucible/crucible-control-server/src/debug_gateway.rs;
+  gatewayOwner = builtins.readFile ../../crates/crucible/crucible-control-api/src/debug_gateway.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
 

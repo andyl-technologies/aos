@@ -4,6 +4,18 @@
 //! [`SingleScheduler`], one live QEMU node per World VM, and the node-addressed
 //! backend loop consumed by [`LifecycleControlPlane`](crucible_control_server::LifecycleControlPlane).
 
+mod fault_evidence;
+pub use fault_evidence::{
+    ProductionBlockFaultEvidence, ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
+};
+
+mod node_launcher;
+#[cfg(any(test, feature = "test-support"))]
+use node_launcher::PackagedProductionVmNodeLauncher;
+pub use node_launcher::ProductionVmNodeLauncher;
+use node_launcher::launch_production_node_generation;
+
 use crucible_control_api::LifecycleApiError;
 use crucible_control_server::debug_gateway::DebugGatewayProcess;
 use crucible_engine::model::{
@@ -36,11 +48,11 @@ use crucible_qemu_host::{
 };
 use crucible_qemu_host::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
-    QemuExactCheckpointCaptureResult, QemuHostIoCheckpoint, QemuLaunchResourceRequirements,
-    QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent as LifecycleMutationIntent,
-    QemuPreparedRunDirectory, QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
-    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, QmpCheckpointRamKind,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuHostIoCheckpoint, QemuLaunchResourceRequirements, QemuNode, QemuNodeLifecycleDecision,
+    QemuNodeLifecycleIntent as LifecycleMutationIntent, QemuPreparedRunDirectory,
+    QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
+    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, linux_process_identity,
+    quarantine_orphaned_qemu_process,
 };
 #[cfg(target_os = "linux")]
 use crucible_qemu_host::{
@@ -76,12 +88,15 @@ pub use checkpoint_store::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 pub use checkpoint_store::{
-    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionExactCheckpointClosure,
-    ProductionExactCheckpointObject, ProductionExactCheckpointRetirement,
-    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionExactCheckpointObject, ProductionExactCheckpointReadSources,
+    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
+    ProductionExactCheckpointRetirementReport, ProductionPagedRamSource,
     ProductionVmExactNodeRestoreAdmissions, decode_authenticated_production_exact_checkpoint,
-    open_exact_checkpoint_closure, retire_production_exact_checkpoint_catalog,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
+    retire_production_exact_checkpoint_catalog,
 };
 mod checkpoint_dependencies;
 pub use checkpoint_dependencies::{
@@ -95,12 +110,24 @@ pub use fault_implementation::{
 #[cfg(target_os = "linux")]
 mod hot_fork;
 #[cfg(target_os = "linux")]
+pub(crate) use hot_fork::TargetSourceBackends;
+#[cfg(target_os = "linux")]
+pub(crate) use hot_fork::{
+    HotForkSourcePreparationError, MainSharedSource, PreparedSharedSource,
+    SourcePreparationBoundary, SourceWorldPreparation,
+};
+#[cfg(target_os = "linux")]
 pub use hot_fork::{
-    ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkIoNodeBoundary,
+    ProductionHotForkCleanupObserver, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmHotForkContinuationUnavailable, ProductionVmHotForkIoNodeBoundary,
     ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
     ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
     ProductionVmHotForkWorldContinuation,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork::{
+    ProductionVmHotForkSourcePreparationError, ProductionVmHotForkSourcePreparationHistory,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
@@ -110,6 +137,10 @@ pub use hot_fork::{
     prepared_multi_node_hot_fork_source_world_with_powered_off_for_scenario_for_test,
     prepared_multi_node_hot_fork_source_world_with_time_limit_for_scenario_for_test,
     production_permanently_failed_loop_for_test, reset_hot_fork_adoption_count_for_test,
+};
+#[cfg(all(target_os = "linux", test))]
+pub(crate) use hot_fork::{
+    take_unissued_component_source, unissued_component_source, with_unique_component_source,
 };
 
 /// Default final logical tick available to one production lifecycle session.
@@ -149,9 +180,25 @@ fn selectable_catalog_checkpoint_ready(
 #[cfg(test)]
 mod test_support;
 
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use crucible_qemu_host::QemuTestBlockCompletionObserver as ProductionBlockCompletionObserver;
+#[cfg(any(test, feature = "test-support"))]
+mod ram_source_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use ram_source_observation::ProductionRamSourceDecorator;
+
 /// Immutable artifacts and bounds for local production QEMU execution.
-#[derive(Clone)]
 pub struct ProductionVmLifecycleConfig {
+    host_ram_registration_factory: Option<Arc<dyn ProductionHostRamRegistrationFactory>>,
+    ram_catalog_provider: Option<Arc<dyn ProductionRamCatalogProvider>>,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
+    #[cfg(any(test, feature = "test-support"))]
+    block_completion_observer: Option<Arc<dyn crucible_qemu_host::QemuTestBlockCompletionObserver>>,
+    #[cfg(any(test, feature = "test-support"))]
+    fault_actor_test_entitlement: Option<[u8; 32]>,
     executable: PathBuf,
     plugin: PathBuf,
     native_guest_architecture: VmArchitecture,
@@ -165,6 +212,8 @@ pub struct ProductionVmLifecycleConfig {
     maximum_host_workers: usize,
     rendezvous_interval_ticks: Option<u64>,
     completion_timeout: Duration,
+    host_operation_supervisor:
+        Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
     unbounded_advance_completion: bool,
     coverage: QemuLaunchPluginSwitch,
     rr_control_boundary_trace: bool,
@@ -181,7 +230,223 @@ pub struct ProductionVmLifecycleConfig {
     fault_replay: Option<ResolvedEffectTrace>,
     world_artifacts: Option<Arc<dyn DagStore>>,
     bounded_scheduler_preemption: Option<BoundedSchedulerPreemptionFlights>,
+    // Owning configuration members are destroyed before their original credits.
+    decode_custody: Option<crucible_engine::owned_decode::DecodeCustody>,
 }
+
+/// Shared storage and descriptor custody for one durable native RAM catalog.
+///
+/// The provider returns clones of one cached tuple per catalog directory. This
+/// keeps SQLite's retained descriptor lifetime and the shared deletion fence
+/// inside the same service reservation, including between captures.
+#[derive(Clone)]
+pub struct ProductionRamCatalogStorage {
+    /// Quota-verified backend with a single retained pair of SQLite connections.
+    pub backend: Arc<dyn crucible_store::content_store::ImmutableBlobBackend>,
+    /// Exact physical quota and independently retained service authority.
+    pub quota: Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard>,
+    /// Shared deletion exclusion held until authenticated catalog retirement.
+    pub retention_fence: Arc<std::fs::File>,
+    /// Unspent original namespace account used to admit independent RAM operations.
+    pub original: crucible_store::owned_decode::DecodeBudget,
+}
+
+/// Retains catalog quota and service custody during authenticated deletion.
+///
+/// Dropping a receipt neither reopens catalog admission nor releases resource
+/// ownership. A failed deletion remains pending and retryable in its provider.
+pub trait ProductionRamCatalogRetirement: Send + Sync {
+    /// Reauthenticates complete directory deletion before discharging custody.
+    ///
+    /// The enclosing persistent root service remains reserved while any durable
+    /// catalog or checkpoint metadata survives. This only retires this catalog.
+    ///
+    /// # Errors
+    /// Refuses incomplete or unauthenticated deletion, retained readers, namespace
+    /// drift, or unavailable resource ownership authority.
+    fn finish_deleted(&self) -> Result<(), crucible_store::content_store::StoreError>;
+}
+
+/// Retained physical quota and service authority for durable checkpoint catalogs.
+///
+/// Implementations own an independently admitted service until authenticated
+/// retirement of their entire persistent root. Assignment completion and the
+/// last reader dropping do not authorize releasing that reservation.
+pub trait ProductionRamCatalogProvider: Send + Sync {
+    /// Reserves resident allocation payloads before decoding retained root metadata.
+    ///
+    /// The returned credit retains the original service authority until the
+    /// final decoded root and every source borrower are dropped.
+    ///
+    /// # Errors
+    /// Refuses unavailable service capacity, closed catalog admission, namespace
+    /// drift, or cancellation under the original service supervision.
+    fn reserve_root_metadata(
+        &self,
+        directory: &Path,
+        bytes: u64,
+    ) -> Result<crucible_store::owned_decode::ResourceLoan, crucible_store::content_store::StoreError>;
+
+    /// Creates or authenticates a catalog directory within the exact quota root.
+    ///
+    /// The provider excludes symlink, mount and project-identity escapes and
+    /// retains an initial bounded descendant audit and continuing namespace
+    /// exclusion. Created directories must inherit the authenticated project.
+    /// The returned guard retains the service receipt and revalidates the quota.
+    ///
+    /// # Errors
+    /// Refuses unavailable quota authority, mismatched paths or project identity,
+    /// exhausted physical bytes/inodes, or canceled supervision.
+    fn prepare_directory(
+        &self,
+        directory: &Path,
+    ) -> Result<
+        Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard>,
+        crucible_store::content_store::StoreError,
+    >;
+
+    /// Opens or clones one cached backend and deletion fence for this directory.
+    ///
+    /// The implementation admits descriptors before any open, establishes shared
+    /// deletion exclusion, and initializes SQLite using the verified quota and
+    /// heap ceiling. It retains the cached tuple through durable catalog life;
+    /// repeated captures never open another pair of connections or fence.
+    ///
+    /// # Errors
+    /// Refuses unavailable service capacity, namespace or quota drift, missing
+    /// deletion exclusion, or durable backend initialization failure.
+    fn open_catalog(
+        &self,
+        directory: &Path,
+    ) -> Result<ProductionRamCatalogStorage, crucible_store::content_store::StoreError>;
+
+    /// Closes catalog admission and prepares an idle cached tuple for deletion.
+    ///
+    /// This atomically excludes new opens, refuses external backend/fence/source
+    /// holders, and detaches the shared SQLite backend and fence. Quota, service
+    /// and descriptor receipts stay retained in a pending provider record until
+    /// authenticated deletion succeeds. Retrying returns that same authority.
+    ///
+    /// # Errors
+    /// Refuses active readers/captures, unavailable ownership, or namespace drift.
+    fn begin_catalog_retirement(
+        &self,
+        directory: &Path,
+    ) -> Result<Arc<dyn ProductionRamCatalogRetirement>, crucible_store::content_store::StoreError>;
+
+    /// Returns the independently reserved process-wide SQLite allocator ceiling.
+    ///
+    /// SQLite's hard heap ceiling is global and can only decrease through the
+    /// catalog constructor. This entitlement covers all SQLite heaps in the
+    /// process; Rust transport and metadata buffers need separate reservations.
+    fn maximum_sqlite_heap_bytes(&self) -> u64;
+}
+
+/// Host-local allocator for exact live RAM ownership and admitted launch resources.
+pub trait ProductionHostRamRegistrationFactory: Send + Sync {
+    /// Partitions the complete admitted world before any node can be prepared.
+    ///
+    /// # Errors
+    /// Refuses inconsistent repeated world shapes or a complete partition that
+    /// cannot retain the required metadata, scratch, guest peak and backing.
+    fn configure_world(
+        &self,
+        shapes: &[ProductionHostRamLaunchShape],
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Binds the launch-scoped operational authority for one admitted node.
+    ///
+    /// # Errors
+    /// Refuses an unknown node or replacement after its generation is prepared.
+    fn bind_node_registrar(
+        &self,
+        node: &str,
+        registrar: Arc<dyn crucible_qemu_host::ram_control::RamControlRegistrar>,
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Returns disjoint native peaks after the complete world has been partitioned.
+    ///
+    /// # Errors
+    /// Refuses an unconfigured world, arithmetic overflow or missing retained
+    /// host and backing ownership.
+    fn native_world_limits(
+        &self,
+    ) -> Result<ProductionHostRamNativeWorldLimits, HostRamAdmissionError>;
+
+    /// Returns the retained operational owner and world allocation epoch.
+    ///
+    /// # Errors
+    /// Refuses a missing or unconfigured original world assignment.
+    fn native_world_identity(
+        &self,
+    ) -> Result<ProductionHostRamNativeWorldIdentity, HostRamAdmissionError>;
+
+    /// Visits the exact configured node names and disjoint native requests.
+    ///
+    /// The callback borrows existing names; the allocator prepays any storage
+    /// needed to retain these requests before a process can be created.
+    ///
+    /// # Errors
+    /// Refuses missing launch geometry, incomplete partitions, arithmetic
+    /// overflow, or the callback's original admission failure.
+    fn visit_native_nodes(
+        &self,
+        visitor: &mut dyn FnMut(
+            &str,
+            ProductionHostRamNativeNodeLimits,
+        ) -> Result<(), HostRamAdmissionError>,
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Reserves the pinned controller descriptor before the native authority is created.
+    ///
+    /// # Errors
+    /// Refuses missing world ownership or exhausted independently authored host
+    /// service descriptor capacity. Non-native fixtures may return no lease.
+    fn reserve_native_controller_resources(
+        &self,
+        node: &str,
+    ) -> Result<
+        Option<crucible_host_resources::host_services::HostServiceLease>,
+        HostRamAdmissionError,
+    >;
+
+    /// Binds the same live kernel authority that enforces the native world peaks.
+    ///
+    /// # Errors
+    /// Refuses absent native authority, a stale or different guard incarnation,
+    /// or kernel ceilings inconsistent with the retained complete partition.
+    fn bind_native_resource_controller(
+        &self,
+        node: &str,
+        controller: Option<crucible_qemu_host::LinuxQemuNativeResourceController>,
+    ) -> Result<(), HostRamAdmissionError>;
+
+    /// Reserves one fresh generation before native launch and sealed-inventory checks.
+    ///
+    /// Declared RAM is an input bound, not proof of the realized native topology.
+    /// The native startup handshake must validate the complete sealed inventory
+    /// against the returned entitlement before the first guest instruction.
+    ///
+    /// # Errors
+    /// Returns a diagnostic when exact ownership, metadata, staging, complete
+    /// resident peak, backing, or worker/descriptor admission cannot be retained.
+    fn prepare(
+        &self,
+        node: &str,
+        process_generation: u64,
+        declared_ram_bytes: u64,
+        vcpus: u32,
+    ) -> Result<crucible_qemu_host::ram_control::RamControlRegistration, HostRamAdmissionError>;
+}
+
+pub use crucible_control_api::host_operational::{
+    HostRamAdmissionError, HostRamBootstrapLimits, HostRamProcessFamilyNativeAllowances,
+    HostRamProcessFamilyPartition, HostRamProcessNativeAllowance,
+    ProductionHostRamLaunchRequirements, ProductionHostRamLaunchShape,
+    ProductionHostRamNativeNodeLimits, ProductionHostRamNativeWorldIdentity,
+    ProductionHostRamNativeWorldLimits, ProductionHostRamPartition,
+    partition_host_ram_launch_resources,
+};
 
 #[derive(Clone)]
 struct BoundedSchedulerPreemptionFlights {
@@ -282,7 +547,7 @@ struct ProductionVmDebugConfig {
     allow_requested_loopback_listen: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmBranchConfig {
     base: Configuration,
     frontier: VirtualTime,
@@ -360,7 +625,8 @@ enum ProductionVmExactCheckpointMaterialization {
         exact_ram: Box<ProductionExactRamCheckpoint>,
         manifest_identity: ContentHash,
     },
-    Repository,
+    // Semantic bytes authenticate a continuation without native materialization.
+    Unmaterialized,
 }
 
 #[derive(Clone, Debug)]
@@ -401,35 +667,7 @@ impl ProductionVmExactCheckpointTarget {
     fn machine_state_artifacts(&self) -> impl Iterator<Item = &ProductionCheckpointArtifact> {
         self.native_materialization()
             .into_iter()
-            .flat_map(|(_, exact_ram, _)| {
-                std::iter::once(&exact_ram.device_artifact)
-                    .chain(exact_ram.layers.iter().map(|layer| &layer.artifact))
-            })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ProductionExactRamKind {
-    Direct,
-    Delta,
-}
-
-impl From<QmpCheckpointRamKind> for ProductionExactRamKind {
-    fn from(kind: QmpCheckpointRamKind) -> Self {
-        match kind {
-            QmpCheckpointRamKind::Direct => Self::Direct,
-            QmpCheckpointRamKind::Delta => Self::Delta,
-        }
-    }
-}
-
-impl From<ProductionExactRamKind> for QmpCheckpointRamKind {
-    fn from(kind: ProductionExactRamKind) -> Self {
-        match kind {
-            ProductionExactRamKind::Direct => Self::Direct,
-            ProductionExactRamKind::Delta => Self::Delta,
-        }
+            .flat_map(|(_, exact_ram, _)| std::iter::once(&exact_ram.device_artifact))
     }
 }
 
@@ -458,177 +696,56 @@ impl From<ProductionExactCheckpointIdentity> for QmpCheckpointIdentity {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ProductionExactRamLayer {
-    kind: ProductionExactRamKind,
-    identity: ProductionExactCheckpointIdentity,
-    parent: Option<ProductionExactCheckpointIdentity>,
-    topology: ContentHash,
-    ram_regions: u64,
-    ram_records: u64,
-    content_sha256: ContentHash,
-    artifact: ProductionCheckpointArtifact,
-}
-
-impl ProductionExactRamLayer {
-    pub(super) fn from_capture(
-        capture: &QemuExactCheckpointCaptureResult,
-        content_sha256: ContentHash,
-        artifact: ProductionCheckpointArtifact,
-    ) -> Result<Self, SchedulerError> {
-        if artifact.length != capture.ram_bytes() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM artifact length differs from QEMU's capture report",
-                ),
-            });
-        }
-
-        Ok(Self {
-            kind: capture.ram_kind().into(),
-            identity: capture.identity().into(),
-            parent: capture.parent().map(Into::into),
-            topology: capture.topology(),
-            ram_regions: capture.ram_regions(),
-            ram_records: capture.ram_records(),
-            content_sha256,
-            artifact,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
 pub(super) struct ProductionExactRamCheckpoint {
-    parent_closure: Option<ContentHash>,
     identity: ProductionExactCheckpointIdentity,
     device_content_sha256: ContentHash,
     device_artifact: ProductionCheckpointArtifact,
-    layers: Vec<ProductionExactRamLayer>,
+    catalog: checkpoint_store::paged::PagedRamCatalog,
+    ram: crucible_store::ram::LeasedRamRoot,
 }
 
 impl ProductionExactRamCheckpoint {
-    pub(super) fn new(
-        parent_closure: Option<ContentHash>,
-        device_content_sha256: ContentHash,
-        device_artifact: ProductionCheckpointArtifact,
-        layers: Vec<ProductionExactRamLayer>,
-    ) -> Result<Self, SchedulerError> {
-        let identity = layers.last().map(|layer| layer.identity).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has no direct base"),
-            }
-        })?;
-        let checkpoint = Self {
-            parent_closure,
-            identity,
-            device_content_sha256,
-            device_artifact,
-            layers,
-        };
-        checkpoint.validate()?;
-
-        Ok(checkpoint)
-    }
-
-    pub(super) fn validate(&self) -> Result<(), SchedulerError> {
-        if self.layers.is_empty()
-            || self.layers.len()
-                > crucible_engine::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has an invalid layer count"),
-            });
-        }
-        let Some(first) = self.layers.first() else {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint has no direct base"),
-            });
-        };
-        if first.kind != ProductionExactRamKind::Direct || first.parent.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM checkpoint chain does not start with a direct layer",
-                ),
-            });
-        }
-        if (self.layers.len() > 1) != self.parent_closure.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "exact RAM parent-closure provenance differs from the retained chain",
-                ),
-            });
-        }
-        let topology = first.topology;
-        for pair in self.layers.windows(2) {
-            let [parent, child] = pair else {
-                continue;
-            };
-            if child.kind != ProductionExactRamKind::Delta
-                || child.parent != Some(parent.identity)
-                || child.topology != topology
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: String::from("exact RAM checkpoint delta chain is not contiguous"),
-                });
-            }
-        }
-        if self.layers.iter().any(|layer| {
-            layer.ram_regions == 0 || layer.artifact.length == 0 || layer.artifact.sparse
-        }) || self.device_artifact.length == 0
-            || self.device_artifact.sparse
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("exact RAM checkpoint contains empty QEMU artifacts"),
-            });
-        }
-        Ok(())
-    }
-
-    pub(super) const fn requires_direct_compaction(&self) -> bool {
-        self.layers.len() >= crucible_engine::exact_checkpoint::MAX_EXACT_CHECKPOINT_RAM_LAYERS
-    }
-
-    /// Builds the retained chain for one admitted direct or delta capture.
-    ///
-    /// A direct capture rebases the chain and deliberately drops all parent
-    /// provenance. A delta capture appends to the authenticated parent chain.
+    /// Binds one complete leased exact RAM image to the same native device cut.
     ///
     /// # Errors
     ///
-    /// Returns an error when a delta has no retained parent, allocation fails,
-    /// or the resulting direct-then-delta chain is invalid.
-    pub(super) fn from_captured_layer(
-        parent_closure: Option<ContentHash>,
-        parent: Option<Self>,
-        capture_kind: ProductionExactRamKind,
+    /// Returns an error when device VMState is empty or sparse, or the RAM
+    /// image lacks exact coverage.
+    fn from_paged_capture(
+        identity: ProductionExactCheckpointIdentity,
         device_content_sha256: ContentHash,
         device_artifact: ProductionCheckpointArtifact,
-        layer: ProductionExactRamLayer,
+        catalog: checkpoint_store::paged::PagedRamCatalog,
+        ram: crucible_store::ram::LeasedRamRoot,
     ) -> Result<Self, SchedulerError> {
-        if capture_kind == ProductionExactRamKind::Direct {
-            // A direct capture is a complete replacement. The published parent
-            // owner remains live until durable publication, but it must not be
-            // reachable from the replacement manifest.
-            return Self::new(None, device_content_sha256, device_artifact, vec![layer]);
-        }
-
-        let mut layers = parent
-            .ok_or_else(|| SchedulerError::BoundaryViolation {
-                message: String::from("delta exact checkpoint lost its authenticated parent chain"),
-            })?
-            .layers;
-        layers
-            .try_reserve_exact(1)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("extend exact RAM checkpoint layers: {error}"),
-            })?;
-        layers.push(layer);
-
-        Self::new(
-            parent_closure,
+        let checkpoint = Self {
+            identity,
             device_content_sha256,
             device_artifact,
-            layers,
-        )
+            catalog,
+            ram,
+        };
+        checkpoint.validate()?;
+        Ok(checkpoint)
+    }
+
+    /// Validates the complete RAM and device realization shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or sparse device artifact or wrong RAM scope.
+    pub(super) fn validate(&self) -> Result<(), SchedulerError> {
+        if self.device_artifact.length == 0 || self.device_artifact.sparse {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact checkpoint has an empty or sparse device VMState"),
+            });
+        }
+        if self.ram.record().scope() != crucible_ram::Scope::Exact {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("exact checkpoint requires a complete exact-scope RAM root"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -669,8 +786,9 @@ struct RetainedCheckpointObject {
     changed_nanoseconds: i64,
 }
 
+/// Retains decoded semantic state and the authenticated one-shot restore claims.
 #[derive(Debug)]
-struct ProductionVmExactCheckpointSet {
+pub(crate) struct ProductionVmExactCheckpointSet {
     identity: ContentHash,
     configuration: Configuration,
     scheduler: Arc<SingleSchedulerCheckpoint>,
@@ -698,6 +816,9 @@ struct RepositoryExactRestoreAuthority {
     configuration: Arc<Configuration>,
     scheduler: Arc<SingleSchedulerCheckpoint>,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+    ram_sources: BTreeMap<NodeId, ProductionPagedRamSource>,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
 }
 
 impl std::fmt::Debug for RepositoryExactRestoreAuthority {
@@ -728,6 +849,11 @@ impl RepositoryExactRestoreAuthority {
                 snapshot,
                 paused,
                 open: Arc::clone(&self.open),
+                ram_source: self.ram_sources.remove(node).ok_or_else(|| {
+                    loop_factory_error("exact restore lost its retained RAM source")
+                })?,
+                #[cfg(any(test, feature = "test-support"))]
+                ram_source_decorator: self.ram_source_decorator.clone(),
             },
         })
     }
@@ -751,6 +877,11 @@ impl RepositoryExactRestoreAuthority {
                 snapshot,
                 paused,
                 open: Arc::clone(&self.open),
+                ram_source: self.ram_sources.remove(node).ok_or_else(|| {
+                    loop_factory_error("exact replay lost its retained RAM source")
+                })?,
+                #[cfg(any(test, feature = "test-support"))]
+                ram_source_decorator: self.ram_source_decorator.clone(),
             },
             process_generation,
         })
@@ -912,7 +1043,7 @@ fn validate_exact_checkpoint_artifact(
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmRecordedControl {
     configuration: Configuration,
     node_times: BTreeMap<NodeId, VirtualTime>,
@@ -934,83 +1065,6 @@ fn restored_node_paused(state: ProductionNodeServiceState) -> Result<bool, Lifec
             "permanently failed node cannot carry an exact restore target",
         )),
     }
-}
-
-/// Read-only evidence for one active production network outage.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionNetworkOutageEvidence {
-    /// Concrete World target whose route stages reject frames.
-    pub target: crucible_engine::model::ResolvedFaultTarget,
-    /// Exclusive virtual-time end of the outage.
-    pub unavailable_until_nanos: u64,
-}
-
-/// Read-only evidence for one live production network queue.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionNetworkQueueEvidence {
-    /// Concrete World queue target owning the reservations.
-    pub target: crucible_engine::model::ResolvedFaultTarget,
-    /// Number of frames currently reserved in the queue.
-    pub reservations: usize,
-    /// Canonical digest of the complete queue continuation.
-    pub continuation_digest: ContentHash,
-    /// Latest scheduled completion tick among current reservations.
-    pub last_finish_ticks: Option<u64>,
-}
-
-/// Read-only evidence for one authoritative production block continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionBlockFaultEvidence {
-    /// Immutable World identity of the attached block device.
-    pub device: ContentHash,
-    /// Number of currently live volatile-cache fragments.
-    pub volatile_entries: usize,
-    /// Canonical digest of the complete volatile-cache entry set.
-    pub volatile_entries_digest: ContentHash,
-    /// Exclusive durable write frontier.
-    pub actual_durable_frontier: u64,
-    /// Number of leading guest-visible bytes covered by `visible_prefix_digest`.
-    pub visible_prefix_bytes: u32,
-    /// Canonical digest of the bounded guest-visible prefix.
-    pub visible_prefix_digest: ContentHash,
-}
-
-/// Read-only evidence for one production QEMU node continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionNodeFaultEvidence {
-    /// World node identity.
-    pub node: NodeId,
-    /// Monotone process generation, incremented by terminal replacement.
-    pub generation: u64,
-    /// Stable service-state spelling used in evidence artifacts.
-    pub service_state: &'static str,
-    /// Scheduler-owned activity at the evidence boundary.
-    pub scheduler_activity: SchedulerNodeActivity,
-    /// Whether the production backend retains a QEMU process for this node.
-    pub backend_owned: bool,
-    /// Exact relationship between backend, current manifest, and staged owner.
-    pub process_ownership: &'static str,
-}
-
-/// Exact observable state of all production fault adapters at one boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProductionFaultEvidenceSnapshot {
-    /// Scheduler frontier at which the snapshot was collected.
-    pub frontier: VirtualTime,
-    /// Committed replay trace, including pass work items.
-    pub resolved_effect_trace: Option<ResolvedEffectTrace>,
-    /// Committed locked-effect replay trace, including pass work items.
-    pub locked_effect_trace: Option<ResolvedEffectTrace>,
-    /// Signal events emitted in authoritative evaluation order.
-    pub emitted_events: Vec<crucible_engine::model::ReferencedSignalEvent>,
-    /// Network outages active at `frontier`.
-    pub network_outages: Vec<ProductionNetworkOutageEvidence>,
-    /// Live network queues with at least one reservation.
-    pub network_queues: Vec<ProductionNetworkQueueEvidence>,
-    /// Authoritative live block continuations in device-identity order.
-    pub block_devices: Vec<ProductionBlockFaultEvidence>,
-    /// Live-QEMU service state in World node order.
-    pub nodes: Vec<ProductionNodeFaultEvidence>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -1095,13 +1149,17 @@ pub struct ProductionVmLifecycleLoop {
     node_generations: BTreeMap<NodeId, u64>,
     node_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_lease_cleanup_failed: bool,
+    retained_cleanup_failure: Option<ProductionVmConstructionCleanupError>,
+    terminal_replacements: Vec<quantum_loop::PreparedTerminalReplacement>,
+    terminal_replacement_values: Vec<Option<QemuNode>>,
+    terminal_replacement_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
     lifecycle_persistence: LifecycleStatePersistence,
     run_manifest: ProductionRunManifest,
     scenario: ScenarioDef,
     source: ScenarioDefForm,
-    config: ProductionVmLifecycleConfig,
+    config: Arc<ProductionVmLifecycleConfig>,
     checkpoint_targets: BTreeMap<ContentHash, quantum_loop::ExactCheckpointPublicationState>,
     exact_ram_parents: BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
     repository_exact_ram_rebase: Option<ProductionRepositoryExactRamRebase>,
@@ -1112,14 +1170,47 @@ pub struct ProductionVmLifecycleLoop {
     debug_attach: Option<GdbAttachInfo>,
     debug_gateway_teardown_required: bool,
     indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
+    // A failed replay stays reachable before its diagnostic is rendered.
+    retained_debug_construction: std::sync::Mutex<Option<construction::RetainedDebugConstruction>>,
+    // The same before-effects Box follows success until whole-owner retirement.
+    construction_custody: LifecycleConstructionCustody,
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
     // Disk pins close after authenticated reap, before aggregate quota release.
     retained_hot_fork_disk_owners: Vec<Box<dyn Send>>,
-    retained_resource_owners: Vec<Box<dyn Send>>,
     hot_fork_backing_files:
         BTreeMap<NodeId, Vec<hot_fork::disk_basis::ImmutableHotForkBackingFile>>,
+    // External admission custody closes after every native and backing borrower.
+    retained_resource_owners: Vec<Box<dyn Send>>,
+    // Declared last so copied model storage closes before its original credits.
+    input_decode_custody: Option<crucible_engine::owned_decode::DecodeCustody>,
+}
+
+// Main pairs the actual carrier and destination so native consuming teardown
+// cannot observe a witness without its original body storage.
+enum LifecycleConstructionCustody {
+    Unissued(Option<Box<ProductionVmConstructionCustody>>),
+    #[cfg(target_os = "linux")]
+    Main {
+        carrier: Box<ProductionVmConstructionCustody>,
+        destination: crate::lifecycle_cleanup::SourceBodyReturn,
+    },
+}
+
+#[cfg(test)]
+impl LifecycleConstructionCustody {
+    fn is_none(&self) -> bool {
+        matches!(self, Self::Unissued(None))
+    }
+
+    fn as_deref(&self) -> Option<&ProductionVmConstructionCustody> {
+        match self {
+            Self::Unissued(carrier) => carrier.as_deref(),
+            #[cfg(target_os = "linux")]
+            Self::Main { carrier, .. } => Some(carrier.as_ref()),
+        }
+    }
 }
 
 /// Exact scheduler/evidence boundary exposed after production checkpoint restore.
@@ -1213,6 +1304,9 @@ struct ProductionVmExactNodeRestoreBasis {
     snapshot: ExactSnapshotHandle,
     paused: bool,
     open: Arc<dyn Fn(ContentHash) -> std::io::Result<Box<dyn std::io::Read + Send>> + Send + Sync>,
+    ram_source: ProductionPagedRamSource,
+    #[cfg(any(test, feature = "test-support"))]
+    ram_source_decorator: Option<Arc<dyn ProductionRamSourceDecorator>>,
 }
 
 impl std::fmt::Debug for ProductionVmExactNodeRestoreAdmission {
@@ -1259,11 +1353,17 @@ impl ProductionVmAtomicExactRestore {
     /// materialization, QEMU restore, or the persisted running transition fails.
     pub fn launch(
         self,
+        issuer: impl FnOnce(
+            crucible_qemu_host::QemuProductionExactRestoreRequest,
+        ) -> Result<
+            crucible_qemu_host::QemuProductionExactRestoreLaunch,
+            crucible_qemu_host::QemuLiveNodeStepGateError,
+        >,
     ) -> Result<(QemuNode, QemuPreparedRunDirectory), crucible_qemu_host::QemuLiveNodeStepGateError>
     {
-        let launched = self.request.launch()?;
+        let launched = issuer(self.request)?;
         if self.paused {
-            Ok(launched.into_node_and_run_directory())
+            launched.into_node_and_run_directory()
         } else {
             launched.into_running_node_and_run_directory()
         }
@@ -1397,6 +1497,13 @@ fn admit_atomic_exact_restore(
             move |identity| (admission.open)(identity),
         )
         .map_err(|error| loop_factory_error(format!("authenticate exact node: {error}")))?;
+    let backing: Arc<dyn crucible_qemu_host::ram_source::QemuRamBacking> =
+        Arc::new(admission.ram_source);
+    #[cfg(any(test, feature = "test-support"))]
+    let backing = ram_source_observation::decorate_authenticated_backing(
+        backing,
+        admission.ram_source_decorator.as_deref(),
+    )?;
     crucible_qemu_host::QemuProductionExactRestoreRequest::new(
         crucible_qemu_host::QemuProductionExactRestoreProfile {
             config: launch,
@@ -1409,6 +1516,8 @@ fn admit_atomic_exact_restore(
         process_contract,
         target,
         streams,
+        crucible_qemu_host::QemuPagedRamRestoreSource::new(backing)
+            .map_err(|error| loop_factory_error(format!("admit leased RAM source: {error}")))?,
     )
     .map_err(|error| loop_factory_error(format!("admit atomic exact restore: {error}")))
 }
@@ -1552,6 +1661,11 @@ impl ProductionVmNodeGeneration {
         Ok(Self { node, generation })
     }
 
+    /// Moves the owned coordinate without copying its node name.
+    pub(crate) fn into_parts(self) -> (NodeId, u64) {
+        (self.node, self.generation)
+    }
+
     /// Returns the exact scheduler node identity.
     #[must_use]
     pub const fn node(&self) -> &NodeId {
@@ -1622,6 +1736,7 @@ pub trait ProductionVmNodeLease: Send {
     /// authenticate the resulting file, or if a prior attempt still owes cleanup.
     fn prepare_hot_fork_detached_root_overlay(
         &mut self,
+        _original: &crucible_qemu_host::QemuHotForkSourceOriginal,
         _graph_generation: u64,
         _virtual_size: u64,
     ) -> Result<(std::fs::File, PathBuf), LifecycleApiError> {
@@ -1685,50 +1800,30 @@ pub struct ProductionVmHotForkNodeAdoption {
 }
 
 impl ProductionVmHotForkNodeAdoption {
-    /// Binds one assembled child to its exact generation and storage owner.
+    /// Retains a child, its lease and the producer's expected process identity.
     ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names another
-    /// generation, the run directory is empty, or the QEMU process incarnation
-    /// cannot be authenticated.
+    /// This is an ownership transfer, not lifecycle admission. The constructor
+    /// performs no fallible operation after accepting the live node. Lifecycle
+    /// assembly verifies its generation, directory and actual process identity
+    /// while retaining the complete joint owner on refusal.
+    #[must_use]
     pub fn new<L>(
         identity: ProductionVmNodeGeneration,
+        process: QemuProcessIdentity,
         node: QemuNode,
         lease: L,
-        run_directory: impl Into<PathBuf>,
-    ) -> Result<Self, LifecycleApiError>
+        run_directory: PathBuf,
+    ) -> Self
     where
         L: ProductionVmNodeLease + 'static,
     {
-        if lease.identity() != &identity {
-            return Err(loop_factory_error(
-                "hot-fork QEMU node lease does not match its adopted generation",
-            ));
-        }
-        let run_directory = run_directory.into();
-        if run_directory.as_os_str().is_empty() {
-            return Err(loop_factory_error(
-                "hot-fork QEMU node adoption has an empty run directory",
-            ));
-        }
-        #[cfg(not(target_os = "linux"))]
-        return Err(loop_factory_error(
-            "hot-fork QEMU node adoption requires a Linux host",
-        ));
-        #[cfg(target_os = "linux")]
-        let process = node.process_identity().map_err(|error| {
-            loop_factory_error(format!(
-                "authenticate adopted hot-fork QEMU process: {error}"
-            ))
-        })?;
-        Ok(Self {
+        Self {
             identity,
             process,
             node,
             lease: Box::new(lease),
             run_directory,
-        })
+        }
     }
 
     /// Returns the exact node-generation identity.
@@ -1765,7 +1860,14 @@ impl ProductionVmNodeReplayLaunchProfile {
     /// Binds one immutable launch profile to its exact World node.
     #[must_use]
     pub fn new(node: NodeId, launch: QemuLiveNodeStepGateConfig) -> Self {
-        Self { node, launch }
+        Self {
+            node,
+            // A replay profile retains immutable launch facts. Each replay
+            // leg must acquire a fresh admitted operational owner at launch.
+            launch: launch
+                .without_ram_control_registration()
+                .without_host_operation_supervisor(),
+        }
     }
 
     /// Returns the exact World node described by this profile.
@@ -1804,56 +1906,65 @@ impl ProductionVmNodeLaunch {
     /// # Errors
     ///
     /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
-    /// different node or generation. The rejected node and lease are dropped
-    /// through their fail-closed ownership paths.
+    /// different node or generation. Refusal returns the same node and lease
+    /// for retention by their existing owner.
     pub fn new<L>(
         request: ProductionVmNodeLaunchRequest<'_>,
         node: QemuNode,
         lease: L,
-    ) -> Result<Self, LifecycleApiError>
+    ) -> Result<Self, (LifecycleApiError, Self)>
     where
         L: ProductionVmNodeLease + 'static,
     {
         Self::new_in_run_directory(request, request.run_directory(), node, lease)
     }
 
-    /// Pairs a launched node with its exact launcher-owned run directory.
-    ///
-    /// An attempt-owned launcher uses this constructor when its sealed storage
-    /// allocator chooses a descriptor-pinned directory rather than trusting the
-    /// lifecycle's diagnostic path hint.
+    /// Pairs a node and its existing lease without discarding refused inputs.
     ///
     /// # Errors
-    ///
-    /// Returns [`LifecycleApiError::LoopFactory`] when the lease names a
-    /// different node or generation, or the chosen path is empty.
+    /// Returns the original typed validation error and the same jointly owned
+    /// node, lease and directory on a mismatched generation or empty path.
+    /// The caller must retain that joint owner before returning the error.
     pub fn new_in_run_directory<L>(
         request: ProductionVmNodeLaunchRequest<'_>,
         run_directory: impl Into<PathBuf>,
         node: QemuNode,
         lease: L,
-    ) -> Result<Self, LifecycleApiError>
+    ) -> Result<Self, (LifecycleApiError, Self)>
     where
         L: ProductionVmNodeLease + 'static,
     {
-        let expected =
-            ProductionVmNodeGeneration::new(request.node().clone(), request.generation())?;
-        if lease.identity() != &expected {
-            return Err(loop_factory_error(
-                "production QEMU node lease does not match its launch request",
-            ));
-        }
-        let run_directory = run_directory.into();
-        if run_directory.as_os_str().is_empty() {
-            return Err(loop_factory_error(
-                "production QEMU node launch returned an empty run directory",
-            ));
-        }
-        Ok(Self {
+        // This is the successful pairing's existing lease allocation. The
+        // refusal path moves this same body; it allocates no error carrier.
+        let launch = Self {
             node,
             lease: Box::new(lease),
-            run_directory,
-        })
+            run_directory: run_directory.into(),
+        };
+        let expected =
+            match ProductionVmNodeGeneration::new(request.node().clone(), request.generation()) {
+                Ok(expected) => expected,
+                Err(first) => return Err((first, launch)),
+            };
+        if launch.lease.identity() != &expected {
+            return Err((
+                loop_factory_error("production QEMU node lease does not match its launch request"),
+                launch,
+            ));
+        }
+        if launch.run_directory.as_os_str().is_empty() {
+            return Err((
+                loop_factory_error("production QEMU node launch returned an empty run directory"),
+                launch,
+            ));
+        }
+        Ok(launch)
+    }
+
+    /// Moves a refused pairing's complete body to its retained launcher.
+    #[must_use]
+    pub fn into_retained_parts(self) -> (QemuNode, Box<dyn ProductionVmNodeLease>, PathBuf) {
+        (self.node, self.lease, self.run_directory)
     }
 
     /// Returns the exact directory retained for this launched generation.
@@ -1874,7 +1985,7 @@ impl ProductionVmNodeLaunch {
         (self.node, self.lease)
     }
 
-    fn quarantine_and_finish(mut self) -> Result<(), SchedulerError> {
+    fn quarantine_and_finish(&mut self) -> Result<(), SchedulerError> {
         self.node.force_quarantine_and_reap().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("reap launched QEMU generation: {error}"),
@@ -1888,197 +1999,8 @@ impl ProductionVmNodeLaunch {
     }
 }
 
-/// Attempt-owned authority for every QEMU generation in one production lifecycle.
-///
-/// Implementations may install cgroup, filesystem-quota, cancellation, and
-/// process-reap ownership before delegating to the packaged QEMU launcher. An
-/// error return must leave no unowned child process. The lifecycle retains this
-/// authority for modeled crash/restart replacements instead of bypassing it
-/// after the initial generation. Implementations must also retain or transfer
-/// containment authority from their `Drop` path when lifecycle construction,
-/// unwinding, or caller abandonment prevents an explicit [`Self::finish`].
-pub trait ProductionVmNodeLauncher: Send {
-    /// Admits one scheduler quantum under the retained attempt authority.
-    ///
-    /// Attempt-scoped launchers use this boundary to check sticky cancellation
-    /// and atomically charge the aggregate execution-quantum ceiling before any
-    /// scheduler, host-fault, or guest state can advance. The packaged launcher
-    /// has no external attempt contract and therefore uses the default no-op.
-    /// A failed admission must not consume modeled state or begin guest work.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] after cancellation, resource exhaustion,
-    /// or loss of the retained attempt authority.
-    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError>;
-
-    /// Checks the retained attempt authority after one scheduler quantum.
-    ///
-    /// This post-boundary check makes cancellation or host-enforcement failure
-    /// that raced the final guest operation observable before the lifecycle
-    /// returns its modeled outcome. The packaged launcher uses the default
-    /// no-op because it has no external attempt contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when the attempt became canceled or its
-    /// resource enforcement can no longer be authenticated.
-    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError>;
-
-    /// Launches one freshly provisioned node generation.
-    ///
-    /// Before spawning any process, the implementation creates the generation
-    /// run directory and performs the operation-specific artifact preparation
-    /// under the same aggregate storage, cancellation, and cleanup authority.
-    /// Success returns the node and a linear containment lease whose identity
-    /// exactly matches the request. The lifecycle retains that lease until the
-    /// corresponding child has been reaped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when admission, namespace or artifact
-    /// preparation, process launch, or post-launch authentication fails. The
-    /// implementation must retain or clean every
-    /// partial artifact and retain or reap every process it may have spawned
-    /// before returning.
-    fn launch_fresh(
-        &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
-        qemu_executable: &Path,
-        root_image: &Path,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
-
-    /// Launches one descriptor-backed exact node generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when exact artifact materialization,
-    /// process launch, restore, or post-launch authentication fails.
-    fn launch_restored(
-        &mut self,
-        request: ProductionVmNodeLaunchRequest<'_>,
-        admission: ProductionVmExactNodeRestoreAdmission,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError>;
-
-    /// Imports a freshly captured terminal checkpoint into this attempt's
-    /// authenticated repository and returns its one-shot restore admissions.
-    ///
-    /// The launcher must retain the published root as process-contract
-    /// authority for every successor launched from the returned checkpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] if publication, authentication, or root
-    /// ownership cannot be completed under the current attempt.
-    fn prepare_terminal_exact_checkpoint(
-        &mut self,
-        _closure: ProductionExactCheckpointClosure,
-    ) -> Result<DecodedProductionExactCheckpoint, LifecycleApiError> {
-        Err(loop_factory_error(
-            "production launcher has no terminal exact-checkpoint import authority",
-        ))
-    }
-
-    /// Creates an independent authority for whole-world debugger replay.
-    ///
-    /// An attempt-scoped implementation may reject this operation when its
-    /// resource contract cannot admit a second world. It must never silently
-    /// substitute an unguarded launcher.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when replay process authority cannot be
-    /// allocated under the same containment policy.
-    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError>;
-
-    /// Finalizes process-containment ownership after lifecycle node shutdown.
-    ///
-    /// The lifecycle calls this method after asking every retained QEMU node to
-    /// shut down. Implementations must make it idempotent. Success attests that
-    /// no child remains and that attempt resources may be released. An error
-    /// must retain or transfer all remaining authority to quarantine. Dropping
-    /// the authority without calling this method must provide the same
-    /// fail-closed ownership transfer, without claiming resource release.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LifecycleApiError`] when reap or containment release cannot be
-    /// attested. The caller reports this failure even when node shutdown also
-    /// failed.
-    fn finish(&mut self) -> Result<(), LifecycleApiError>;
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Clone, Copy, Debug, Default)]
-struct PackagedProductionVmNodeLauncher;
-
-#[cfg(any(test, feature = "test-support"))]
-impl ProductionVmNodeLauncher for PackagedProductionVmNodeLauncher {
-    fn begin_execution_quantum(&mut self) -> Result<(), LifecycleApiError> {
-        Ok(())
-    }
-
-    fn check_operational_boundary(&mut self) -> Result<(), LifecycleApiError> {
-        Ok(())
-    }
-
-    fn launch_fresh(
-        &mut self,
-        _request: ProductionVmNodeLaunchRequest<'_>,
-        _qemu_executable: &Path,
-        _root_image: &Path,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        Err(loop_factory_error(
-            "test lifecycle has no production process authority",
-        ))
-    }
-
-    fn launch_restored(
-        &mut self,
-        _request: ProductionVmNodeLaunchRequest<'_>,
-        _admission: ProductionVmExactNodeRestoreAdmission,
-    ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-        Err(loop_factory_error(
-            "test lifecycle has no production process authority",
-        ))
-    }
-
-    fn replay_candidate(&self) -> Result<Box<dyn ProductionVmNodeLauncher>, LifecycleApiError> {
-        Err(loop_factory_error(
-            "test lifecycle has no production replay authority",
-        ))
-    }
-
-    fn finish(&mut self) -> Result<(), LifecycleApiError> {
-        Ok(())
-    }
-}
-
-fn launch_production_node_generation(
-    launcher: &mut dyn ProductionVmNodeLauncher,
-    basis: ProductionVmNodeLaunchBasis<'_>,
-    crash_detector: &str,
-    preparation: ProductionVmNodePreparationKind<'_>,
-    kind: ProductionVmNodeLaunchKind,
-) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
-    ProductionVmNodeGeneration::new(basis.node.clone(), basis.generation)?;
-    let request = ProductionVmNodeLaunchRequest::new(basis, "crucible-router", crash_detector);
-    match (preparation, kind) {
-        (
-            ProductionVmNodePreparationKind::Fresh {
-                qemu_executable,
-                root_image,
-            },
-            ProductionVmNodeLaunchKind::Fresh,
-        ) => launcher.launch_fresh(request, qemu_executable, root_image),
-        (ProductionVmNodePreparationKind::Exact, ProductionVmNodeLaunchKind::Exact(admission)) => {
-            launcher.launch_restored(request, *admission)
-        }
-        _ => Err(loop_factory_error(
-            "production QEMU node preparation does not match its launch operation",
-        )),
-    }
-}
+#[cfg(all(test, target_os = "linux"))]
+mod node_lease_cleanup_tests;
 
 fn finish_reaped_node_lease_map(
     node_generations: &BTreeMap<NodeId, u64>,
@@ -2096,7 +2018,7 @@ fn finish_reaped_node_lease_map(
             }
             continue;
         };
-        let Some(mut lease) = node_leases.remove(node) else {
+        let Some(lease) = node_leases.get_mut(node) else {
             if first_error.is_none() {
                 first_error = Some(format!(
                     "reaped QEMU node `{}` has no generation lease",
@@ -2114,14 +2036,18 @@ fn finish_reaped_node_lease_map(
             }
             continue;
         }
-        if let Err(error) = lease.finish()
-            && first_error.is_none()
-        {
-            first_error = Some(format!(
-                "finish reaped QEMU node `{}` generation {generation}: {error}",
-                node.name
-            ));
+        if let Err(error) = lease.finish() {
+            if first_error.is_none() {
+                first_error = Some(format!(
+                    "finish reaped QEMU node `{}` generation {generation}: {error}",
+                    node.name
+                ));
+            }
+            continue;
         }
+        // A refusal leaves this exact owner available for the same cleanup.
+        // Only successful retirement permits destruction of the lease body.
+        node_leases.remove(node);
     }
     first_error.map_or(Ok(()), |message| {
         Err(SchedulerError::BoundaryViolation { message })
@@ -2130,9 +2056,33 @@ fn finish_reaped_node_lease_map(
 
 mod checkpoint_recovery;
 use checkpoint_recovery::durable_run_state_api_error;
+// The generic admitted-path constructor uses the existing driver format type.
+type RootImageFormat = QemuRootImageFormat;
+
+mod admitted_assets;
+pub use admitted_assets::{ProductionVmGuestAssetAdmissionError, ProductionVmGuestAssetPaths};
+
+mod admitted_clone;
 mod config;
+pub use admitted_clone::ProductionVmLifecycleConfigCloneError;
+pub use crucible_control_api::{
+    ProductionVmCleanupHandoff, ProductionVmCleanupOwner, ProductionVmCleanupReservation,
+    ProductionVmCleanupStage,
+};
 mod construction;
 use construction::build_production_vm_lifecycle_loop_with_restore;
+pub(crate) use construction::{
+    ExactRestoreExposure as RetainedConstructionExposure,
+    prepare_from_custody as prepare_retained_construction,
+};
+#[cfg(target_os = "linux")]
+pub use construction::{
+    MainSourceLifecycle, MainSourceLifecycleFailure, MainSourceLifecycleRefusal,
+};
+pub use construction::{
+    ProductionVmCleanupEarlierFailure, ProductionVmConstructionCleanupError,
+    ProductionVmConstructionCustody, ProductionVmConstructionFailure,
+};
 mod helpers;
 mod network_faults;
 mod process_owners;
@@ -2142,6 +2092,8 @@ use process_owners::{
 };
 mod quantum_loop;
 mod runtime;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub use runtime::checkpoint_consumer::CheckpointConsumerEpochEvidence;
 mod search;
 mod storage_faults;
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
@@ -2382,31 +2334,180 @@ use storage_faults::{ProductionBlockFaultCoordinator, block_binding_for_vm, nine
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError`] when launcher construction or restored
-/// lifecycle validation fails.
-pub fn build_production_vm_exact_resume_lifecycle<L>(
+/// Returns [`ProductionVmConstructionFailure`] retaining the exact inputs when
+/// launcher construction or restored lifecycle validation fails.
+pub fn build_production_vm_exact_resume_lifecycle(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
     decoded: DecodedProductionExactCheckpoint,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    if source.scenario_def() != *scenario {
-        return Err(loop_factory_error(
-            "repository checkpoint source does not reconstruct the requested scenario",
-        ));
-    }
-    build_production_vm_lifecycle_loop_with_restore(
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let custody = construction::retain_construction_inputs(
+        launcher,
+        Some(decoded.into_checkpoint()),
+        None,
+        None,
+        Vec::new(),
+    )?;
+    construction::build_from_custody(
         scenario,
         source,
         config,
-        Some(decoded.into_checkpoint()),
-        Box::new(launcher),
-        None,
+        custody,
+        construction::ExactRestoreExposure::Released,
     )
+}
+
+mod receiving_transfer;
+pub use receiving_transfer::ProductionStoppedLifecycleError;
+
+/// Owns a reconstructed World whose live native nodes remain stopped.
+///
+/// This owner deliberately exposes no scheduler, debug, or quantum interface.
+/// It is not a destination Ready or execution-ownership grant. Read-only
+/// verification and physical cleanup expose no executable lifecycle interface.
+///
+/// ```compile_fail,E0616
+/// use crucible_daemon::ProductionVmStoppedLifecycle;
+/// fn expose(world: ProductionVmStoppedLifecycle) {
+///     let executable = world.lifecycle;
+/// }
+/// ```
+pub struct ProductionVmStoppedLifecycle {
+    lifecycle: Option<ProductionVmLifecycleLoop>,
+}
+
+impl ProductionVmStoppedLifecycle {
+    /// Retains a fully validated lifecycle before ownership-commit exposure.
+    pub(crate) fn from_retained_loop(lifecycle: ProductionVmLifecycleLoop) -> Self {
+        Self {
+            lifecycle: Some(lifecycle),
+        }
+    }
+
+    /// Reaps the complete stopped World and joins its retained source workers.
+    ///
+    /// # Errors
+    /// Keeps the entire World in this owner when cleanup is unproven. Dropping
+    /// that owner quarantines its scheduler, roots and native custody together.
+    pub fn shutdown(&mut self) -> Result<(), SchedulerError> {
+        self.shutdown_before_main_return()?;
+        if let Some(lifecycle) = self.lifecycle.take() {
+            #[cfg(target_os = "linux")]
+            lifecycle.retire_owned_body();
+            #[cfg(not(target_os = "linux"))]
+            drop(lifecycle);
+        }
+        Ok(())
+    }
+
+    /// Performs the same semantic shutdown while retaining its actual body.
+    ///
+    /// Receiving cleanup records an independent failure before adopting its
+    /// actual alias owners into Main. Neither result publishes or drops this
+    /// body, so adoption always precedes its canonical return.
+    pub(crate) fn shutdown_before_main_return(&mut self) -> Result<(), SchedulerError> {
+        if let Some(lifecycle) = self.lifecycle.as_mut() {
+            lifecycle.abort_stopped_restore()?;
+        }
+        Ok(())
+    }
+
+    /// Observes the required private return pair without claiming body closure.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_main_return(&self) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(ProductionVmLifecycleLoop::has_main_return)
+    }
+
+    /// Corroborates the actual body destination against its input return owner.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn matches_input_return(
+        &self,
+        input: &crate::lifecycle_cleanup::ServiceInputReturn,
+    ) -> bool {
+        self.lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| match &lifecycle.construction_custody {
+                LifecycleConstructionCustody::Main { destination, .. } => {
+                    destination.matches_input_return(input)
+                }
+                LifecycleConstructionCustody::Unissued(_) => false,
+            })
+    }
+
+    /// Publishes a witnessed body after its actual alias input was adopted.
+    ///
+    /// A false result preserves the same unissued body. No semantic operation,
+    /// destructor or fallible delivery runs after a native body is taken.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn return_to_main(&mut self) -> bool {
+        if !self.has_main_return() {
+            return false;
+        }
+        if let Some(lifecycle) = self.lifecycle.take() {
+            lifecycle.retire_owned_body();
+            return true;
+        }
+        false
+    }
+
+    /// Borrows only the original body slot for a pure same-role custody return.
+    pub(crate) fn retirement_loop_slot(&mut self) -> &mut Option<ProductionVmLifecycleLoop> {
+        &mut self.lifecycle
+    }
+}
+
+impl Drop for ProductionVmStoppedLifecycle {
+    fn drop(&mut self) {
+        if let Some(lifecycle) = self.lifecycle.take() {
+            #[cfg(target_os = "linux")]
+            if lifecycle.has_main_return() {
+                lifecycle.retire_owned_body();
+                return;
+            }
+            // Standalone callers must retain the same complete stopped World
+            // as the daemon owner when physical retirement is not proven.
+            std::mem::forget(lifecycle);
+        }
+    }
+}
+
+/// Reconstructs one complete exact World with every live native node stopped.
+///
+/// Logical Running, PoweredOff and PermanentlyFailed dispositions retain their
+/// authenticated meanings. The caller must keep this lifecycle private until
+/// its durable execution-ownership commit; physical reconstruction alone does
+/// not authorize exposure, a scheduler quantum, or source destruction.
+///
+/// # Errors
+///
+/// Returns [`ProductionVmConstructionFailure`] retaining the exact inputs for a
+/// different scenario, incomplete continuation, or unsuccessful native restore.
+pub fn build_production_vm_exact_stopped_lifecycle(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    config: &ProductionVmLifecycleConfig,
+    decoded: DecodedProductionExactCheckpoint,
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmStoppedLifecycle, ProductionVmConstructionFailure> {
+    let custody = construction::retain_construction_inputs(
+        launcher,
+        Some(decoded.into_checkpoint()),
+        None,
+        None,
+        Vec::new(),
+    )?;
+    construction::build_from_custody(
+        scenario,
+        source,
+        config,
+        custody,
+        construction::ExactRestoreExposure::AwaitingOwnershipCommit,
+    )
+    .map(ProductionVmStoppedLifecycle::from_retained_loop)
 }
 
 /// Authenticates the exact scheduler and device boundary used by hot-fork capture.
@@ -2427,8 +2528,15 @@ pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     closure: ContentHash,
+    ram_catalog_provider: Option<&Arc<dyn ProductionRamCatalogProvider>>,
 ) -> Result<ProductionVmExactHotForkSourceBoundary, LifecycleApiError> {
-    let checkpoint = load_exact_checkpoint_set(run_state_root, scenario, source, closure)?;
+    let checkpoint = load_exact_checkpoint_set(
+        run_state_root,
+        scenario,
+        source,
+        closure,
+        ram_catalog_provider,
+    )?;
     ProductionVmExactHotForkSourceBoundary::from_exact_checkpoint(&checkpoint)
         .map_err(|error| loop_factory_error(format!("authenticate hot-fork boundary: {error}")))
 }
@@ -2451,22 +2559,77 @@ pub fn authenticate_production_vm_exact_hot_fork_source_boundary(
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError::LoopFactory`] when the scenario, continuation,
-/// node set, service-state policy, physical boundary, process incarnation,
-/// lease, durable run-state root, or lifecycle construction differs from the
-/// assembled World.
+/// Returns [`ProductionVmConstructionFailure`] retaining the continuation,
+/// children and launcher when validation or lifecycle construction refuses.
 #[cfg(target_os = "linux")]
-pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher<L>(
+pub fn build_production_vm_lifecycle_loop_from_hot_fork_with_launcher(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     continuation: ProductionVmHotForkWorldContinuation,
     adoptions: Vec<ProductionVmHotForkNodeAdoption>,
     run_state_root: impl Into<PathBuf>,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    let mut custody = construction::retain_construction_inputs(
+        launcher,
+        None,
+        None,
+        Some(continuation),
+        adoptions,
+    )?;
+    if let Err(first) = prepare_retained_hot_fork_construction(
+        scenario,
+        source,
+        &mut custody,
+        run_state_root.into(),
+    ) {
+        return Err(custody.into_failure(first));
+    }
+    custody.into_loop().map_err(|custody| {
+        custody.into_failure(loop_factory_error(
+            "construction lost its complete lifecycle",
+        ))
+    })
+}
+
+/// Builds a retained fork while its original owner keeps the actual carrier.
+///
+/// The launcher, continuation and adoptions must already be installed together.
+/// A refused validation or physical operation leaves their partial state in the
+/// same carrier. Export is a separate pure move after successful preparation.
+///
+/// # Errors
+/// Returns the original validation or construction error without consuming the
+/// carrier or allocating a replacement ownership frame.
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare_retained_hot_fork_construction(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    custody: &mut ProductionVmConstructionCustody,
+    run_state_root: PathBuf,
+) -> Result<(), LifecycleApiError> {
+    let config = prepare_hot_fork_restore_inputs(scenario, source, custody, run_state_root)?;
+    construction::prepare_from_custody(
+        scenario,
+        source,
+        &config,
+        custody,
+        construction::ExactRestoreExposure::Released,
+    )
+}
+
+/// Validates and stages the captured continuation without exporting its owners.
+#[cfg(target_os = "linux")]
+fn prepare_hot_fork_restore_inputs(
+    scenario: &ScenarioDef,
+    source: &ScenarioDefForm,
+    custody: &mut ProductionVmConstructionCustody,
+    run_state_root: PathBuf,
+) -> Result<Arc<ProductionVmLifecycleConfig>, LifecycleApiError> {
+    let phase = custody.preparation_phase()?;
+    let continuation = phase.hot_fork_continuation.as_ref().ok_or_else(|| {
+        loop_factory_error("hot-fork continuation is absent from construction custody")
+    })?;
     if source.scenario_def() != *scenario || continuation.configuration().def.id() != scenario.id()
     {
         return Err(loop_factory_error(
@@ -2496,31 +2659,34 @@ where
             "hot-fork continuation node set differs from the scenario World",
         ));
     }
-
-    if adoptions.len() > source_nodes.len() {
+    if phase.hot_fork_adoptions.len() > source_nodes.len() {
         return Err(loop_factory_error(
             "hot-fork adopted child count exceeds the scenario World",
         ));
     }
-    let mut adoptions_by_node = BTreeMap::new();
-    for adoption in adoptions {
+    // Validate identities while every actual child remains in its input slot.
+    let mut adoption_generations = BTreeMap::new();
+    for adoption in &phase.hot_fork_adoptions {
         let node = adoption.identity().node().clone();
-        if adoptions_by_node.insert(node.clone(), adoption).is_some() {
+        if adoption_generations
+            .insert(node.clone(), adoption.identity().generation())
+            .is_some()
+        {
             return Err(loop_factory_error(format!(
                 "hot-fork World contains duplicate child `{}`",
-                node.name
+                node.name,
             )));
         }
     }
-    let adoption_generations = adoptions_by_node
-        .iter()
-        .map(|(node, adoption)| (node.clone(), adoption.identity().generation()))
-        .collect::<BTreeMap<_, _>>();
     let HotForkAdoptionInventory {
         expected_times,
         node_generations,
-    } = validate_hot_fork_adoption_inventory(&continuation, &adoption_generations)?;
-
+    } = validate_hot_fork_adoption_inventory(continuation, &adoption_generations)?;
+    // The admitted copy can refuse while the original continuation is retained.
+    let config = continuation.prepare_restore_config(run_state_root)?;
+    let continuation = phase.hot_fork_continuation.take().ok_or_else(|| {
+        loop_factory_error("hot-fork continuation disappeared from construction custody")
+    })?;
     let ProductionVmHotForkRestoreParts {
         config,
         checkpoint,
@@ -2529,23 +2695,49 @@ where
         block_bindings,
         ninep_bindings,
         active_host_io,
-    } = continuation.into_restore_parts(node_generations, run_state_root);
-    build_production_vm_lifecycle_loop_with_restore(
-        scenario,
-        source,
-        &config,
-        Some(checkpoint),
-        Box::new(launcher),
-        Some(ProductionVmHotForkRestore {
-            expected_times,
-            adoptions: adoptions_by_node,
-            immutable_root_images,
-            disk_bases,
-            block_bindings,
-            ninep_bindings,
-            active_host_io,
-        }),
-    )
+    } = continuation.into_restore_parts(node_generations, config);
+    phase.restore_checkpoint = Some(checkpoint);
+    phase.retained_config = Some(Arc::new(config));
+    phase.hot_fork_restore = Some(ProductionVmHotForkRestore {
+        expected_times,
+        adoptions: BTreeMap::new(),
+        immutable_root_images,
+        disk_bases,
+        block_bindings,
+        ninep_bindings,
+        active_host_io,
+    });
+
+    while let Some(adoption) = phase.hot_fork_adoptions.pop() {
+        phase.pending_adoption = Some(adoption);
+        let node = phase
+            .pending_adoption
+            .as_ref()
+            .ok_or_else(|| loop_factory_error("hot-fork pending adoption is absent"))?
+            .identity()
+            .node()
+            .clone();
+        let restore = phase
+            .hot_fork_restore
+            .as_mut()
+            .ok_or_else(|| loop_factory_error("hot-fork restore custody is absent"))?;
+        match restore.adoptions.entry(node) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                if let Some(adoption) = phase.pending_adoption.take() {
+                    entry.insert(adoption);
+                }
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                // Both the existing child and the incoming child stay retained.
+                return Err(loop_factory_error("hot-fork adoption slot is occupied"));
+            }
+        }
+    }
+    phase
+        .retained_config
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| loop_factory_error("hot-fork admitted configuration is absent"))
 }
 
 fn validate_hot_fork_adoption_inventory(
@@ -2622,26 +2814,16 @@ fn validate_hot_fork_adoption_inventory(
 ///
 /// # Errors
 ///
-/// Returns [`LifecycleApiError::LoopFactory`] when scenario validation,
-/// run-directory preparation, launch admission, QEMU startup, or scheduler
+/// Returns [`ProductionVmConstructionFailure`] with the actual inputs and
+/// partial lifecycle retained when validation, admission, launch, or scheduler
 /// construction fails.
-pub fn build_production_vm_lifecycle_loop_with_launcher<L>(
+pub fn build_production_vm_lifecycle_loop_with_launcher(
     scenario: &ScenarioDef,
     source: &ScenarioDefForm,
     config: &ProductionVmLifecycleConfig,
-    launcher: L,
-) -> Result<ProductionVmLifecycleLoop, LifecycleApiError>
-where
-    L: ProductionVmNodeLauncher + 'static,
-{
-    build_production_vm_lifecycle_loop_with_restore(
-        scenario,
-        source,
-        config,
-        None,
-        Box::new(launcher),
-        None,
-    )
+    launcher: Box<dyn ProductionVmNodeLauncher>,
+) -> Result<ProductionVmLifecycleLoop, ProductionVmConstructionFailure> {
+    build_production_vm_lifecycle_loop_with_restore(scenario, source, config, None, launcher, None)
 }
 
 fn validate_app_random_branch_replay_config(
@@ -2767,4 +2949,37 @@ mod run_lock_schema_tests {
 
         Ok(())
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+mod parent_park_drain;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use parent_park_drain::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
+};
+
+#[cfg(target_os = "linux")]
+pub use hot_fork::{
+    ProductionVmHotForkSourceRetirement, ProductionVmHotForkSourceRetirementFailure,
+    ProductionVmHotForkSourceRetirementHistory, SourceRearmHistory, SourceRetirementCause,
+    SourceRetirementRefusal,
+};
+
+/// Prices the existing terminal transaction buffers in their Source World.
+pub(crate) fn terminal_replacement_control_bytes(
+    selected: usize,
+) -> Result<u64, LifecycleApiError> {
+    let rows = std::alloc::Layout::array::<quantum_loop::PreparedTerminalReplacement>(selected)
+        .map_err(|_| loop_factory_error("terminal replacement row extent overflows"))?;
+    let values = std::alloc::Layout::array::<Option<QemuNode>>(selected)
+        .map_err(|_| loop_factory_error("terminal replacement value extent overflows"))?;
+    rows.size()
+        .checked_add(values.size())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| loop_factory_error("terminal replacement transaction extent overflows"))
 }

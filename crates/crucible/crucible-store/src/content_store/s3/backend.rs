@@ -1,5 +1,7 @@
 //! S3 immutable-object backend and multipart cleanup authority.
 
+use crate::content_store::{ObjectKind, graph_object_count};
+
 use super::*;
 
 /// Namespace and transfer policy for one S3 immutable-object backend.
@@ -370,6 +372,11 @@ impl ImmutableBlobBackend for S3BlobBackend {
         }
     }
 
+    fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
+        graph_object_count(objects)?;
+        Ok(())
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         let Some(length) = self.client.head_object(&self.bucket, &self.key(id))? else {
             return Ok(false);
@@ -390,13 +397,13 @@ impl ImmutableBlobBackend for S3BlobBackend {
         }
         BlobHandle::integrity_checked(
             id,
-            Arc::new(S3BlobSource {
+            S3BlobSource {
                 client: self.client.clone(),
                 bucket: self.bucket.clone(),
                 key: self.key(id),
                 id,
                 logical_length,
-            }),
+            },
         )
         .slice(range)
     }

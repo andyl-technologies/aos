@@ -10,6 +10,12 @@
   buildPlatform,
   hostPlatform,
   runtimePerl ? null,
+  patches ? [],
+  name ? "glibc-2.39",
+  preConfigure ? "",
+  postBuild ? "",
+  extraConfigureFlags ? [],
+  extraInstallFlags ? [],
 }: let
   # Only the public finalizer supplies an explicit runtime Perl.
   publicLibc = runtimePerl != null;
@@ -56,6 +62,8 @@ in
       runtimePerl
       ;
   } {
+    inherit name patches postBuild;
+    installFlags = extraInstallFlags;
     version = "2.39";
     url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.39.tar.xz";
     sha256 = "0zr0lk75rvkxp0xplfsggaj4fcv1xjpsvg5qrvp6yifim77q2mn0";
@@ -87,6 +95,7 @@ in
         "--without-gd"
         "--without-selinux"
       ]
+      ++ extraConfigureFlags
       ++ (
         if cetFlag != ""
         then [cetFlag]
@@ -97,7 +106,7 @@ in
       "libc_cv_c_cleanup=yes"
     ];
     preConfigure = ''
-      # CC wrapper: supplies the include paths that gccRaw's specs file used
+      ${preConfigure}# CC wrapper: supplies the include paths that gccRaw's specs file used
       # to embed (scrubbed to keep gccRaw's $out off the pre-tier chain).
       mkdir -p "$TMPDIR/ccwrap"
       # This binutils tier defaults to wall-clock archive member timestamps.

@@ -5,7 +5,7 @@
 //! attempt identity, so restart recovery does not materialize daemon history in
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
-//! Startup accepts only a bounded inventory of exact v15 attempt records; stale
+//! Startup accepts only a bounded inventory of exact v16 attempt records; stale
 //! staging names and every noncurrent record shape fail closed.
 //! Retention administration is a separate mutable capability whose fence binds
 //! one combined operational-root scan to a persistent generation.
@@ -18,6 +18,7 @@
 //!   retention-state-v1
 //!   assignments/<two-hex>/<assignment-id-hex>
 //!   attempts/<two-hex>/<attempt-key-hash>
+//!   receiving/<two-hex>/<operation-and-offer-digest>
 //! ```
 
 use std::collections::BTreeMap;
@@ -37,14 +38,22 @@ use crucible_campaign::{
 
 use crate::owned_advisory_lock::OwnedAdvisoryLock;
 
+mod receiving_transfer;
 mod record_codec;
+pub(crate) use receiving_transfer::{
+    ReceivingTransferCas, ReceivingTransferPhase, ReceivingTransferRecord,
+};
+mod source_transfer;
+mod startup_inventory;
 
 use record_codec::*;
+use source_transfer::preserves_source_transfer;
+pub use source_transfer::{SourceTransferIntent, SourceTransferPhase, SourceTransferState};
 
 const ASSIGNMENT_MAGIC: &[u8] = b"crucible.executor.assignment-record.v1\0";
-const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v15\0";
+const ATTEMPT_STATE_MAGIC: &[u8] = b"crucible.executor.attempt-state-record.v16\0";
 const ASSIGNMENT_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-record.v1";
-const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v15";
+const ATTEMPT_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.attempt-state-record.v16";
 const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-state.v1\0";
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
@@ -452,6 +461,8 @@ pub enum AttemptRuntimeState {
         checkpoint: ExactCheckpointId,
         /// Resource/retention basis needed for automatic promotion recovery.
         promotion_basis: Option<CheckpointPromotionExecutionBasis>,
+        /// Durable maintenance fence; no ordinary transition may erase it.
+        source_transfer: Option<SourceTransferState>,
     },
     /// One paused raw root has durably reserved its replay-validated replacement.
     CheckpointPromoting {
@@ -759,6 +770,19 @@ impl AttemptRuntimeState {
 
     fn validates_for_key(self, key: AttemptExecutionKey) -> bool {
         let scoped_capture = matches!(key.scope(), AttemptExecutionScope::SavepointCapture { .. });
+        if let Some(transfer) = self.source_transfer()
+            && (!transfer.valid()
+                || key.scope() != AttemptExecutionScope::Semantic
+                || !matches!(
+                    self,
+                    Self::Paused {
+                        promotion_basis: None,
+                        ..
+                    }
+                ))
+        {
+            return false;
+        }
         if scoped_capture
             && (self.origin() != AttemptExecutionOrigin::Initial
                 || matches!(
@@ -1232,7 +1256,7 @@ impl AssignmentLedger for MemoryAssignmentLedger {
         if next.is_some_and(|state| !state.validates_for_key(key)) {
             return Ok(AttemptStateCas::Conflict { current });
         }
-        if current != expected {
+        if current != expected || !preserves_source_transfer(current, next) {
             return Ok(AttemptStateCas::Conflict { current });
         }
         self.retention_generation = AssignmentRetentionGeneration::from_bytes(
@@ -1374,6 +1398,29 @@ pub struct DirectoryAssignmentLedger {
     retention_state: AssignmentRetentionState,
 }
 
+/// Returns the bounded physical peak of streamed ledger startup and publication.
+///
+/// Records are capped at 16 KiB and shard names at 256. A streamed directory
+/// owns one 64 KiB buffer; no allocation scales with historical attempt count.
+/// Path storage accounts for twenty overlapping Linux PATH_MAX-sized names.
+pub(crate) fn startup_inventory_resources()
+-> crucible_host_resources::ram_policy::HostResourceVector {
+    let metadata = (std::mem::size_of::<DirectoryAssignmentLedger>()
+        + 20 * 4096
+        + 2 * 256 * (std::mem::size_of::<std::ffi::OsString>() + 255)) as u64;
+    let staging = 2 * 64 * 1024 + 4 * (MAX_LEDGER_RECORD_BYTES + 1);
+    crucible_host_resources::ram_policy::HostResourceVector {
+        resident_peak_bytes: metadata + staging,
+        metadata_bytes: metadata,
+        staging_bytes: staging,
+        // Root (2), bound lock (4), two directory authorities (4), raw
+        // iterator (1), anchored record (3), reader (1), verification (2),
+        // and parent lookup (2) cover the overlapping open/read/write peak.
+        file_descriptors: 2 + 4 + 2 * 2 + 1 + 3 + 1 + 2 + 2,
+        ..Default::default()
+    }
+}
+
 impl DirectoryAssignmentLedger {
     /// Opens a durable ledger and acquires exclusive single-writer ownership.
     ///
@@ -1385,8 +1432,26 @@ impl DirectoryAssignmentLedger {
     /// Returns [`AssignmentLedgerError`] when the directory cannot be created,
     /// another writer owns it, or the lock cannot be acquired safely.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, AssignmentLedgerError> {
+        Self::open_internal(root, &mut || Ok(()), false)
+    }
+
+    /// Opens the original writer with checks at every streamed record boundary.
+    pub(crate) fn open_with_boundary(
+        root: impl Into<PathBuf>,
+        boundary: &mut dyn FnMut() -> Result<(), AssignmentLedgerError>,
+    ) -> Result<Self, AssignmentLedgerError> {
+        Self::open_internal(root, boundary, true)
+    }
+
+    fn open_internal(
+        root: impl Into<PathBuf>,
+        boundary: &mut dyn FnMut() -> Result<(), AssignmentLedgerError>,
+        retain_uncertain_writer: bool,
+    ) -> Result<Self, AssignmentLedgerError> {
         let root = root.into();
+        boundary()?;
         create_directory_durable(&root)?;
+        boundary()?;
         let authority = crate::anchored_fs::AnchoredDirectory::open(root.clone())
             .map_err(|source| anchored_ledger_error(source, "open-ledger-root"))?;
         let lock_path = root.join("writer.lock");
@@ -1395,18 +1460,58 @@ impl DirectoryAssignmentLedger {
             .map_err(|source| anchored_ledger_error(source, "open-writer-lock"))?;
         let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(lock_file)
             .map_err(|source| anchored_ledger_error(source, "lock-writer"))?;
-        validate_runtime_attempt_inventory(&authority)?;
-        authority
-            .sync()
-            .map_err(|source| anchored_ledger_error(source, "sync-ledger-root"))?;
-        let retention_state = load_or_create_retention_state(&authority, &root)?;
+        let validation = (|| {
+            let mut attempt_records = 0_usize;
+            let complete = startup_inventory::visit_attempt_states(
+                &authority,
+                &root,
+                MAX_RUNTIME_ATTEMPT_RECORDS,
+                &mut |_key, _state| {
+                    attempt_records += 1;
+                },
+                boundary,
+            )?;
+            if !complete {
+                return Err(corrupt("runtime-attempt-inventory-limit"));
+            }
+            receiving_transfer::visit_records(
+                &authority,
+                &root,
+                MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+                &mut |_| {},
+                boundary,
+            )?;
+            boundary()?;
+            authority
+                .sync()
+                .map_err(|source| anchored_ledger_error(source, "sync-ledger-root"))?;
+            let retention_state = load_or_create_retention_state(&authority, &root)?;
+            writer_lock
+                .verify_path_binding()
+                .map_err(|source| anchored_ledger_error(source, "verify-writer-lock"))?;
+            authority
+                .verify_path_binding()
+                .map_err(|source| anchored_ledger_error(source, "verify-ledger-startup"))?;
+            boundary()?;
+            Ok(retention_state)
+        })();
+        let retention_state = match validation {
+            Ok(state) => state,
+            Err(error) => {
+                if retain_uncertain_writer {
+                    // A failed original boundary cannot authenticate deletion.
+                    // Retain actual exclusion together with the charged account.
+                    std::mem::forget((authority, writer_lock));
+                }
+                return Err(error);
+            }
+        };
         let ledger = Self {
             root,
             authority,
             writer_lock,
             retention_state,
         };
-        ledger.verify_authority()?;
         Ok(ledger)
     }
 
@@ -1527,91 +1632,7 @@ fn visit_directory_attempt_states_with_authority(
     maximum: usize,
     visitor: &mut dyn FnMut(AttemptExecutionKey, AttemptRuntimeState),
 ) -> Result<bool, AssignmentLedgerError> {
-    let attempts = root.join("attempts");
-    let Some(attempts_authority) = authority
-        .open_directory_optional(&attempts, "open-attempt-root")
-        .map_err(|source| anchored_ledger_error(source, "open-attempt-root"))?
-    else {
-        return Ok(true);
-    };
-    let shards = attempts_authority
-        .entry_names(MAX_RUNTIME_ATTEMPT_SHARDS, "read-attempt-root-shards")
-        .map_err(|source| anchored_ledger_error(source, "read-attempt-root-shards"))?;
-    let mut visited = 0_usize;
-    for shard_name in shards {
-        let shard_name = shard_name
-            .to_str()
-            .ok_or_else(|| corrupt("attempt-root-shard-name"))?;
-        if shard_name.len() != 2
-            || !shard_name
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(corrupt("attempt-root-shard-name"));
-        }
-        let shard_path = attempts.join(shard_name);
-        let shard_authority = attempts_authority
-            .open_directory(&shard_path, "open-attempt-root-shard")
-            .map_err(|source| anchored_ledger_error(source, "open-attempt-root-shard"))?;
-        let records = shard_authority
-            .entry_names(MAX_RUNTIME_ATTEMPT_RECORDS, "read-attempt-root-records")
-            .map_err(|source| anchored_ledger_error(source, "read-attempt-root-records"))?;
-        for name in records {
-            let path = shard_path.join(&name);
-            let name = name
-                .to_str()
-                .ok_or_else(|| corrupt("attempt-root-record-name"))?;
-            if name.starts_with('.') {
-                return Err(corrupt("attempt-root-unknown-hidden-entry"));
-            }
-            if name.len() != 64
-                || !name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
-                return Err(corrupt("attempt-root-record-name"));
-            }
-            if visited >= maximum {
-                return Ok(false);
-            }
-            let bytes = read_optional_bounded(&shard_authority, &path)?
-                .ok_or_else(|| corrupt("attempt-root-record-disappeared"))?;
-            let (key, state) = decode_attempt_state(&bytes)?;
-            if attempt_path_at(root, key) != path {
-                return Err(corrupt("attempt-root-record-path-identity-mismatch"));
-            }
-            visitor(key, state);
-            visited = visited
-                .checked_add(1)
-                .ok_or_else(|| corrupt("attempt-record-count-overflow"))?;
-        }
-        shard_authority
-            .verify_path_binding()
-            .map_err(|source| anchored_ledger_error(source, "verify-attempt-root-shard"))?;
-    }
-    attempts_authority
-        .verify_path_binding()
-        .map_err(|source| anchored_ledger_error(source, "verify-attempt-root"))?;
-    authority
-        .verify_path_binding()
-        .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
-    Ok(true)
-}
-
-fn validate_runtime_attempt_inventory(
-    authority: &crate::anchored_fs::AnchoredDirectory,
-) -> Result<(), AssignmentLedgerError> {
-    let complete = visit_directory_attempt_states_with_authority(
-        authority,
-        authority.path(),
-        MAX_RUNTIME_ATTEMPT_RECORDS,
-        &mut |_key, _state| {},
-    )?;
-    if complete {
-        Ok(())
-    } else {
-        Err(corrupt("runtime-attempt-inventory-limit"))
-    }
+    startup_inventory::visit_attempt_states(authority, root, maximum, visitor, &mut || Ok(()))
 }
 
 impl AssignmentLedger for DirectoryAssignmentLedger {
@@ -1693,7 +1714,7 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
             return Err(corrupt("attempt-state-does-not-match-execution-scope"));
         }
         let current = self.load_attempt(key)?;
-        if current != expected {
+        if current != expected || !preserves_source_transfer(current, next) {
             return Ok(AttemptStateCas::Conflict { current });
         }
         self.advance_retention_state()?;
@@ -1730,11 +1751,22 @@ impl AssignmentLedger for DirectoryAssignmentLedger {
         &self,
         visitor: &mut dyn FnMut(ExactCheckpointId),
     ) -> Result<(), Self::Error> {
+        let mut attempt_records = 0;
         self.visit_attempt_records(&mut |_key, state| {
+            attempt_records += 1;
             for checkpoint in state.retained_checkpoint_roots().into_iter().flatten() {
                 visitor(checkpoint);
             }
-        })
+        })?;
+        self.visit_receiving_records(
+            MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+            &mut |record| {
+                if let Some(checkpoint) = record.binding().1.checkpoint() {
+                    visitor(checkpoint);
+                }
+            },
+            &mut || Ok(()),
+        )
     }
 }
 
@@ -1766,14 +1798,39 @@ impl AssignmentRetentionFence for DirectoryAssignmentRetentionFence<'_> {
         let mut summary =
             AssignmentRetentionSummary::new(self.ledger.retention_state.digest(), 0, 0, 0, 0);
         let mut visitor_error = None;
+        let mut attempt_records = 0;
         self.ledger
             .visit_attempt_states(&mut |_key, state| {
+                attempt_records += 1;
                 if visitor_error.is_none()
                     && let Err(source) = summary.visit(state, visitor)
                 {
                     visitor_error = Some(source);
                 }
             })
+            .map_err(AssignmentRetentionInventoryError::Backend)?;
+        self.ledger
+            .visit_receiving_records(
+                MAX_RUNTIME_ATTEMPT_RECORDS.saturating_sub(attempt_records),
+                &mut |record| {
+                    if visitor_error.is_none() {
+                        let result = (|| {
+                            let checkpoint = record
+                                .binding()
+                                .1
+                                .checkpoint()
+                                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+                            summary.checkpoint_roots = summary
+                                .checkpoint_roots
+                                .checked_add(1)
+                                .ok_or(AssignmentRetentionVisitorError::LimitExceeded)?;
+                            visitor(AssignmentRetentionRoot::ExactCheckpoint(checkpoint))
+                        })();
+                        visitor_error = result.err();
+                    }
+                },
+                &mut || Ok(()),
+            )
             .map_err(AssignmentRetentionInventoryError::Backend)?;
         if let Some(source) = visitor_error {
             return Err(AssignmentRetentionInventoryError::Visitor(source));

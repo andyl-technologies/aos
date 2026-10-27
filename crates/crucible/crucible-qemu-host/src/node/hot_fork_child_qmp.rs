@@ -1,5 +1,6 @@
 //! Branch-private QMP endpoint staging for a retained QEMU template.
 
+use std::borrow::Cow;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;
@@ -569,7 +570,7 @@ impl QemuNode {
     }
 }
 
-fn qmp_rejected(message: impl Into<String>) -> QemuHotForkChildQmpStageError {
+fn qmp_rejected(message: impl Into<Cow<'static, str>>) -> QemuHotForkChildQmpStageError {
     qmp_rejected_source(QemuNodeChannelError::new(
         "stage hot-fork child QMP",
         message,

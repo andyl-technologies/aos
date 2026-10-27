@@ -12,10 +12,12 @@ use thiserror::Error;
 
 use super::{
     GuestMemoryRange, GuestMemoryReader, PluginWhiteboxDoorbell, WhiteboxDoorbellError,
-    WhiteboxDoorbellTrapEvent, WhiteboxGuestInput, WhiteboxGuestInputCapability,
-    WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter,
-    read_doorbell_payload,
+    WhiteboxDoorbellTrapEvent, WhiteboxGuestInputCapability, WhiteboxGuestInputInjection,
+    WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter, read_doorbell_payload,
 };
+
+mod prepared;
+pub(crate) use prepared::PreparedSelectableTrap;
 
 mod catalog;
 pub use catalog::{
@@ -151,65 +153,9 @@ where
 {
     let payload = read_doorbell_payload(doorbell, reader, event)
         .map_err(SelectableDoorbellError::Doorbell)?;
-    if coordinate.raw_icount() != event.current_icount()
-        || coordinate.vcpu_index() != event.vcpu_index()
-    {
-        return Err(SelectableDoorbellError::CoordinateMismatch);
-    }
-    match decode_selectable_message_kind(&payload)? {
-        SelectableMessageKind::Register => {
-            let registration = SelectableRegister::decode(&payload)?;
-            service.register_selectable(&registration, coordinate)?;
-            Ok(SelectableDoorbellOutcome::Registered {
-                registration,
-                coordinate,
-            })
-        }
-        SelectableMessageKind::Request => {
-            let request = SelectionRequest::decode(&payload)?;
-            let disposition =
-                service.serve_selection(&request, coordinate, event.payload_range())?;
-            let SelectableReplyDisposition::Reply(reply) = disposition else {
-                return Ok(SelectableDoorbellOutcome::Pending {
-                    request,
-                    coordinate,
-                });
-            };
-            if reply.sequence() != request.sequence() {
-                return Err(SelectableDoorbellError::ReplySequenceMismatch {
-                    expected: request.sequence(),
-                    actual: reply.sequence(),
-                });
-            }
-            let reply_bytes = reply.encode()?;
-            if reply_bytes.len() > request.reply_capacity() {
-                return Err(SelectableDoorbellError::ReplyExceedsReservation {
-                    reply_len: reply_bytes.len(),
-                    capacity: request.reply_capacity(),
-                });
-            }
-            let mut full_buffer = vec![0; request.reply_capacity()];
-            full_buffer[..reply_bytes.len()].copy_from_slice(&reply_bytes);
-            let input =
-                WhiteboxGuestInput::new(event.current_icount(), event.payload_range(), full_buffer);
-            let injection = match doorbell
-                .inject_guest_input(capability, writer, event.current_icount(), &input)
-                .map_err(SelectableDoorbellError::Doorbell)?
-            {
-                WhiteboxGuestInputOutcome::Delivered(injection) => injection,
-                WhiteboxGuestInputOutcome::NotReady { delivery_icount } => {
-                    return Err(SelectableDoorbellError::ReplyNotDelivered { delivery_icount });
-                }
-            };
-            Ok(SelectableDoorbellOutcome::Replied {
-                request,
-                reply,
-                coordinate,
-                injection,
-            })
-        }
-        SelectableMessageKind::Reply => Err(SelectableDoorbellError::GuestSuppliedReply),
-    }
+    let prepared = PreparedSelectableTrap::decode(doorbell, event, coordinate, &payload)?;
+    drop(payload);
+    prepared.serve(capability, service, writer)
 }
 
 /// Result of one successfully serviced selectable doorbell.
@@ -243,25 +189,69 @@ pub enum SelectableDoorbellOutcome {
 }
 
 /// Stable failure from the catalog or decision authority.
+///
+/// Catalog and transport causes remain typed until reporting. A service may
+/// also retain its own diagnostic through [`Self::new`].
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("selectable service failed: {message}")]
-pub struct SelectableDoorbellServiceError {
-    message: String,
+#[non_exhaustive]
+pub enum SelectableDoorbellServiceError {
+    /// Retains a decision authority's original diagnostic.
+    #[error("selectable service failed: {message}")]
+    Diagnostic {
+        /// Original service diagnostic, without the common error prefix.
+        message: String,
+    },
+    /// Retains the original catalog refusal without formatting it.
+    #[error("selectable service failed: {0}")]
+    Catalog(#[from] SelectableCatalogError),
+    /// Retains the original deferred-transport validation refusal.
+    #[error("selectable service failed: {0}")]
+    PendingTransport(
+        #[from] crucible_qemu_protocol::selectable_transport::SelectablePendingTransportError,
+    ),
+    /// Another request already owns the VMStop handoff.
+    #[error("selectable service failed: another selectable VMStop handoff is already pending")]
+    HandoffAlreadyPending,
+    /// QEMU refused the translated-block exit before deferred delivery.
+    #[error(
+        "selectable service failed: QEMU rejected selectable translated-block exit with status {status}"
+    )]
+    HandoffRejected {
+        /// Original status returned by QEMU's exit API.
+        status: i32,
+    },
 }
 
 impl SelectableDoorbellServiceError {
     /// Builds one service failure without exposing host-private state.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self::Diagnostic {
             message: message.into(),
         }
     }
 
-    /// Returns the stable service diagnostic.
+    /// Returns the stable service diagnostic without its common error prefix.
+    ///
+    /// An authority-provided diagnostic is borrowed from its original storage.
+    /// Typed causes are formatted into an owned string only when this method
+    /// is called. Formatting the error through [`std::fmt::Display`] writes
+    /// directly to the caller's formatter instead.
     #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn message(&self) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
+
+        match self {
+            Self::Diagnostic { message } => Cow::Borrowed(message),
+            Self::Catalog(source) => Cow::Owned(source.to_string()),
+            Self::PendingTransport(source) => Cow::Owned(source.to_string()),
+            Self::HandoffAlreadyPending => {
+                Cow::Borrowed("another selectable VMStop handoff is already pending")
+            }
+            Self::HandoffRejected { status } => Cow::Owned(format!(
+                "QEMU rejected selectable translated-block exit with status {status}"
+            )),
+        }
     }
 }
 

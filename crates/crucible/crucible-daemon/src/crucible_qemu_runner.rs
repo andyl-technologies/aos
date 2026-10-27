@@ -305,6 +305,22 @@ where
         }
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        let fresh = self
+            .fresh
+            .try_retire_original(original)
+            .map_err(QemuAttemptExecutionRouterError::Fresh);
+        let resume = self
+            .resume
+            .try_retire_original(original)
+            .map_err(QemuAttemptExecutionRouterError::Resume);
+
+        fresh.and(resume)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         let Some(route) = self.pending.take() else {
             return;
@@ -366,6 +382,14 @@ mod tests {
         expects_resume: bool,
         disposition: RoutedFailureDisposition,
         message: &'static str,
+        retirement: Option<RetirementProbe>,
+    }
+
+    struct RetirementProbe {
+        file: Option<std::fs::File>,
+        calls: usize,
+        refuse_once: bool,
+        operation_id: u64,
     }
 
     impl RoutedFailureRunner {
@@ -391,6 +415,25 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(context.resume_checkpoint().is_some(), self.expects_resume);
             Err(self.failure())
+        }
+
+        fn try_retire_original(
+            &mut self,
+            original: &crucible_host_resources::host_supervision::HostOperationGuard,
+        ) -> Result<(), Self::Error> {
+            let Some(probe) = self.retirement.as_mut() else {
+                return Ok(());
+            };
+            assert_eq!(
+                original.status().expect("same live operation").operation_id,
+                probe.operation_id
+            );
+            probe.calls += 1;
+            if std::mem::take(&mut probe.refuse_once) {
+                return Err(self.message);
+            }
+            probe.file = None;
+            Ok(())
         }
     }
 
@@ -532,12 +575,14 @@ mod tests {
                 expects_resume: false,
                 disposition: RoutedFailureDisposition::Retryable,
                 message: "fresh unavailable",
+                retirement: None,
             },
             RoutedFailureRunner {
                 calls: Arc::clone(&resume_calls),
                 expects_resume: true,
                 disposition: RoutedFailureDisposition::Canceled,
                 message: "resume canceled",
+                retirement: None,
             },
         );
         let input = routed_input();
@@ -583,12 +628,14 @@ mod tests {
                 expects_resume: false,
                 disposition: RoutedFailureDisposition::Retryable,
                 message: "unused fresh failure",
+                retirement: None,
             },
             RoutedFailureRunner {
                 calls: Arc::clone(&resume_calls),
                 expects_resume: true,
                 disposition: RoutedFailureDisposition::Canceled,
                 message: "verified resume canceled",
+                retirement: None,
             },
         );
         let input = routed_input_for_stop(StopCondition::EventCount(4));
@@ -604,11 +651,167 @@ mod tests {
         assert_eq!(resume_calls.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn retirement_visits_inactive_routes_and_preserves_refused_descriptors() {
+        use crucible_host_resources::host_supervision::{
+            HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+        };
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+
+        // A semantic route can be absent even though either constructor owns
+        // cleanup. Failure of one route must not suppress the other callback.
+        for pending in [
+            None,
+            Some(QemuAttemptExecutionPendingRoute::Fresh),
+            Some(QemuAttemptExecutionPendingRoute::Resume),
+        ] {
+            for (fresh_refuses, resume_refuses) in [(true, false), (false, true), (true, true)] {
+                let supervisor =
+                    HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+                        .expect("bounded component supervision");
+                let original = supervisor
+                    .begin(HostOperationClass::Cleanup)
+                    .expect("cleanup operation");
+                let operation_id = original.status().expect("original status").operation_id;
+                let make_runner = |refuse_once, message| RoutedFailureRunner {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    expects_resume: false,
+                    disposition: RoutedFailureDisposition::Terminal,
+                    message,
+                    retirement: Some(RetirementProbe {
+                        file: Some(tempfile::tempfile().expect("retained descriptor")),
+                        calls: 0,
+                        refuse_once,
+                        operation_id,
+                    }),
+                };
+                let mut router = QemuAttemptExecutionRouter::new(
+                    make_runner(fresh_refuses, "fresh retirement refused"),
+                    make_runner(resume_refuses, "resume retirement refused"),
+                );
+                router.pending = pending;
+                let identity = |runner: &RoutedFailureRunner| {
+                    let file = runner
+                        .retirement
+                        .as_ref()
+                        .expect("probe")
+                        .file
+                        .as_ref()
+                        .expect("owned descriptor");
+                    let metadata = file.metadata().expect("descriptor identity");
+                    (file.as_raw_fd(), metadata.dev(), metadata.ino())
+                };
+                let fresh_identity = identity(&router.fresh);
+                let resume_identity = identity(&router.resume);
+
+                let failure = router.try_retire_original(&original);
+
+                if fresh_refuses {
+                    assert!(matches!(
+                        failure,
+                        Err(QemuAttemptExecutionRouterError::Fresh(
+                            "fresh retirement refused"
+                        ))
+                    ));
+                    assert_eq!(identity(&router.fresh), fresh_identity);
+                } else {
+                    assert!(matches!(
+                        failure,
+                        Err(QemuAttemptExecutionRouterError::Resume(
+                            "resume retirement refused"
+                        ))
+                    ));
+                    assert!(
+                        router
+                            .fresh
+                            .retirement
+                            .as_ref()
+                            .expect("fresh probe")
+                            .file
+                            .is_none()
+                    );
+                }
+                if resume_refuses {
+                    assert_eq!(identity(&router.resume), resume_identity);
+                } else {
+                    assert!(
+                        router
+                            .resume
+                            .retirement
+                            .as_ref()
+                            .expect("resume probe")
+                            .file
+                            .is_none()
+                    );
+                }
+                assert_eq!(
+                    router.fresh.retirement.as_ref().expect("fresh probe").calls,
+                    1
+                );
+                assert_eq!(
+                    router
+                        .resume
+                        .retirement
+                        .as_ref()
+                        .expect("resume probe")
+                        .calls,
+                    1
+                );
+                assert_eq!(router.pending, pending);
+
+                router
+                    .try_retire_original(&original)
+                    .expect("same-owner retry");
+
+                assert!(
+                    router
+                        .fresh
+                        .retirement
+                        .as_ref()
+                        .expect("fresh probe")
+                        .file
+                        .is_none()
+                );
+                assert!(
+                    router
+                        .resume
+                        .retirement
+                        .as_ref()
+                        .expect("resume probe")
+                        .file
+                        .is_none()
+                );
+                assert_eq!(
+                    router.fresh.retirement.as_ref().expect("fresh probe").calls,
+                    2
+                );
+                assert_eq!(
+                    router
+                        .resume
+                        .retirement
+                        .as_ref()
+                        .expect("resume probe")
+                        .calls,
+                    2
+                );
+                assert_eq!(
+                    supervisor
+                        .operation_statuses()
+                        .expect("same operation roster")
+                        .len(),
+                    1
+                );
+                assert_eq!(router.pending, pending);
+            }
+        }
+    }
+
     fn exact_checkpoint_id(material: &[u8]) -> crucible_campaign::ExactCheckpointId {
         crucible_campaign::ExactCheckpointId::try_from(
             crucible_store::content_store::ContentId::for_bytes(
                 crucible_store::content_store::ObjectKind::ExactManifest,
-                5,
+                6,
                 material,
             ),
         )

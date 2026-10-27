@@ -1,6 +1,6 @@
 //! The SS25.1 cost model: scenario inputs and the closed-form evaluator.
 //!
-//! This module owns the *modeled inputs* to the RFC-0010 file 25 cost model  --  a
+//! This module owns the *modeled inputs* to the deterministic execution cost model -- a
 //! [`BenchScenario`] of [`BenchNode`]s and [`BenchLink`]s plus the run-shaping
 //! [`RealizationConfig`]  --  and the deterministic closed form that turns them into
 //! a [`CostModelBreakdown`]:

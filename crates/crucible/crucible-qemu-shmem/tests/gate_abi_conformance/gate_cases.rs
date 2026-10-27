@@ -54,6 +54,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_node_slot, advance_stop_condition)",
         "offsetof(crucible_shmem_node_slot, publish_gen)",
         "offsetof(crucible_shmem_node_slot, control_boundary_ack)",
+        "offsetof(crucible_shmem_node_slot, parent_park_return)",
         "offsetof(crucible_shmem_node_slot, preemption_at_tick)",
         "offsetof(crucible_shmem_node_slot, preemption_deadline_tick)",
         "offsetof(crucible_shmem_node_slot, preemption_ceiling_tick)",

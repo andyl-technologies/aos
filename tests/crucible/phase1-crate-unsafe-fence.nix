@@ -327,11 +327,18 @@
       safeWrapperContract = [
         "Unsafe boundary discipline:"
         "public callers use safe setup descriptor handover wrappers"
-        "validate the fixed three-fd order and descriptor count"
+        "validate the fixed descriptor order and exact count"
+        "the digest workspace is sixth exactly when the setup frame declares it"
       ];
     }
     {
       package = "crucible-device";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-ram";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -425,6 +432,27 @@
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
+    }
+    {
+      package = "crucible-host-resources";
+      root = "src/lib.rs";
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use safe host resource capabilities"
+        "wrappers retain original task, descriptor, and memory permits"
+      ];
+    }
+    {
+      package = "crucible-sqlite-heap";
+      root = "src/lib.rs";
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "safe integer-only controls"
+        "validate positive representable limits"
+        "no pointers, callbacks, configuration or shutdown"
+      ];
     }
     {
       package = "crucible-store-s3";
@@ -624,7 +652,7 @@ in
             runtime_safe_crates=${toString (builtins.length (builtins.filter (spec: !spec.unsafeBoundary && spec.package != "crucible-test-support") specs))}
             runtime_unsafe_boundary_crates=${toString (builtins.length (builtins.filter (spec: spec.unsafeBoundary) specs))}
             test_only_safe_crates=1
-            unsafe_policy=root-fences,enumerated-unsafe-boundary,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
+            unsafe_policy=root-fences,enumerated-unsafe-boundaries,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
             RESULT
           '';
         }

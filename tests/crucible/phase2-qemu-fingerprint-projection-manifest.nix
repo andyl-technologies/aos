@@ -254,6 +254,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -263,6 +264,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -272,6 +274,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -281,6 +284,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -290,6 +294,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -fsdev synth,id=crucible-9p-fsdev0 \
@@ -301,6 +306,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -netdev hubport,id=crucible-netdev0,hubid=0 \
@@ -312,6 +318,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -device virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on,bus=pcie.0,addr=0x6 \
@@ -322,6 +329,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -chardev null,id=crucible-debug-activation \
@@ -334,6 +342,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -blockdev driver=crucible-shmem,node-name=crucible-blk0,size=1048576 \
@@ -345,6 +354,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -blockdev driver=crucible-shmem,node-name=crucible-blk0,size=1048576 \
@@ -356,6 +366,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -blockdev driver=null-co,node-name=crucible-root \
@@ -367,6 +378,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none -serial null \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -376,6 +388,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -blockdev driver=null-co,node-name=crucible-root \
@@ -387,6 +400,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -fsdev synth,id=crucible-9p-fsdev0 \
@@ -398,6 +412,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -netdev hubport,id=crucible-netdev0,hubid=0 \
@@ -409,6 +424,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -device virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on,bus=pcie.0,addr=0x6 \
@@ -419,6 +435,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -chardev null,id=crucible-debug-activation \
@@ -431,6 +448,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none -serial null \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
@@ -444,6 +462,7 @@ in
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none -serial null \
               $common_all_devices -plugin ./fault-manifest-plugin.so
 
@@ -452,6 +471,7 @@ in
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
+              -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
               -nodefaults -no-user-config -display none \
               $common_all_devices -plugin ./fault-manifest-plugin.so
 

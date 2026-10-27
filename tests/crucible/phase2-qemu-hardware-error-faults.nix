@@ -122,6 +122,7 @@
           timeout 30 "$qemu_binary" \
             $machine_args \
             -accel sim \
+            -plugin "${qemuPackage}/share/aos/crucible/native-tests/libcrucible-resident-ram-observer.so" \
             -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
             -smp 1 \
             -nographic \

@@ -1,31 +1,45 @@
 //! Canonical binary plan, action, fault, and predicate codec.
 
 use super::*;
-pub(super) fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
+pub(super) fn event_graph_assertion_references(
+    events: &[Event],
+) -> Result<Vec<AssertionId>, EngineError> {
     let mut assertions = BTreeSet::new();
     for event in events {
         if let Some(trigger) = &event.trigger {
-            collect_predicate_assertion_references(trigger, &mut assertions);
+            collect_predicate_assertion_references(trigger, &mut assertions)?;
         }
     }
-    assertions.into_iter().collect()
+    crate::owned_decode::charge_array::<AssertionId>(assertions.len())
+        .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    let mut references = Vec::new();
+    references
+        .try_reserve_exact(assertions.len())
+        .map_err(|source| {
+            scenario_serialization_error(format!("reserve assertion references: {source}"))
+        })?;
+    references.extend(assertions);
+    Ok(references)
 }
 
 pub(super) fn collect_predicate_assertion_references(
     predicate: &Predicate,
     assertions: &mut BTreeSet<AssertionId>,
-) {
+) -> Result<(), EngineError> {
     match predicate {
         Predicate::AssertionState { name, .. } => {
+            crate::owned_decode::charge_btree_set_entry::<AssertionId>()
+                .and_then(|()| crate::owned_decode::charge_array::<u8>(name.name.len()))
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
             assertions.insert(name.clone());
         }
         Predicate::AllOf { predicates } | Predicate::AnyOf { predicates } => {
             for predicate in predicates {
-                collect_predicate_assertion_references(predicate, assertions);
+                collect_predicate_assertion_references(predicate, assertions)?;
             }
         }
         Predicate::Once { predicate } | Predicate::Not { predicate } => {
-            collect_predicate_assertion_references(predicate, assertions);
+            collect_predicate_assertion_references(predicate, assertions)?;
         }
         Predicate::At { .. }
         | Predicate::After { .. }
@@ -40,6 +54,7 @@ pub(super) fn collect_predicate_assertion_references(
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => {}
     }
+    Ok(())
 }
 
 pub(super) fn write_event_binary(event: &Event, writer: &mut ScenarioBinaryWriter) {
@@ -133,6 +148,10 @@ pub(super) fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWr
 pub(super) fn read_action_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Action, EngineError> {
+    reader.with_nesting(read_action_binary_inner)
+}
+
+fn read_action_binary_inner(reader: &mut ScenarioBinaryReader<'_>) -> Result<Action, EngineError> {
     match reader.read_u8()? {
         0 => Ok(Action::ArmTimer {
             name: TimerId {
@@ -173,7 +192,7 @@ pub(super) fn read_action_binary(
         }),
         9 => {
             let count = reader.read_collection_count("action.group")?;
-            let mut actions = Vec::with_capacity(count);
+            let mut actions = reader.allocate_vec(count)?;
             for _ in 0..count {
                 actions.push(read_action_binary(reader)?);
             }
@@ -270,7 +289,7 @@ pub(super) fn read_properties_binary(
 ) -> Result<Properties, EngineError> {
     let id = reader.read_hash()?;
     let count = reader.read_collection_count("properties.assertion")?;
-    let mut assertions = Vec::with_capacity(count);
+    let mut assertions = reader.allocate_vec(count)?;
     for _ in 0..count {
         assertions.push(read_assertion_binary(reader)?);
     }
@@ -389,7 +408,7 @@ pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut Scenari
         Predicate::ConsoleMatch { node, regex } => {
             writer.write_u8(10);
             writer.write_string(&node.name);
-            writer.write_string(&regex.pattern);
+            writer.write_string(regex.pattern());
         }
         Predicate::CoveragePoint { node, point } => {
             writer.write_u8(13);
@@ -466,11 +485,17 @@ pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut Scenari
 pub(super) fn read_predicate_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Predicate, EngineError> {
+    reader.with_nesting(read_predicate_binary_inner)
+}
+
+fn read_predicate_binary_inner(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Predicate, EngineError> {
     match reader.read_u8()? {
         0 => {
             let name = reader.read_string()?;
             let count = reader.read_collection_count("predicate.node")?;
-            let mut nodes = Vec::with_capacity(count);
+            let mut nodes = reader.allocate_vec(count)?;
             for _ in 0..count {
                 nodes.push(NodeId {
                     name: reader.read_string()?,
@@ -485,7 +510,7 @@ pub(super) fn read_predicate_binary(
         }),
         2 => {
             let count = reader.read_collection_count("predicate.all_of")?;
-            let mut predicates = Vec::with_capacity(count);
+            let mut predicates = reader.allocate_vec(count)?;
             for _ in 0..count {
                 predicates.push(read_predicate_binary(reader)?);
             }
@@ -493,18 +518,24 @@ pub(super) fn read_predicate_binary(
         }
         3 => {
             let count = reader.read_collection_count("predicate.any_of")?;
-            let mut predicates = Vec::with_capacity(count);
+            let mut predicates = reader.allocate_vec(count)?;
             for _ in 0..count {
                 predicates.push(read_predicate_binary(reader)?);
             }
             Ok(Predicate::AnyOf { predicates })
         }
-        4 => Ok(Predicate::Once {
-            predicate: Box::new(read_predicate_binary(reader)?),
-        }),
-        5 => Ok(Predicate::Not {
-            predicate: Box::new(read_predicate_binary(reader)?),
-        }),
+        4 => {
+            reader.admit_box::<Predicate>()?;
+            Ok(Predicate::Once {
+                predicate: Box::new(read_predicate_binary(reader)?),
+            })
+        }
+        5 => {
+            reader.admit_box::<Predicate>()?;
+            Ok(Predicate::Not {
+                predicate: Box::new(read_predicate_binary(reader)?),
+            })
+        }
         6 => Ok(Predicate::At {
             at: VirtualTime {
                 ticks: reader.read_u64()?,
@@ -544,9 +575,7 @@ pub(super) fn read_predicate_binary(
             node: NodeId {
                 name: reader.read_string()?,
             },
-            regex: RegexProgram {
-                pattern: reader.read_string()?,
-            },
+            regex: RegexProgram::from_pattern(reader.read_string()?),
         }),
         13 => Ok(Predicate::CoveragePoint {
             node: NodeId {
@@ -612,13 +641,13 @@ pub(super) fn read_frame_predicate_binary(
     match reader.read_u8()? {
         0 => Ok(FramePredicate::Any),
         1 => Ok(FramePredicate::Exact(
-            reader.read_binary_blob("frame exact bytes")?.to_vec(),
+            reader.read_owned_blob("frame exact bytes")?,
         )),
         2 => Ok(FramePredicate::Contains(
-            reader.read_binary_blob("frame contains bytes")?.to_vec(),
+            reader.read_owned_blob("frame contains bytes")?,
         )),
         3 => Ok(FramePredicate::Prefix(
-            reader.read_binary_blob("frame prefix bytes")?.to_vec(),
+            reader.read_owned_blob("frame prefix bytes")?,
         )),
         _ => Err(scenario_serialization_error("invalid frame predicate tag")),
     }

@@ -9,6 +9,8 @@ use super::super::network_fault_boundary::{
 
 #[test]
 fn phase_marker_coordinate_errors_identify_the_node_and_exact_ticks() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut log = EventLog::new();
     let entries = network_phase_marker(&mut log, "router-a", 10);
     let expected_nodes = BTreeSet::from([node("router-b")]);
@@ -53,6 +55,8 @@ fn phase_marker_coordinate_errors_identify_the_node_and_exact_ticks() {
 
 #[test]
 fn same_named_network_scenario_without_boot_capability_stays_serial() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = network_choice_scenario(&[
         "router-a",
         "router-b",
@@ -111,6 +115,8 @@ impl NetworkBoundaryLifecycle {
 
 #[test]
 fn ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = network_choice_scenario(&["router-a"]);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
@@ -245,6 +251,8 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
 
 #[test]
 fn network_fault_marker_rejects_a_frame_before_the_quiescent_barrier() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let mut log = EventLog::new();
     let marker = log
         .append_observable_events([ObservableEvent::guest_marker(
@@ -289,6 +297,8 @@ fn network_fault_marker_rejects_a_frame_before_the_quiescent_barrier() {
 
 #[test]
 fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = network_choice_scenario(&["router-a"]);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
@@ -332,6 +342,8 @@ fn ready_marker_discovers_the_same_public_network_choice_on_repeat() {
 
 #[test]
 fn selected_network_group_releases_the_exact_parked_phase() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = network_choice_scenario(&["router-a"]);
     let parent = Configuration::genesis(scenario.scenario_def());
     let selectable = NetworkFaultSelectable::next(
@@ -406,6 +418,8 @@ fn selected_network_group_releases_the_exact_parked_phase() {
 
 #[test]
 fn network_choice_waits_for_every_parked_vm_marker() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let names = ["router-a", "router-b", "router-c", "west", "east"];
     let scenario = network_choice_scenario(&names);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
@@ -477,6 +491,8 @@ fn network_choice_waits_for_every_parked_vm_marker() {
 
 #[test]
 fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let scenario = network_choice_scenario(&["router-a", "router-b"]);
     let input = input_for_scenario(scenario, StopCondition::NextChoice);
     let configuration = starting_configuration(&input);
@@ -560,6 +576,8 @@ fn network_choice_rejects_duplicate_unknown_and_stale_physical_markers() {
 
 #[test]
 fn lifecycle_without_marker_proof_cannot_publish_network_choice() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let input = input_for_scenario(
         network_choice_scenario(&["router-a"]),
         StopCondition::NextChoice,
@@ -590,6 +608,8 @@ fn lifecycle_without_marker_proof_cannot_publish_network_choice() {
 
 #[test]
 fn incidental_same_name_marker_is_inert_without_network_declaration() {
+    let _decode_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
     let declared = network_choice_scenario(&["router-a"]);
     let scenario = ScenarioDefForm::from_components(
         declared.world(),

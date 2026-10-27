@@ -19,7 +19,13 @@ pub(in crate::vm_lifecycle) use persistence::{
 };
 pub(in crate::vm_lifecycle::quantum_loop) use publication::release_restored_generation_after_scheduler_publication;
 pub(in crate::vm_lifecycle::quantum_loop) use restart_ownership::*;
-pub(in crate::vm_lifecycle::quantum_loop) use staging::*;
+pub(in crate::vm_lifecycle) use staging::PreparedTerminalReplacement;
+pub(in crate::vm_lifecycle::quantum_loop) use staging::{
+    PreparedLifecyclePrecommit, PreparedLifecycleProcessOwner, PreparedLifecycleTerminal,
+    TerminalReplacementLoan, lifecycle_hash_matches, lifecycle_intent_may_require_successor_generation,
+    lifecycle_resource_error, lifecycle_transition_text, replace_lifecycle_hash, try_lifecycle_hash,
+    try_lifecycle_path, try_lifecycle_string, try_lifecycle_transition,
+};
 
 impl ProductionVmLifecycleLoop {
     pub(super) fn begin_terminal_lifecycle_intent(
@@ -46,10 +52,6 @@ impl ProductionVmLifecycleLoop {
         terminal_decisions
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
-        let mut prepared_replacements = Vec::new();
-        prepared_replacements
-            .try_reserve_exact(intents.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let mut observed_exit_codes = Vec::new();
         observed_exit_codes
             .try_reserve_exact(intents.len())
@@ -60,10 +62,6 @@ impl ProductionVmLifecycleLoop {
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let mut replacement_nodes = Vec::new();
         replacement_nodes
-            .try_reserve_exact(intents.len())
-            .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
-        let mut replacement_values = Vec::new();
-        replacement_values
             .try_reserve_exact(intents.len())
             .map_err(|_| lifecycle_resource_error("nodes", 0, intents.len(), limits))?;
         let completed_exit_count = self.lifecycle_journal.completed_exits.len();
@@ -218,11 +216,9 @@ impl ProductionVmLifecycleLoop {
             actions,
             process_owners,
             terminal_decisions,
-            prepared_replacements,
             observed_exit_codes,
             block_handles,
             replacement_nodes,
-            replacement_values,
             reserved_event_records,
             reserved_event_log_bytes: u64::try_from(reserved_event_log_bytes).map_err(|_| {
                 lifecycle_resource_error("event_log_bytes", 0, reserved_event_log_bytes, limits)

@@ -17,6 +17,21 @@ pub trait QemuPluginIpcControlChannel: Send {
     /// Returns [`QemuNodeChannelError`] when the control channel cannot accept
     /// the teardown request.
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Sends teardown with the existing bounded cleanup operation.
+    ///
+    /// # Errors
+    /// Refuses transports without bounded live writes. Scripted transports may
+    /// complete their in-memory operation immediately.
+    fn send_quit_supervised(
+        &mut self,
+        _guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "send supervised plugin Quit",
+            "transport has no bounded cleanup writer",
+        ))
+    }
 }
 
 /// Shared-memory hot-path channel for per-quantum data.
@@ -217,6 +232,26 @@ pub trait QemuShmemHotPathChannel: Send {
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
 
+    /// Starts a split quantum with the live Source's actual retained lenders.
+    ///
+    /// # Errors
+    /// Refuses a supplied live publisher unless the channel implements the real
+    /// handoff, or propagates the channel's actual start failure.
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        if publication.is_some() {
+            return Err(QemuNodeChannelError::operational_supervision(
+                "start Quantum with actual Source",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            ));
+        }
+        self.start_quantum(horizon, stop_condition)
+    }
+
     /// Polls a split quantum without consuming its pending token.
     ///
     /// # Errors
@@ -397,6 +432,36 @@ pub trait QemuShmemHotPathChannel: Send {
         ))
     }
 
+    /// Prevalidates one exact stopped request without changing its ledger.
+    ///
+    /// # Errors
+    /// Refuses an unsupported channel, stale request or queued reply.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn validate_selectable_reset(
+        &mut self,
+        _pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "validate selectable reset",
+            "selectable reset transport unavailable",
+        ))
+    }
+
+    /// Abandons the exact request after correlated terminal reset observation.
+    ///
+    /// # Errors
+    /// Refuses an unsupported channel or inconsistent retained request ledger.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn abandon_selectable_after_reset(
+        &mut self,
+        _pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "abandon selectable reset",
+            "selectable reset transport unavailable",
+        ))
+    }
+
     /// Returns the exact host-mirrored selectable catalog plan, when enabled.
     #[must_use]
     fn selectable_catalog_plan(
@@ -517,6 +582,192 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_stopped_generation(
+        &mut self,
+        _actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<u64, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn prepare_parent_park_begin(
+        &mut self,
+        _binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        _stopped: u64,
+        _actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "retained parent Park preparation unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_begin(
+        &mut self,
+        _request: crate::qmp::parent_park_drain::ParentParkRequest<'_>,
+        _actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::parent_park_drain::QmpParentParkResult, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return_under_originals(
+        &mut self,
+        _binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        _actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "original parent Park return channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_return(
+        &mut self,
+        _binding: crucible_qemu_protocol::boundary_action::ActionBinding,
+        _cleanup: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpParentParkResult, crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "retained parent Park return channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn parent_park_import(
+        &mut self,
+        _imports: &crate::OriginalActorParkImports,
+        _actor: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _family: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), crate::QmpError> {
+        Err(crate::QmpError::InvalidBound {
+            operation: "paired park channel unavailable",
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn reset_selectable_under_original(
+        &mut self,
+        _pending: &crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpSelectableResetComplete, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "managed reset channel unavailable",
+        })
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn capture_readonly_backing<'host, 'owner>(
+        &mut self,
+        _observation: crate::OriginalBoundBackingObservation<'host, 'owner>,
+        _visitor: &mut dyn for<'event> FnMut(
+            crate::QmpReadOnlyBackingEvent<'event>,
+        ) -> std::io::Result<()>,
+    ) -> Result<crate::QmpReadOnlyBackingReceipt, crate::QemuReadOnlyBackingError<'owner>> {
+        Err(crate::QemuReadOnlyBackingError::Binding(
+            crate::OriginalActorAccountError::Unavailable,
+        ))
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn discover_kernel_swap_admission(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _generation: u64,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapAdmission, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap admission channel unavailable",
+        })
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn observe_kernel_swap_residency(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _generation: u64,
+        _topology_generation: u64,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpKernelSwapResidency, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap residency channel unavailable",
+        })
+    }
+
+    #[cfg(feature = "kernel-swap-measurement")]
+    fn close_kernel_swap_cancellation(
+        &mut self,
+        _cancellation: &mut crate::qmp::QmpKernelSwapCancellation,
+        _cleanup: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::qmp::QmpCommandComplete, crate::qmp::QmpError> {
+        Err(crate::qmp::QmpError::InvalidBound {
+            operation: "kernel-swap cancellation channel unavailable",
+        })
+    }
+
+    /// Reads only the closed two-page CPU writer fixture window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when fixed observation is unavailable, its evidence is
+    /// invalid, or the retained original refuses the operation.
+    #[cfg(any(test, feature = "test-support"))]
+    fn cpu_write_observation(
+        &mut self,
+        _guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuCpuWriteObservation, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "CPU write observation",
+            "fixed observation unavailable",
+        ))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn performance_observation(
+        &mut self,
+        _guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+        _resident: crucible_ram::ResourceLoan,
+    ) -> Result<crate::qmp::QemuPerformanceObservation, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "performance observation",
+            "fixed read-only observation unavailable",
+        ))
+    }
+
+    fn query_paused_cpu(
+        &mut self,
+        _vcpu: u32,
+        _generation: Option<u64>,
+    ) -> Result<crate::qmp::QmpPausedCpu, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query paused CPU",
+            "read-only CPU observation unavailable",
+        ))
+    }
+
+    /// Attaches the same live operation owner used by node host I/O.
+    ///
+    /// # Errors
+    /// Refuses channels without independently supervised operational transport.
+    fn set_host_operation_supervisor(
+        &mut self,
+        _supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "attach host operation supervisor",
+            "QMP channel has no live operational ownership",
+        ))
+    }
+
     /// Reports whether QEMU is already stopped for template preparation.
     ///
     /// A paused runstate is only a scheduling fact. The native template
@@ -529,6 +780,36 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         Err(QemuNodeChannelError::new(
             "query hot-fork source runstate",
             "QMP runstate query is unavailable",
+        ))
+    }
+
+    /// Binds the retained original before checkpoint transport or physical reads.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before sending a command.
+    #[cfg(target_os = "linux")]
+    fn bind_checkpoint_original(
+        &mut self,
+        _original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "bind checkpoint original",
+            "channel has no original-bound checkpoint transport",
+        ))
+    }
+
+    /// Consumes the retained ARM request on the authenticated QMP connection.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before checkpoint pause or descriptor import.
+    #[cfg(target_os = "linux")]
+    fn begin_checkpoint_receiving(
+        &mut self,
+        _receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "begin checkpoint receiving",
+            "channel has no original-bound native request receiver",
         ))
     }
 
@@ -547,6 +828,35 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     /// running-state transition. The next bounded step proves execution.
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError>;
 
+    /// Resumes through the same client while borrowing the original operation.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels before any command is sent.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "original reset resume",
+            "channel has no original-bound resume",
+        ))
+    }
+
+    /// Checks stopped runstate using the same live Transfer operation.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels without native I/O or a replacement bank.
+    fn is_stopped_for_transfer(
+        &mut self,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<bool, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "receiving stopped runstate",
+            "channel has no original-bound receiving runstate",
+        ))
+    }
+
     /// Imports one descriptor for an exact RAM checkpoint operation.
     ///
     /// # Errors
@@ -560,7 +870,22 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         _descriptor: BorrowedFd<'_>,
     ) -> Result<(), QemuNodeChannelError>;
 
-    /// Captures one direct or parent-relative exact checkpoint candidate.
+    /// Prepares bounded topology metadata without capturing RAM pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the channel cannot authenticate a paused topology.
+    fn prepare_exact_checkpoint_topology(
+        &mut self,
+        _request: &crate::QmpCheckpointCaptureRequest,
+    ) -> Result<crate::QmpCheckpointTopology, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "prepare checkpoint RAM topology",
+            "channel has no topology preparation capability",
+        ))
+    }
+
+    /// Captures one coherent paged exact checkpoint candidate.
     ///
     /// # Errors
     ///
@@ -580,6 +905,7 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn commit_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
     /// Aborts the active exact checkpoint candidate.
@@ -591,6 +917,7 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn abort_exact_checkpoint(
         &mut self,
         _identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
         _expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError>;
 
@@ -633,6 +960,21 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     fn query_hot_fork_plugin_barrier(
         &mut self,
     ) -> Result<crate::QmpHotForkPluginBarrierState, QemuNodeChannelError>;
+
+    /// Observes actual native map lifetimes under a retained original test scope.
+    ///
+    /// # Errors
+    /// Refuses unsupported channels, expired authority, or a malformed native report.
+    #[cfg(any(test, feature = "test-support"))]
+    fn query_block_borrowers_for_test(
+        &mut self,
+        _guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<crate::QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query actual block borrowers",
+            "read-only native borrower observation is unavailable",
+        ))
+    }
 
     /// Holds the native graph writer and block-drain barrier before sealing.
     ///
@@ -921,6 +1263,42 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         &mut self,
     ) -> Result<crate::QmpHotForkPrivateRingState, QemuNodeChannelError>;
 
+    #[cfg(target_os = "linux")]
+    fn install_hot_fork_child_ram(
+        &mut self,
+        _names: &crate::qmp::QmpHotForkChildRamNames,
+        _descriptors: crate::qmp::QmpHotForkChildRamDescriptors<'_>,
+        _template: u64,
+        _contract: u64,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "stage child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_hot_fork_child_ram(
+        &mut self,
+        _names: &crate::qmp::QmpHotForkChildRamNames,
+        _generation: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "release child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn query_hot_fork_child_ram(
+        &mut self,
+    ) -> Result<crate::qmp::QmpHotForkChildRamState, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query child RAM",
+            "channel has no child RAM custody",
+        ))
+    }
+
     /// Imports branch-private plugin control and wake endpoints into QEMU.
     ///
     /// # Errors
@@ -938,6 +1316,23 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
         _identity: crate::QmpHotForkPluginEndpointIdentity,
         _private_ring_generation: u64,
     ) -> Result<crate::QmpHotForkPluginEndpointState, QemuNodeChannelError>;
+
+    /// Attempts an actual source-object alias and authenticates its exact refusal.
+    ///
+    /// # Errors
+    /// Refuses unavailable native transport, unexpected acceptance, changed
+    /// retained state, a different rejection cause, or uncertain import release.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    fn probe_native_source_alias_for_test(
+        &mut self,
+        _kind: crate::node::QemuTestNativeAliasKind,
+        _descriptor: BorrowedFd<'_>,
+    ) -> Result<QemuNodeChannelError, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "probe native source alias",
+            "channel has no real native descriptor probe",
+        ))
+    }
 
     /// Closes plugin endpoints retained by the QEMU template and monitor.
     ///
@@ -1107,6 +1502,20 @@ pub(crate) trait QemuQmpMachineControlChannel: Send {
     ///
     /// Returns [`QemuNodeChannelError`] when QMP cannot send the quit command.
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
+
+    /// Requests termination under the caller's existing cleanup Original.
+    ///
+    /// # Errors
+    /// Refuses a transport without a same-Original bounded QMP exchange.
+    fn quit_under_original(
+        &mut self,
+        _original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "QMP quit",
+            "same cleanup Original transport unavailable",
+        ))
+    }
 
     /// Releases the process-scoped guest activation endpoint after proven reap.
     ///

@@ -26,9 +26,10 @@ use crate::{
 
 use super::{
     AttachedCanonicalCampaignRuntime, CampaignLocalServiceError, CampaignLocalServiceMode,
-    CampaignLoopbackServerShutdown, CampaignStateOwner, CanonicalCampaignRuntimeConfig,
-    MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, PreparedCanonicalCampaignRuntime,
-    prepare_canonical_campaign_runtime, prepare_canonical_campaign_runtime_endpoint,
+    CampaignLoopbackServerShutdown, CanonicalCampaignRuntimeConfig,
+    MAX_ATTACHED_CANONICAL_CAMPAIGN_RUNTIMES, PreparedCampaignStateOwner,
+    PreparedCanonicalCampaignRuntime, prepare_canonical_campaign_runtime,
+    prepare_canonical_campaign_runtime_endpoint,
 };
 
 /// Weak operational capability for attaching one runtime to a live service.
@@ -202,7 +203,7 @@ impl CampaignRuntimeRegistryOwner {
         planner_authority: Option<PlannerAuthorityKey>,
         mode: CampaignLocalServiceMode,
         shutdown: CampaignLoopbackServerShutdown,
-        repository_owner: CampaignStateOwner,
+        repository_owner: PreparedCampaignStateOwner,
         packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     ) -> Self {
         Self {
@@ -251,7 +252,7 @@ struct CampaignRuntimeRegistry {
     packaged_scope: Option<(PathBuf, BTreeSet<ScenarioArtifactId>)>,
     state: Mutex<RegistryState>,
     changed: Condvar,
-    _repository_owner: CampaignStateOwner,
+    _repository_owner: PreparedCampaignStateOwner,
 }
 
 impl CampaignRuntimeRegistry {
@@ -589,6 +590,8 @@ enum RuntimeControlReservation {
 
 fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignServiceFailure {
     match error {
+        #[cfg(feature = "private-measurement-domain")]
+        CampaignLocalServiceError::OriginalState(_) => CampaignServiceFailure::Unavailable,
         CampaignLocalServiceError::RuntimeReadOnly
         | CampaignLocalServiceError::RuntimeAuthorityUnavailable
         | CampaignLocalServiceError::StoreMaintenanceReadOnly => {
@@ -612,6 +615,9 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::RuntimeRegistryPoisoned
         | CampaignLocalServiceError::RuntimeMonitorPanicked => {
             CampaignServiceFailure::IntegrityFailure
+        }
+        CampaignLocalServiceError::RepositoryRamAdmission(error) => {
+            crucible_campaign::CampaignRepositoryError::classify_store_failure(error)
         }
         CampaignLocalServiceError::Runtime(error) => runtime_control_runtime_failure(error),
         CampaignLocalServiceError::Endpoint(_) => CampaignServiceFailure::Unavailable,

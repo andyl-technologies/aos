@@ -4,9 +4,81 @@ use super::*;
 use crate::QemuAsyncDriverRuntimeError;
 use thiserror::Error;
 
+/// Names an immutable operation retained by a bounded node-step failure.
+///
+/// Failures borrow this static metadata while retaining the complete node error
+/// inline. The label is diagnostic and grants no execution or retry authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuNodeStepOperation {
+    label: &'static str,
+}
+
+impl QemuNodeStepOperation {
+    /// Creates diagnostic metadata for a statically named operation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use crucible_qemu_host::QemuNodeStepOperation;
+    ///
+    /// const ADVANCE: QemuNodeStepOperation =
+    ///     QemuNodeStepOperation::new("advance to ceiling");
+    /// assert_eq!(ADVANCE.as_str(), "advance to ceiling");
+    /// ```
+    #[must_use]
+    pub const fn new(label: &'static str) -> Self {
+        Self { label }
+    }
+
+    /// Returns the unchanged operation label.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        self.label
+    }
+}
+
+impl std::fmt::Display for QemuNodeStepOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
+    }
+}
+
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// Enabled fingerprinting has no issued prebirth workspace owner.
+    #[error("fingerprint startup requires an issued device-digest workspace")]
+    DeviceDigestWorkspaceUnavailable,
+    /// The same original native account refused the fixed launch purpose.
+    #[cfg(target_os = "linux")]
+    #[error("original native launch account refused: {source}")]
+    OriginalNativeAccount {
+        /// The actual original account or supervision refusal.
+        #[source]
+        source: crate::OriginalActorAccountError,
+    },
+    /// The retained physical owner refused its actual process contract.
+    #[cfg(target_os = "linux")]
+    #[error("installed native process contract refused: {source}")]
+    OriginalNativeContract {
+        /// The actual initiating process-owner refusal.
+        #[source]
+        source: crate::QemuVmRealizationError,
+    },
+    /// The paid same-slot error control retains the first launch and postcut.
+    #[cfg(target_os = "linux")]
+    #[error("original native fresh launch refused: {source}")]
+    OriginalNativeLaunch {
+        /// The same existing shared control retained by the external slot.
+        #[source]
+        source: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
+    },
+    /// The original prebirth startup owner or cancellation role refused.
+    #[error(transparent)]
+    PluginStartup(#[from] crate::spawn::PluginStartupError),
+    /// A live operational budget or original-start outer cap refused progress.
+    #[error(transparent)]
+    HostSupervision(#[from] crucible_host_resources::host_supervision::HostSupervisionError),
     /// A caller requested a runtime trace outside the finite admission range.
     #[error("runtime trace budget {requested} must be within 1..={maximum} bytes")]
     InvalidRuntimeTraceBudget {
@@ -94,6 +166,14 @@ pub enum QemuLiveNodeStepGateError {
     HostSetup {
         /// Underlying host-setup error.
         source: QemuHostPluginSetupError,
+    },
+    /// A pre-CPU RAM controller exchange or inventory admission failed.
+    #[error("{operation} failed: {source}")]
+    RamAdmission {
+        /// Startup phase whose original failure is retained.
+        operation: &'static str,
+        /// Original authenticated transport, supervision, or admission cause.
+        source: crucible_qemu_protocol::ram_control::RamControlError,
     },
     /// The diagnostic path did not name the descriptor-pinned launch directory.
     #[error(
@@ -208,15 +288,13 @@ pub enum QemuLiveNodeStepGateError {
         /// Primary launch or assembly failure.
         primary: Box<QemuLiveNodeStepGateError>,
         /// Independent force-kill/reap failure.
-        cleanup: crate::QemuShutdownTargetError,
-        /// Nonduplicable direct-child handle retained after failed reap.
-        unreaped_child: Option<Box<crate::QemuNodeChild>>,
+        cleanup: crate::QemuNodeError,
     },
     /// A bounded node step failed.
     #[error("{operation} failed")]
     Step {
-        /// Node operation that failed.
-        operation: &'static str,
+        /// Statically retained diagnostic operation that failed.
+        operation: &'static QemuNodeStepOperation,
         /// Underlying node error.
         source: QemuNodeError,
     },
@@ -253,28 +331,103 @@ pub enum QemuLiveNodeStepGateError {
 }
 
 impl QemuLiveNodeStepGateError {
-    /// Extracts a direct child whose mandatory synchronous reap failed.
+    /// Reports a retained Source receiver requiring physical disposition.
     ///
-    /// A guarded caller must transfer the returned handle into its attempt
-    /// resource owner before releasing containment or storage authority.
+    /// The same prebirth receiver owns any failed child or Node. The error
+    /// retains only its existing shared control; it never extracts that body.
+    /// A diagnostic alone cannot establish physical return.
     #[must_use]
-    pub fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
-        match self {
-            Self::WhiteboxSetup { source } => source.take_unreaped_child(),
-            Self::ExactVmstatePreparation { source } => source.take_unreaped_child(),
-            Self::NodeFactory { source } => source.take_unreaped_child(),
-            Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
-            _ => None,
+    pub fn has_retained_owner(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            matches!(self, Self::OriginalNativeLaunch { .. })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
         }
     }
 
     /// Builds a [`QemuLiveNodeStepGateError::Step`] for a node operation.
-    pub(super) fn node_op(operation: &'static str, source: QemuNodeError) -> Self {
+    pub(super) fn node_op(
+        operation: &'static QemuNodeStepOperation,
+        source: QemuNodeError,
+    ) -> Self {
         Self::Step { operation, source }
     }
 
     /// Builds a [`QemuLiveNodeStepGateError::Prime`] for a priming operation.
     pub(super) fn prime(operation: &'static str, source: QemuNodeChannelError) -> Self {
         Self::Prime { operation, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::borrow::Cow;
+    use std::error::Error as _;
+
+    #[test]
+    fn static_operation_preserves_actual_node_causes_without_allocating() {
+        const OPERATION: QemuNodeStepOperation =
+            QemuNodeStepOperation::new("read pre-advance icount");
+        let operation = &OPERATION;
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
+        supervisor.cancel().unwrap();
+        let first = original.wait_slice().unwrap_err();
+        let message = String::from("original owned channel refusal");
+        let payload = message.as_ptr();
+        let cases = [
+            QemuNodeError::ChannelSupervision {
+                plane: crate::QemuNodeChannelPlane::QmpMachineControl,
+                operation: "observe retained QMP channel",
+                source: first,
+            },
+            QemuNodeError::Channel {
+                plane: crate::QemuNodeChannelPlane::QmpMachineControl,
+                operation: "observe retained QMP channel",
+                message: Cow::Owned(message),
+            },
+        ];
+
+        for source in cases {
+            let (error, counts) = TestAllocationObserver::count(|| {
+                QemuLiveNodeStepGateError::node_op(operation, source)
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            let QemuLiveNodeStepGateError::Step {
+                operation: retained_operation,
+                source,
+            } = &error
+            else {
+                panic!("node operation must retain its original typed refusal");
+            };
+            assert!(std::ptr::eq(*retained_operation, operation));
+            assert_eq!(retained_operation.as_str(), "read pre-advance icount");
+            assert!(std::ptr::eq(
+                error
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<QemuNodeError>()
+                    .unwrap(),
+                source,
+            ));
+            match source {
+                QemuNodeError::ChannelSupervision { source, .. } => assert_eq!(*source, first),
+                QemuNodeError::Channel { message, .. } => assert_eq!(message.as_ptr(), payload),
+                _ => panic!("node cause cannot change during static operation adaptation"),
+            }
+            assert_eq!(error.to_string(), "read pre-advance icount failed");
+        }
     }
 }

@@ -1,14 +1,19 @@
 //! World, plan, property, and random-fault validation/canonicalization.
 
 use super::*;
-pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
+pub(super) fn validate_world_nodes<'a>(
+    nodes: impl IntoIterator<Item = &'a WorldNode>,
+) -> Result<(), EngineError> {
     let mut seen = BTreeSet::new();
     for node in nodes {
-        if !seen.insert(node.id.clone()) {
+        if seen.contains(&node.id) {
             return Err(EngineError::DuplicateWorldNodeId {
                 node: node.id.clone(),
             });
         }
+        crate::owned_decode::charge_btree_set_entry::<&NodeId>()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+        seen.insert(&node.id);
         if matches!(node.ready_point, ReadyPoint::AgentSignal) && !node.white_box.is_enabled() {
             return Err(EngineError::WhiteBoxReadyPointWithoutOptIn {
                 node: node.id.clone(),
@@ -388,22 +393,38 @@ pub(super) fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), Eng
     Ok(())
 }
 
-pub(super) fn validate_event_graph_plan(
-    world: &World,
-    assertions: impl IntoIterator<Item = AssertionId>,
-    graph: EventGraph,
-) -> Result<EventGraph, EventGraphError> {
-    EventGraph::new_with_assertions_for_world(graph.events().to_vec(), assertions, world)
-}
-
 pub(super) fn event_graph_plan_error(error: EventGraphError) -> EngineError {
-    scenario_serialization_error(format!("event graph plan validation failed: {error}"))
+    match error {
+        EventGraphError::OriginalAdmission(source) => {
+            EngineError::ArtifactDecodeAdmission { source }
+        }
+        error => {
+            scenario_serialization_error(format!("event graph plan validation failed: {error}"))
+        }
+    }
 }
 
 pub(super) fn validate_properties_for_world(
     world: &World,
     assertions: &[AssertionDef],
 ) -> Result<(), EngineError> {
+    for _ in world.vm_nodes() {
+        crate::owned_decode::charge_btree_set_entry::<&NodeId>()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    }
+    for _ in world
+        .vm_nodes()
+        .iter()
+        .filter(|node| node.white_box == WhiteBoxPolicy::Enabled)
+    {
+        crate::owned_decode::charge_btree_set_entry::<&NodeId>()
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    }
+    for assertion in assertions {
+        crate::owned_decode::charge_btree_set_entry::<AssertionId>()
+            .and_then(|()| crate::owned_decode::charge_array::<u8>(assertion.id.name.len()))
+            .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+    }
     let node_ids = world.vm_nodes().iter().map(|node| &node.id).collect();
     let white_box_node_ids = world
         .vm_nodes()
@@ -433,115 +454,14 @@ pub(super) fn validate_properties_for_world(
     Ok(())
 }
 
-pub(super) fn resolve_assertions_dsl_for_context(
-    world: &World,
-    _plan: &Plan,
-    assertions: &[AssertionDef],
-) -> Vec<AssertionDef> {
-    assertions
-        .iter()
-        .map(|assertion| AssertionDef {
-            id: assertion.id.clone(),
-            message: assertion.message.clone(),
-            property: resolve_property_dsl_for_context(&assertion.property, world),
-        })
-        .collect()
-}
-
 pub(super) fn resolve_properties_dsl_for_context(
     world: &World,
     plan: &Plan,
     properties: &Properties,
 ) -> Result<Properties, EngineError> {
-    Properties::from_assertions_for_world_and_plan(world, plan, properties.assertions().to_vec())
-}
-
-pub(super) fn resolve_property_dsl_for_context(property: &Property, world: &World) -> Property {
-    match property {
-        Property::Always { predicate } => Property::Always {
-            predicate: resolve_predicate_dsl_for_context(predicate, world),
-        },
-        Property::Sometimes { predicate } => Property::Sometimes {
-            predicate: resolve_predicate_dsl_for_context(predicate, world),
-        },
-        Property::Eventually {
-            trigger,
-            property,
-            deadline,
-        } => Property::Eventually {
-            trigger: resolve_predicate_dsl_for_context(trigger, world),
-            property: resolve_predicate_dsl_for_context(property, world),
-            deadline: *deadline,
-        },
-        Property::AfterQuiescence { predicate } => Property::AfterQuiescence {
-            predicate: resolve_predicate_dsl_for_context(predicate, world),
-        },
-        Property::Reachable {
-            predicate,
-            expectation,
-        } => Property::Reachable {
-            predicate: resolve_predicate_dsl_for_context(predicate, world),
-            expectation: *expectation,
-        },
-    }
-}
-
-pub(super) fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> EventGraph {
-    EventGraph::from_unchecked_events_for_model(
-        graph
-            .events()
-            .iter()
-            .map(|event| Event {
-                id: event.id.clone(),
-                trigger: event
-                    .trigger
-                    .as_ref()
-                    .map(|trigger| resolve_predicate_dsl_for_context(trigger, world)),
-                action: event.action.clone(),
-                policy: event.policy,
-            })
-            .collect(),
-    )
-}
-
-pub(super) fn resolve_predicate_dsl_for_context(predicate: &Predicate, world: &World) -> Predicate {
-    match predicate {
-        Predicate::Named { name, nodes } if nodes.is_empty() => {
-            resolve_named_predicate_dsl_for_context(name, world)
-                .unwrap_or_else(|| predicate.clone())
-        }
-        Predicate::AllOf { predicates } => Predicate::all_of(
-            predicates
-                .iter()
-                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world))
-                .collect(),
-        ),
-        Predicate::AnyOf { predicates } => Predicate::any_of(
-            predicates
-                .iter()
-                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world))
-                .collect(),
-        ),
-        Predicate::Once { predicate } => {
-            Predicate::once(resolve_predicate_dsl_for_context(predicate, world))
-        }
-        Predicate::Not { predicate } => {
-            Predicate::not(resolve_predicate_dsl_for_context(predicate, world))
-        }
-        Predicate::At { .. }
-        | Predicate::After { .. }
-        | Predicate::Timer { .. }
-        | Predicate::NetworkMatch { .. }
-        | Predicate::ConsoleMatch { .. }
-        | Predicate::CoveragePoint { .. }
-        | Predicate::MemoryPredicate { .. }
-        | Predicate::IoPattern { .. }
-        | Predicate::NodeState { .. }
-        | Predicate::AssertionState { .. }
-        | Predicate::Quiescent
-        | Predicate::Named { .. }
-        | Predicate::GuestMarker { .. } => predicate.clone(),
-    }
+    properties
+        .clone_admitted_for_world(world)?
+        .into_resolved_for_context(world, plan)
 }
 
 pub(super) fn resolve_named_predicate_dsl_for_context(
@@ -729,136 +649,20 @@ pub(super) fn validate_property_node(
 }
 
 pub(super) fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
-    regex::bytes::Regex::new(&regex.pattern)
-        .map(|_| ())
-        .map_err(|source| EngineError::PropertyPredicateInvalidRegex {
-            pattern: regex.pattern.clone(),
-            reason: source.to_string(),
-        })
-}
-
-pub(super) fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {
-    let mut assertions = assertions
-        .iter()
-        .map(canonical_assertion)
-        .collect::<Vec<_>>();
-    assertions.sort_by(|left, right| {
-        left.id
-            .cmp(&right.id)
-            .then_with(|| assertion_material(left).cmp(&assertion_material(right)))
-    });
-    assertions
-}
-
-pub(super) fn canonical_assertion(assertion: &AssertionDef) -> AssertionDef {
-    AssertionDef {
-        id: assertion.id.clone(),
-        message: assertion.message.clone(),
-        property: canonical_property(&assertion.property),
+    match regex.compiled() {
+        Ok(_) => Ok(()),
+        Err(crate::predicate_regex::PredicateRegexError::Admission(source)) => {
+            Err(EngineError::ArtifactDecodeAdmission { source })
+        }
+        Err(source) => {
+            let reason = crate::owned_decode::display_string(&source)
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+            crate::owned_decode::charge_array::<u8>(regex.pattern().len())
+                .map_err(|source| EngineError::ArtifactDecodeAdmission { source })?;
+            Err(EngineError::PropertyPredicateInvalidRegex {
+                pattern: regex.pattern().to_owned(),
+                reason,
+            })
+        }
     }
-}
-
-pub(super) fn canonical_property(property: &Property) -> Property {
-    match property {
-        Property::Always { predicate } => Property::Always {
-            predicate: canonical_predicate(predicate),
-        },
-        Property::Sometimes { predicate } => Property::Sometimes {
-            predicate: canonical_predicate(predicate),
-        },
-        Property::Eventually {
-            trigger,
-            property,
-            deadline,
-        } => Property::Eventually {
-            trigger: canonical_predicate(trigger),
-            property: canonical_predicate(property),
-            deadline: *deadline,
-        },
-        Property::AfterQuiescence { predicate } => Property::AfterQuiescence {
-            predicate: canonical_predicate(predicate),
-        },
-        Property::Reachable {
-            predicate,
-            expectation,
-        } => Property::Reachable {
-            predicate: canonical_predicate(predicate),
-            expectation: *expectation,
-        },
-    }
-}
-
-pub(super) fn canonical_predicate(predicate: &Predicate) -> Predicate {
-    match predicate {
-        Predicate::At { at } => Predicate::At { at: *at },
-        Predicate::After { duration, of } => Predicate::After {
-            duration: *duration,
-            of: of.clone(),
-        },
-        Predicate::Timer { name } => Predicate::Timer { name: name.clone() },
-        Predicate::NetworkMatch { link, predicate } => Predicate::NetworkMatch {
-            link: link.clone(),
-            predicate: predicate.clone(),
-        },
-        Predicate::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
-            node: node.clone(),
-            regex: regex.clone(),
-        },
-        Predicate::CoveragePoint { node, point } => Predicate::CoveragePoint {
-            node: node.clone(),
-            point: point.clone(),
-        },
-        Predicate::MemoryPredicate {
-            node,
-            place,
-            cmp,
-            value,
-        } => Predicate::MemoryPredicate {
-            node: node.clone(),
-            place: place.clone(),
-            cmp: *cmp,
-            value: *value,
-        },
-        Predicate::IoPattern { node, kind } => Predicate::IoPattern {
-            node: node.clone(),
-            kind: *kind,
-        },
-        Predicate::NodeState { node, state } => Predicate::NodeState {
-            node: node.clone(),
-            state: *state,
-        },
-        Predicate::AssertionState { name, state } => Predicate::AssertionState {
-            name: name.clone(),
-            state: *state,
-        },
-        Predicate::Quiescent => Predicate::Quiescent,
-        Predicate::Named { name, nodes } => Predicate::Named {
-            name: name.clone(),
-            nodes: nodes.clone(),
-        },
-        Predicate::GuestMarker { marker } => Predicate::GuestMarker {
-            marker: marker.clone(),
-        },
-        Predicate::AllOf { predicates } => Predicate::AllOf {
-            predicates: canonical_predicate_set(predicates),
-        },
-        Predicate::AnyOf { predicates } => Predicate::AnyOf {
-            predicates: canonical_predicate_set(predicates),
-        },
-        Predicate::Once { predicate } => Predicate::Once {
-            predicate: Box::new(canonical_predicate(predicate)),
-        },
-        Predicate::Not { predicate } => Predicate::Not {
-            predicate: Box::new(canonical_predicate(predicate)),
-        },
-    }
-}
-
-pub(super) fn canonical_predicate_set(predicates: &[Predicate]) -> Vec<Predicate> {
-    let mut predicates = predicates
-        .iter()
-        .map(canonical_predicate)
-        .collect::<Vec<_>>();
-    predicates.sort_by_key(predicate_material);
-    predicates
 }

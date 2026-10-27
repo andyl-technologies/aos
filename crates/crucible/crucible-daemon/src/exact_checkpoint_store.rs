@@ -1,16 +1,17 @@
 //! Durable content-addressed publication of exact QEMU checkpoints.
 //!
-//! A complete production checkpoint uses a version-five storage root around
-//! one canonical version-nine production closure and bounded index pages. The
+//! A complete production checkpoint uses a version-six storage root around
+//! one canonical version-ten production closure and bounded index pages. The
 //! root version belongs to this CAS envelope and is independent of the runtime
 //! restore protocol version:
 //!
 //! ```text
-//! ExactCheckpointRootV5
-//!   production-manifest -> ProductionExactCheckpointClosureV9
+//! ExactCheckpointRootV6
+//!   production-manifest -> ProductionExactCheckpointClosureV10
 //!   checkpoint-choice-closure -> bounded owned replay selections
 //!   production-object-index-* -> ProductionCheckpointIndexV1
 //!     object-<native-hash> -> opaque typed production object
+//!   ram-root-* -> immutable paged RAM root and bounded binary catalogs
 //! ```
 //!
 //! Index pages expose every immutable child to generic closure walkers without
@@ -27,16 +28,18 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
 use crate::ProductionExactCheckpointClosure;
+use crucible_engine::ContentHash;
 pub use crucible_campaign::ExactCheckpointId;
 use crucible_campaign::{
     AuthenticatedFindingExactCheckpoint, CampaignExecutorStore, CampaignHash, ConfigurationId,
     ExecutionId, FindingExactCheckpointAuthenticationError, FindingExactCheckpointAuthenticator,
     ScenarioArtifactId, ScenarioDefId,
 };
-use crucible_engine::ContentHash;
+
 use crucible_store::content_envelope::{ContentChild, ContentEnvelope, ContentEnvelopeError};
 use crucible_store::content_store::{
     BlobHandle, ContentId, ImmutableBlobBackend, ObjectKind, PutReceipt, StoreError,
+    StorePhysicalQuotaGuard,
 };
 use thiserror::Error;
 
@@ -47,13 +50,20 @@ const CHECKPOINT_CANCELLATION_READ_CHUNK_BYTES: usize = 1024 * 1024;
 /// Canonical schema name of the child-bearing exact-checkpoint root.
 pub const EXACT_CHECKPOINT_ROOT_SCHEMA: &str = "crucible.executor.exact-checkpoint-root";
 /// Content-ID and envelope version of the complete production exact-checkpoint root.
-pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 5;
+pub const EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION: u32 = 6;
 
+#[cfg(test)]
+mod native_census;
 mod production;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support;
 pub use production::{
     LoadedProductionExactCheckpoint, PreparedProductionExactCheckpoint,
     ProductionExactCheckpointPublication,
 };
+
+mod modeled_comparison;
+pub use modeled_comparison::CapturedModeledComparisonError;
 
 /// Attempt-owned production closure awaiting no-write immutable-store preparation.
 pub struct CapturedAttemptCheckpoint {
@@ -139,8 +149,11 @@ impl PreparedAttemptCheckpoint {
         self.0.native_retirement()
     }
 
-    pub(crate) fn retire_native_source(&self) -> Result<(), ExactCheckpointStoreError> {
-        self.0.retire_native_source()
+    pub(crate) fn retire_native_source(
+        &mut self,
+        store: &ExactCheckpointStore,
+    ) -> Result<(), ExactCheckpointStoreError> {
+        self.0.retire_native_source(store)
     }
 }
 
@@ -196,6 +209,8 @@ impl From<CapturedAttemptCheckpoint> for AttemptCheckpointResult {
 pub struct ExactCheckpointStore {
     backend: Arc<dyn ImmutableBlobBackend>,
     maximum_checkpoint_bytes: u64,
+    ram_retention: crucible_store::ram::RamRetentionAuthority,
+    ram_root_resources: Option<Arc<dyn StorePhysicalQuotaGuard>>,
     live_replay_promotions: Mutex<BTreeMap<LiveReplayPromotionIdentity, LiveReplayPromotionState>>,
 }
 
@@ -260,7 +275,10 @@ impl Drop for LiveReplayPromotionClaim<'_> {
 }
 
 impl ExactCheckpointStore {
-    /// Admits a durable streaming immutable backend and checkpoint byte ceiling.
+    /// Admits durable checkpoint storage and its authoritative GC namespace.
+    ///
+    /// RAM root leases acquire publication fences from `ram_retention`. The
+    /// factory must select the ref namespace used by checkpoint garbage collection.
     ///
     /// # Errors
     ///
@@ -270,6 +288,7 @@ impl ExactCheckpointStore {
     pub fn new(
         backend: Arc<dyn ImmutableBlobBackend>,
         maximum_checkpoint_bytes: u64,
+        ram_retention: crucible_store::ram::RamRetentionAuthority,
     ) -> Result<Self, ExactCheckpointStoreError> {
         if maximum_checkpoint_bytes == 0 {
             return Err(ExactCheckpointStoreError::InvalidLimit);
@@ -288,8 +307,70 @@ impl ExactCheckpointStore {
         Ok(Self {
             backend,
             maximum_checkpoint_bytes,
+            ram_retention,
+            ram_root_resources: None,
             live_replay_promotions: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Retains the original admitted authority for checkpoint and RAM metadata.
+    ///
+    /// Checkpoint loading reserves encoded buffers and typed inventories before
+    /// allocation. RAM loading reserves its complete codec bound before decoding
+    /// root metadata. Lazy sources retain that credit independently of this
+    /// facade through the last root lease and child backing borrower. Loaded
+    /// containers retain their own credits until destruction. Stores without
+    /// this authority refuse production checkpoint loading.
+    #[must_use]
+    pub fn with_ram_root_resources(mut self, authority: Arc<dyn StorePhysicalQuotaGuard>) -> Self {
+        self.ram_root_resources = Some(authority);
+        self
+    }
+
+    /// Shares the original admitted authority for owning checkpoint metadata.
+    ///
+    /// The returned handle preserves the namespace's existing resource account;
+    /// it creates no additional capacity or supervision deadline.
+    ///
+    /// # Errors
+    /// Refuses stores lacking an authenticated metadata resource authority.
+    pub fn metadata_resource_authority(
+        &self,
+    ) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        self.ram_root_resources
+            .clone()
+            .ok_or(StoreError::Unsupported {
+                capability: "checkpoint-metadata-resources",
+            })
+    }
+
+    pub(crate) fn decode_semantic_checkpoint(
+        &self,
+        loaded: &Arc<LoadedProductionExactCheckpoint>,
+        source: &crucible_engine::ScenarioDefForm,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<crate::DecodedProductionExactCheckpoint, ExactCheckpointStoreError> {
+        if cancellation.is_canceled() {
+            return Err(ExactCheckpointStoreError::Canceled);
+        }
+        loaded.authenticate_storage_owner(self)?;
+        let retention = self.ram_retention.acquire()?;
+        let ram_sources = loaded.prepare_paged_ram_sources(
+            source
+                .plan()
+                .fault_signals()
+                .resource_limits()
+                .fat_checkpoint_bytes,
+            &retention,
+            &mut || {
+                if cancellation.is_canceled() {
+                    Err(crucible_store::ram::RamStoreError::Canceled)
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
+        loaded.decode_semantic_checkpoint(source, cancellation, ram_sources)
     }
 
     /// Returns the configured aggregate per-checkpoint byte ceiling.
@@ -447,6 +528,15 @@ impl ExactCheckpointStore {
         self.publish_production_closure(&prepared.0)
     }
 
+    /// Publishes a prepared checkpoint under its original operational scope.
+    pub(crate) fn publish_attempt_checkpoint_with_boundary(
+        &self,
+        prepared: &PreparedAttemptCheckpoint,
+        boundary: &mut dyn FnMut() -> Result<(), ExactCheckpointStoreError>,
+    ) -> Result<ProductionExactCheckpointPublication, ExactCheckpointStoreError> {
+        self.publish_production_closure_with_boundary(&prepared.0, boundary)
+    }
+
     /// Loads one production attempt checkpoint.
     ///
     /// Dispatch is bound to the typed root's canonical schema version. The
@@ -513,6 +603,12 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
         if leaf.scenario() != scenario
             || leaf.configuration() != configuration
             || !crate::crucible_measurement::verify_assertion_failure_boundary(&leaf, boundary)
+                .map_err(|source| match source {
+                    crucible_engine::EngineError::ArtifactDecodeAdmission { source } => {
+                        FindingExactCheckpointAuthenticationError::DecodeAdmission(source)
+                    }
+                    _ => FindingExactCheckpointAuthenticationError::AuthenticationFailed,
+                })?
         {
             return Err(FindingExactCheckpointAuthenticationError::AuthenticationFailed);
         }
@@ -528,8 +624,9 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
         let source = crate::decode_crucible_scenario_artifact(&artifact)
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        let decoded = loaded
-            .decode_semantic_checkpoint(&source, &ExecutionCancellation::default())
+        let decoded = self
+            .checkpoints
+            .decode_semantic_checkpoint(&loaded, &source, &ExecutionCancellation::default())
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
         let scheduler = decoded.scheduler();
         let checkpoint_events = scheduler.event_log_offset().events;
@@ -576,8 +673,9 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
         let source = crate::decode_crucible_scenario_artifact(&artifact)
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
-        let decoded = loaded
-            .decode_semantic_checkpoint(&source, &ExecutionCancellation::default())
+        let decoded = self
+            .checkpoints
+            .decode_semantic_checkpoint(&loaded, &source, &ExecutionCancellation::default())
             .map_err(|_| FindingExactCheckpointAuthenticationError::AuthenticationFailed)?;
         let authenticated_scenario =
             ScenarioDefId::from_hash(CampaignHash::from_bytes(loaded.scenario().bytes));
@@ -608,6 +706,12 @@ impl FindingExactCheckpointAuthenticator for ExactFindingCheckpointAuthenticator
 /// Failure while preparing, publishing, or loading an exact QEMU checkpoint.
 #[derive(Debug, Error)]
 pub enum ExactCheckpointStoreError {
+    /// The original assignment publication authority was unavailable.
+    #[error(transparent)]
+    HostAuthority(#[from] crucible_control_api::host_operational::HostOperationalError),
+    /// Original-start supervision canceled or expired before completion.
+    #[error(transparent)]
+    Supervision(#[from] crucible_host_resources::host_supervision::HostSupervisionError),
     /// The owning execution canceled checkpoint preparation or publication.
     #[error("exact-checkpoint operation was canceled")]
     Canceled,
@@ -656,6 +760,9 @@ pub enum ExactCheckpointStoreError {
     /// Attempt-local native checkpoint retirement failed.
     #[error(transparent)]
     NativeRetirement(#[from] crate::ProductionExactCheckpointRetirementError),
+    /// A paged RAM root failed bounded authenticated publication or lookup.
+    #[error(transparent)]
+    Ram(#[from] crucible_store::ram::RamStoreError),
 }
 
 fn map_checkpoint_store_error(error: StoreError) -> ExactCheckpointStoreError {
@@ -668,10 +775,10 @@ fn map_checkpoint_store_error(error: StoreError) -> ExactCheckpointStoreError {
 }
 
 fn cancellation_blob_handle(source: BlobHandle, cancellation: ExecutionCancellation) -> BlobHandle {
-    BlobHandle::new(Arc::new(CancellationBlobSource {
+    BlobHandle::new(CancellationBlobSource {
         source,
         cancellation,
-    }))
+    })
 }
 
 struct CancellationBlobSource {

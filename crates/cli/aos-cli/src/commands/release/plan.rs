@@ -462,6 +462,29 @@ mod tests {
 
     use super::*;
 
+    // Fixture mutations must not invoke the operator's hooks or signing setup.
+    // Production identity reads continue to use the ordinary Git helper.
+    fn fixture_git(directory: &tempfile::TempDir, arguments: &[&str]) -> Result<Output> {
+        Command::new("git")
+            .arg("-C")
+            .arg(directory.path())
+            .args(["-c", "core.hooksPath=/dev/null", "-c", "init.templateDir="])
+            .args(["-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
+            .args(arguments)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_COUNT", "0")
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_TEMPLATE_DIR")
+            .env("GIT_AUTHOR_NAME", "AOS Test")
+            .env("GIT_AUTHOR_EMAIL", "aos-test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "AOS Test")
+            .env("GIT_COMMITTER_EMAIL", "aos-test@example.invalid")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .with_context(|| format!("running fixture git {}", arguments.join(" ")))
+    }
+
     #[test]
     fn oid_parser_requires_native_lowercase_git_oid() {
         assert!(require_lower_hex_oid(&"a".repeat(40), "sha1", "test").is_ok());
@@ -488,20 +511,20 @@ mod tests {
     #[test]
     fn source_identity_accepts_sha1_git_and_rejects_dirty_state() -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let initialized = git(
-            directory.path(),
+        let initialized = fixture_git(
+            &directory,
             &["init", "--initial-branch=master", "--object-format=sha1"],
         )?;
         assert!(initialized.status.success());
         fs::write(directory.path().join("source.txt"), b"source-v1")?;
         assert!(
-            git(directory.path(), &["add", "source.txt"])?
+            fixture_git(&directory, &["add", "source.txt"])?
                 .status
                 .success()
         );
         assert!(
-            git(
-                directory.path(),
+            fixture_git(
+                &directory,
                 &[
                     "-c",
                     "user.name=AOS Test",
@@ -548,8 +571,8 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let root = directory.path();
         assert!(
-            git(
-                root,
+            fixture_git(
+                &directory,
                 &["init", "--initial-branch=master", "--object-format=sha1"]
             )?
             .status
@@ -557,10 +580,14 @@ mod tests {
         );
         let commit = |message: &str| -> Result<()> {
             fs::write(root.join("source.txt"), message.as_bytes())?;
-            assert!(git(root, &["add", "source.txt"])?.status.success());
             assert!(
-                git(
-                    root,
+                fixture_git(&directory, &["add", "source.txt"])?
+                    .status
+                    .success()
+            );
+            assert!(
+                fixture_git(
+                    &directory,
                     &[
                         "-c",
                         "user.name=AOS Test",
@@ -590,8 +617,8 @@ mod tests {
         let first = derive_source_identity(root, false, &source, authorization_digest)?;
         // A lightweight tag is enough here; the operator's signing config must
         // not reach into the fixture repository.
-        let tagged = git(
-            root,
+        let tagged = fixture_git(
+            &directory,
             &[
                 "-c",
                 "tag.gpgSign=false",

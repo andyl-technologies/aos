@@ -360,7 +360,12 @@ pub(super) fn wait_for_child_exit(
     for poll in 0..CHILD_REAP_POLLS {
         let state = node
             .query_hot_fork_child_process(generation)
-            .map_err(|source| qmp_operation("query hot-fork child status", source))?;
+            .map_err(|source| {
+                qmp_operation(
+                    const { &QemuNodeStepOperation::new("query hot-fork child status") },
+                    source,
+                )
+            })?;
         if state.phase() != QmpHotForkChildProcessPhase::Running {
             return Ok(());
         }
@@ -385,7 +390,7 @@ pub(super) fn invariant(reason: &str) -> QemuLiveNodeStepGateError {
 }
 
 pub(super) fn qmp_operation(
-    operation: &'static str,
+    operation: &'static QemuNodeStepOperation,
     source: QemuNodeChannelError,
 ) -> QemuLiveNodeStepGateError {
     QemuLiveNodeStepGateError::node_op(

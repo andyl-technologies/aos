@@ -21,7 +21,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
@@ -1522,7 +1522,11 @@
       }
       {
         label = "unknown named predicate additive preservation";
-        needle = ".unwrap_or_else(|| predicate.clone())";
+        needle = "_ => return Ok(()),";
+      }
+      {
+        label = "known named predicate replacement after admitted resolution";
+        needle = "if let Some(resolved) = resolve_named_predicate_dsl_for_context(name, world) {\n                *predicate = resolved;\n            }";
       }
       {
         label = "predicate DSL resolver";

@@ -24,6 +24,10 @@ use crate::guest_introspection::{
     GUEST_INTROSPECTION_MAX_RECORD_BYTES, GuestIntrospectionError, GuestIntrospectionRecord,
 };
 
+mod borrowed;
+
+pub use borrowed::GuestIntrospectionDoorbellView;
+
 /// Four-byte magic identifying a guest-agent exchange buffer.
 pub const GUEST_INTROSPECTION_DOORBELL_MAGIC: [u8; 4] = *b"CRGX";
 /// Current guest-agent exchange protocol version.
@@ -161,31 +165,23 @@ impl GuestIntrospectionDoorbellFrame {
         &self,
     ) -> Result<[u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES], GuestIntrospectionDoorbellError>
     {
-        let record = self
-            .record
-            .as_ref()
-            .map(GuestIntrospectionRecord::encode)
-            .transpose()
-            .map_err(GuestIntrospectionDoorbellError::Record)?;
-        if self.kind.carries_record() != record.is_some() {
+        let mut output = [0_u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES];
+        let record_len = match self.record.as_ref() {
+            Some(record) => record
+                .encode_into_slice(&mut output[GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES..])
+                .map_err(GuestIntrospectionDoorbellError::Record)?,
+            None => 0,
+        };
+        if self.kind.carries_record() != self.record.is_some() {
             return Err(GuestIntrospectionDoorbellError::KindRecordMismatch { kind: self.kind });
-        }
-        let record_len = record.as_ref().map_or(0, Vec::len);
-        if record_len > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionDoorbellError::RecordTooLarge { len: record_len });
         }
         let record_len = u32::try_from(record_len).map_err(|_error| {
             GuestIntrospectionDoorbellError::RecordTooLarge { len: record_len }
         })?;
-        let mut output = [0_u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES];
         output[..4].copy_from_slice(&GUEST_INTROSPECTION_DOORBELL_MAGIC);
         output[4..6].copy_from_slice(&GUEST_INTROSPECTION_DOORBELL_VERSION.to_le_bytes());
         output[6] = self.kind.wire_value();
         output[8..12].copy_from_slice(&record_len.to_le_bytes());
-        if let Some(record) = record {
-            let end = GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES + record.len();
-            output[GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES..end].copy_from_slice(&record);
-        }
         Ok(output)
     }
 
@@ -196,44 +192,11 @@ impl GuestIntrospectionDoorbellFrame {
     /// Returns [`GuestIntrospectionDoorbellError`] for a bad length, magic,
     /// version, kind, reserved field, record shape, or nonzero padding.
     pub fn decode(bytes: &[u8]) -> Result<Self, GuestIntrospectionDoorbellError> {
-        if bytes.len() != GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES {
-            return Err(GuestIntrospectionDoorbellError::FrameLength {
-                actual: bytes.len(),
-            });
-        }
-        if bytes[..4] != GUEST_INTROSPECTION_DOORBELL_MAGIC {
-            return Err(GuestIntrospectionDoorbellError::Magic);
-        }
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != GUEST_INTROSPECTION_DOORBELL_VERSION {
-            return Err(GuestIntrospectionDoorbellError::Version { actual: version });
-        }
-        let kind = GuestIntrospectionDoorbellKind::from_wire_value(bytes[6])
-            .ok_or(GuestIntrospectionDoorbellError::Kind { actual: bytes[6] })?;
-        if bytes[7] != 0 || bytes[12..16].iter().any(|byte| *byte != 0) {
-            return Err(GuestIntrospectionDoorbellError::Reserved);
-        }
-        let record_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-        if record_len > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionDoorbellError::RecordTooLarge { len: record_len });
-        }
-        if kind.carries_record() != (record_len != 0) {
-            return Err(GuestIntrospectionDoorbellError::KindRecordMismatch { kind });
-        }
-        let record_end = GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES + record_len;
-        if bytes[record_end..].iter().any(|byte| *byte != 0) {
-            return Err(GuestIntrospectionDoorbellError::NonzeroPadding);
-        }
-        let record = if record_len == 0 {
-            None
-        } else {
-            Some(
-                GuestIntrospectionRecord::decode(
-                    &bytes[GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES..record_end],
-                )
-                .map_err(GuestIntrospectionDoorbellError::Record)?,
-            )
-        };
+        let (kind, encoded_record) = borrowed::parse_frame(bytes)?;
+        let record = encoded_record
+            .map(GuestIntrospectionRecord::decode)
+            .transpose()
+            .map_err(GuestIntrospectionDoorbellError::Record)?;
         Ok(Self { kind, record })
     }
 }

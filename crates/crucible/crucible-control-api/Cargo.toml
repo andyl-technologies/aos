@@ -6,10 +6,19 @@ license.workspace = true
 publish = false
 description = "Native transport-independent Crucible control contracts and canonical codecs"
 
+[features]
+test-support = ["crucible-engine/test-support", "crucible-store/test-support"]
+
 [lints]
 workspace = true
 
 [dependencies]
+sha2 = { workspace = true }
+bytes = { workspace = true }
+crucible-store = { workspace = true }
+crucible-host-resources = { workspace = true }
+crucible-ram = { workspace = true }
+crucible-campaign = { workspace = true }
 crucible-engine = { path = "../crucible-engine" }
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 crucible-session = { path = "../crucible-session" }
@@ -21,3 +30,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 crucible-engine = { path = "../crucible-engine", features = ["test-support"] }
+crucible-host-resources = { workspace = true, features = ["test-support"] }

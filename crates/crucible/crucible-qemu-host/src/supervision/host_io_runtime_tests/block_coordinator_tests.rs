@@ -38,7 +38,12 @@ fn empty_block_poll_does_not_block_late_fault_coordinator_installation()
     let mut runtime =
         QemuLiveHostIoRuntime::from_shmem_fd(region.as_fd(), wake.as_fd(), region_len, 0)?
             .with_block_servicer(block, BlockIoDiagnostics::shared())?;
-    let snapshot = runtime.region.node_slot(0)?.snapshot();
+    let snapshot = runtime
+        .region
+        .as_ref()
+        .ok_or_else(region_missing)?
+        .node_slot(0)?
+        .snapshot();
 
     assert!(!runtime.service_block_io(&snapshot)?);
     assert!(

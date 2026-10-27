@@ -4,7 +4,8 @@
   mkDerivation,
   fetchurl,
   gnumake,
-  commandShell ? null,
+  bash,
+  stdenv,
 }: let
   version = "1.13.2";
 in
@@ -100,7 +101,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = lib.optional (commandShell != null) commandShell;
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     phases = [
@@ -113,16 +114,12 @@ in
       }
       {
         name = "configure";
-        script =
-          ''
-            # No configure step — ninja is bootstrapped directly from C++ sources
-            true
-          ''
-          + lib.optionalString (commandShell != null) ''
-            # Some source builders execute shell commands in a sandbox without
-            # host /bin/sh. Opt in without changing ordinary toolchain identities.
-            sed -i 's|/bin/sh|${commandShell}/bin/bash|g' src/subprocess-posix.cc
-          '';
+        script = ''
+          # Ninja's POSIX runner invokes this shell for every build command.
+          # Pin it to the packaged interpreter available in the sandbox.
+          sed -i 's|"/bin/sh"|"${bash}/bin/bash"|g' src/subprocess-posix.cc
+          grep -F '"${bash}/bin/bash"' src/subprocess-posix.cc
+        '';
       }
       {
         name = "build";
@@ -148,6 +145,18 @@ in
         '';
       }
       {
+        name = "check";
+        script = lib.optionalString (!stdenv.isCross) ''
+          cat > "$TMPDIR/ninja-shell-check.ninja" <<'EOF'
+          rule shell_check
+            command = printf '%s' hermetic-shell > $out
+          build ninja-shell-result: shell_check
+          EOF
+          ./ninja -f "$TMPDIR/ninja-shell-check.ninja"
+          test "$(cat ninja-shell-result)" = hermetic-shell
+        '';
+      }
+      {
         name = "install";
         script = ''
           mkdir -p $out/bin
@@ -156,12 +165,12 @@ in
       }
     ];
 
-    # mkDerivation.override changes final attributes rather than package inputs.
-    # Keep this factory explicit so the source patch and runtime closure agree.
+    # Retain the existing hermetic build identity while allowing consumers to
+    # select the interpreter for their build platform explicitly.
     passthru.withCommandShell = shell:
       import ./ninja.nix {
-        inherit lib mkDerivation fetchurl gnumake;
-        commandShell = shell;
+        inherit lib mkDerivation fetchurl gnumake stdenv;
+        bash = shell;
       };
 
     meta = {

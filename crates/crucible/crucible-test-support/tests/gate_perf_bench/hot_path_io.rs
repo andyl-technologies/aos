@@ -187,8 +187,17 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         "crucible/crucible-qemu-plugin/src/runtime/live_callbacks.rs",
         &[
             "pub(crate) struct LiveVcpuTimeCallbackState",
-            "fn wait_for_scheduler_release_or_inbound(",
             "fn on_block_wait(",
+        ],
+        &[],
+    ),
+    owner(
+        "crucible/crucible-qemu-plugin/src/runtime/live_callbacks/idle_advance.rs",
+        &[
+            "fn on_vcpu_idle(",
+            "fn wait_for_scheduler_release_or_inbound(",
+            "fn arm_idle_advance(",
+            "fn complete_idle_advance(",
         ],
         &[],
     ),
@@ -378,7 +387,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        28,
+        29,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 

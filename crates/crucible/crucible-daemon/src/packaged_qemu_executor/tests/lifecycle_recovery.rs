@@ -21,13 +21,13 @@ fn packaged_executor_completion_is_sticky_across_owner_panic() {
 fn competing_packaged_startup_preserves_live_native_catalogs() {
     let directory = tempfile::tempdir().expect("packaged competing-start directory");
     let mut config = config(&directory, 1);
-    config.lifecycle = ProductionVmLifecycleConfig::new(
+    config.lifecycle = Arc::new(ProductionVmLifecycleConfig::new(
         "qemu",
         "plugin",
         "kernel",
         "root",
         directory.path().join("run-state"),
-    );
+    ));
     let run_state_root = config.lifecycle.run_state_root();
     let workers = run_state_root.join("campaign-workers");
     let promotions = run_state_root.join("campaign-checkpoint-promotions");
@@ -86,7 +86,7 @@ fn packaged_native_catalog_recovery_is_crash_safe_and_idempotent() {
     .expect("fallback lineage");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"packaged restart fallback",
     ))
     .expect("fallback checkpoint");
@@ -272,7 +272,7 @@ fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"packaged-status-checkpoint",
     ))
     .expect("checkpoint");
@@ -283,6 +283,7 @@ fn operational_phase_uses_exact_actor_ownership_and_durable_phase() {
         execution,
         checkpoint,
         promotion_basis: None,
+        source_transfer: None,
     };
     assert_eq!(
         operational_phase(paused, epoch, &BTreeMap::new(), &BTreeMap::new()),
@@ -305,4 +306,56 @@ fn actor_status_snapshots_reject_intervening_ownership_changes() {
         ..stable.clone()
     };
     assert!(!successive_actor_snapshots(&stable, &changed));
+}
+
+#[cfg(target_os = "linux")]
+// crucible-lint: allow rust-allow -- this genuine lifecycle driver waits for an authenticated normal Main Source fixture, rather than substituting a scripted issuer.
+#[allow(
+    dead_code,
+    reason = "The authentic normal Main Source fixture remains unqualified."
+)]
+fn genuine_main_retirement_closes_its_existing_target_dispatcher(
+    mut executor: PackagedQemuExecutor,
+    mut source: crate::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    target_resources: AttemptResourceLimits,
+) {
+    executor
+        .guarded_state
+        .config
+        .normal_executor
+        .as_ref()
+        .expect("actual authenticated normal Main")
+        .check()
+        .expect("unchanged actual Main authority");
+    let preparation = source.prepare_fork_target().expect("genuine Source permit");
+    let (permit, mut target_cleanup) = match preparation {
+        crucible_qemu_host::QemuForkTargetPreparation::Ready { permit, cleanup } => (permit, cleanup),
+        crucible_qemu_host::QemuForkTargetPreparation::Retained { first, .. } => {
+            panic!("genuine Target landing refused: {first}");
+        }
+    };
+    let host = executor
+        .guarded_state
+        .host
+        .as_mut()
+        .expect("same saved factory");
+    let mut target = host
+        .begin_fork_target(permit, target_resources)
+        .expect("actual Main dispatcher and same-family Target host");
+    // No child carrier is fabricated. The genuine host job and dedicated
+    // Target envelope must close before their containing Main can retire.
+    target.finish().expect("physical Target host cleanup");
+    drop(target);
+    target_cleanup
+        .try_finish()
+        .expect("exact Target role return");
+    assert!(target_cleanup.is_physically_returned());
+    source.retire().expect("physical Source cleanup");
+    drop(source);
+
+    let attached =
+        AttachedPackagedQemuExecutor::start(executor).expect("actual packaged owner lifecycle");
+    attached
+        .shutdown_and_join()
+        .expect("same paid dispatcher worker and alias retirement");
 }

@@ -152,7 +152,7 @@ fn completed_responses_encode_current_optional_finding_candidates() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"candidate-resume-checkpoint",
     ))
     .expect("resume checkpoint");
@@ -679,7 +679,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
     let prior_execution = ExecutionId::from_bytes([0x3d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"executor-resume-checkpoint-root",
     ))
     .expect("checkpoint root");
@@ -697,7 +697,7 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &request_bytes,
         )
         .to_hex(),
-        "77024fb20d8b57b5a64ddf75752cfe8da7c128dddca470400dc780a504524945"
+        "520820cf6c12009fbf450ee67845aaa56e225f237b5e971fb651233167469633"
     );
 
     let execution = ExecutionId::from_bytes([0x3e; 16]).expect("resumed execution");
@@ -718,12 +718,12 @@ fn resume_attempt_execution_messages_bind_the_exact_paused_root() {
             &response_bytes,
         )
         .to_hex(),
-        "f4236ee59e894d9c06a7dcb608109485f8b81c763480e038928d3a625e4693aa"
+        "0367203bed15aca18caf045d789a0751e958c6ea24bf0859c8a5c8def9c08c0e"
     );
 
     let other_checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"other-resume-checkpoint-root",
     ))
     .expect("other checkpoint root");
@@ -789,7 +789,7 @@ fn materialized_start_resume_authenticates_prior_and_new_execution_bases() {
     let prior_execution = ExecutionId::from_bytes([0x4d; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"materialized-start-resume-checkpoint",
     ))
     .expect("checkpoint root");
@@ -934,7 +934,7 @@ fn selected_savepoint_resume_preserves_the_semantic_start_authority() {
     let prior_execution = ExecutionId::from_bytes([0xb3; 16]).expect("prior execution");
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"selected-resume-checkpoint",
     ))
     .expect("checkpoint");
@@ -1077,7 +1077,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"executor-checkpoint-root",
     ))
     .expect("checkpoint root");
@@ -1098,7 +1098,7 @@ fn checkpoint_attempt_execution_messages_bind_the_exact_root_and_request() {
             &response_bytes,
         )
         .to_hex(),
-        "a6f03af021805041424c0bb7c2f2e1e7015c02ad647f65d4aee93fa747766420"
+        "fce169fd03be2d96faa5be1c29d872ac6954c83123753fe90d4fffbb27205c75"
     );
 
     let other = CheckpointAttemptExecutionRequest::new(

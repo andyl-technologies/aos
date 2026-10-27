@@ -34,7 +34,11 @@ fn budget_projection_counts_distinct_commands_not_auxiliary_facts_or_retries() {
         head.snapshot_id()
     );
 
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         cold.budget_projection("budget").expect("cold projection"),
         projection

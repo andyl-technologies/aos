@@ -30,7 +30,7 @@ use super::*;
 const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
 const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
-type TestState = Http2LifecycleState<
+pub(super) type TestState = Http2LifecycleState<
     QuiescentLifecycleLoop,
     crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
 >;
@@ -44,8 +44,9 @@ fn open_shutdown_receiver() -> watch::Receiver<bool> {
     receiver
 }
 
-fn test_state(mode: LifecycleServerMode) -> TestState {
+pub(super) fn test_state(mode: LifecycleServerMode) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
             "server-test",
             Vec::new(),
@@ -62,6 +63,7 @@ fn test_state(mode: LifecycleServerMode) -> TestState {
 
 fn test_state_with_max_sessions(mode: LifecycleServerMode, max_sessions: usize) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(
             LifecycleControlPlane::new(
                 "server-test",
@@ -267,12 +269,24 @@ async fn rejected_tls_handshakes_release_admission_for_authenticated_rpc()
         let _ = tokio::time::timeout(Duration::from_secs(1), rejected.read(&mut byte)).await?;
     }
 
+    let (output_budget, retained_output_bytes) =
+        crucible_control_api::admitted_output::test_support::tracked_fixture_budget(
+            64 * 1024 * 1024,
+        )?;
     let client = RpcControlClient::new_mtls(
         RpcEndpoint::http2(format!("https://{address}")),
         RpcMutualTlsConfig::from_pem(tls.ca_pem, tls.client_identity_pem),
-    )?;
+    )?
+    .with_decode_budget(output_budget);
     let sessions = tokio::time::timeout(Duration::from_secs(2), client.list_sessions()).await??;
     assert!(sessions.sessions.is_empty());
+
+    drop(sessions);
+    drop(client);
+    assert_eq!(
+        retained_output_bytes.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 
     let _ = shutdown_sender.send(());
     tokio::time::timeout(Duration::from_secs(1), server).await???;
@@ -657,6 +671,24 @@ fn debug_guest_wire_parsers_preserve_node_and_bounded_record() {
         parse_debug_guest_fork_request(fork.as_bytes()).expect("guest fork request must parse");
     assert_eq!(generation, 3);
     assert_eq!(node.name, "node-a");
+}
+
+#[tokio::test]
+async fn retained_cleanup_has_the_same_internal_response_policy_as_factory_refusal() {
+    for error in [
+        LifecycleApiError::CleanupRetained,
+        LifecycleApiError::LoopFactory {
+            message: String::from("component cleanup refusal"),
+        },
+    ] {
+        let response = lifecycle_error_response(error);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_text(response)
+            .await
+            .expect("typed internal response must decode");
+        assert!(body.contains("status=internal"));
+        assert!(body.contains("reason=internal"));
+    }
 }
 
 #[tokio::test]

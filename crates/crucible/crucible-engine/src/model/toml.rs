@@ -746,7 +746,7 @@ pub(super) fn scenario_form_from_toml(
         toml.plan,
     )?;
     let raw_properties = Properties::from_assertions_for_world(&world, assertions)?;
-    let properties = resolve_properties_dsl_for_context(&world, &plan, &raw_properties)?;
+    let properties = raw_properties.into_resolved_for_context(&world, &plan)?;
     validate_serialized_id("properties", properties_id, properties.content_hash())?;
     let seed = parse_seed_ref(&toml.scenario.seed)?;
     let measurements = MeasurementDefinitions::from_decoded_definitions(
@@ -851,7 +851,7 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
     let world = World::from_recorded_node_defs_and_links(id, topology_nodes, links)?
         .with_fault_topology(fault_topology)
         .map_err(|error| scenario_serialization_error(error.to_string()))?;
-    validate_serialized_id("world", id, serialized_world_identity(&world))?;
+    validate_serialized_id("world", id, serialized_world_identity(&world)?)?;
     Ok(world)
 }
 
@@ -1110,7 +1110,7 @@ pub(super) fn plan_from_toml_with_assertions(
         .collect::<Result<Vec<_>, _>>()?;
     let graph = EventGraph::from_unchecked_events_for_model(events);
     let plan = Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
-        .with_fault_signals(fault_signals);
+        .with_fault_signals(fault_signals)?;
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
 }
@@ -1481,7 +1481,7 @@ pub(super) fn predicate_to_toml(predicate: &Predicate) -> Result<PredicateToml, 
         },
         Predicate::ConsoleMatch { node, regex } => PredicateTomlKind::ConsoleMatch {
             node: node.name.clone(),
-            regex: regex.pattern.clone(),
+            regex: regex.pattern().to_owned(),
         },
         Predicate::CoveragePoint { node, point } => PredicateTomlKind::CoveragePoint {
             node: node.name.clone(),
@@ -1568,7 +1568,7 @@ pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, Engi
         },
         PredicateTomlKind::ConsoleMatch { node, regex } => Predicate::ConsoleMatch {
             node: NodeId { name: node },
-            regex: RegexProgram { pattern: regex },
+            regex: RegexProgram::from_pattern(regex),
         },
         PredicateTomlKind::CoveragePoint { node, point } => Predicate::CoveragePoint {
             node: NodeId { name: node },

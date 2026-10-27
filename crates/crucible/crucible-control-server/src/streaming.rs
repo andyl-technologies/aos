@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::event_log_stream::{ControlPlaneEventLog, SessionEventLogStreamError};
 use crucible_control_api::lifecycle::{ReproductionCommandRecord, SessionRef};
 use crucible_control_api::rpc_abi::RPC_PROTOCOL_VERSION;
+use crucible_control_api::session_mapping::API_COMMAND_MAPPINGS;
 
 use crucible_control_api::streaming::*;
 
@@ -100,6 +101,7 @@ impl CommandReplyObserver {
 #[derive(Clone)]
 pub struct InProcessStreamingSession {
     session: SessionRef,
+    output_budget: Option<crucible_engine::owned_decode::DecodeBudget>,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     event_log: ControlPlaneEventLog,
@@ -128,12 +130,27 @@ impl StreamingCommandPolicy {
         }
     }
 
-    fn capabilities(self) -> StreamingCapabilitySet {
-        let mut capabilities = StreamingCapabilitySet::current();
-        capabilities
-            .commands
-            .retain(|capability| self.permits(capability.command_kind));
-        capabilities
+    fn capabilities(self) -> Result<StreamingCapabilitySet, EngineError> {
+        let count = API_COMMAND_MAPPINGS
+            .iter()
+            .filter(|mapping| self.permits(mapping.command_kind))
+            .count();
+        let mut commands = Vec::new();
+        crucible_engine::owned_decode::reserve_vec(&mut commands, count)
+            .map_err(crucible_control_api::admitted_output::admission)?;
+        for mapping in API_COMMAND_MAPPINGS
+            .iter()
+            .filter(|mapping| self.permits(mapping.command_kind))
+        {
+            commands.push(StreamingCommandCapability {
+                command_name: mapping.command_name,
+                command_kind: mapping.command_kind,
+            });
+        }
+        Ok(StreamingCapabilitySet {
+            commands,
+            snapshot_on_attach: true,
+        })
     }
 }
 
@@ -150,6 +167,7 @@ impl InProcessStreamingSession {
     ) -> Self {
         Self {
             session,
+            output_budget: crucible_engine::owned_decode::current_budget(),
             sender,
             live,
             event_log,
@@ -158,6 +176,14 @@ impl InProcessStreamingSession {
             max_actor_yields: STREAMING_COMMAND_MAX_ACTOR_YIELDS,
             command_policy: StreamingCommandPolicy::All,
         }
+    }
+
+    pub(crate) fn with_output_budget(
+        mut self,
+        budget: Option<crucible_engine::owned_decode::DecodeBudget>,
+    ) -> Self {
+        self.output_budget = budget;
+        self
     }
 
     pub(crate) const fn with_read_only_debug_policy(mut self) -> Self {
@@ -200,6 +226,7 @@ impl InProcessStreamingSession {
         let (attached, events, state_updates) = self.attach_stream(&request)?;
         Ok(ControlStream {
             session: self.session,
+            output_budget: self.output_budget.clone(),
             sender: self.sender.clone(),
             live: Arc::clone(&self.live),
             attached,
@@ -220,6 +247,7 @@ impl InProcessStreamingSession {
         let (attached, events, state_updates) = self.attach_stream(&request)?;
         Ok(WatchStream {
             session: self.session,
+            output_budget: self.output_budget.clone(),
             attached,
             events,
             state_updates,
@@ -264,28 +292,61 @@ impl InProcessStreamingSession {
         self.validate_session(request.session, request.expected_epoch)?;
         let mut state_updates = self.state_transitions.subscribe();
         let (attach_tail, events) = self.event_log.subscribe_with_replay_tail(request.from);
-        let reproduction = self
+        let _original = self
+            .output_budget
+            .as_ref()
+            .map(crucible_engine::owned_decode::DecodeBudget::enter);
+        let budget =
+            crucible_engine::owned_decode::require_current_child_budget().map_err(|source| {
+                StreamingApiError::OutputAdmission {
+                    source: crucible_control_api::admitted_output::admission(source),
+                }
+            })?;
+        let _scope = budget.enter();
+        let recorded = self
             .reproduction_log
-            .snapshot()
-            .into_iter()
-            .map(ReproductionCommandRecord::from)
-            .filter(|record| record.at_sequence <= attach_tail.next_sequence)
-            .collect();
-        let snapshot = AttachSnapshot::from_event_log(
+            .snapshot_admitted()
+            .map_err(|source| StreamingApiError::OutputAdmission { source })?;
+        let mut reproduction = Vec::new();
+        let count = recorded
+            .entries()
+            .iter()
+            .filter(|entry| entry.event_log_sequence_before <= attach_tail.next_sequence)
+            .count();
+        crucible_engine::owned_decode::reserve_vec(&mut reproduction, count).map_err(|source| {
+            StreamingApiError::OutputAdmission {
+                source: crucible_control_api::admitted_output::admission(source),
+            }
+        })?;
+        for entry in recorded
+            .entries()
+            .iter()
+            .filter(|entry| entry.event_log_sequence_before <= attach_tail.next_sequence)
+        {
+            reproduction.push(
+                ReproductionCommandRecord::from_entry_admitted(entry)
+                    .map_err(|source| StreamingApiError::OutputAdmission { source })?,
+            );
+        }
+        let snapshot = AttachSnapshot::from_event_log_admitted(
             self.event_log.snapshot_through(attach_tail),
             reproduction,
-        );
+        )
+        .map_err(|source| StreamingApiError::OutputAdmission { source })?;
         let live = self.live.read();
         state_updates.set_sequence_floor(live.state_transition_sequence);
         Ok((
-            Attached {
-                session: self.session,
-                event_log_len: attach_tail.next_sequence,
-                state: live.state_kind,
-                version: RPC_PROTOCOL_VERSION,
-                capabilities: self.command_policy.capabilities(),
-                snapshot: Some(snapshot),
-            },
+            Attached::from_owned_fields(
+                self.session,
+                attach_tail.next_sequence,
+                live.state_kind,
+                RPC_PROTOCOL_VERSION,
+                self.command_policy
+                    .capabilities()
+                    .map_err(|source| StreamingApiError::OutputAdmission { source })?,
+                Some(snapshot),
+            )
+            .map_err(|source| StreamingApiError::OutputAdmission { source })?,
             events,
             state_updates,
         ))
@@ -317,6 +378,7 @@ impl InProcessStreamingSession {
 /// Attached bidirectional `Control` stream handle.
 pub struct ControlStream {
     session: SessionRef,
+    output_budget: Option<crucible_engine::owned_decode::DecodeBudget>,
     sender: mpsc::Sender<SessionCommand>,
     live: Arc<LiveSnapshot>,
     attached: Attached,
@@ -346,7 +408,7 @@ impl ControlStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
     /// behind the bounded live tail.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-        recv_api_event(&mut self.events).await
+        recv_api_event(&mut self.events, self.output_budget.as_ref()).await
     }
 
     /// Receives the next live run-state update.
@@ -367,7 +429,13 @@ impl ControlStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
     /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
-        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
+        recv_api_frame(
+            self.session,
+            &mut self.events,
+            &mut self.state_updates,
+            self.output_budget.as_ref(),
+        )
+        .await
     }
 
     /// Dispatches one command envelope through the control stream.
@@ -416,6 +484,7 @@ fn policy_rejection(command_id: u64, command_kind: SessionCommandKind) -> SendRe
 /// Attached read-only `Watch` stream handle.
 pub struct WatchStream {
     session: SessionRef,
+    output_budget: Option<crucible_engine::owned_decode::DecodeBudget>,
     attached: Attached,
     events: SessionEventLogStream,
     state_updates: SessionStateTransitionStream,
@@ -441,7 +510,7 @@ impl WatchStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the subscriber falls
     /// behind the bounded live tail.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-        recv_api_event(&mut self.events).await
+        recv_api_event(&mut self.events, self.output_budget.as_ref()).await
     }
 
     /// Receives the next live run-state update.
@@ -462,18 +531,28 @@ impl WatchStream {
     /// Returns [`StreamingApiError::EventStreamLagged`] if the canonical event
     /// subscriber falls behind. Superseded state updates are coalesced.
     pub async fn recv_frame(&mut self) -> Result<Option<StreamingFrame>, StreamingApiError> {
-        recv_api_frame(self.session, &mut self.events, &mut self.state_updates).await
+        recv_api_frame(
+            self.session,
+            &mut self.events,
+            &mut self.state_updates,
+            self.output_budget.as_ref(),
+        )
+        .await
     }
 }
 
 async fn recv_api_event(
     events: &mut SessionEventLogStream,
+    budget: Option<&crucible_engine::owned_decode::DecodeBudget>,
 ) -> Result<Option<StreamingEventFrame>, StreamingApiError> {
-    events
-        .recv()
-        .await
-        .map(|frame| frame.map(StreamingEventFrame::from))
-        .map_err(stream_error)
+    let frame = events.recv().await.map_err(stream_error)?;
+    // A scope never crosses await; each delivered frame borrows the same
+    // retained session authority on the thread performing its conversion.
+    let _scope = budget.map(crucible_engine::owned_decode::DecodeBudget::enter);
+    frame
+        .map(StreamingEventFrame::from_session_admitted)
+        .transpose()
+        .map_err(|source| StreamingApiError::OutputAdmission { source })
 }
 
 fn stream_error(error: SessionEventLogStreamError) -> StreamingApiError {
@@ -674,10 +753,17 @@ fn schedule_error_rejection_kind(error: &crucible_engine::ScheduleError) -> Comm
 fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
     match error {
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
+        SchedulerError::RamFailure { source, .. } => source
+            .first_boundary()
+            .map(scheduler_error_rejection_kind)
+            .unwrap_or(CommandRejectionKind::Internal),
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
         }
         SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::RamAdmission { .. }
+        | SchedulerError::Evaluation { .. }
+        | SchedulerError::AssertionCheckpoint { .. }
         | SchedulerError::OperationalBoundary { .. }
         | SchedulerError::ResourceLimit { .. } => CommandRejectionKind::Internal,
     }
@@ -687,7 +773,9 @@ const fn backend_error_rejection_kind(error: &BackendError) -> CommandRejectionK
     match error {
         BackendError::Unsupported { .. } => CommandRejectionKind::Unsupported,
         BackendError::Rejected { .. } => CommandRejectionKind::InvalidArgument,
-        BackendError::ResourceLimit { .. } => CommandRejectionKind::Internal,
+        BackendError::ResourceLimit { .. }
+        | BackendError::OperationalFailure { .. }
+        | BackendError::RetainedOperationalFailure { .. } => CommandRejectionKind::Internal,
     }
 }
 
@@ -695,10 +783,11 @@ async fn recv_api_frame(
     session: SessionRef,
     events: &mut SessionEventLogStream,
     state_updates: &mut SessionStateTransitionStream,
+    budget: Option<&crucible_engine::owned_decode::DecodeBudget>,
 ) -> Result<Option<StreamingFrame>, StreamingApiError> {
     // crucible-lint: allow unordered-select -- API stream multiplexing preserves per-source ordering.
     tokio::select! {
-        event = recv_api_event(events) => event.map(|frame| frame.map(StreamingFrame::Event)),
+        event = recv_api_event(events, budget) => event.map(|frame| frame.map(StreamingFrame::Event)),
         state_update = state_updates.recv_latest() => {
             Ok(state_update.map(|frame| StreamingFrame::StateUpdate(state_update_frame(session, frame))))
         }
@@ -932,6 +1021,49 @@ impl crucible_control_client::LocalWatchStream for WatchStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_ram_failures_preserve_original_command_rejection_kind() {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024).unwrap();
+        let original = crucible_engine::owned_decode::current_budget().unwrap();
+        for first in [
+            SchedulerError::Backend(BackendError::Unsupported {
+                capability: "original checkpoint capability",
+            }),
+            SchedulerError::Backend(BackendError::Rejected {
+                message: String::from("original checkpoint rejection"),
+            }),
+            SchedulerError::TopologyActivationInPast { at: 1, frontier: 2 },
+            SchedulerError::BoundaryViolation {
+                message: String::from("original checkpoint boundary"),
+            },
+            SchedulerError::OperationalBoundary {
+                class: crucible_engine::SchedulerOperationalFailureClass::Canceled,
+                message: String::from("original checkpoint cancellation"),
+            },
+        ] {
+            let expected = scheduler_error_rejection_kind(&first);
+            let prepared =
+                crucible_store::ram::PreparedRamFailure::<SchedulerError>::new(&original).unwrap();
+            let error = SchedulerError::from_ram_failure(prepared.retain(
+                Some(first),
+                crucible_store::ram::RamStoreError::Invalid("retained storage failure"),
+            ));
+            assert_eq!(scheduler_error_rejection_kind(&error), expected);
+            assert_eq!(scheduler_error_rejection_kind(&error.clone()), expected);
+        }
+
+        let prepared =
+            crucible_store::ram::PreparedRamFailure::<SchedulerError>::new(&original).unwrap();
+        let error = SchedulerError::from_ram_failure(prepared.retain(
+            None,
+            crucible_store::ram::RamStoreError::Invalid("original storage rejection"),
+        ));
+        assert_eq!(
+            scheduler_error_rejection_kind(&error),
+            CommandRejectionKind::Internal
+        );
+    }
 
     #[test]
     fn continue_acknowledges_an_immediate_breakpoint_pause() {

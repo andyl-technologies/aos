@@ -171,9 +171,6 @@ pub fn run_guarded_production_plugin_probe(
                 Some(&request.root_image),
                 process_contract,
             ) {
-                if let Some(child) = error.take_unreaped_child() {
-                    owner.retain_failed_launch_child(child);
-                }
                 return Err(ProductionPluginProbeError::ImagePreparation {
                     message: error.to_string(),
                 });

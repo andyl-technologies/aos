@@ -3,8 +3,8 @@
 //! Every host-parallel mechanism is recorded as either Class A (work outside
 //! the guest-observable boundary) or Class B (observable work whose commit
 //! coordinate is fixed before dispatch). The perf gate validates this register
-//! so an optimization cannot silently bypass the determinism argument in RFC
-//! 0010 section 25.12.1.
+//! so observable work cannot commit at a coordinate chosen by host timing.
+//! The admission classes keep that determinism boundary explicit.
 
 use std::collections::BTreeSet;
 
@@ -74,7 +74,7 @@ impl HostParallelismAdmission {
     }
 }
 
-/// Returns the canonical RFC 0010 host-parallelism admission register.
+/// Returns the canonical host-parallelism admission register.
 #[must_use]
 pub fn canonical_host_parallelism_admissions() -> Vec<HostParallelismAdmission> {
     vec![

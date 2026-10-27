@@ -10,10 +10,10 @@ pub(crate) fn emit_memory_batch_c_header(out: &mut String) {
     }
     out.push_str("\n/* Atomic ordered QEMU memory-mutation batch ABI. */\n");
     out.push_str("#define CRUCIBLE_MEMORY_MUTATION_BATCH_MAGIC_V1 \"CRUMBAT1\"\n");
-    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V1 \"crucible.memory-mutation-batch-precondition.v1\\0\"\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V2 \"crucible.memory-mutation-batch-precondition.v2\\0\"\n");
     define!(
-        "CRUCIBLE_MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V1_BYTES",
-        MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V1.len()
+        "CRUCIBLE_MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V2_BYTES",
+        MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V2.len()
     );
     out.push_str("#define CRUCIBLE_MEMORY_MUTATION_BATCH_BEFORE_SHA256_DOMAIN_V1 \"crucible.memory-mutation-batch-before.v1\\0\"\n");
     define!(

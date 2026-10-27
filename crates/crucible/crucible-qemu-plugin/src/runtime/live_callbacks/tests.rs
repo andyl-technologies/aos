@@ -1,13 +1,14 @@
 //! Live QEMU callback integration tests.
 
 use super::*;
+use std::sync::mpsc;
 
 use std::cell::Cell;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::{FromRawFd as _, IntoRawFd as _};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicPtr, AtomicU8};
 
 use crucible_qemu_shmem::{
     KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_IDLE, STATUS_RUNNING,
@@ -16,6 +17,7 @@ use crucible_qemu_shmem::{
 
 mod block_wait;
 mod fault_event_control;
+mod final_placement;
 mod network_custody;
 mod network_output;
 mod preemption;
@@ -113,7 +115,7 @@ extern "C" fn test_fingerprint_read_rr_cursor(
 }
 
 extern "C" fn test_fingerprint_capture(
-    out: *mut crate::fingerprint_sampler::QemuFingerprintMaterialFds,
+    out: *mut crate::fingerprint_sampler::QemuFingerprintCaptureV2,
 ) -> std::os::raw::c_int {
     if out.is_null() {
         return 1;
@@ -121,9 +123,8 @@ extern "C" fn test_fingerprint_capture(
 
     let seed = TEST_FINGERPRINT_CAPTURE_SEED.get() as u8;
     TEST_FINGERPRINT_CAPTURE_COUNT.set(TEST_FINGERPRINT_CAPTURE_COUNT.get() + 1);
-    let ram = test_sealed_fingerprint_memfd(seed);
     let device = test_sealed_fingerprint_memfd(seed.wrapping_add(1));
-    let (Ok(ram), Ok(device)) = (ram, device) else {
+    let Ok(device) = device else {
         return 1;
     };
     let mut schema = [0_u8; crucible_qemu_shmem::FINGERPRINT_DIGEST_BYTES];
@@ -132,9 +133,12 @@ extern "C" fn test_fingerprint_capture(
     }
     // SAFETY: `out` names the live aggregate output checked above.
     unsafe {
-        out.write(crate::fingerprint_sampler::QemuFingerprintMaterialFds {
-            ram_fd: ram.into_raw_fd(),
-            ram_material_length: 1,
+        out.write(crate::fingerprint_sampler::QemuFingerprintCaptureV2 {
+            schema: 2,
+            logical_edition: 1,
+            ram_scope: 0,
+            reserved: 0,
+            ram_digest: [seed; 32],
             ram_bytes: 1,
             device_fd: device.into_raw_fd(),
             device_material_length: 1,
@@ -788,7 +792,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
             .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
     );
     let state_pointer = std::ptr::from_ref(state.as_ref()).cast_mut();
-    LIVE_VCPU_TIME_STATE.store(state_pointer, Ordering::Release);
+    LIVE_VCPU_CALLBACKS_CLAIMED.store(true, Ordering::Release);
     state.quiescence.close();
     let userdata = state_pointer.cast::<c_void>();
     let before = slot.snapshot();
@@ -833,7 +837,7 @@ fn every_live_callback_entry_rejects_work_after_quiescence() {
 
     let after = slot.snapshot();
     assert_eq!(after, before);
-    LIVE_VCPU_TIME_STATE.store(std::ptr::null_mut(), Ordering::Release);
+    LIVE_VCPU_CALLBACKS_CLAIMED.store(false, Ordering::Release);
 }
 
 #[test]
@@ -1596,3 +1600,34 @@ fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
 
 mod registration_stubs;
 use registration_stubs::*;
+
+fn attach_test_fingerprint(
+    mut state: LiveVcpuTimeCallbackState,
+    sampling: crate::fingerprint_sampler::PluginFingerprintSampling,
+    slot: &FingerprintSampleSlot,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
+    attach_test_fingerprint_in_place(
+        &mut state,
+        sampling,
+        slot,
+        LiveWorkerQuiescence::new(crate::runtime::worker_quiescence::WORKER_ALL),
+    )?;
+    Ok(state)
+}
+
+fn attach_test_fingerprint_in_place(
+    state: &mut LiveVcpuTimeCallbackState,
+    sampling: crate::fingerprint_sampler::PluginFingerprintSampling,
+    slot: &FingerprintSampleSlot,
+    worker_quiescence: Arc<LiveWorkerQuiescence>,
+) -> Result<(), LiveVcpuTimeCallbackError> {
+    let mut failure = None;
+    state.attach_fingerprint_in_place(
+        sampling,
+        StableFingerprintSlotHandle::new(slot),
+        worker_quiescence,
+        crate::device_digest_workspace::DeviceDigestWorkspace::test_owner(),
+        &mut || Ok(std::time::Duration::from_millis(1)),
+        &mut failure,
+    )
+}

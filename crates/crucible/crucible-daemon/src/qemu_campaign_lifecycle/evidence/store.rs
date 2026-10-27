@@ -32,7 +32,11 @@ impl QemuAttemptExecutionEvidenceSnapshot {
     ) -> Self {
         let event_log_bytes = event_log_entries
             .iter()
-            .map(SchedulerEventLogEntry::canonical_material_len)
+            .map(|entry| {
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|source| panic!("fixture event material admission: {source}"))
+            })
             .sum();
         Self {
             quanta,
@@ -441,7 +445,7 @@ fn append_event_entries_with_limits(
     }
     let added_bytes = entries.iter().try_fold(0usize, |total, entry| {
         total
-            .checked_add(entry.canonical_material_len())
+            .checked_add(entry.canonical_material_len()?)
             .ok_or_else(|| {
                 event_limit(
                     snapshot,
@@ -548,18 +552,22 @@ mod tests {
 
     #[test]
     fn post_quantum_entries_extend_evidence_without_advancing_frontier() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let quantum_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             frontier,
             "quantum-boundary-fixture",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let reply_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             1,
             frontier,
             "selectable-reply-fixture",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
 
         evidence
             .record(7, frontier, std::slice::from_ref(&quantum_entry))
@@ -576,12 +584,16 @@ mod tests {
 
     #[test]
     fn settled_preselection_records_only_its_authenticated_suffix() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let prefix =
-            SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "preselection-prefix");
+            SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "preselection-prefix")
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let suffix =
-            SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "preselection-suffix");
+            SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "preselection-suffix")
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         evidence
             .record(7, frontier, std::slice::from_ref(&prefix))
             .expect("record reserved boundary");
@@ -611,18 +623,22 @@ mod tests {
 
     #[test]
     fn preselection_mismatch_reports_first_field_without_payload_values() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
         let recorded = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             frontier,
             "private-recorded-budget",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let settled = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             frontier,
             "private-settled-budget",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         evidence
             .record(1, frontier, &[recorded])
             .expect("record reserved boundary");
@@ -638,12 +654,16 @@ mod tests {
 
     #[test]
     fn selected_preselection_records_only_contiguous_suffix_after_one_or_many_entries() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         for selected_count in [1, 3] {
             let evidence = QemuAttemptExecutionEvidence::default();
             let frontier = VirtualTime { ticks: 19 };
             let prefix = [
-                SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "first-prefix"),
-                SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "second-prefix"),
+                SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "first-prefix")
+                    .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+                SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "second-prefix")
+                    .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
             ];
             evidence
                 .record(1, frontier, &prefix)
@@ -651,11 +671,14 @@ mod tests {
 
             let mut selected = Vec::new();
             for index in 0..selected_count {
-                selected.push(SchedulerEventLogEntry::execution_budget_exhausted(
-                    (index + prefix.len()) as u64,
-                    frontier,
-                    "selected-entry",
-                ));
+                selected.push(
+                    SchedulerEventLogEntry::execution_budget_exhausted(
+                        (index + prefix.len()) as u64,
+                        frontier,
+                        "selected-entry",
+                    )
+                    .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
+                );
             }
             let selected_prefix_end = evidence
                 .record_selected_preselection_selection(&selected)
@@ -667,12 +690,14 @@ mod tests {
                     selected_prefix_end as u64,
                     frontier,
                     "first-suffix",
-                ),
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
                 SchedulerEventLogEntry::execution_budget_exhausted(
                     selected_prefix_end as u64 + 1,
                     frontier,
                     "second-suffix",
-                ),
+                )
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}")),
             ];
             evidence
                 .record_selected_preselection_suffix(&suffix, selected_prefix_end)
@@ -691,9 +716,12 @@ mod tests {
 
     #[test]
     fn selected_preselection_rejects_stale_prefix_or_noncontiguous_suffix() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         let frontier = VirtualTime { ticks: 19 };
-        let prefix = SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "prefix");
+        let prefix = SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "prefix")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         assert!(
             evidence
                 .record_selected_preselection_selection(std::slice::from_ref(&prefix))
@@ -708,7 +736,8 @@ mod tests {
                 .is_err()
         );
         let wrong_selection =
-            SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "wrong-selection");
+            SchedulerEventLogEntry::execution_budget_exhausted(2, frontier, "wrong-selection")
+                .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let error = evidence
             .record_selected_preselection_selection(&[wrong_selection])
             .expect_err("selection append cannot skip an event");
@@ -717,11 +746,13 @@ mod tests {
                 .to_string()
                 .contains("selection is not contiguous at event 0")
         );
-        let selected = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "selected");
+        let selected = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "selected")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let selected_prefix_end = evidence
             .record_selected_preselection_selection(std::slice::from_ref(&selected))
             .expect("append authenticated selection");
-        let skipped = SchedulerEventLogEntry::execution_budget_exhausted(3, frontier, "skipped");
+        let skipped = SchedulerEventLogEntry::execution_budget_exhausted(3, frontier, "skipped")
+            .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
 
         let error = evidence
             .record_selected_preselection_suffix(&[skipped], selected_prefix_end)
@@ -742,12 +773,15 @@ mod tests {
 
     #[test]
     fn event_byte_limit_refusal_preserves_the_complete_snapshot() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         let retained_entry = SchedulerEventLogEntry::execution_budget_exhausted(
             0,
             VirtualTime { ticks: 19 },
             "retained-evidence-limit-fixture",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         evidence
             .record(7, VirtualTime { ticks: 19 }, &[retained_entry])
             .expect("seed retained event evidence");
@@ -756,10 +790,15 @@ mod tests {
             1,
             VirtualTime { ticks: 20 },
             "evidence-limit-fixture",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
         let byte_limit = before
             .event_log_bytes
-            .checked_add(entry.canonical_material_len())
+            .checked_add(
+                entry
+                    .canonical_material_len()
+                    .unwrap_or_else(|source| panic!("fixture boundary admission: {source}")),
+            )
             .and_then(|total| total.checked_sub(1))
             .expect("two nonempty canonical event entries");
 
@@ -785,6 +824,8 @@ mod tests {
 
     #[test]
     fn effect_trace_limit_refusal_preserves_final_events_and_prior_evidence() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])
@@ -794,7 +835,8 @@ mod tests {
             0,
             VirtualTime { ticks: 12 },
             "final-evidence-limit-fixture",
-        );
+        )
+        .unwrap_or_else(|source| panic!("fixture event admission: {source}"));
 
         let error = evidence
             .complete_with_trace_limit(&[final_entry], Some(vec![0xa5, 0x5a]), None, 1)
@@ -812,6 +854,8 @@ mod tests {
 
     #[test]
     fn terminal_fingerprint_limit_refusal_preserves_prior_evidence() {
+        let _fixture_metadata = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
         let evidence = QemuAttemptExecutionEvidence::default();
         evidence
             .record(3, VirtualTime { ticks: 11 }, &[])

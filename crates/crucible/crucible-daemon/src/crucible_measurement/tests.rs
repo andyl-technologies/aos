@@ -63,6 +63,9 @@ fn objective_policy() -> CampaignPolicy {
 
 #[test]
 fn verified_crucible_aggregate_drives_exact_campaign_objective() {
+    let _scope = crucible_engine::test_support::fixture_decode_scope(16 << 20)
+        .unwrap_or_else(|error| panic!("finite measurement fixture metadata: {error}"));
+
     let world = crucible_engine::World::from_nodes(vec![crucible_engine::WorldNode {
         id: node("router"),
         arch: NodeTemplate::DEFAULT_ARCH,
@@ -107,7 +110,8 @@ fn verified_crucible_aggregate_drives_exact_campaign_objective() {
             Icount { retired: 2 },
             node("router"),
             MarkerId::from_name("done"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("objective terminal marker: {error}")),
     ];
     let terminal = MeasurementTerminalState {
         scenario_ready_at: None,

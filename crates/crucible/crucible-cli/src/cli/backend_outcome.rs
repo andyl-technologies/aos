@@ -10,7 +10,8 @@ pub(crate) trait BackendRouteRecorder {
     fn record_backend_announcement(&mut self, message: &str);
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct BackendCommandOutcome {
     pub(crate) subcommand: CliSubcommand,
     pub(crate) status: BackendCommandStatus,
@@ -27,6 +28,7 @@ pub(crate) struct BackendCommandOutcome {
     pub(crate) reproduction_artifact: Option<Vec<u8>>,
     pub(crate) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
     pub(crate) host_scheduler_preemption: Vec<HostSchedulerPreemptionEvidence>,
+    pub(crate) _output_custody: Option<crucible_session::engine::owned_decode::DecodeCustody>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,0 +1,40 @@
+[package]
+name = "crucible-host-resources"
+description = "Crucible host resource ownership, supervision, and RAM placement policy"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+private-measurement-domain = ["rustix/net", "rustix/process", "rustix/system", "dep:serde", "dep:serde_json", "dep:blake3"]
+test-support = ["dep:crucible-ram"]
+
+[lints]
+workspace = true
+
+[dependencies]
+aos-linux-project-quota = { path = "../../linux/aos-linux-project-quota" }
+crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
+blake3 = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+crucible-ram = { path = "../crucible-ram", optional = true }
+libc = { workspace = true }
+rustix = { workspace = true, features = ["time", "try_close"] }
+thiserror = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+crucible-host-resources = { path = ".", features = ["test-support"] }
+tempfile = { workspace = true }
+
+[[bin]]
+name = "crucible-measurement-init"
+path = "src/bin/measurement_init.rs"
+required-features = ["private-measurement-domain"]
+
+[[bin]]
+name = "crucible-allocation-roster-controls"
+path = "src/bin/allocation_roster_controls.rs"
+required-features = ["test-support"]

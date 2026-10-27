@@ -71,6 +71,16 @@ impl CheckpointReadBudget {
         self.reserve(requested)
     }
 
+    /// Charges complete logical RAM coverage without allocating page inventory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an exact resource-limit error before RAM traversal when the
+    /// aggregate footprint exceeds its authored or compiled bound.
+    pub(super) fn reserve_logical_ram(&mut self, requested: u64) -> Result<(), LifecycleApiError> {
+        self.reserve(requested)
+    }
+
     fn reserve(&mut self, requested: u64) -> Result<(), LifecycleApiError> {
         let current = self.used;
         let hard = FaultResourceLimits::compiled_maximum().fat_checkpoint_bytes;

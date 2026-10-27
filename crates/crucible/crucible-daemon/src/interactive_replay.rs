@@ -11,7 +11,7 @@ use crucible_engine::{
     NodeId, QuantumLoop, TemporalGraph, VirtualTime,
 };
 use crucible_session::{
-    CommandReply, Engine, SessionActor, SessionCommand, SessionControlLogEntry,
+    AdmittedSessionReproductionSnapshot, CommandReply, Engine, SessionActor, SessionCommand,
     SessionControlReplayArtifact, SessionError, SessionEventLog,
 };
 use thiserror::Error;
@@ -20,6 +20,12 @@ use tokio::sync::mpsc;
 /// Failure constructing, replaying, or terminating an interactive actor.
 #[derive(Debug, Error)]
 pub enum InteractiveReplayError {
+    /// The original metadata authority refused replay storage.
+    #[error("admit interactive replay metadata: {0}")]
+    Metadata(#[from] crucible_engine::owned_decode::DecodeAdmissionError),
+    /// The actor could not retain its original account through asynchronous polls.
+    #[error("start admitted replay actor: {0}")]
+    ActorSpawn(#[source] crucible_control_api::LifecycleApiError),
     /// The recorded initial configuration could not produce its genesis checkpoint.
     #[error("build interactive replay genesis: {0}")]
     Genesis(#[source] EngineError),
@@ -51,6 +57,7 @@ pub struct PreparedInteractiveReplay<L: QuantumLoop> {
     actor: SessionActor<L>,
     sender: mpsc::Sender<SessionCommand>,
     execution_fingerprints: Vec<FingerprintSample>,
+    decoding: crucible_engine::owned_decode::DecodeBudget,
 }
 
 impl<L: QuantumLoop> PreparedInteractiveReplay<L> {
@@ -60,10 +67,15 @@ impl<L: QuantumLoop> PreparedInteractiveReplay<L> {
         self.actor.event_log()
     }
 
-    /// Returns the actor-recorded reproduction command snapshot.
-    #[must_use]
-    pub fn reproduction_commands(&self) -> Vec<SessionControlLogEntry> {
-        self.actor.reproduction_log().snapshot()
+    /// Copies reproduction commands while retaining their original allocation custody.
+    ///
+    /// # Errors
+    /// Refuses expired or exhausted original metadata authority or failed copying.
+    pub fn reproduction_commands(
+        &self,
+    ) -> Result<AdmittedSessionReproductionSnapshot, EngineError> {
+        let _scope = self.decoding.enter();
+        self.actor.reproduction_log().snapshot_admitted()
     }
 
     /// Returns fingerprints sampled before original terminal nodes were retired.
@@ -86,7 +98,8 @@ impl<L: QuantumLoop + Send + 'static> PreparedInteractiveReplay<L> {
     /// Panics when polled outside a Tokio runtime.
     pub async fn shutdown(self) -> Result<(), InteractiveReplayError> {
         let actor = self.actor;
-        let task = tokio::spawn(async move { actor.run().await });
+        let task = crucible_control_server::spawn_admitted_session_actor(actor, self.decoding)
+            .map_err(InteractiveReplayError::ActorSpawn)?;
         let (reply, receiver) = CommandReply::channel();
 
         self.sender
@@ -117,6 +130,8 @@ pub fn prepare_interactive_replay<L: QuantumLoop>(
     artifact: &SessionControlReplayArtifact,
     nodes: &[NodeId],
 ) -> Result<PreparedInteractiveReplay<L>, InteractiveReplayError> {
+    let decoding = crucible_engine::owned_decode::require_current_child_budget()?;
+    let _scope = decoding.enter();
     let checkpoint = Checkpoint::from_recorded_configuration(
         &initial_configuration,
         None,
@@ -138,6 +153,7 @@ pub fn prepare_interactive_replay<L: QuantumLoop>(
         actor,
         sender,
         execution_fingerprints,
+        decoding,
     })
 }
 

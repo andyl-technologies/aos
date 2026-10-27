@@ -20,7 +20,7 @@ const MAX_TAGS: usize = 256;
 /// Typed producer and consumer class for a choice opportunity.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ChoiceSource {
-    /// RFC-0014 environment adapter opportunity.
+    /// Typed signal-fault environment adapter opportunity.
     Environment {
         /// Stable adapter implementation identity.
         adapter: String,
@@ -334,6 +334,14 @@ impl SelectableDeclaration {
         codec::encode(self)
     }
 
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
+    }
+
     /// Decodes strict canonical declaration bytes.
     ///
     /// # Errors
@@ -380,7 +388,7 @@ impl Canonical for SelectableDeclaration {
 /// Stable modeled coordinate of one dynamic choice occurrence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChoiceCoordinate {
-    /// Scenario scheduler or RFC-0014 fault coordinate identity.
+    /// Scenario scheduler or typed signal-fault coordinate identity.
     pub scheduler: CampaignHash,
     /// Producer-specific semantic operation or phase identity.
     pub producer: CampaignHash,
@@ -517,6 +525,14 @@ impl ChoiceOpportunity {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
     }
 
     /// Decodes one canonical runtime opportunity body.
@@ -1062,6 +1078,14 @@ impl Selection {
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
+    }
+
+    /// Returns the exact canonical byte length without allocating the body.
+    ///
+    /// # Errors
+    /// Refuses overflow or an encoded body exceeding the canonical format bound.
+    pub fn canonical_encoded_len(&self) -> Result<usize, CampaignCodecError> {
+        codec::encoded_length(self)
     }
 
     /// Decodes one strict canonical selection envelope.

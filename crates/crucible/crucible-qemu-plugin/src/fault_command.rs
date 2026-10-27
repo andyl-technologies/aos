@@ -23,7 +23,7 @@ use crucible_qemu_shmem::{
     FaultCommandKind, FaultCommandSlotV1, FaultEventHeaderV1, FaultEventOutcomeV1,
     FaultEventSlotV1, FaultExceptionEvidenceV1, FaultHardwareErrorCapabilityManifestV1,
     FaultHardwareErrorCapabilityRowV1, FaultHardwareErrorClassV1, FaultHardwareErrorMechanismV1,
-    FaultHardwareErrorRecordKindV1, FaultInstructionEvidenceOutcomeV1, FaultInstructionEvidenceV1,
+    FaultHardwareErrorRecordKindV1, FaultInstructionEvidenceOutcomeV1, FaultInstructionEvidenceV2,
     FaultInstructionMutationKindV1, FaultInstructionPortIoEvidenceV1,
     FaultInterruptCapabilityManifestV1, FaultInterruptCapabilityRowV1,
     FaultInterruptDeliveryDropV1, FaultInterruptFamilyV1, FaultInterruptPolarityV1,
@@ -33,7 +33,7 @@ use crucible_qemu_shmem::{
     FaultSystemCapabilityManifestV1, FaultTargetManifestKind, FaultTargetManifestQueryV1,
     FaultTerminalEvidenceV1, FaultTransportError, HARD_FAULT_PAYLOAD_BYTES,
     MappedFaultCommandTransportMut, MappedFaultEventTransportMut, MappedFaultResultTransportMut,
-    MappedSetupRegion, MappedSetupRegionAccessError, NodeFaultOperationV1, NodeFaultPayloadV1,
+    MappedSetupRegionAccessError, MappedSetupView, NodeFaultOperationV1, NodeFaultPayloadV1,
     NodeFaultTargetKindV1, RingHeader, can_enqueue_fault_event, can_enqueue_fault_result,
     dequeue_fault_command, encode_fault_capability_manifest, enqueue_fault_event,
     enqueue_fault_result, fault_capability_manifest_digest, fault_object_id_hash_v1,
@@ -355,6 +355,7 @@ pub(crate) struct FaultCommandBridge {
     prepared_commands: BTreeSet<u64>,
     prepare_only_commands: BTreeSet<u64>,
     pending_command: Option<DequeuedFaultCommand>,
+    custody: bridge::custody::EffectCustody,
     initialized: bool,
 }
 
@@ -376,6 +377,41 @@ use test_support::{TEST_EVENT_PENDING, test_event_peek, test_event_poll, test_re
 /// Failure of the lossless fault command bridge.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultCommandBridgeError {
+    /// An earlier destructive effect has no authentic physical disposition.
+    #[error(
+        "fault command {stage} receipt {serial:?} remains unresolved (native={native_status:?}, publication_attempted={publication_attempted}, published={published})"
+    )]
+    EffectUnresolved {
+        /// The first local effect phase whose receipt must not be replayed.
+        stage: &'static str,
+        /// The retained local attempt, when a native call was entered.
+        serial: Option<u64>,
+        /// The actual native return, including unknown absence before return.
+        native_status: Option<i32>,
+        /// Whether the local public transport enqueue was entered.
+        publication_attempted: bool,
+        /// Whether that enqueue returned successfully before a later refusal.
+        published: bool,
+    },
+    /// The bounded local attempt journal cannot represent another serial.
+    #[error("fault command receipt serial overflow")]
+    ReceiptSerialOverflow,
+
+    /// The physical owner refused access without donating semantic authority.
+    #[error("native command storage refused ({status})")]
+    PhysicalStorage {
+        /// Exact native status; it supplies no generic retry policy.
+        status: i32,
+    },
+    /// Native proved preeffect contention with an already-held physical use.
+    #[error("native command storage physical use is pending")]
+    PhysicalStoragePending,
+    /// The actual installing or containing Source refused the storage birth.
+    #[error("command storage Source refused: {source}")]
+    StorageSource {
+        /// Retained authentic installing or lifetime-accounting refusal.
+        source: crate::StartupSourceError,
+    },
     /// A command pump ran before the first realized vCPU admitted manifests.
     #[error("QEMU fault bridge is not initialized by a realized vCPU")]
     NotInitialized,

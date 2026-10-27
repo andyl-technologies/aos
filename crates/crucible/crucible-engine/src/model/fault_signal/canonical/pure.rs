@@ -2,9 +2,12 @@
 
 use super::*;
 
-pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
-    match specification {
-        PureSignalSpecification::Simple { operator, overflow } => format!(
+pub(super) fn pure_material(
+    specification: &PureSignalSpecification,
+) -> impl std::fmt::Display + '_ {
+    display(move |formatter| match specification {
+        PureSignalSpecification::Simple { operator, overflow } => write!(
+            formatter,
             "operator={};overflow={}",
             operator_name(*operator),
             overflow_name(*overflow)
@@ -14,7 +17,8 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
             ratio,
             rounding,
             overflow,
-        } => format!(
+        } => write!(
+            formatter,
             "operator={};ratio={}/{};rounding={};overflow={}",
             operator_name(*operator),
             ratio.numerator(),
@@ -26,17 +30,19 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
             minimum,
             maximum,
             overflow,
-        } => format!(
+        } => write!(
+            formatter,
             "minimum={};maximum={};overflow={}",
-            minimum.material(),
-            maximum.material(),
+            value_material(minimum),
+            value_material(maximum),
             overflow_name(*overflow)
         ),
         PureSignalSpecification::LookupStep {
             points,
             before,
             after,
-        } => format!(
+        } => write!(
+            formatter,
             "points={};before={};after={}",
             value_pair_list_material(points),
             boundary_material(before),
@@ -46,19 +52,27 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
             points,
             rounding,
             overflow,
-        } => format!(
+        } => write!(
+            formatter,
             "points={};rounding={};overflow={}",
             value_pair_list_material(points),
             rounding_name(*rounding),
             overflow_name(*overflow)
         ),
-        PureSignalSpecification::EnumMap { entries } => format!(
+        PureSignalSpecification::EnumMap { entries } => write!(
+            formatter,
             "entries={}",
-            entries
-                .iter()
-                .map(|(variant, value)| format!("{}=>{}", variant.as_str(), value.material()))
-                .collect::<Vec<_>>()
-                .join(",")
+            joined(
+                entries
+                    .iter()
+                    .map(|(variant, value)| display(move |formatter| write!(
+                        formatter,
+                        "{}=>{}",
+                        variant.as_str(),
+                        value_material(value)
+                    ))),
+                ","
+            )
         ),
         PureSignalSpecification::UnitConvert {
             from_unit,
@@ -67,7 +81,8 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
             offset,
             rounding,
             overflow,
-        } => format!(
+        } => write!(
+            formatter,
             "from_unit={};to_unit={};ratio={}/{};offset={}/{};rounding={};overflow={}",
             from_unit.material(),
             to_unit.material(),
@@ -81,13 +96,17 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
         PureSignalSpecification::Delay {
             delay,
             retained_samples,
-        } => format!("delay={delay};retained_samples={retained_samples}"),
+        } => write!(
+            formatter,
+            "delay={delay};retained_samples={retained_samples}"
+        ),
         PureSignalSpecification::SampleHold {
             cadence,
             epoch,
             retained_samples,
         } => {
-            format!(
+            write!(
+                formatter,
                 "cadence={cadence};epoch={};retained_samples={retained_samples}",
                 coordinate_material(epoch)
             )
@@ -99,31 +118,34 @@ pub(super) fn pure_material(specification: &PureSignalSpecification) -> String {
             retained_samples,
             rounding,
             overflow,
-        } => format!(
+        } => write!(
+            formatter,
             "operator={};window={window};sampling_cadence={sampling_cadence};retained_samples={retained_samples};rounding={};overflow={}",
             operator_name(*operator),
             rounding_name(*rounding),
             overflow_name(*overflow)
         ),
-        PureSignalSpecification::Distance { metric, rounding } => format!(
+        PureSignalSpecification::Distance { metric, rounding } => write!(
+            formatter,
             "metric={};rounding={}",
             metric.as_str(),
             rounding_name(*rounding)
         ),
         PureSignalSpecification::ZoneContains { zone } => {
-            format!("zone={}", zone.as_str())
+            write!(formatter, "zone={}", zone.as_str())
         }
-        PureSignalSpecification::FieldSample => String::new(),
+        PureSignalSpecification::FieldSample => formatter.write_str(""),
         PureSignalSpecification::OrientationDelta { convention } => {
-            format!("convention={}", convention.as_str())
+            write!(formatter, "convention={}", convention.as_str())
         }
         PureSignalSpecification::MergeEvents {
             source_sequence_limit,
         } => {
-            format!(
+            write!(
+                formatter,
                 "same_coordinate_order=source_then_sequence;source_sequence_limit={source_sequence_limit}"
             )
         }
-        PureSignalSpecification::GateEvents => String::new(),
-    }
+        PureSignalSpecification::GateEvents => formatter.write_str(""),
+    })
 }

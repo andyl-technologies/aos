@@ -152,6 +152,22 @@ where
         }
     }
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        let hot_fork = self
+            .hot_fork
+            .try_retire_original(original)
+            .map_err(QemuHotFirstExecutionRouterError::HotFork);
+        let fallback = self
+            .fallback
+            .try_retire_original(original)
+            .map_err(QemuHotFirstExecutionRouterError::Fallback);
+
+        hot_fork.and(fallback)
+    }
+
     fn quarantine_pending_execution(&mut self) {
         let Some(route) = self.pending.take() else {
             return;

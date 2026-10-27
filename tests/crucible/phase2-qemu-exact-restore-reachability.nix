@@ -53,24 +53,6 @@ in
             printf '%s' "$count" | ${pkgs.coreutils}/bin/tr -d '[:space:]'
           }
 
-          count_daemon_production_occurrences() {
-            needle="$1"
-            # Lifecycle declarations and their closed inline fixture regions
-            # moved into the daemon. Their exact counts and gates are checked
-            # below; they do not introduce a production launch implementation.
-            count="$(
-              for file in $(${pkgs.grep}/bin/grep -RlF --include='*.rs' \
-                --exclude='tests.rs' --exclude-dir=tests --exclude-dir=examples \
-                -- "$needle" crates/crucible/crucible-daemon/src 2>/dev/null); do
-                case "$file" in
-                  crates/crucible/crucible-daemon/src/vm_lifecycle.rs|\
-                  crates/crucible/crucible-daemon/src/vm_lifecycle/helpers.rs) ;;
-                  *) ${pkgs.grep}/bin/grep -Fo -- "$needle" "$file" ;;
-                esac
-              done | ${pkgs.coreutils}/bin/wc -l
-            )"
-            printf '%s' "$count" | ${pkgs.coreutils}/bin/tr -d '[:space:]'
-          }
 
           require_count() {
             expected="$1"
@@ -89,7 +71,7 @@ in
               || fail "expected $expected occurrence(s) of '$needle' in $file, found $actual"
           }
 
-          # The lifecycle owner alone constructs the complete request.
+          # The concrete backend alone constructs the complete request.
           require_count 1 'QemuProductionExactRestoreRequest::new('
           require_file_count 1 \
             crates/crucible/crucible-daemon/src/vm_lifecycle.rs \
@@ -115,12 +97,28 @@ in
           require_file_count 1 \
             crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher.rs \
             'fn launch_restored('
-          daemon_restored_impls="$(count_daemon_production_occurrences 'fn launch_restored(')"
-          [ "$daemon_restored_impls" = 1 ] \
-            || fail "expected one production daemon launch_restored implementation, found $daemon_restored_impls"
-          # Across the workspace, the remaining definitions are one lifecycle trait
-          # declaration and seven implementations in closed test-only regions.
-          require_count 9 'fn launch_restored('
+          # One trait, the actual atomic launcher, one cleanup-only partial
+          # owner, and eleven closed component implementations exist. Every
+          # implementation is accounted below; custody does not mint launch.
+          require_count 14 'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher/pending_construction.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher/pending_construction.rs \
+            'pending Source construction grants no restore'
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/lifecycle_cleanup/reservation/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/vm_lifecycle/construction/custody/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/vm_lifecycle/hot_fork/tests.rs \
+            'fn launch_restored('
+          require_file_count 1 \
+            crates/crucible/crucible-daemon/src/vm_lifecycle/hot_fork/tests/retained_continuation.rs \
+            'fn launch_restored('
           require_file_count 2 \
             crates/crucible/crucible-daemon/src/vm_lifecycle.rs \
             'fn launch_restored('

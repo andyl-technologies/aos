@@ -17,6 +17,9 @@
 
 use thiserror::Error;
 
+mod slice_encoder;
+mod wire_decoder;
+
 /// Four-byte magic identifying a guest-introspection record.
 pub const GUEST_INTROSPECTION_MAGIC: [u8; 4] = *b"CRGI";
 /// Current guest-introspection protocol version.
@@ -280,23 +283,7 @@ impl GuestIntrospectionRecord {
     /// kind or [`GuestIntrospectionError::FeatureChannelMismatch`] when the
     /// reserved feature channel is used by a request.
     pub fn validate_host_request(&self) -> Result<(), GuestIntrospectionError> {
-        if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID {
-            return Err(GuestIntrospectionError::FeatureChannelMismatch);
-        }
-        match &self.message {
-            GuestIntrospectionMessage::Exec { .. }
-            | GuestIntrospectionMessage::Pty { .. }
-            | GuestIntrospectionMessage::Ssh { .. }
-            | GuestIntrospectionMessage::Input(_)
-            | GuestIntrospectionMessage::Resize { .. }
-            | GuestIntrospectionMessage::Close => Ok(()),
-            GuestIntrospectionMessage::Features(_)
-            | GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. } => {
-                Err(GuestIntrospectionError::WrongDirection)
-            }
-        }
+        validate_host_request_kind(self.channel_id, message_header(&self.message).0)
     }
 
     /// Validates that this record may travel from the guest agent to the host.
@@ -308,34 +295,27 @@ impl GuestIntrospectionRecord {
     /// feature advertisement uses another channel, or another response uses
     /// the reserved feature channel.
     pub fn validate_guest_response(&self) -> Result<(), GuestIntrospectionError> {
-        match &self.message {
-            GuestIntrospectionMessage::Features(_)
-                if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
-            {
-                Ok(())
-            }
-            GuestIntrospectionMessage::Features(_) => {
-                Err(GuestIntrospectionError::FeatureChannelMismatch)
-            }
-            GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. }
-                if self.channel_id != GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
-            {
-                Ok(())
-            }
-            GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. } => {
-                Err(GuestIntrospectionError::FeatureChannelMismatch)
-            }
-            GuestIntrospectionMessage::Exec { .. }
-            | GuestIntrospectionMessage::Pty { .. }
-            | GuestIntrospectionMessage::Ssh { .. }
-            | GuestIntrospectionMessage::Input(_)
-            | GuestIntrospectionMessage::Resize { .. }
-            | GuestIntrospectionMessage::Close => Err(GuestIntrospectionError::WrongDirection),
-        }
+        validate_guest_response_kind(self.channel_id, message_header(&self.message).0)
+    }
+
+    /// Validates a host request directly from borrowed encoded bytes.
+    ///
+    /// # Errors
+    /// Returns decoding errors for malformed records, or the same direction
+    /// and feature-channel errors as [`Self::validate_host_request`].
+    pub fn validate_encoded_host_request(bytes: &[u8]) -> Result<(), GuestIntrospectionError> {
+        let record = wire_decoder::decode(bytes)?;
+        validate_host_request_kind(record.channel_id, record.kind)
+    }
+
+    /// Validates a guest response directly from borrowed encoded bytes.
+    ///
+    /// # Errors
+    /// Returns decoding errors for malformed records, or the same direction
+    /// and feature-channel errors as [`Self::validate_guest_response`].
+    pub fn validate_encoded_guest_response(bytes: &[u8]) -> Result<(), GuestIntrospectionError> {
+        let record = wire_decoder::decode(bytes)?;
+        validate_guest_response_kind(record.channel_id, record.kind)
     }
 
     /// Encodes one complete little-endian protocol record.
@@ -345,23 +325,62 @@ impl GuestIntrospectionRecord {
     /// Returns [`GuestIntrospectionError`] if the record is invalid or exceeds
     /// the maximum encoded length.
     pub fn encode(&self) -> Result<Vec<u8>, GuestIntrospectionError> {
-        validate_message(&self.message)?;
-        let (kind, flags, payload) = encode_message(&self.message)?;
-        let total_len = GUEST_INTROSPECTION_HEADER_LEN.saturating_add(payload.len());
-        if total_len > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionError::RecordTooLarge { len: total_len });
-        }
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| GuestIntrospectionError::RecordTooLarge { len: total_len })?;
-        let mut output = Vec::with_capacity(total_len);
-        output.extend_from_slice(&GUEST_INTROSPECTION_MAGIC);
-        output.extend_from_slice(&GUEST_INTROSPECTION_PROTOCOL_VERSION.to_le_bytes());
-        output.push(kind);
-        output.push(flags);
-        output.extend_from_slice(&self.channel_id.to_le_bytes());
-        output.extend_from_slice(&payload_len.to_le_bytes());
-        output.extend_from_slice(&payload);
+        let mut output = Vec::with_capacity(self.encoded_len()?);
+        self.encode_into(&mut output)?;
         Ok(output)
+    }
+
+    /// Counts and validates the exact record length without allocating payload scratch.
+    ///
+    /// # Errors
+    /// Refuses invalid message fields or an aggregate record exceeding the wire maximum.
+    pub fn encoded_len(&self) -> Result<usize, GuestIntrospectionError> {
+        validate_message(&self.message)?;
+        let argv_len = |argv: &[String]| {
+            2 + argv
+                .iter()
+                .map(|argument| 2 + argument.len())
+                .sum::<usize>()
+        };
+        let payload = match &self.message {
+            GuestIntrospectionMessage::Features(_) => 6,
+            GuestIntrospectionMessage::Exec { argv, .. } => argv_len(argv),
+            GuestIntrospectionMessage::Pty { argv, .. } => 4 + argv_len(argv),
+            GuestIntrospectionMessage::Ssh { .. } | GuestIntrospectionMessage::Close => 0,
+            GuestIntrospectionMessage::Input(bytes)
+            | GuestIntrospectionMessage::Output { bytes, .. } => bytes.len(),
+            GuestIntrospectionMessage::Resize { .. } => 4,
+            GuestIntrospectionMessage::Exit { .. } => 8,
+            GuestIntrospectionMessage::Error { message, .. } => 2 + message.len(),
+        };
+        // Validated argv count and argument limits bound every addition above.
+        let length = GUEST_INTROSPECTION_HEADER_LEN + payload;
+        if length > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
+            return Err(GuestIntrospectionError::RecordTooLarge { len: length });
+        }
+        Ok(length)
+    }
+
+    /// Appends a record to already reserved storage without allocating.
+    ///
+    /// No output bytes change until every field and the available capacity pass
+    /// validation. Callers can admit and fallibly reserve the exact counted
+    /// extent before handing storage to this encoder.
+    ///
+    /// # Errors
+    /// Refuses invalid message fields, oversized records, or insufficient reserved capacity.
+    pub fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), GuestIntrospectionError> {
+        let length = self.encoded_len()?;
+        let available = output.capacity() - output.len();
+        if available < length {
+            return Err(GuestIntrospectionError::OutputCapacity {
+                required: length,
+                available,
+            });
+        }
+
+        self.encode_reserved(output, length);
+        Ok(())
     }
 
     /// Decodes and validates one complete protocol record.
@@ -371,37 +390,19 @@ impl GuestIntrospectionRecord {
     /// Returns [`GuestIntrospectionError`] for truncated, oversized, malformed,
     /// unsupported, or semantically invalid bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, GuestIntrospectionError> {
-        if bytes.len() < GUEST_INTROSPECTION_HEADER_LEN {
-            return Err(GuestIntrospectionError::Truncated { len: bytes.len() });
-        }
-        if bytes.len() > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionError::RecordTooLarge { len: bytes.len() });
-        }
-        if bytes[..4] != GUEST_INTROSPECTION_MAGIC {
-            return Err(GuestIntrospectionError::InvalidMagic);
-        }
-        let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != GUEST_INTROSPECTION_PROTOCOL_VERSION {
-            return Err(GuestIntrospectionError::VersionMismatch {
-                expected: GUEST_INTROSPECTION_PROTOCOL_VERSION,
-                actual: version,
-            });
-        }
-        let kind = bytes[6];
-        let flags = bytes[7];
-        let channel_id = u64::from_le_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ]);
-        let payload_len = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
-        let expected_len = GUEST_INTROSPECTION_HEADER_LEN.saturating_add(payload_len);
-        if bytes.len() != expected_len {
-            return Err(GuestIntrospectionError::LengthMismatch {
-                expected: expected_len,
-                actual: bytes.len(),
-            });
-        }
-        let message = decode_message(kind, flags, &bytes[GUEST_INTROSPECTION_HEADER_LEN..])?;
-        Self::new(channel_id, message)
+        wire_decoder::decode(bytes)?.into_owned()
+    }
+
+    /// Validates a complete encoded record without constructing owned fields.
+    ///
+    /// This applies the same framing, UTF-8 and semantic checks as [`Self::decode`]
+    /// while borrowing the caller's bytes and allocating no payload storage.
+    ///
+    /// # Errors
+    /// Returns the same malformed, unsupported or invalid-record errors as
+    /// [`Self::decode`].
+    pub fn validate_encoded(bytes: &[u8]) -> Result<(), GuestIntrospectionError> {
+        wire_decoder::decode(bytes).map(|_| ())
     }
 }
 
@@ -416,166 +417,56 @@ const KIND_OUTPUT: u8 = 8;
 const KIND_EXIT: u8 = 9;
 const KIND_ERROR: u8 = 10;
 
-fn encode_message(
-    message: &GuestIntrospectionMessage,
-) -> Result<(u8, u8, Vec<u8>), GuestIntrospectionError> {
+fn validate_host_request_kind(channel_id: u64, kind: u8) -> Result<(), GuestIntrospectionError> {
+    if channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID {
+        return Err(GuestIntrospectionError::FeatureChannelMismatch);
+    }
+    match kind {
+        KIND_EXEC | KIND_PTY | KIND_SSH | KIND_INPUT | KIND_RESIZE | KIND_CLOSE => Ok(()),
+        _ => Err(GuestIntrospectionError::WrongDirection),
+    }
+}
+
+fn validate_guest_response_kind(channel_id: u64, kind: u8) -> Result<(), GuestIntrospectionError> {
+    match kind {
+        KIND_FEATURES if channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID => Ok(()),
+        KIND_OUTPUT | KIND_EXIT | KIND_ERROR
+            if channel_id != GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
+        {
+            Ok(())
+        }
+        KIND_FEATURES | KIND_OUTPUT | KIND_EXIT | KIND_ERROR => {
+            Err(GuestIntrospectionError::FeatureChannelMismatch)
+        }
+        _ => Err(GuestIntrospectionError::WrongDirection),
+    }
+}
+
+fn message_header(message: &GuestIntrospectionMessage) -> (u8, u8) {
     match message {
-        GuestIntrospectionMessage::Features(features) => {
-            let mut payload = Vec::with_capacity(6);
-            payload.extend_from_slice(&features.bits.to_le_bytes());
-            payload.extend_from_slice(&features.max_channels.to_le_bytes());
-            Ok((KIND_FEATURES, 0, payload))
-        }
+        GuestIntrospectionMessage::Features(_) => (KIND_FEATURES, 0),
         GuestIntrospectionMessage::Exec {
-            argv,
-            record_transcript,
-        } => Ok((
-            KIND_EXEC,
-            transcript_flag(*record_transcript),
-            encode_argv(argv)?,
-        )),
+            record_transcript, ..
+        } => (KIND_EXEC, transcript_flag(*record_transcript)),
         GuestIntrospectionMessage::Pty {
-            argv,
-            columns,
-            rows,
-            record_transcript,
-        } => {
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&columns.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
-            payload.extend_from_slice(&encode_argv(argv)?);
-            Ok((KIND_PTY, transcript_flag(*record_transcript), payload))
-        }
+            record_transcript, ..
+        } => (KIND_PTY, transcript_flag(*record_transcript)),
         GuestIntrospectionMessage::Ssh { record_transcript } => {
-            Ok((KIND_SSH, transcript_flag(*record_transcript), Vec::new()))
+            (KIND_SSH, transcript_flag(*record_transcript))
         }
-        GuestIntrospectionMessage::Input(bytes) => Ok((KIND_INPUT, 0, bytes.clone())),
-        GuestIntrospectionMessage::Resize { columns, rows } => {
-            let mut payload = Vec::with_capacity(4);
-            payload.extend_from_slice(&columns.to_le_bytes());
-            payload.extend_from_slice(&rows.to_le_bytes());
-            Ok((KIND_RESIZE, 0, payload))
-        }
-        GuestIntrospectionMessage::Close => Ok((KIND_CLOSE, 0, Vec::new())),
-        GuestIntrospectionMessage::Output { stream, bytes } => Ok((
+        GuestIntrospectionMessage::Input(_) => (KIND_INPUT, 0),
+        GuestIntrospectionMessage::Resize { .. } => (KIND_RESIZE, 0),
+        GuestIntrospectionMessage::Close => (KIND_CLOSE, 0),
+        GuestIntrospectionMessage::Output { stream, .. } => (
             KIND_OUTPUT,
             if *stream == GuestOutputStream::Stderr {
                 FLAG_STDERR
             } else {
                 0
             },
-            bytes.clone(),
-        )),
-        GuestIntrospectionMessage::Exit { status, signal } => {
-            let mut payload = Vec::with_capacity(8);
-            payload.extend_from_slice(&status.to_le_bytes());
-            payload.extend_from_slice(&signal.unwrap_or(0).to_le_bytes());
-            Ok((KIND_EXIT, 0, payload))
-        }
-        GuestIntrospectionMessage::Error { code, message } => {
-            let mut payload = Vec::with_capacity(2 + message.len());
-            payload.extend_from_slice(&code.wire_value().to_le_bytes());
-            payload.extend_from_slice(message.as_bytes());
-            Ok((KIND_ERROR, 0, payload))
-        }
-    }
-}
-
-fn decode_message(
-    kind: u8,
-    flags: u8,
-    payload: &[u8],
-) -> Result<GuestIntrospectionMessage, GuestIntrospectionError> {
-    match kind {
-        KIND_FEATURES => {
-            require_flags(flags, 0)?;
-            require_payload_len(payload, 6)?;
-            let bits = read_u32(payload, 0)?;
-            let known = FEATURE_ARGV_EXEC | FEATURE_PTY | FEATURE_RESIZE | FEATURE_SSH_BRIDGE;
-            if bits & !known != 0 {
-                return Err(GuestIntrospectionError::UnknownFeatureBits { bits });
-            }
-            Ok(GuestIntrospectionMessage::Features(
-                GuestIntrospectionFeatures {
-                    bits,
-                    max_channels: read_u16(payload, 4)?,
-                },
-            ))
-        }
-        KIND_EXEC => {
-            require_flags(flags, FLAG_RECORD_TRANSCRIPT)?;
-            Ok(GuestIntrospectionMessage::Exec {
-                argv: decode_argv(payload)?,
-                record_transcript: flags & FLAG_RECORD_TRANSCRIPT != 0,
-            })
-        }
-        KIND_PTY => {
-            require_flags(flags, FLAG_RECORD_TRANSCRIPT)?;
-            if payload.len() < 4 {
-                return Err(GuestIntrospectionError::Truncated { len: payload.len() });
-            }
-            Ok(GuestIntrospectionMessage::Pty {
-                columns: read_u16(payload, 0)?,
-                rows: read_u16(payload, 2)?,
-                argv: decode_argv(&payload[4..])?,
-                record_transcript: flags & FLAG_RECORD_TRANSCRIPT != 0,
-            })
-        }
-        KIND_SSH => {
-            require_flags(flags, FLAG_RECORD_TRANSCRIPT)?;
-            require_payload_len(payload, 0)?;
-            Ok(GuestIntrospectionMessage::Ssh {
-                record_transcript: flags & FLAG_RECORD_TRANSCRIPT != 0,
-            })
-        }
-        KIND_INPUT => {
-            require_flags(flags, 0)?;
-            Ok(GuestIntrospectionMessage::Input(payload.to_vec()))
-        }
-        KIND_RESIZE => {
-            require_flags(flags, 0)?;
-            require_payload_len(payload, 4)?;
-            Ok(GuestIntrospectionMessage::Resize {
-                columns: read_u16(payload, 0)?,
-                rows: read_u16(payload, 2)?,
-            })
-        }
-        KIND_CLOSE => {
-            require_flags(flags, 0)?;
-            require_payload_len(payload, 0)?;
-            Ok(GuestIntrospectionMessage::Close)
-        }
-        KIND_OUTPUT => {
-            require_flags(flags, FLAG_STDERR)?;
-            Ok(GuestIntrospectionMessage::Output {
-                stream: if flags & FLAG_STDERR != 0 {
-                    GuestOutputStream::Stderr
-                } else {
-                    GuestOutputStream::Stdout
-                },
-                bytes: payload.to_vec(),
-            })
-        }
-        KIND_EXIT => {
-            require_flags(flags, 0)?;
-            require_payload_len(payload, 8)?;
-            let signal = read_u32(payload, 4)?;
-            Ok(GuestIntrospectionMessage::Exit {
-                status: i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
-                signal: (signal != 0).then_some(signal),
-            })
-        }
-        KIND_ERROR => {
-            require_flags(flags, 0)?;
-            let wire_code = read_u16(payload, 0)?;
-            let code = GuestIntrospectionFailureCode::from_wire_value(wire_code)
-                .ok_or(GuestIntrospectionError::UnknownFailureCode { code: wire_code })?;
-            let message = std::str::from_utf8(&payload[2..])
-                .map_err(|_| GuestIntrospectionError::InvalidUtf8)?
-                .to_owned();
-            Ok(GuestIntrospectionMessage::Error { code, message })
-        }
-        _ => Err(GuestIntrospectionError::UnknownKind { kind }),
+        ),
+        GuestIntrospectionMessage::Exit { .. } => (KIND_EXIT, 0),
+        GuestIntrospectionMessage::Error { .. } => (KIND_ERROR, 0),
     }
 }
 
@@ -644,51 +535,6 @@ fn validate_argv(argv: &[String]) -> Result<(), GuestIntrospectionError> {
     Ok(())
 }
 
-fn encode_argv(argv: &[String]) -> Result<Vec<u8>, GuestIntrospectionError> {
-    validate_argv(argv)?;
-    let count = u16::try_from(argv.len())
-        .map_err(|_| GuestIntrospectionError::InvalidArgvCount { count: argv.len() })?;
-    let mut output = Vec::new();
-    output.extend_from_slice(&count.to_le_bytes());
-    for argument in argv {
-        let len = u16::try_from(argument.len()).map_err(|_| {
-            GuestIntrospectionError::InvalidArgumentLength {
-                index: output.len(),
-                len: argument.len(),
-            }
-        })?;
-        output.extend_from_slice(&len.to_le_bytes());
-        output.extend_from_slice(argument.as_bytes());
-    }
-    Ok(output)
-}
-
-fn decode_argv(payload: &[u8]) -> Result<Vec<String>, GuestIntrospectionError> {
-    let count = usize::from(read_u16(payload, 0)?);
-    let mut cursor = 2;
-    let mut argv = Vec::with_capacity(count);
-    for _ in 0..count {
-        let len = usize::from(read_u16(payload, cursor)?);
-        cursor = cursor.saturating_add(2);
-        let end = cursor.saturating_add(len);
-        let bytes = payload
-            .get(cursor..end)
-            .ok_or(GuestIntrospectionError::Truncated { len: payload.len() })?;
-        let argument = std::str::from_utf8(bytes)
-            .map_err(|_| GuestIntrospectionError::InvalidUtf8)?
-            .to_owned();
-        argv.push(argument);
-        cursor = end;
-    }
-    if cursor != payload.len() {
-        return Err(GuestIntrospectionError::TrailingBytes {
-            count: payload.len() - cursor,
-        });
-    }
-    validate_argv(&argv)?;
-    Ok(argv)
-}
-
 const fn transcript_flag(record: bool) -> u8 {
     if record { FLAG_RECORD_TRANSCRIPT } else { 0 }
 }
@@ -740,6 +586,14 @@ pub enum GuestIntrospectionError {
     RecordTooLarge {
         /// Rejected byte length.
         len: usize,
+    },
+    /// The caller's reserved output cannot hold the complete record.
+    #[error("guest-introspection output requires {required} bytes, available {available}")]
+    OutputCapacity {
+        /// Complete validated record size.
+        required: usize,
+        /// Unused capacity supplied by the caller.
+        available: usize,
     },
     /// The four-byte record magic does not match.
     #[error("guest-introspection record magic is invalid")]
@@ -914,6 +768,19 @@ mod tests {
             let bytes = record
                 .encode()
                 .unwrap_or_else(|error| panic!("record should encode: {error}"));
+            assert_eq!(GuestIntrospectionRecord::validate_encoded(&bytes), Ok(()));
+            assert_eq!(
+                GuestIntrospectionRecord::validate_encoded_host_request(&bytes),
+                record.validate_host_request()
+            );
+            assert_eq!(
+                GuestIntrospectionRecord::validate_encoded_guest_response(&bytes),
+                record.validate_guest_response()
+            );
+            let mut fixed = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES + 1];
+            let length = record.encode_into_slice(&mut fixed).unwrap();
+            assert_eq!(&fixed[..length], bytes);
+            assert!(fixed[length..].iter().all(|byte| *byte == 0xa5));
             assert_eq!(
                 GuestIntrospectionRecord::decode(&bytes),
                 Ok(record),
@@ -982,5 +849,118 @@ mod tests {
             features.validate_host_request(),
             Err(GuestIntrospectionError::FeatureChannelMismatch)
         );
+    }
+
+    #[test]
+    fn reserved_encoding_preserves_exact_bytes_and_refuses_before_mutation()
+    -> Result<(), GuestIntrospectionError> {
+        let record = GuestIntrospectionRecord::new(
+            7,
+            GuestIntrospectionMessage::Pty {
+                argv: vec![String::from("printf"), String::from("héllo")],
+                columns: 80,
+                rows: 24,
+                record_transcript: true,
+            },
+        )?;
+        let length = record.encoded_len()?;
+        let mut output = Vec::with_capacity(length + 1);
+        output.push(42);
+        record.encode_into(&mut output)?;
+        assert_eq!(&output[1..], record.encode()?);
+        assert_eq!(output.len(), length + 1);
+        assert_eq!(GuestIntrospectionRecord::decode(&output[1..])?, record);
+
+        let mut insufficient = vec![42];
+        let available = insufficient.capacity() - insufficient.len();
+        assert_eq!(
+            record.encode_into(&mut insufficient),
+            Err(GuestIntrospectionError::OutputCapacity {
+                required: length,
+                available,
+            })
+        );
+        assert_eq!(insufficient, [42]);
+        Ok(())
+    }
+
+    #[test]
+    fn aggregate_argv_refusal_precedes_payload_allocation() -> Result<(), GuestIntrospectionError> {
+        let record = GuestIntrospectionRecord::new(
+            1,
+            GuestIntrospectionMessage::Exec {
+                argv: vec!["x".repeat(GUEST_INTROSPECTION_MAX_ARG_BYTES); 2],
+                record_transcript: false,
+            },
+        )?;
+        assert!(matches!(
+            record.encoded_len(),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        let mut output = Vec::new();
+        assert!(matches!(
+            record.encode_into(&mut output),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        assert!(output.is_empty());
+        assert_eq!(output.capacity(), 0);
+        let mut fixed = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES];
+        assert!(matches!(
+            record.encode_into_slice(&mut fixed),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        assert!(fixed.iter().all(|byte| *byte == 0xa5));
+        Ok(())
+    }
+
+    #[test]
+    fn slice_encoding_matches_literal_record_and_preserves_tail() {
+        let record = GuestIntrospectionRecord::new(7, GuestIntrospectionMessage::Close).unwrap();
+        let expected = [
+            0x43, 0x52, 0x47, 0x49, 1, 0, 7, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut output = [0xa5; 32];
+
+        let length = record.encode_into_slice(&mut output).unwrap();
+
+        assert_eq!(length, expected.len());
+        assert_eq!(&output[..length], expected);
+        assert_eq!(&output[length..], &[0xa5; 12]);
+    }
+
+    #[test]
+    fn slice_encoding_refuses_capacity_and_invalid_fields_before_mutation() {
+        let record = GuestIntrospectionRecord::new(7, GuestIntrospectionMessage::Close).unwrap();
+        let mut short = [0xa5; GUEST_INTROSPECTION_HEADER_LEN - 1];
+
+        let refused = record.encode_into_slice(&mut short);
+
+        assert_eq!(
+            refused,
+            Err(GuestIntrospectionError::OutputCapacity {
+                required: GUEST_INTROSPECTION_HEADER_LEN,
+                available: short.len(),
+            })
+        );
+        assert!(short.iter().all(|byte| *byte == 0xa5));
+
+        let invalid = GuestIntrospectionRecord {
+            channel_id: 7,
+            message: GuestIntrospectionMessage::Input(vec![
+                0;
+                GUEST_INTROSPECTION_MAX_CHUNK_BYTES + 1
+            ]),
+        };
+        let mut output = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES];
+
+        let refused = invalid.encode_into_slice(&mut output);
+
+        assert_eq!(
+            refused,
+            Err(GuestIntrospectionError::ChunkTooLarge {
+                len: GUEST_INTROSPECTION_MAX_CHUNK_BYTES + 1,
+            })
+        );
+        assert!(output.iter().all(|byte| *byte == 0xa5));
     }
 }

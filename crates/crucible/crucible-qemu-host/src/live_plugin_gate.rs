@@ -386,6 +386,8 @@ pub fn run_live_plugin_install_gate(
         admission.run_directory,
         allocation.layout().region_size,
         admission.process_contract,
+        None,
+        None,
     )
     .map_err(|source| LivePluginInstallGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();

@@ -3,6 +3,9 @@
 //! These values describe the frozen control surface without allocating actors
 //! or starting a transport.
 
+use crucible_engine::EngineError;
+use std::sync::Arc;
+
 use crucible_session::{
     BreakpointId, LiveQueryKind, LiveStateKind, QueryResult, SavepointInfo, SessionCommand,
     SessionCommandKind,
@@ -10,7 +13,7 @@ use crucible_session::{
 use thiserror::Error;
 
 use crate::lifecycle::{ReproductionCommandRecord, SessionRef};
-use crate::open_set::{OpenSetEventEnvelope, open_set_event_envelope_from_entry};
+use crate::open_set::OpenSetEventEnvelope;
 use crate::rpc_abi::{ProtocolVersion, RpcStatusCode};
 use crate::session_mapping::{
     API_COMMAND_MAPPINGS, ApiDispatch, ApiMethod, CommandDispatchCardinality, method_mapping,
@@ -114,9 +117,39 @@ pub struct Attached {
     /// Protocol version used by this API surface.
     pub version: ProtocolVersion,
     /// Command capabilities available after attach.
-    pub capabilities: StreamingCapabilitySet,
+    pub capabilities: Arc<crate::AdmittedShared<StreamingCapabilitySet>>,
     /// Optional log-derived snapshot captured at attach time.
     pub snapshot: Option<AttachSnapshot>,
+    _decode_custody: crucible_engine::owned_decode::DecodeCustody,
+}
+
+impl Attached {
+    /// Shares admitted capabilities and snapshot under their original custody.
+    ///
+    /// # Errors
+    /// Refuses a missing original account or exhausted allocation credit. The
+    /// caller must admit owned capability entries before constructing them.
+    pub fn from_owned_fields(
+        session: SessionRef,
+        event_log_len: u64,
+        state: LiveStateKind,
+        version: ProtocolVersion,
+        capabilities: StreamingCapabilitySet,
+        snapshot: Option<AttachSnapshot>,
+    ) -> Result<Self, EngineError> {
+        let custody = crucible_engine::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let capabilities = crate::admitted_output::shared(capabilities)?;
+        Ok(Self {
+            session,
+            event_log_len,
+            state,
+            version,
+            capabilities,
+            snapshot,
+            _decode_custody: custody,
+        })
+    }
 }
 
 /// Log-derived snapshot summary included in `Attached`.
@@ -133,24 +166,33 @@ pub struct AttachSnapshot {
     /// Last sequence folded into the snapshot, when any entry was present.
     pub last_sequence: Option<u64>,
     /// Recorded command stream captured for deterministic reproduction.
-    pub reproduction: Vec<ReproductionCommandRecord>,
+    pub reproduction: Arc<crate::AdmittedShared<Vec<ReproductionCommandRecord>>>,
+    _decode_custody: crucible_engine::owned_decode::DecodeCustody,
 }
 
 impl AttachSnapshot {
-    /// Builds an attach snapshot from the retained event-log summary.
-    #[must_use]
-    pub fn from_event_log(
+    /// Shares already admitted reproduction records with their original custody.
+    ///
+    /// # Errors
+    /// Refuses missing original authority or exhausted allocation credit. The
+    /// caller must admit the owned vector before allocating its elements.
+    pub fn from_event_log_admitted(
         value: SessionEventLogSnapshot,
         reproduction: Vec<ReproductionCommandRecord>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EngineError> {
+        crucible_engine::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let reproduction = crate::admitted_output::shared(reproduction)?;
+        Ok(Self {
             through: value.through,
             event_count: value.event_count,
             causal_event_count: value.causal_count,
             observational_event_count: value.observational_count,
             last_sequence: value.last_sequence,
             reproduction,
-        }
+            _decode_custody: crucible_engine::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
     }
 }
 
@@ -164,17 +206,82 @@ pub struct StreamingEventFrame {
     /// Cursor position immediately after this entry.
     pub next_cursor: EventLogCursor,
     /// Open-set API event envelope.
-    pub event: OpenSetEventEnvelope,
+    pub event: Arc<crate::AdmittedShared<OpenSetEventEnvelope>>,
+    _decode_custody: crucible_engine::owned_decode::DecodeCustody,
 }
 
-impl From<SessionEventLogFrame> for StreamingEventFrame {
-    fn from(value: SessionEventLogFrame) -> Self {
-        Self {
-            generation: value.generation,
-            cursor: value.cursor,
-            next_cursor: value.next_cursor,
-            event: open_set_event_envelope_from_entry(&value.entry),
-        }
+impl StreamingEventFrame {
+    /// Shares an already admitted event envelope under its original custody.
+    ///
+    /// # Errors
+    /// Refuses missing original authority or exhausted allocation credit. The
+    /// caller must admit the envelope's owned fields before constructing them.
+    pub fn from_owned_fields(
+        generation: u64,
+        cursor: EventLogCursor,
+        next_cursor: EventLogCursor,
+        event: OpenSetEventEnvelope,
+    ) -> Result<Self, EngineError> {
+        crucible_engine::owned_decode::require_current_custody()
+            .map_err(crate::admitted_output::admission)?;
+        let event = crate::admitted_output::shared(event)?;
+        Ok(Self {
+            generation,
+            cursor,
+            next_cursor,
+            event,
+            _decode_custody: crucible_engine::owned_decode::require_current_custody()
+                .map_err(crate::admitted_output::admission)?,
+        })
+    }
+
+    /// Converts a session frame into a returned nominal admitted owner.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original exhaustion or allocation failure.
+    pub fn from_session_admitted(value: SessionEventLogFrame) -> Result<Self, EngineError> {
+        let (frame, custody) = Self::from_admitted(value)?.into_parts();
+        // The nominal frame retains the same account through its private field.
+        drop(custody);
+        Ok(frame)
+    }
+
+    /// Copies a borrowed scheduler entry into an admitted API frame.
+    ///
+    /// # Errors
+    /// Refuses missing authority, original exhaustion or allocation failure.
+    pub fn from_entry_admitted(
+        generation: u64,
+        cursor: EventLogCursor,
+        next_cursor: EventLogCursor,
+        entry: &crucible_engine::SchedulerEventLogEntry,
+    ) -> Result<crate::AdmittedOutput<Self>, EngineError> {
+        crate::AdmittedOutput::build(|| {
+            Self::from_owned_fields(
+                generation,
+                cursor,
+                next_cursor,
+                crate::open_set::event_envelope_admitted(entry)?,
+            )
+        })
+    }
+
+    /// Converts a session frame after admitting each owned API field.
+    ///
+    /// # Errors
+    /// Refuses missing authority, exhausted original resources or allocation
+    /// failure. The returned value shares its immutable body when cloned.
+    pub fn from_admitted(
+        value: SessionEventLogFrame,
+    ) -> Result<crate::AdmittedOutput<Self>, EngineError> {
+        crate::AdmittedOutput::build(|| {
+            Self::from_owned_fields(
+                value.generation,
+                value.cursor,
+                value.next_cursor,
+                crate::open_set::event_envelope_admitted(&value.entry)?,
+            )
+        })
     }
 }
 
@@ -324,6 +431,12 @@ pub struct SendResponse {
 /// Error returned by streaming API operations.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum StreamingApiError {
+    /// Original output metadata authority refused a concrete owned response.
+    #[error("streaming output admission failed: {source}")]
+    OutputAdmission {
+        /// Original typed admission failure.
+        source: EngineError,
+    },
     /// The requested session is not present in the live registry.
     #[error("streaming session {session:?} was not found")]
     SessionNotFound {
