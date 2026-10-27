@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Current completion boundary
+
+The latest qualified Source-composition checkpoint is `a3966e3ec8`. It composes
+the prebirth Source census under the original deployment, following retained
+mechanism accounting in `abc1915f26` and retained Job accounting in `4788218df7`.
+Its seven-package check, seven architecture gates, both Engine codec suites,
+application test-target build and funded Source VM passed. The application build
+contains 185 test artifacts across 58 packages, including 76 integration targets.
+Both registered Nix sources match all 8,391 captured Rust/Cargo inputs. Those
+snapshots include local user changes; they do not qualify a clean PR checkout.
+
+Private-Birth mapping nonces and original one-use Source mapping custody are
+subsequent implementation work. Their focused checks do not establish complete
+Recipe or Initial production. In particular, the native funding path still needs
+all of the following before full lifecycle qualification:
+
+| Dependency | Required completion evidence |
+| --- | --- |
+| Complete recipe | Independent Prepare, Commit, Arm, World and FirstObserve construction terms from actual inputs; the single original escrow covers their retained sum and simultaneous transient/control maxima. |
+| Initial funding and runtime handoff | The original Source retains the derived Recipe and Initial, then transfers the same admitted Controller/runtime owners once; refusal preserves spent attempts and every initialized prefix. |
+| Native18 transactions | Genuine bootstrap, seven-bank Prepare, Commit, Arm, World and first observation execute under the original occurrence, with no copied receipt or historical number supplying permission. |
+| Complete history codecs | Paired Source18, Once18, Node18 and semantic-spend18 writers/readers preserve actual pending state, failed prefixes, used IDs, physical histories and original limits. Schema constants alone are insufficient. |
+| Preservation | Complete capture, removal of original resources and two independent fresh restorations preserve the required continuation under real native execution. |
+| Full RFC qualification | Applicable backend, device parity, causal timing, containment, ABI/license and performance requirements pass for their declared profiles and a clean final PR source. |
+
+The current opaque recipe type deliberately has no production constructor while
+its complete phase terms are missing. The Source17 header also rejects the
+Native18 mechanism. Completing this work requires the distinct lifecycle and
+codecs above; the existing refusal paths are not evidence that they execute.
+The [phased plan](phased-implementation.md),
+[qualification plan](qualification-plan.md) and
+[requirement map](requirement-map.tsv) retain the full RFC scope beyond this
+immediate native funding path.
+
 ## Packet runtime funding and handoff
 
 The original Controller quotes one complete retained/transient/control row for
