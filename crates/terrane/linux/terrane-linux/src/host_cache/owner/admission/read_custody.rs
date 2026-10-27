@@ -165,7 +165,7 @@ pub(super) fn observe(
     Ok(original)
 }
 
-/// Captures each actual standalone dependency before exposing a pack read.
+/// Captures each actual dictionary dependency before exposing a pack read.
 ///
 /// # Errors
 /// Refuses exhausted bounds, changed original jobs or failed publisher inspection.

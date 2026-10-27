@@ -87,6 +87,10 @@ pub(super) fn finish(owner: &mut Custody, job: &mut AdmissionJob) -> io::Result<
 pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
     state::check_registration(owner, job)?;
     for root in dictionary_roots(owner, job)? {
+        if matches!(&job.input, Input::DataPack { .. }) {
+            super::dictionary_read::check(owner, &job.custody, &root.source, &root.digest)?;
+            continue;
+        }
         let mut next = Some(root);
         let mut previous_order = job.order;
         let mut remaining = owner.preparation.config.state.records;
@@ -127,51 +131,15 @@ pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
     }
 }
 
-/// Matches every external pack edge to one genuine retained standalone job.
+/// Matches every external pack edge to one genuine retained source job.
 fn dictionary_roots(owner: &Custody, job: &AdmissionJob) -> io::Result<Vec<Dependency>> {
-    let Input::DataPack { pack, .. } = &job.input else {
+    if !matches!(&job.input, Input::DataPack { .. }) {
         return dependency(job).map(|edge| edge.into_iter().collect());
-    };
-    let config = &owner.preparation.config;
-    let digests = super::packed_body::external_dictionaries(
-        pack,
-        config.reads,
-        config.inventory_entries.min(config.state.records),
-    )?;
-    if digests.len() != job.dependencies.len() {
-        return Err(io::Error::other(
-            "data admission changed its external dictionary closure",
-        ));
     }
-    let mut roots = Vec::new();
-    roots
-        .try_reserve_exact(digests.len())
-        .map_err(io::Error::other)?;
-    for digest in digests {
-        let mut found = None;
-        for source in &job.dependencies {
-            let dictionary = super::backing::lock(source)?;
-            let Input::Chunk { descriptor, .. } = &dictionary.input else {
-                return Err(io::Error::other(
-                    "data dictionary is not a standalone admission",
-                ));
-            };
-            if descriptor.digest() == digest {
-                if found.is_some() {
-                    return Err(io::Error::other(
-                        "data dictionary retains duplicate source jobs",
-                    ));
-                }
-                found = Some(Arc::clone(source));
-            }
-        }
-        roots.push(Dependency {
-            digest,
-            source: found
-                .ok_or_else(|| io::Error::other("data dictionary lacks its original source job"))?,
-        });
-    }
-    Ok(roots)
+    Ok(super::dictionary_read::roots(owner, job)?
+        .into_iter()
+        .map(|(digest, source)| Dependency { digest, source })
+        .collect())
 }
 
 /// Checks each original envelope edge before following its genuine job custody.

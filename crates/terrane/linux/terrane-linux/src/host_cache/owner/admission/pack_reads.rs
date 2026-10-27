@@ -48,7 +48,7 @@ pub(in crate::host_cache) struct AdmittedPackRead {
     uid: u32,
     gid: u32,
     chunk: Option<ChunkRead>,
-    dictionaries: Vec<super::reads::AdmittedRead>,
+    dictionaries: Vec<super::dictionary_read::DictionaryRead>,
 }
 
 struct ChunkRead {
@@ -182,19 +182,16 @@ impl AdmittedPackRead {
                 return Err(invalid("metadata body exceeds original pack"));
             }
             let mut dictionaries = Vec::new();
+            let roots = super::dictionary_read::roots(owner, &job)?;
             dictionaries
-                .try_reserve_exact(job.dependencies.len())
+                .try_reserve_exact(roots.len())
                 .map_err(io::Error::other)?;
-            for dependency in &job.dependencies {
-                let source = super::backing::lock(dependency)?;
-                if source.order >= job.order {
-                    return Err(invalid(
-                        "pack dictionary does not precede its dependent admission",
-                    ));
-                }
-                drop(source);
-                dictionaries.push(super::reads::AdmittedRead::prepare_dictionary(
-                    executor, owner, dependency,
+            for (digest, dependency) in roots {
+                dictionaries.push(super::dictionary_read::DictionaryRead::prepare(
+                    executor,
+                    owner,
+                    &dependency,
+                    &digest,
                 )?);
             }
             let read = Self {
@@ -472,7 +469,7 @@ impl AdmittedPackRead {
         domain: usize,
         records: usize,
     ) -> io::Result<usize> {
-        let dictionaries = super::reads::AdmittedRead::storage_bytes(domain, records)?
+        let dictionaries = super::dictionary_read::DictionaryRead::storage_bytes(domain, records)?
             .checked_mul(records)
             .ok_or_else(|| invalid("pack dictionary storage overflow"))?;
         std::mem::size_of::<Self>()

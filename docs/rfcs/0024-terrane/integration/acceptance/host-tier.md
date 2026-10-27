@@ -231,11 +231,42 @@ external-dictionary recovery path remain unqualified. Cross-pack dictionary
 custody, cyclic pack-unit lifecycle and full trunk qualification remain open.
 Acceptance remains 28/64.
 
+Producer data packs can now retain dictionaries in earlier actual data-pack
+admissions as well as standalone admissions. A bounded flat read graph binds
+each record range to its original pack and index descriptors, verifies complete
+original bytes before and after positioned reads, and decodes from the terminal
+dictionary without recursive job locking. Every external edge records its
+actual selected source order within the retained job closure, so overlapping
+pack contents cannot silently change the source. Funding, cache dependency pins
+and consumer promises include the source pack's whole-container identity.
+
+The `admit-cross-pack` guest selector adds two original pairs: terminal and
+middle dictionary records in one pack, and the dependent root in the other.
+It checks reads while the dictionary remains producer-held, retains the same
+consumer across dictionary cache handoff, and obtains another consumer after
+handoff. The independent observer checks all four original inodes, exact record
+ranges and dictionary edges, durable container protection, separate funding,
+and absence of extracted standalone chunks. The new case is appended to the
+existing guest domain inventory without changing existing project IDs,
+resources or deadlines. Feature-enabled and minimal all-target Clippy pass;
+Python syntax and source inventory checks are compilation/source evidence only.
+Current-source application compilation and native execution remain required.
+Cold cross-pack recovery ordering, standalone chunks using packed dictionaries,
+cyclic pack-unit lifecycle, metadata-only dictionary tracing and full trunk
+qualification remain open. No additional task is accepted.
+
 Separately, frozen `d9435d032d` passes required application compilation (190
 targets across 59 packages), complete comparison of 8,306 immutable source files,
 all four image artifact reviews and prerequisite execution review. Its 32 output
 paths and seven original controller records are retained. This establishes no
 runtime pass and does not qualify the subsequent external-dictionary changes.
+
+Frozen `a877c8ecba` also passes required application compilation (190 targets
+across 59 packages), complete comparison of 8,307 immutable source files, all
+four image artifact reviews and prerequisite execution review. Its 32 outputs
+are rooted and seven original controller records are preserved before scratch
+cleanup. These results qualify build artifacts only, not native runtime or the
+subsequent dictionary implementation.
 
 ## Clause coverage
 

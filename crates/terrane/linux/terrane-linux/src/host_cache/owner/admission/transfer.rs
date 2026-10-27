@@ -117,6 +117,7 @@ impl TransferredFunding {
         job.files.clear();
         job.directory_progress.clear();
         job.dependencies.clear();
+        job.dictionary_edges.clear();
         job.cached = None;
         job.read_observation = None;
         Ok(())

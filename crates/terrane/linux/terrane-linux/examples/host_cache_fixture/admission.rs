@@ -66,6 +66,7 @@ pub(super) fn run(
         "admit-metadata" => "tenant:admission-metadata",
         "admit-data-pack" => "tenant:admission-data-pack",
         "admit-external-data-pack" => "tenant:admission-external-data-pack",
+        "admit-cross-pack" => "tenant:admission-cross-pack",
         "admit-cancel" => "tenant:admission-cancel",
         _ => return Err(invalid("unknown admission selector")),
     };
@@ -85,6 +86,7 @@ pub(super) fn run(
         "admit-metadata" => metadata(owner, runtime, inputs),
         "admit-data-pack" => data_pack::run(owner, runtime, inputs),
         "admit-external-data-pack" => data_pack::run_external(owner, runtime, inputs),
+        "admit-cross-pack" => data_pack::run_cross_pack(owner, runtime, inputs),
         "admit-cancel" => cancelled(owner, runtime, inputs),
         _ => Err(invalid("unreachable admission selector")),
     }

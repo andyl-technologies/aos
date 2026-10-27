@@ -51,6 +51,7 @@ pub(super) async fn run(
         let hashes = if data {
             let verified = verify_data(executor, &owner, Some(resource), &job.input)?;
             job.dependencies = verified.dependencies;
+            job.dictionary_edges = verified.edges;
             verified.hashes
         } else {
             verify(
@@ -121,11 +122,13 @@ pub(super) async fn run(
 pub(super) struct VerifiedData {
     /// Includes the pack, its records and directly retained external dictionaries.
     pub(super) hashes: Vec<String>,
-    /// Retains actual completed standalone admissions rather than digest claims.
+    /// Retains actual completed dictionary admissions rather than digest claims.
     pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
+    /// Records exact selected dictionary edges despite overlapping pack contents.
+    pub(super) edges: Vec<(terrane_format::identity::Digest, u64)>,
 }
 
-/// Verifies every data body using only original admitted standalone dictionaries.
+/// Verifies every data body using only original admitted dictionary sources.
 ///
 /// # Errors
 /// Refuses unavailable or changed original custody, invalid content or bounds.
@@ -147,6 +150,8 @@ pub(super) fn verify_data(
     };
     let config = &owner.preparation.config;
     let mut dependencies = Vec::new();
+    let mut external_hashes = Vec::new();
+    let mut edges = Vec::new();
     let mut hashes = super::packed_body::verify_with_dictionaries(
         pack,
         index,
@@ -155,7 +160,31 @@ pub(super) fn verify_data(
         config.reads,
         config.inventory_entries.min(config.state.records),
         |digest| {
-            let (plaintext, source) = super::chunk::dictionary(executor, current, owner, digest)?;
+            let (plaintext, source) =
+                super::dictionary_read::verify(executor, current, owner, digest)?;
+            external_hashes
+                .try_reserve_exact(2)
+                .map_err(io::Error::other)?;
+            external_hashes.push(state::hex(digest));
+            {
+                let dependency = backing::lock(&source)?;
+                if let Some((_, order)) = edges.iter().find(|(edge, _)| edge == digest) {
+                    if *order != dependency.order {
+                        return Err(io::Error::other(
+                            "dictionary changed its original selected source",
+                        ));
+                    }
+                } else {
+                    edges.try_reserve_exact(1).map_err(io::Error::other)?;
+                    edges.push((*digest, dependency.order));
+                }
+                if let Input::DataPack { pack, .. } = &dependency.input {
+                    let identity = terrane_format::identity::TERRANE_V1
+                        .calculate(terrane_format::identity::IdentityKind::Pack, pack)
+                        .map_err(io::Error::other)?;
+                    external_hashes.push(state::hex(identity.digest()));
+                }
+            }
             if !dependencies
                 .iter()
                 .any(|original| Arc::ptr_eq(original, &source))
@@ -168,16 +197,13 @@ pub(super) fn verify_data(
             Ok(plaintext)
         },
     )?;
-    for dependency in &dependencies {
-        let dependency = backing::lock(dependency)?;
-        let (identity, _, _) = super::chunk::checked_dictionary(owner, &dependency)?;
-        hashes.push(state::hex(identity.digest()));
-    }
+    hashes.extend(external_hashes);
     hashes.sort();
     hashes.dedup();
     Ok(VerifiedData {
         hashes,
         dependencies,
+        edges,
     })
 }
 

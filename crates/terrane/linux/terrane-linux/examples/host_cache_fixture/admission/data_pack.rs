@@ -1,5 +1,8 @@
 //! Checks producer data-pair refusal, native completion, handoff and original reads.
 
+#[path = "data_pack/cross_pack.rs"]
+mod cross_pack;
+
 use super::*;
 use std::time::UNIX_EPOCH;
 use terrane_linux::host_cache::NativeDataPackAdmissionError;
@@ -11,6 +14,18 @@ use terrane_sdk::{
 struct Chunk {
     plaintext: Vec<u8>,
     encoded: Vec<u8>,
+}
+
+/// Exercises original packed dictionary custody through both cache handoffs.
+///
+/// # Errors
+/// Refuses failed admission, changed original backing, accounting or reads.
+pub(super) fn run_cross_pack(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    cross_pack::run(owner, runtime, inputs)
 }
 
 fn fixture() -> io::Result<(SealedPack, Vec<Chunk>)> {

@@ -131,6 +131,15 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         .ok_or_else(overflow)?;
     total
         .checked_add(dictionary_walk)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                super::dictionary_read::DictionaryRead::storage_bytes(
+                    config.location.domain().len(),
+                    config.state.records,
+                )
+                .ok()?,
+            )
+        })
         .and_then(|bytes| bytes.checked_add(consumer_backing))
         .and_then(|bytes| bytes.checked_add(external_reads))
         .and_then(|bytes| bytes.checked_add(source_slots.checked_mul(per_source)?))
@@ -249,7 +258,9 @@ fn check_parts(
     // cache handoffs additionally retain their exact hash and dependency sets.
     add(
         jobs.checked_mul(records).ok_or_else(overflow)?,
-        5 * hash_slot + size_of::<std::sync::Arc<std::sync::Mutex<AdmissionJob>>>(),
+        5 * hash_slot
+            + size_of::<std::sync::Arc<std::sync::Mutex<AdmissionJob>>>()
+            + 2 * size_of::<(terrane_format::identity::Digest, u64)>(),
     )?;
 
     // The encoded census and pending unit retain their own direct-content sets.

@@ -140,7 +140,7 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         }
     };
     let custody = Arc::clone(executor.custody());
-    let (hashes, dependencies) = {
+    let (hashes, dependencies, edges) = {
         let owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -155,7 +155,7 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         bounds.check(pack.capacity(), index.capacity())?;
         if data {
             let verified = super::metadata::verify_data(executor, &owner, None, &input)?;
-            (verified.hashes, verified.dependencies)
+            (verified.hashes, verified.dependencies, verified.edges)
         } else {
             let hashes = super::metadata::verify(
                 &pack,
@@ -165,7 +165,7 @@ pub(in crate::host_cache::owner) async fn import_metadata(
                 config.reads,
                 config.inventory_entries.min(config.state.records),
             )?;
-            (hashes, Vec::new())
+            (hashes, Vec::new(), Vec::new())
         }
     };
     let resource = executor.register_admission(input)?;
@@ -178,6 +178,7 @@ pub(in crate::host_cache::owner) async fn import_metadata(
             super::refuse_completed(executor, &owner, &resource, &job.input)?;
             source.check_current()?;
             job.dependencies = dependencies;
+            job.dictionary_edges = edges;
             state::begin(executor, &mut owner, &mut job, 0, &hashes)?
         };
         super::super::snapshot::persist(executor, reservation).await?;

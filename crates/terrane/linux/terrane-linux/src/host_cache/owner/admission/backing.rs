@@ -8,7 +8,7 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use terrane_format::identity::Descriptor;
+use terrane_format::identity::{Descriptor, Digest};
 use terrane_sdk::pack::PackId;
 
 /// Retains every physical resource even if a reply or an external receipt drops.
@@ -36,6 +36,10 @@ pub(in crate::host_cache::owner) struct AdmissionJob {
     pub(super) directory_progress: Vec<DirectoryProgress>,
     /// Actual previously admitted direct dictionary custody, never caller evidence.
     pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
+    /// Exact external dictionary edges and their original source admission order.
+    ///
+    /// Orders select only among `dependencies`; they never create source custody.
+    pub(super) dictionary_edges: Vec<(Digest, u64)>,
     /// Records only fully reconciled physical completion.
     pub(super) complete: bool,
     /// Healthy original publisher observation shared with dependent consumer reads.
@@ -68,6 +72,7 @@ impl AdmissionJob {
             || !self.files.is_empty()
             || !self.directory_progress.is_empty()
             || !self.dependencies.is_empty()
+            || !self.dictionary_edges.is_empty()
             || !self.started.load(std::sync::atomic::Ordering::Acquire)
         {
             return Err(io::Error::other(
@@ -122,6 +127,7 @@ impl AdmissionJob {
             files,
             directory_progress,
             dependencies,
+            dictionary_edges: Vec::new(),
             complete: false,
             cached: None,
             read_observation: None,

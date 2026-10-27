@@ -580,7 +580,7 @@ def main():
         shared.require(path.read_bytes() == (source / relative).read_bytes(), "executed proof helper differs from source")
     artifacts = selected_artifacts(workspace, temporary, target)
     source_hashes = shared.source_hashes(workspace, source)
-    for name in ["host-cache-proof.nix", "host-cache-scenarios.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py", "host_cache_mount_views_vm.py", "native_sdk_test_image.py"]:
+    for name in ["host-cache-proof.nix", "host-cache-scenarios.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "cross_pack_admission_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py", "host_cache_mount_views_vm.py", "native_sdk_test_image.py"]:
         path = source / "tests/terrane" / name
         shared.require(path.read_bytes() == (workspace.parent / "tests/terrane" / name).read_bytes(), "mutable proof input: " + name)
         source_hashes["tests/terrane/" + name] = digest(path)
@@ -625,7 +625,7 @@ def main():
                            "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
     checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
     supervisor_helpers = {}
-    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py", "host_cache_mount_views_vm.py"]:
+    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "cross_pack_admission_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py", "host_cache_mount_views_vm.py"]:
         helper_source = source / "tests/terrane" / helper_name
         helper_installed = output / "share" / helper_name
         shared.require(source_hashes.get("tests/terrane/" + helper_name) == digest(helper_source),
@@ -642,7 +642,7 @@ def main():
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in [
         "prepare", "prepare-readonly-refuse", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
-        "admit-chunk", "admit-metadata", "admit-data-pack", "admit-external-data-pack", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "read-through-chunk", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure",
+        "admit-chunk", "admit-metadata", "admit-data-pack", "admit-external-data-pack", "admit-cross-pack", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "read-through-chunk", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure",
         "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
         "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",
         "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",
