@@ -122,6 +122,7 @@ CASES += ["encoded-external-data-pack"]
 CASES += ["admission-cross-pack"]
 CASES += ["encoded-cross-pack"]
 CASES += ["admission-packed-dictionary"]
+CASES += ["encoded-mixed-sources"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"

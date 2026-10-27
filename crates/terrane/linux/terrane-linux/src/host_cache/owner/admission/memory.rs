@@ -131,7 +131,7 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         .ok_or_else(overflow)?;
     // Both original and fresh cold inventories can retain external edge
     // bindings. Count each pack's maximum record window or one standalone
-    // edge, plus the pair-order graph bounded by the inventory policy.
+    // edge, plus the combined source graph bounded by the inventory policy.
     let recovery_edges = config
         .inventory_entries
         .checked_mul(
@@ -148,9 +148,19 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
             )
         })
         .ok_or_else(overflow)?;
+    let recovery_headers = config
+        .inventory_entries
+        .checked_mul(
+            2 * size_of::<crate::host_cache::VerifiedStandaloneChunk>()
+                + 2 * size_of::<crate::host_cache::DerivedIndexRepair>()
+                + 64 * size_of::<usize>()
+                + 4 * size_of::<super::super::recovery_metadata::order::Source>(),
+        )
+        .ok_or_else(overflow)?;
     total
         .checked_add(dictionary_walk)
         .and_then(|bytes| bytes.checked_add(recovery_edges))
+        .and_then(|bytes| bytes.checked_add(recovery_headers))
         .and_then(|bytes| {
             bytes.checked_add(
                 super::dictionary_read::DictionaryRead::storage_bytes(

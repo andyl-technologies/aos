@@ -13,7 +13,7 @@ from source_cleanup_vm import files, quota
 CASES = ["encoded-recovery", "encoded-cold", "encoded-corrupt", "encoded-duplicate",
          "encoded-missing-dictionary", "encoded-unknown", "encoded-sealed", "encoded-old-range",
          "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack"]
+         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack", "encoded-mixed-sources"]
 
 
 def seed(vm, uuid):
@@ -54,6 +54,25 @@ def seed(vm, uuid):
     vm.metadata(path, 840, 844, 0o640)
     with path.open("rb") as file:
         os.fsync(file.fileno())
+    # This promise belongs to the original standalone root of an alternating
+    # pair/chunk chain, independently of every later imported cache pin.
+    root = vm.root("encoded-mixed-sources")
+    from cross_pack_admission_vm import records
+    _, _, packed = records(vm, root, 123, 1)
+    packed_id = next(iter(packed))
+    roots = [path for path in (root / "chunks").glob("*/*.2")
+             if path.read_bytes()[1:33].hex() == packed_id]
+    vm.require(len(roots) == 1, "mixed cold root does not name its original packed dictionary")
+    path = root / "state/cache/records.toml"
+    path.write_text('version = 1\nresidences = []\n'
+                    '[[pins]]\nowner = "cold-mixed-sources"\nhash = "' + roots[0].stem + '"\n'
+                    'expires = 9223372036854775807\n'
+                    '[[leases]]\nowner = "cold-mixed-sources"\nexpires = 9223372036854775807\n'
+                    '[[reservations]]\nid = "' + 'c' * 32 + '"\nowner = "' + vm.owner("encoded-mixed-sources")
+                    + '"\nbytes = 262144\n')
+    vm.metadata(path, 840, 844, 0o640)
+    with path.open("rb") as file:
+        os.fsync(file.fileno())
     # This contradictory cold range was never durably removed. A valid sealed
     # body and standalone encoding cannot authorize recovery to erase that row.
     sealed = next(path for path in (vm.root("encoded-old-range") / "sealed").glob("*/*")
@@ -71,7 +90,7 @@ def run(vm, uuid):
     """Checks real consumer reads, unchanged source inodes and retained cold promises."""
     for case in CASES:
         recovers = case in {"encoded-recovery", "encoded-cold", "encoded-sealed", "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack"}
+                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack", "encoded-mixed-sources"}
         sources = list((vm.root(case) / "chunks").glob("*/*")) + list((vm.root(case) / "objects/pack").glob("*/*"))
         before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes())
                   for path in sources if path.is_file()}
@@ -89,6 +108,8 @@ def run(vm, uuid):
                 witness = "PASS actual packed manifest rejects a wrong whole-file hash while retaining original pairs and durable copy funding; no Ready"
             elif case == "encoded-packed-manifest":
                 witness = "PASS actual packed manifest verifies repeated dictionary-backed chunks and whole-file hashes, publishes immutable ranges and releases private pair reads under durable container grace without standalone extraction; no Ready"
+            elif case == "encoded-mixed-sources":
+                witness = "PASS cold mixed-source recovery imports pair chunk pair chunk in original dependency order, releases inspection descriptors and serves exact original encodings without extraction; no Ready"
             elif case == "encoded-cross-pack":
                 witness = "PASS cold cross-pack recovery imports original dictionary pairs before dependents, releases inspection descriptors and preserves cold promises; no Ready"
             elif case == "encoded-metadata-only":
@@ -117,10 +138,12 @@ def run(vm, uuid):
                     "PASS cold cross-pack consumers read all original nested records without standalone extraction") == 1,
                     "missing cold original cross-pack consumer witness")
                 check_cross_pack(vm, case, before, new)
+            if case == "encoded-mixed-sources":
+                check_mixed_sources(vm, case, before, new)
 
         if case == "encoded-data-pack":
             retire_data_pack(vm, uuid, check_recovery)
-        elif case in {"encoded-external-data-pack", "encoded-cross-pack"}:
+        elif case in {"encoded-external-data-pack", "encoded-cross-pack", "encoded-mixed-sources"}:
             originals = []
             try:
                 for path in sources:
@@ -134,6 +157,53 @@ def run(vm, uuid):
         else:
             check_recovery(vm.actor(case, "recover-encoded" if recovers else "refuse-encoded", uuid))
     print("PASS actual cold encoded recovery, original consumer custody and refusal controls", flush=True)
+
+
+def check_mixed_sources(vm, case, originals, state):
+    """Checks all six originals, exact alternating edges and container funding."""
+    from cross_pack_admission_vm import records
+
+    root = vm.root(case)
+    vm.require(len(originals) == 6
+               and len({identity[:2] for identity in originals.values()}) == 6
+               and len(files(root / "chunks")) == 2
+               and len(files(root / "objects/pack")) == 4
+               and not files(root / "pending-delete"),
+               "mixed cold recovery changed original allocation units")
+    _, _, terminal_records = records(vm, root, 124, 1)
+    _, _, packed_records = records(vm, root, 123, 1)
+    terminal_id, (terminal_length, terminal_codec, terminal_body) = next(iter(terminal_records.items()))
+    packed_id, (packed_length, packed_codec, packed_body) = next(iter(packed_records.items()))
+    chunks = {path.stem: path.read_bytes() for path in (root / "chunks").glob("*/*.2")}
+    middle_id = packed_body[1:33].hex()
+    roots = [digest for digest, body in chunks.items() if body[1:33].hex() == packed_id]
+    vm.require(terminal_codec == 0 and packed_codec == 2
+               and terminal_body == b"\0" + b"mixed cold terminal vocabulary " * 16
+               and terminal_length == len(terminal_body) - 1
+               and packed_length == len(b"mixed cold terminal vocabulary intermediate packed " * 128)
+               and middle_id in chunks and chunks[middle_id][0] == 2
+               and chunks[middle_id][1:33].hex() == terminal_id
+               and len(roots) == 1 and chunks[roots[0]][0] == 2
+               and len({terminal_id, middle_id, packed_id, roots[0]}) == 4,
+               "mixed cold originals do not form pair chunk pair chunk")
+    groups = {}
+    for row in state["pins"]:
+        if row["owner"].startswith("cache-dependency:"):
+            groups.setdefault(row["owner"], set()).add(row["hash"])
+    known = {terminal_id, middle_id, packed_id, roots[0]}
+    paired = [group for group in groups.values() if len(group) == 2]
+    vm.require(sorted(map(len, groups.values())) == [1, 2, 2]
+               and {middle_id} in groups.values()
+               and {next(iter(group & known)) for group in paired if len(group & known) == 1}
+                   == {terminal_id, packed_id}
+               and len(set().union(*paired) - known) == 2
+               and any(row["owner"] == "cold-mixed-sources" and row["hash"] == roots[0]
+                       for row in state["pins"])
+               and sorted(row["bytes"] for row in state["reservations"]) == [262144, 262144]
+               and not any(row["owner"].startswith("admission:") for row in state["pins"])
+               and quota(vm, case) + 2 * 262144 <= 6 * 1024 * 1024,
+               "mixed cold recovery lost exact source/container protection or cold funding")
+    print("PASS independent observer verifies six original mixed-source inodes, alternating dictionary edges and durable source-container protection", flush=True)
 
 
 def check_cross_pack(vm, case, originals, state):

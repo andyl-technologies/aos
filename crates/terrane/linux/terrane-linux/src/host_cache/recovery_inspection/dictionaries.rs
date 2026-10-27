@@ -31,26 +31,6 @@ struct Member {
     range: Range<usize>,
 }
 
-/// Verifies every dependency before returning the requested dictionary plaintext.
-pub(super) fn resolve(
-    context: &NativeRecoveryInspector,
-    digest: &Digest,
-    current_pack: CurrentPack<'_>,
-    packs: &[PackId],
-    dependencies: &mut Vec<VerifiedDependency>,
-    plaintext_budget: usize,
-) -> io::Result<Vec<u8>> {
-    resolve_with_source(
-        context,
-        digest,
-        current_pack,
-        packs,
-        dependencies,
-        plaintext_budget,
-    )
-    .map(|(plaintext, _)| plaintext)
-}
-
 /// Preserves the first dictionary's actual source alongside verified plaintext.
 ///
 /// A source index names only an original retained dependency. `None` means the

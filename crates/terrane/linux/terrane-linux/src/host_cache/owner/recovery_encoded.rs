@@ -12,7 +12,6 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
-use terrane_format::codec::Codec;
 use terrane_format::identity::Digest;
 use terrane_sdk::host::cache::ResidenceRecord;
 
@@ -20,13 +19,12 @@ use terrane_sdk::host::cache::ResidenceRecord;
 ///
 /// # Errors
 /// Refuses unresolved inventory, multiple encodings of one identity and
-/// dictionaries without a separately verified standalone source.
+/// dictionaries without an independently verified original chunk or pair.
 pub(super) fn select(
     inventory: &NativeRecoveryInspection,
 ) -> io::Result<Vec<Arc<VerifiedStandaloneChunk>>> {
     recovery_candidates::preflight(inventory)?;
     let mut chunks = BTreeMap::new();
-    let mut dependencies = BTreeMap::new();
     for candidate in inventory.candidates() {
         if !matches!(
             recovery_candidates::classify(candidate)?,
@@ -47,18 +45,49 @@ pub(super) fn select(
                 "multiple standalone encodings of one recovered identity",
             ));
         }
-        let bytes = chunk.encoded()?;
-        let dependency = match terrane_format::codec::parse_envelope(&bytes)
-            .map_err(io::Error::other)?
-            .codec
-        {
-            Codec::ZstdDictionary(digest) => Some(digest),
-            _ => None,
-        };
-        dependencies.insert(digest, dependency);
     }
-    // Only genuine standalone admissions can supply the original dependency
-    // links. Metadata-pack dictionaries still require a separate transfer path.
+    let mut standalone = BTreeMap::new();
+    let mut packs = BTreeSet::new();
+    for (digest, chunk) in &chunks {
+        let metadata = chunk.file().metadata()?;
+        if standalone
+            .insert((metadata.dev(), metadata.ino()), *digest)
+            .is_some()
+        {
+            return Err(invalid("recovered standalone sources alias an inode"));
+        }
+    }
+    for candidate in inventory.candidates() {
+        if let Some(VerifiedEncodedBody::Pack(pack)) = candidate.verified() {
+            let metadata = pack.pack_file().metadata()?;
+            packs.insert((metadata.dev(), metadata.ino()));
+        }
+    }
+    let mut dependencies = BTreeMap::new();
+    for (digest, chunk) in &chunks {
+        let dependency = if let Some((expected, file)) = chunk.dictionary_source()? {
+            let metadata = file.metadata()?;
+            let inode = (metadata.dev(), metadata.ino());
+            if let Some(actual) = standalone.get(&inode) {
+                if *actual != expected {
+                    return Err(invalid("recovered standalone dictionary identity changed"));
+                }
+                Some(*actual)
+            } else if packs.contains(&inode) {
+                // The combined graph orders this original pair before the
+                // chunk. This projection orders only standalone-to-standalone
+                // edges and grants no authority to import either source.
+                None
+            } else {
+                return Err(invalid(
+                    "recovered dictionary lacks its original verified source",
+                ));
+            }
+        } else {
+            None
+        };
+        dependencies.insert(*digest, dependency);
+    }
     dependency_order(&dependencies)?
         .into_iter()
         .map(|digest| {

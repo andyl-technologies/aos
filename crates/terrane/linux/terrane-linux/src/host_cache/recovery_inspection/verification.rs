@@ -2,7 +2,6 @@
 
 use super::{
     NativeRecoveryInspector,
-    dictionaries::resolve as dictionary,
     files::{CanonicalName, RetainedFile, invalid},
 };
 use crate::{host_cache::NativeHostLayout, publisher_local::wire::BodyKey};
@@ -259,6 +258,7 @@ pub enum VerifiedEncodedBody {
 pub struct VerifiedStandaloneChunk {
     source: RetainedFile,
     dependencies: Vec<VerifiedDependency>,
+    dictionary_edge: Option<(Digest, usize)>,
     identity: Identity,
     length: usize,
     encoded_hash: blake3::Hash,
@@ -267,6 +267,22 @@ pub struct VerifiedStandaloneChunk {
 }
 
 impl VerifiedStandaloneChunk {
+    /// Borrows the direct dictionary edge and its independently inspected inode.
+    ///
+    /// # Errors
+    /// Refuses changed original bytes or a lost source binding.
+    pub(in crate::host_cache) fn dictionary_source(&self) -> io::Result<Option<(Digest, &File)>> {
+        self.check_current()?;
+        self.dictionary_edge
+            .map(|(digest, index)| {
+                self.dependencies
+                    .get(index)
+                    .map(|dependency| (digest, dependency.source.file()))
+                    .ok_or_else(|| invalid("standalone dictionary lost its inspected source"))
+            })
+            .transpose()
+    }
+
     /// Borrows the descriptor checked against actual decoded bytes.
     pub(in crate::host_cache) fn descriptor(&self) -> &Descriptor {
         &self.descriptor
@@ -384,18 +400,26 @@ pub(super) fn chunk(
         ));
     }
     let mut dependencies = Vec::new();
+    let mut dictionary_edge = None;
     let dictionary = match terrane_format::codec::parse_envelope(&encoded)
         .map_err(invalid)?
         .codec
     {
-        Codec::ZstdDictionary(digest) => Some(dictionary(
-            context,
-            &digest,
-            None,
-            packs,
-            &mut dependencies,
-            context.reads.max_allocation_bytes,
-        )?),
+        Codec::ZstdDictionary(digest) => {
+            let (plaintext, source) = super::dictionaries::resolve_with_source(
+                context,
+                &digest,
+                None,
+                packs,
+                &mut dependencies,
+                context.reads.max_allocation_bytes,
+            )?;
+            dictionary_edge = Some((
+                digest,
+                source.ok_or_else(|| invalid("standalone dictionary has no original source"))?,
+            ));
+            Some(plaintext)
+        }
         _ => None,
     };
     terrane_sdk::codec::decode_verified(
@@ -410,6 +434,7 @@ pub(super) fn chunk(
     let chunk = VerifiedStandaloneChunk {
         source,
         dependencies,
+        dictionary_edge,
         identity,
         length,
         encoded_hash: blake3::hash(&encoded),

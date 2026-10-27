@@ -57,12 +57,20 @@ pub(in crate::host_cache::owner) async fn import(
                 .map_err(io::Error::other)?
                 .codec
             {
+                let (inspected, original) = source.dictionary_source()?.ok_or_else(|| {
+                    io::Error::other("recovered standalone dictionary lost its original edge")
+                })?;
+                if inspected != digest {
+                    return Err(io::Error::other(
+                        "recovered standalone dictionary edge changed",
+                    ));
+                }
                 let (_, dependency) = super::dictionary_read::verify(
                     executor,
                     Some(&resource),
                     &owner,
                     &digest,
-                    None,
+                    Some(original),
                 )?;
                 super::dictionary_read::retain(&mut job, digest, dependency, &mut hashes)?;
             }

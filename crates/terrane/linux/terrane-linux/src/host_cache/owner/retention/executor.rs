@@ -754,9 +754,7 @@ impl NativeOwnerExecutor {
         match result {
             Ok(mut context) => {
                 self.recovered_chunks = context.take_encoded_sources();
-                self.recovered_chunks.reverse();
                 self.recovered_metadata = context.take_metadata_sources();
-                self.recovered_metadata.reverse();
                 self.running = Some(Arc::new(context));
                 // Transfer all original sources before the first fallible import.
                 // A failed job and every unimported source remain physically owned.
@@ -767,27 +765,22 @@ impl NativeOwnerExecutor {
                     // adding imported cache protection to the bounded snapshot.
                     self.register_recovered_sealed_order()?;
                     super::super::consumer::sweep(self).await?;
-                    while let Some(source) = self.recovered_metadata.last().cloned() {
-                        let dictionaries =
-                            super::super::recovery_metadata::external_dictionaries(&source)?;
-                        // The standalone inventory is already topologically
-                        // ordered. Preserve the old pair-first order when a pack
-                        // is closed; otherwise import the required dictionary
-                        // prefix before registering this dependent pair.
-                        while self.recovered_chunks.iter().any(|chunk| {
-                            dictionaries
-                                .iter()
-                                .any(|digest| chunk.identity().digest() == digest)
-                        }) {
-                            let dictionary =
-                                self.recovered_chunks.last().cloned().ok_or_else(|| {
-                                    io::Error::other("recovered dictionary prefix disappeared")
-                                })?;
-                            super::super::admission::recovery::import(self, &dictionary).await?;
-                            self.recovered_chunks.pop();
+                    let order = super::super::recovery_metadata::order::imports(
+                        &self.recovered_chunks,
+                        &self.recovered_metadata,
+                    )?;
+                    for source in order {
+                        match source {
+                            super::super::recovery_metadata::order::Source::Chunk(position) => {
+                                let source = Arc::clone(&self.recovered_chunks[position]);
+                                super::super::admission::recovery::import(self, &source).await?;
+                            }
+                            super::super::recovery_metadata::order::Source::Pair(position) => {
+                                let source = Arc::clone(&self.recovered_metadata[position]);
+                                super::super::admission::recovery::import_metadata(self, &source)
+                                    .await?;
+                            }
                         }
-                        super::super::admission::recovery::import_metadata(self, &source).await?;
-                        self.recovered_metadata.pop();
                     }
                     // Recovered reconstruction sources share the imported pair's
                     // healthy publisher observation before Resume can return.
@@ -802,10 +795,8 @@ impl NativeOwnerExecutor {
                             )?;
                         }
                     }
-                    while let Some(source) = self.recovered_chunks.last().cloned() {
-                        super::super::admission::recovery::import(self, &source).await?;
-                        self.recovered_chunks.pop();
-                    }
+                    self.recovered_chunks.clear();
+                    self.recovered_metadata.clear();
                     Ok(())
                 }
                 .await;

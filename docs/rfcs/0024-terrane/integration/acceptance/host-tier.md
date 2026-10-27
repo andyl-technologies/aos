@@ -375,6 +375,47 @@ metadata-only GC tracing and complete trunk qualification remain open. Existing
 standalone-only inline publication uses its original verifier until that custody
 path is completed. No task is newly accepted.
 
+## Combined cold chunk and pair ordering
+
+Cold standalone verification now records the direct dictionary digest and its
+independently inspected original source inode. Selection accepts an original
+verified pair as well as a standalone dictionary. The complete import graph
+includes both classes, resolves actual inode edges before import and preserves
+pair-first order for unrelated sources. A standalone import verifies against its
+specific inspected source; a matching digest cannot substitute another inode.
+Missing sources, aliases and cyclic allocation units still refuse sequential
+import. Cyclic-unit admission and lifetime handling remain unfinished.
+
+Acknowledged Resume transfers both source inventories to the physical executor
+before its first fallible import. The executor follows the combined dependency
+order and retains all cold sources if import fails. After every import and
+metadata observation binding succeeds, it releases the duplicate inspection
+descriptors. Header and graph arithmetic covers the combined source classes.
+
+The appended `encoded-mixed-sources` native scenario seeds two single-record data
+pairs and two canonical chunks. The exact dependency chain alternates pair,
+chunk, pair, chunk, with the dependent pair sorting before its source. Genuine
+recovery, acknowledged Resume and consumers must preserve all six original
+inodes and return every original encoding and plaintext. The actor checks that
+only the owner descriptor for each original remains after Resume. An independent
+observer checks both detached indexes, all three dictionary edges, unchanged
+source names, direct and container protection, original cold promises and quota.
+No standalone extraction is permitted. All 110 previous project assignments
+remain fixed; 111 domains occupy partitions of 1,020 and 90 scaffold directories.
+
+Source inspection also found that the image verifier's exact actor inventory
+omitted `admit-packed-dictionary`, introduced with the previous standalone
+consumer increment. Its expected list now includes that mode in the same
+position as the executable. Source validation compares the complete two lists.
+The frozen standalone-only qualification packet was prepared but was not
+launched with this known image-inventory discrepancy.
+
+Feature-enabled and minimal all-target Clippy and source checks are required;
+exact-source application compilation and native execution remain pending.
+Combined ordering code and graph checks do not prove physical cold recovery.
+Inline publication with packed dictionaries, cyclic units, metadata-only GC
+tracing and full T2–T6 qualification remain open. No task is newly accepted.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |

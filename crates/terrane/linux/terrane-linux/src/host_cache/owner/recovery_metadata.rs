@@ -4,7 +4,7 @@
 //! before cold inventory descriptors can disappear. Selection grants no serving
 //! authority; every import still funds and synchronizes its actual owner job.
 
-mod order;
+pub(super) mod order;
 
 use super::recovery_candidates::{self, RecoveryCase};
 use crate::host_cache::{DerivedIndexRepair, NativeRecoveryInspection, VerifiedEncodedBody};
@@ -82,22 +82,6 @@ pub(super) fn select(
         sources.push(Arc::clone(source));
     }
     order::original_sources(inventory, sources)
-}
-
-/// Selects actual external edges to import before the original data pair.
-///
-/// # Errors
-/// Refuses changed native pairs, malformed data or exceeded inspection bounds.
-pub(super) fn external_dictionaries(
-    source: &DerivedIndexRepair,
-) -> io::Result<Vec<terrane_format::identity::Digest>> {
-    let (bytes, _) = source.pair_bytes()?;
-    let pack = PackReader::open(&bytes).map_err(io::Error::other)?;
-    if pack.header().class() != terrane_sdk::pack::PackClass::Data {
-        return Ok(Vec::new());
-    }
-    let (limits, max_entries) = source.read_policy();
-    super::admission::packed_body::external_dictionaries(&bytes, limits, max_entries)
 }
 
 /// Checks exact original verified metadata against a fresh complete inventory.

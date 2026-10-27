@@ -1,4 +1,4 @@
-//! Orders cold pair imports using inspected dictionary-to-inode bindings.
+//! Orders combined cold chunk and pair imports using inspected source inodes.
 //!
 //! Identities alone cannot choose a substitute dictionary source. Every edge
 //! names an actual independently verified standalone inode or an original pair
@@ -8,7 +8,16 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Orders exact original pairs while keeping unrelated source order stable.
+/// Identifies one original source in the retained complete recovery inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::host_cache::owner) enum Source {
+    /// Imports the pair at its original position in the retained pair vector.
+    Pair(usize),
+    /// Imports the chunk at its original position in the retained chunk vector.
+    Chunk(usize),
+}
+
+/// Orders pairs by the complete chunk-and-pair dependency graph.
 ///
 /// # Errors
 /// Refuses changed native custody, aliases, missing dictionary sources or cycles.
@@ -16,62 +25,95 @@ pub(super) fn original_sources(
     inventory: &NativeRecoveryInspection,
     sources: Vec<Arc<DerivedIndexRepair>>,
 ) -> io::Result<Vec<Arc<DerivedIndexRepair>>> {
-    let mut packs = BTreeMap::new();
-    for (position, source) in sources.iter().enumerate() {
-        source.check_current()?;
-        if packs.insert(inode(source.pack_file())?, position).is_some() {
-            return Err(io::Error::other(
-                "cold data pairs alias an original source inode",
-            ));
+    let chunks = super::super::recovery_encoded::select(inventory)?;
+    let mut ordered = Vec::new();
+    ordered
+        .try_reserve_exact(sources.len())
+        .map_err(io::Error::other)?;
+    for source in imports(&chunks, &sources)? {
+        if let Source::Pair(position) = source {
+            ordered.push(Arc::clone(&sources[position]));
         }
     }
-    let mut standalone = BTreeSet::new();
-    for candidate in inventory.candidates() {
-        if let Some(VerifiedEncodedBody::Chunk(chunk)) = candidate.verified() {
-            chunk.check_current()?;
-            let key = inode(chunk.file())?;
-            if packs.contains_key(&key) || !standalone.insert(key) {
-                return Err(io::Error::other(
-                    "cold dictionary sources alias original inodes",
-                ));
-            }
+    Ok(ordered)
+}
+
+/// Orders every exact original source before any dependent admission.
+///
+/// Pairs precede unrelated chunks to preserve existing allocation order. An
+/// edge follows the independently inspected inode, never an identity-based
+/// substitute. The complete order is resolved before any import has effects.
+///
+/// # Errors
+/// Refuses changed custody, aliases, missing original sources or unit cycles.
+pub(in crate::host_cache::owner) fn imports(
+    chunks: &[Arc<crate::host_cache::VerifiedStandaloneChunk>],
+    pairs: &[Arc<DerivedIndexRepair>],
+) -> io::Result<Vec<Source>> {
+    let total = pairs
+        .len()
+        .checked_add(chunks.len())
+        .ok_or_else(|| io::Error::other("cold source graph bound overflow"))?;
+    let mut originals = BTreeMap::new();
+    let mut sources = Vec::new();
+    sources.try_reserve_exact(total).map_err(io::Error::other)?;
+    for (position, pair) in pairs.iter().enumerate() {
+        pair.check_current()?;
+        if originals
+            .insert(inode(pair.pack_file())?, sources.len())
+            .is_some()
+        {
+            return Err(io::Error::other(
+                "cold pairs alias an original source inode",
+            ));
         }
+        sources.push(Source::Pair(position));
+    }
+    for (position, chunk) in chunks.iter().enumerate() {
+        chunk.check_current()?;
+        if originals
+            .insert(inode(chunk.file())?, sources.len())
+            .is_some()
+        {
+            return Err(io::Error::other(
+                "cold chunks alias an original source inode",
+            ));
+        }
+        sources.push(Source::Chunk(position));
     }
 
     let mut dependencies = Vec::new();
     dependencies
-        .try_reserve_exact(sources.len())
+        .try_reserve_exact(total)
         .map_err(io::Error::other)?;
     for source in &sources {
+        let files = match *source {
+            Source::Pair(position) => pairs[position].dictionary_sources()?,
+            Source::Chunk(position) => chunks[position].dictionary_source()?.into_iter().collect(),
+        };
         let mut parents = Vec::new();
-        for (_, file) in source.dictionary_sources()? {
-            let key = inode(file)?;
-            if standalone.contains(&key) {
-                continue;
-            }
-            let parent = packs.get(&key).copied().ok_or_else(|| {
-                io::Error::other("cold dictionary lacks its independently verified original pair")
+        parents
+            .try_reserve_exact(files.len())
+            .map_err(io::Error::other)?;
+        for (_, file) in files {
+            let parent = originals.get(&inode(file)?).copied().ok_or_else(|| {
+                io::Error::other("cold dictionary lacks its independently verified original source")
             })?;
             if !parents.contains(&parent) {
-                parents.try_reserve_exact(1).map_err(io::Error::other)?;
                 parents.push(parent);
             }
         }
         dependencies.push(parents);
     }
-    let order = dependency_order(&dependencies)?;
-    let mut ordered = Vec::new();
-    ordered
-        .try_reserve_exact(sources.len())
-        .map_err(io::Error::other)?;
-    for position in order {
-        let source = sources
-            .get(position)
-            .ok_or_else(|| io::Error::other("cold dictionary source order disappeared"))?;
-        source.check_current()?;
-        ordered.push(Arc::clone(source));
-    }
-    Ok(ordered)
+    dependency_order(&dependencies)?
+        .into_iter()
+        .map(|position| {
+            sources
+                .get(position)
+                .copied()
+                .ok_or_else(|| io::Error::other("cold source order disappeared"))
+        })
+        .collect()
 }
 
 fn inode(file: &std::fs::File) -> io::Result<(u64, u64)> {
@@ -114,7 +156,7 @@ fn dependency_order(dependencies: &[Vec<usize>]) -> io::Result<Vec<usize>> {
     if order.len() != dependencies.len() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "cyclic cold pack units require coordinated admission and lifetime handling",
+            "cyclic cold source units require coordinated admission and lifetime handling",
         ));
     }
     Ok(order)
@@ -132,6 +174,13 @@ mod tests {
         assert_eq!(order, [1, 3, 2, 0, 4]);
         assert_eq!(dependency_order(&[vec![], vec![]]).unwrap(), [0, 1]);
         assert!(dependency_order(&[]).unwrap().is_empty());
+
+        // Pair 0 needs chunk 3, which needs pair 1; chunk 2 needs pair 0.
+        // The combined source order must cross both kinds more than once.
+        assert_eq!(
+            dependency_order(&[vec![3], vec![], vec![0], vec![1]]).unwrap(),
+            [1, 3, 0, 2],
+        );
     }
 
     #[test]

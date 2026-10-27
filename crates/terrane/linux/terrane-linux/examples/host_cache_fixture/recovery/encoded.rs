@@ -1,5 +1,8 @@
 //! Exercises cold canonical encodings through genuine recovery and consumer pins.
 
+#[path = "encoded/mixed_sources.rs"]
+mod mixed_sources;
+
 use super::*;
 use std::{io::Seek, os::unix::fs::MetadataExt, time::UNIX_EPOCH};
 use terrane_linux::host_cache::{NativeRecoveryInspector, VerifiedEncodedBody};
@@ -260,6 +263,9 @@ pub(crate) fn inspect_pack(inspector: &NativeRecoveryInspector) -> io::Result<()
 /// Refuses missing native project inheritance or an invalid fixture envelope.
 pub(crate) fn seed() -> io::Result<()> {
     let inputs = Inputs::load()?;
+    if mixed_sources::selected(&inputs) {
+        return mixed_sources::seed(&inputs);
+    }
     if super::packed_manifest::selected(&inputs) {
         return super::packed_manifest::seed(&inputs);
     }
@@ -465,6 +471,9 @@ pub(crate) fn run(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
 ) -> io::Result<()> {
+    if mixed_sources::selected(inputs) {
+        return mixed_sources::run(mode, owner, runtime, inputs);
+    }
     let original = runtime
         .block_on(CacheState::load(
             &TokioLocalFs,
