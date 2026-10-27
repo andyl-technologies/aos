@@ -17,7 +17,6 @@
 //! pinned root lock and kernel authority; the future combined process/storage
 //! quarantine owner must consume the explicit retry errors instead.
 
-use std::ffi::CString;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::OwnedFd;
@@ -27,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use rustix::fs::{
     AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, fchmod, fchown, flock, fstat, fsync,
-    mkdirat, open, openat, statat, unlinkat,
+    mkdirat, open, openat, unlinkat,
 };
 use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Gid, Uid, getegid, geteuid};

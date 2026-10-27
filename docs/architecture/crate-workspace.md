@@ -117,10 +117,19 @@ APR parser and terminal adapters alongside independently callable signing and
 local staging operations that accept domain inputs without a printer. Format
 libraries remain separate from native signing processes.
 
-`aos-linux-project-quota` is shared for its implemented quota capability. Crucible
-storage retains its project scope: its object kinds and persisted identities are
-Crucible domain concepts. Future host supervision, RAM authority, sandbox journals,
-and descriptor wrappers require API review before promotion to shared libraries.
+`aos-linux-project-quota` is shared for its implemented quota capability.
+`crucible-host-resources` owns the original Linux descriptor read leases and
+isolated notification workers used by the engine and daemon. Complete content
+measurements, namespace checks and execution authority remain with those callers;
+future host budgets, supervision and RAM controls extend this Crucible owner only
+after their own review. `crucible-node-format` owns portable CNP data and
+validation; `crucible-node-transport` owns bounded host process transport and
+request custody.
+
+Crucible storage retains its project scope: its object kinds and persisted
+identities are Crucible domain concepts. Future host supervision, RAM authority,
+sandbox journals and descriptor wrappers require API review before promotion to
+shared libraries.
 
 Prefer direct dependencies on the owning crate. Compatibility facades that retain
 an application dependency undermine extraction and should not become permanent.

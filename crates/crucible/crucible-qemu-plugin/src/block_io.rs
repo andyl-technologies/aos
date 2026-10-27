@@ -105,6 +105,26 @@ struct PendingBlockDelivery {
 }
 
 impl PluginBlockIo {
+    /// Observes the same submitted token's current owner and freeze obligation.
+    ///
+    /// This check neither consumes the token nor changes pending bookkeeping.
+    pub(crate) fn original_completion_token_current(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        token: &BlockRequestToken,
+    ) -> bool {
+        token.block_owner_id == self.owner_id
+            && token.identity.epoch() == self.request_epoch()
+            && token.identity.request_id() < self.next_request_id()
+            && !self.completed_identities.borrow().contains(token.identity)
+            && freeze
+                .completion_current(
+                    &token.device_token,
+                    crate::DeviceIoRequestOutcome::Completed,
+                )
+                .is_ok()
+    }
+
     /// Builds block callback state from the directed rings selected at registration.
     ///
     /// # Errors
@@ -595,6 +615,11 @@ impl PluginBlockIo {
             payload_len: payload.len(),
             token: BlockRequestToken {
                 block_owner_id: self.owner_id,
+                response_capacity: match request.operation() {
+                    BlockOperation::Read => request.count() as usize,
+                    BlockOperation::GetLength => 8,
+                    BlockOperation::Write | BlockOperation::Flush | BlockOperation::Discard => 0,
+                },
                 identity,
                 device_token,
             },
@@ -1167,3 +1192,54 @@ fn peek_head_frame(ring: &BlockInboundRing<'_>) -> Result<Option<FrameEntry>, Bl
 #[cfg(test)]
 #[path = "block_io_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "Positive token controls intentionally panic if original successful setup or submission fails."
+)]
+mod whole_original_token_tests {
+    use super::*;
+    use crucible_qemu_shmem::KIND_VM;
+
+    #[test]
+    fn whole_original_block_token_rejects_foreign_owner_freeze_and_epoch() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let block = PluginBlockIo::new(2, 8, 9);
+        let header = RingHeader::new();
+        let mut entries: Vec<_> = (0..4).map(|_| FrameEntry::default()).collect();
+        let mut ring = BlockOutboundRing::new(8, 2, BLOCK_IO_SLOT_U32, &header, &mut entries);
+        let token = block
+            .submit_request(
+                &mut freeze,
+                &slot,
+                &mut ring,
+                100,
+                &BlockRequest::read(0, 512),
+            )
+            .unwrap()
+            .into_token();
+
+        assert!(block.original_completion_token_current(&freeze, &token));
+        assert_eq!(token.original_response_capacity(), 512);
+        let exact =
+            BlockResponse::with_identity(BlockResponseStatus::Ok, token.identity(), vec![0; 512]);
+        let short =
+            BlockResponse::with_identity(BlockResponseStatus::Ok, token.identity(), vec![0; 511]);
+        let foreign = BlockResponse::with_identity(
+            BlockResponseStatus::Ok,
+            BlockRequestIdentity::new(token.identity().epoch() + 1, token.request_id()),
+            vec![0; 512],
+        );
+        assert!(token.original_response_shape_current(&exact));
+        assert!(!token.original_response_shape_current(&short));
+        assert!(!token.original_response_shape_current(&foreign));
+        assert!(!PluginBlockIo::new(2, 8, 9).original_completion_token_current(&freeze, &token));
+        assert!(!block.original_completion_token_current(&PluginDeviceIoFreeze::new(), &token));
+        block.request_epoch.set(block.request_epoch() + 1);
+        assert!(!block.original_completion_token_current(&freeze, &token));
+        assert_eq!(freeze.pending_requests(), 1);
+        assert_eq!(header.write_index(), 1);
+    }
+}

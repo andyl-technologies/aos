@@ -1,6 +1,6 @@
 # Active Rust crate inventory
 
-The workspace contains 77 Cargo packages, grouped by ownership. The full package
+The workspace contains 80 Cargo packages, grouped by ownership. The full package
 name carries scope. Filesystem groups reduce the directory listing and do not
 change dependency identity. The authoritative membership is
 [`crates/Cargo.toml`](../../crates/Cargo.toml); the
@@ -59,6 +59,9 @@ change dependency identity. The authoritative membership is
 | `crucible-device` | [crucible/crucible-device](../../crates/crucible/crucible-device/Cargo.toml) | Deterministic device and I/O sub-node models |
 | `crucible-engine` | [crucible/crucible-engine](../../crates/crucible/crucible-engine/Cargo.toml) | Execution graphs, checkpoints, replay, and deterministic engine state |
 | `crucible-guest` | [crucible/crucible-guest](../../crates/crucible/crucible-guest/Cargo.toml) | Optional guest observation and assertion instrumentation |
+| `crucible-host-resources` | [crucible/crucible-host-resources](../../crates/crucible/crucible-host-resources/Cargo.toml) | Original Linux descriptor read leases and isolated notification custody |
+| `crucible-node-format` | [crucible/crucible-node-format](../../crates/crucible/crucible-node-format/Cargo.toml) | Portable CNP data, strict JSON, canonical identities, and validation |
+| `crucible-node-transport` | [crucible/crucible-node-transport](../../crates/crucible/crucible-node-transport/Cargo.toml) | Bounded host process transport, request custody, and reference-provider tools |
 | `crucible-qemu-protocol` | [crucible/crucible-qemu-protocol](../../crates/crucible/crucible-qemu-protocol/Cargo.toml) | Permissive versioned control messages across the QEMU process boundary |
 | `crucible-qemu-shmem` | [crucible/crucible-qemu-shmem](../../crates/crucible/crucible-qemu-shmem/Cargo.toml) | Permissive shared-memory layouts, checked offsets, and observation transport |
 | `crucible-qemu-debug-gateway` | [crucible/crucible-qemu-debug-gateway](../../crates/crucible/crucible-qemu-debug-gateway/Cargo.toml) | Separate GPL debugger process using QEMU private interfaces |
@@ -123,6 +126,14 @@ stay the same, see the [rename reference](crate-renames.md).
   Boot execution formerly in the systemd handler and boot preparation crate is
   in `aos-boot-runtime`. Pure release verification is `aos-release-format`;
   reusable publication preparation and verification is `aos-release-coordinator`.
+- `crucible-node-contract` is now `crucible-node-format`, and
+  `crucible-node-provider` is now `crucible-node-transport`. The latter keeps its
+  host transport and reference-provider tools; executable and wire identities
+  retain their established names.
+- `crucible-host-resources` owns the first implemented host-resource capability:
+  original Linux descriptor read leases shared by engine and daemon. Quotas stay
+  in `aos-linux-project-quota`; future RAM, budget and supervision capabilities
+  from #696 are not implemented by this extraction.
 - `crucible-assert` gate vocabulary is folded into `crucible-test-support`.
   `crucible-control-api` owns message/codecs/compatibility contracts,
   `crucible-control-client` owns client transport, and `crucible-control-server`

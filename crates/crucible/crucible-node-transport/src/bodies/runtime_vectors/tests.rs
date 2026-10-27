@@ -1,0 +1,344 @@
+//! Checks real borrowed typed vectors and nested malformed decoder prefixes.
+
+use super::*;
+use serde::Deserialize;
+use serde_json::json;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn id(value: &str) -> Id {
+    Id::new(value).unwrap()
+}
+
+fn observation(events: usize, parents: usize) -> ObservationBatch {
+    let reference = canonical::content_ref(b"proof", "application/octet-stream").unwrap();
+    let position = Position::new(U64::new(1), U64::new(0), Phase::Publication);
+    let endpoint = || Endpoint {
+        node_id: id("node"),
+        port_id: id("port"),
+        lane_id: id("lane"),
+    };
+    let events = (0..events)
+        .map(|index| Event {
+            schema_version: 1,
+            id: id(&format!("event/{index}")),
+            source: endpoint(),
+            destination: endpoint(),
+            position,
+            stage: EventStage::Publication,
+            publication_position: position,
+            delivery_position: None,
+            source_sequence: U64::new(index as u64 + 1),
+            causal_parent_ids: (0..parents)
+                .map(|parent| id(&format!("parent/{parent:05}")))
+                .collect(),
+            payload: reference.clone(),
+            provenance_ref: reference.clone(),
+            extensions: Extensions::new(),
+        })
+        .collect();
+    ObservationBatch {
+        schema_version: 1,
+        execution_owner_id: id("owner"),
+        owner_binding_hash: canonical::hash("cnp.owner-binding.v1", b"owner").unwrap(),
+        world_binding_hash: canonical::hash("cnp.world-binding.v1", b"world").unwrap(),
+        activation_id: id("activation"),
+        world_generation: U64::new(1),
+        owner_generation: U64::new(1),
+        operation_id: id("operation"),
+        grant_id: None,
+        first_sequence: U64::new(1),
+        last_sequence: U64::new(1),
+        events,
+        visibility: Visibility::Committed,
+        measurement_ref: reference,
+        extensions: Extensions::new(),
+    }
+}
+
+fn vector_backing(value: &ObserveResult) -> usize {
+    value.observations.capacity() * size_of::<ObservationBatch>()
+        + value
+            .observations
+            .iter()
+            .map(|batch| {
+                batch.events.capacity() * size_of::<Event>()
+                    + batch
+                        .events
+                        .iter()
+                        .map(|event| event.causal_parent_ids.capacity() * size_of::<Id>())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+}
+
+fn positional<T: RecordFields>(value: &Value) -> Value {
+    Value::Array(
+        T::FIELDS
+            .iter()
+            .map(|field| value[*field].clone())
+            .collect(),
+    )
+}
+
+fn verify_required_record_syntax<T>(original: &T) -> TestResult
+where
+    T: RecordFields + Serialize + serde::de::DeserializeOwned + PartialEq,
+{
+    let value = serde_json::to_value(original)?;
+    let object = value.as_object().ok_or("record object absent")?;
+    assert_eq!(object.len(), T::FIELDS.len());
+
+    for field in T::FIELDS {
+        let mut missing = object.clone();
+        assert!(missing.remove(*field).is_some());
+        assert!(T::deserialize(Value::Object(missing)).is_err(), "{field}");
+    }
+    let array = positional::<T>(&value);
+    assert!(T::deserialize(&array).is_err());
+    assert!(T::deserialize(array.clone()).is_err());
+    let elements = array.as_array().ok_or("record sequence absent")?;
+    for length in 0..elements.len() {
+        assert!(T::deserialize(Value::Array(elements[..length].to_vec())).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn records_require_objects_and_keep_every_required_field() -> TestResult {
+    let batch = observation(1, 1);
+
+    verify_required_record_syntax(&batch.measurement_ref)?;
+    verify_required_record_syntax(&batch.events[0])?;
+    verify_required_record_syntax(&batch)?;
+    assert!(Id::deserialize(json!("")).is_err());
+    assert_eq!(serde_json::to_vec(&id("i"))?.len(), Id::LOCAL_ENCODED_BYTES);
+    Ok(())
+}
+
+#[test]
+fn nested_positional_records_are_refused_before_typed_vector_results() -> TestResult {
+    let original = ObserveResult {
+        observations: vec![observation(17, 33); 3],
+        next_sequence: U64::new(1),
+        complete: true,
+        inventory_hash: canonical::hash("cnp.inventory.v1", b"inventory")?,
+    };
+    let mut input = serde_json::to_value(&original)?;
+    let bytes = serde_json::to_vec(&input)?;
+    let decoded = ObserveResult::deserialize(&input)?;
+    let row = typed_vector_storage_data(bytes.len(), usize::MAX)?;
+    assert_eq!(decoded, original);
+    assert!(vector_backing(&decoded) <= row[0]);
+
+    for batch in input["observations"].as_array_mut().unwrap() {
+        for event in batch["events"].as_array_mut().unwrap() {
+            for field in ["payload", "provenance_ref"] {
+                event[field] = positional::<ContentRef>(&event[field]);
+            }
+            *event = positional::<Event>(event);
+        }
+        batch["measurement_ref"] = positional::<ContentRef>(&batch["measurement_ref"]);
+        *batch = positional::<ObservationBatch>(batch);
+    }
+    assert!(ObserveResult::deserialize(&input).is_err());
+    assert!(ObserveResult::deserialize(input).is_err());
+    Ok(())
+}
+
+#[test]
+fn closed_field_walk_preserves_valid_byte_windows_and_bounds_large_objects() -> TestResult {
+    let reference = canonical::content_ref(b"body", "application/octet-stream")?;
+    let request = BlobBeginRequest {
+        transfer_id: id("transfer"),
+        content: reference,
+        extensions: Extensions::from([("literal".into(), json!({"nested": [0, "text"]}))]),
+    };
+    let body = PacketRuntimeRequest::BlobBegin(&request);
+    let empty = Extensions::new();
+    let bytes = serde_json::to_vec(&body)?;
+
+    body.preflight_serialization(&empty, bytes.len() + 2)?;
+
+    let large = Extensions::from([(
+        "many".into(),
+        json!(
+            (0..20_000)
+                .map(|index| (index.to_string(), Value::Null))
+                .collect::<Map<String, Value>>()
+        ),
+    )]);
+    assert!(matches!(
+        body.preflight_serialization(&large, 65_536),
+        Err(ProviderError::ResourceExhausted(
+            "packet runtime serializer preflight exceeds frame"
+        ))
+    ));
+    assert_eq!(serde_json::to_vec(&body)?, bytes);
+    Ok(())
+}
+
+#[test]
+fn nested_literal_serialization_fits_the_closed_control_depth() -> TestResult {
+    fn container_depth(value: &Value) -> usize {
+        match value {
+            Value::Array(values) => 1 + values.iter().map(container_depth).max().unwrap_or(0),
+            Value::Object(values) => 1 + values.values().map(container_depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    // Reserved-looking keys remain literal map entries under raw_value too.
+    // Put a deepest permitted literal below actual typed record/Vec layers.
+    let marker = json!({"$serde_json::private::RawValue": "[1,2,3]"});
+    let mut literal = marker.clone();
+    for _ in 0..62 {
+        literal = Value::Array(vec![literal]);
+    }
+    let mut batch = observation(1, 1);
+    batch.events[0].extensions.insert("literal".into(), literal);
+    let request = InputRequest {
+        binding_hash: batch.owner_binding_hash,
+        owner_generation: batch.owner_generation,
+        batch_id: id("batch"),
+        batch_sequence: U64::new(1),
+        input_epoch: id("epoch"),
+        events: batch.events,
+        batch_hash: batch.world_binding_hash,
+        extensions: Extensions::new(),
+    };
+    let body = PacketRuntimeRequest::Input(&request);
+
+    body.preflight_serialization(&Extensions::new(), 65_536)?;
+    let value = serde_json::to_value(&body)?;
+    let bytes = serde_json::to_vec(&body)?;
+
+    assert_eq!(serde_json::to_value(&marker)?, marker);
+    assert_eq!(serde_json::from_slice::<InputRequest>(&bytes)?, request);
+    assert!(container_depth(&value) > 64);
+    assert!(container_depth(&value) + 1 <= packet_runtime_serialization_depth());
+    Ok(())
+}
+
+#[test]
+fn completed_borrowed_populations_fit_with_independent_nested_capacities() -> TestResult {
+    for (batches, events, parents) in [(0, 0, 0), (1, 0, 0), (1, 1, 3), (1, 2050, 0), (3, 2, 257)] {
+        let original = ObserveResult {
+            observations: vec![observation(events, parents); batches],
+            next_sequence: U64::new(1),
+            complete: true,
+            inventory_hash: canonical::hash("cnp.inventory.v1", b"inventory")?,
+        };
+        let wire = serde_json::to_vec(&original)?;
+        let input: Value = serde_json::from_slice(&wire)?;
+        let row = typed_vector_storage_data(wire.len(), usize::MAX)?;
+
+        let decoded = ObserveResult::deserialize(&input)?;
+
+        assert_eq!(decoded, original);
+        assert!(vector_backing(&decoded) <= row[0]);
+        assert!(row[0] <= row[1]);
+        if events == 2050 {
+            // This actual Event vector crosses Serde's cautious initial bank.
+            assert!(decoded.observations[0].events.capacity() > events);
+        }
+        drop(input);
+        assert_eq!(decoded.observations.len(), batches);
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_invalid_first_elements_still_receive_partial_vector_credit() -> TestResult {
+    // Lexicographic field traversal reaches all three Vec visitors before the
+    // first invalid Id. No Event or ObservationBatch can complete here.
+    let mut parents = vec![Value::Null; 3000];
+    parents[0] = json!(false);
+    let mut events = vec![Value::Null; 2100];
+    events[0] = json!({"causal_parent_ids": parents});
+    let mut observations = vec![Value::Null; 2500];
+    observations[0] = json!({"events": events});
+    let input = json!({"observations": observations});
+    let wire = serde_json::to_vec(&input)?;
+    assert!(wire.len() <= 65_536);
+    let row = typed_vector_storage_data(wire.len(), usize::MAX)?;
+
+    assert!(ObserveResult::deserialize(&input).is_err());
+    assert_eq!(RUNTIME.vector_depth, 3);
+    assert!(row[1] - row[0] >= 3 * 1024 * 1024);
+    Ok(())
+}
+
+#[test]
+fn independent_restrictions_refuse_without_arithmetic_wraparound() -> TestResult {
+    let row = typed_vector_storage_data(65536, usize::MAX)?;
+
+    assert_eq!(typed_vector_storage_data(65536, row[1])?, row);
+    assert!(typed_vector_storage_data(65536, row[1] - 1).is_err());
+    assert!(typed_vector_storage_data(0, usize::MAX).is_err());
+    assert!(typed_vector_storage_data(usize::MAX, usize::MAX).is_err());
+    assert_eq!(RUNTIME.element_bytes, size_of::<Event>());
+    Ok(())
+}
+
+#[test]
+fn begin_capture_results_include_their_typed_reference_vector() -> TestResult {
+    let reference = canonical::content_ref(b"state", "application/octet-stream")?;
+    let original = CaptureResult {
+        capture_manifest: reference.clone(),
+        owner_state_refs: vec![reference.clone(); 12_000],
+        unchanged_cut_receipt: reference,
+    };
+    let wire = serde_json::to_vec(&original)?;
+    let input: Value = serde_json::from_slice(&wire)?;
+
+    let decoded = CaptureResult::deserialize(&input)?;
+    let row = typed_vector_storage_data(wire.len(), usize::MAX)?;
+
+    assert_eq!(decoded, original);
+    assert!(decoded.owner_state_refs.capacity() * size_of::<ContentRef>() <= row[0]);
+    assert!(decoded.owner_state_refs.capacity() > decoded.owner_state_refs.len());
+    Ok(())
+}
+
+#[test]
+fn actual_serde_initial_reservations_match_the_pinned_failed_prefix_bound() -> TestResult {
+    struct ReservationHint;
+
+    impl<'de> serde::de::SeqAccess<'de> for ReservationHint {
+        type Error = serde_json::Error;
+
+        fn next_element_seed<T: serde::de::DeserializeSeed<'de>>(
+            &mut self,
+            _: T,
+        ) -> Result<Option<T::Value>, Self::Error> {
+            Ok(None)
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            // Isolate the visitor's initial reservation without requiring an
+            // allocator hook. Live borrowed Value arrays provide their real
+            // lengths; the malformed nested control exercises that path.
+            Some(usize::MAX)
+        }
+    }
+
+    fn verify<T: serde::de::DeserializeOwned>() -> Result<(), serde_json::Error> {
+        let sequence = serde::de::value::SeqAccessDeserializer::new(ReservationHint);
+
+        let values = Vec::<T>::deserialize(sequence)?;
+
+        assert!(values.is_empty());
+        assert_eq!(
+            values.capacity(),
+            CAUTIOUS_RESERVATION_BYTES / size_of::<T>()
+        );
+        Ok(())
+    }
+
+    verify::<Id>()?;
+    verify::<ContentRef>()?;
+    verify::<Event>()?;
+    verify::<ObservationBatch>()?;
+    Ok(())
+}

@@ -1,0 +1,1146 @@
+--- a/src/crucible_exec_custody.h
++++ b/src/crucible_exec_custody.h
+@@ -8,6 +8,7 @@
+ 
+ #include "crucible_exec_state.h"
+ #include "crucible_descriptor_scope.h"
++#include "crucible_original_shared_area.h"
+ 
+ #include <sys/vfs.h>
+ #include "protectedfds.h"
+@@ -41,6 +42,7 @@
+     PeerIdentity parent;
+     unsigned char cookie[32] = {};
+     Descriptor descriptors[DescriptorLimit];
++    original_shared_area::OriginalRecord sharedArea;
+ };
+ 
+ inline bool selected()
+@@ -53,6 +55,20 @@
+     if (!observed.load(std::memory_order_acquire)) return false;
+     log_writer::require(policy != nullptr && std::strcmp(policy, "exec-custody.v1") == 0 &&
+                         log_writer::selected() && writer_cohort_admitted(),
++                        log_writer::Refusal::Policy);
++    return true;
++}
++
++// Edition2 appends the complete new original shared-area bank to the exec
++// transfer only. Existing standalone producer/capsule state codecs retain
++// their Edition1 layout; neither transfer edition grants native authority.
++constexpr std::uint64_t SharedAreaTransferEdition = 2;
++
++inline bool shared_area_selected()
++{
++    const char *policy = std::getenv("CRUCIBLE_NATIVE_SHARED_PROFILE");
++    if (!policy) return false;
++    log_writer::require(std::strcmp(policy, "shared-birth.v1") == 0 && selected(),
+                         log_writer::Refusal::Policy);
+     return true;
+ }
+@@ -238,7 +254,8 @@
+     exec_state::Writer writer(storage(), exec_state::MaximumBytes);
+     unsigned char magic[8] = {'D', 'C', 'P', 'X', 'F', 'E', 'R', 0};
+     writer.bytes(magic, sizeof(magic));
+-    std::uint64_t edition = exec_state::Edition;
++    const bool sharedSelected = shared_area_selected();
++    std::uint64_t edition = sharedSelected ? SharedAreaTransferEdition : exec_state::Edition;
+     size_t header_bytes = ControlHeaderBytes;
+     writer.unsigned_value(edition);
+     writer.unsigned_value(header_bytes);
+@@ -247,6 +264,12 @@
+     exec_state::fields(writer, log_writer::account(), control_bank(), control_channels(),
+                        requests, probes, attempts());
+     descriptor_fields(writer, transfer);
++    if (sharedSelected) {
++        transfer.sharedArea = original_shared_area::original().originalRecord();
++        require(transfer.sharedArea.headerCompleted && !transfer.sharedArea.execImported &&
++                !transfer.sharedArea.refused && !transfer.sharedArea.closeUnknown);
++        original_shared_area::preservationFields(writer, transfer.sharedArea);
++    }
+     require(writer.valid());
+ 
+     // Validate the complete snapshot before creating a delivery file. The
+@@ -256,6 +279,7 @@
+                        transfer.state.channels, transfer.state.requests,
+                        transfer.state.probes, transfer.state.exec_attempts);
+     descriptor_fields(validation, transfer);
++    if (sharedSelected) original_shared_area::preservationFields(validation, transfer.sharedArea);
+     require(validation.complete() && exec_state::consistent(transfer.state));
+ 
+     unsigned char nonce[16];
+@@ -319,22 +343,31 @@
+     size_t header_bytes = 0;
+     reader.unsigned_value(edition);
+     reader.unsigned_value(header_bytes);
++    const bool sharedSelected = shared_area_selected();
++    const std::uint64_t expectedEdition = sharedSelected
++        ? SharedAreaTransferEdition : exec_state::Edition;
+     require(std::memcmp(magic, expected, sizeof(magic)) == 0 &&
+-            edition == exec_state::Edition && header_bytes == ControlHeaderBytes);
++            edition == expectedEdition && header_bytes == ControlHeaderBytes);
+     Transfer &transfer = candidate();
+     exec_state::fields(reader, transfer.state.log, transfer.state.control,
+                        transfer.state.channels, transfer.state.requests,
+                        transfer.state.probes, transfer.state.exec_attempts);
+     descriptor_fields(reader, transfer);
++    if (sharedSelected) original_shared_area::preservationFields(reader, transfer.sharedArea);
+     require(reader.complete() && exec_state::consistent(transfer.state) &&
+             transfer.state.log.process == kernel_identity::read(SYS_getpid) &&
+             transfer.state.log.uid == syscall(SYS_geteuid) &&
+             control_cookie_matches(transfer.cookie));
+     require_bounded_namespace();
+     validate_census(transfer);
+-
+-    // No effects occur until the complete candidate and actual inherited
+-    // census have passed. Installation preserves every attempted original row.
++    if (sharedSelected) {
++        require(transfer.sharedArea.protectedDescriptor == PROTECTED_SHM_FD);
++        require(original_shared_area::original().importExecPreservation(transfer.sharedArea));
++    }
++
++    // The complete candidate and inherited census precede account installation.
++    // The selected shared-area import above retains its original creation debits;
++    // installation here preserves every earlier log and control attempt.
+     exec_state::Reader install(storage() + 24, extent - 24);
+     unsigned requests = 0;
+     unsigned probes = 0;
+--- /dev/null
++++ b/src/crucible_original_shared_area.h
+@@ -0,0 +1,374 @@
++// SPDX-License-Identifier: LGPL-3.0-or-later
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef DMTCP_CRUCIBLE_ORIGINAL_SHARED_AREA_H
++#define DMTCP_CRUCIBLE_ORIGINAL_SHARED_AREA_H
++
++#include "crucible_raw_kernel_call.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <fcntl.h>
++#include <sys/stat.h>
++
++#include <sys/mman.h>
++
++namespace dmtcp_crucible::original_shared_area
++{
++
++using raw_kernel_call::kernelCall;
++
++/** Retains actual source creation effects, rather than a descriptor census.
++ *
++ * Every scalar is preservation data. A native source issuer must separately
++ * authenticate its original constructor/exec custody and whole process cut.
++ * This record cannot authorize a new open, mapping, branch or native Ready.
++ */
++struct OriginalRecord
++{
++  std::uint64_t process = 0;
++  std::uint64_t uid = 0;
++  std::uint64_t gid = 0;
++  std::uint64_t storageBytes = 0;
++  std::uint64_t device = 0;
++  std::uint64_t inode = 0;
++  std::uint64_t mappingBytes = 0;
++  std::uint64_t fileBytes = 0;
++  std::uint64_t mappingAddress = 0;
++  std::uint64_t libraryMappingAddress = 0;
++  std::uint64_t mappingSlotsReserved = 0;
++  std::uint64_t mappingStorageReserved = 0;
++  std::int64_t sourceDescriptor = -1;
++  std::int64_t protectedDescriptor = -1;
++  std::uint64_t openAttempt = 0;
++  std::uint64_t resizeAttempt = 0;
++  std::uint64_t duplicateAttempt = 0;
++  std::uint64_t closeAttempt = 0;
++  std::uint64_t mappingAttempt = 0;
++  bool openCompleted = false;
++  bool resizeCompleted = false;
++  bool duplicateCompleted = false;
++  bool closeCompleted = false;
++  bool closeUnknown = false;
++  bool mappingCompleted = false;
++  bool headerCompleted = false;
++  bool libraryMappingCompleted = false;
++  bool execImported = false;
++  bool refused = false;
++};
++
++/** Owns the selected launcher's initial shared-area creation before effects. */
++class OriginalSharedArea
++{
++public:
++  static constexpr int DescriptorLimit = 1024;
++  static constexpr std::size_t MappingLimit = 32 * 1024 * 1024;
++
++  OriginalSharedArea()
++      : ownerProcess(kernelCall(SYS_getpid)),
++        ownerUid(kernelCall(SYS_geteuid)), ownerGid(kernelCall(SYS_getegid))
++  {
++    authenticateOwner();
++  }
++  OriginalSharedArea(const OriginalSharedArea &) = delete;
++  OriginalSharedArea &operator=(const OriginalSharedArea &) = delete;
++
++  /** Consumes the sole creation before open and refuses an inherited alias. */
++  bool begin(std::size_t bytes, int protectedDescriptor)
++  {
++    authenticateOwner();
++    if (record.openAttempt || importConsumed || record.refused) {
++      if (record.openAttempt) current();
++      return refuse();
++    }
++    record.openAttempt = 1;
++    const long process = kernelCall(SYS_getpid);
++    const long uid = kernelCall(SYS_geteuid);
++    const long gid = kernelCall(SYS_getegid);
++    record.process = process;
++    record.uid = uid;
++    record.gid = gid;
++    record.storageBytes = sizeof(*this);
++    if (process <= 0 || uid < 0 || gid < 0 || kernelCall(SYS_gettid) != process ||
++        bytes == 0 || bytes > MappingLimit || bytes % 4096 != 0 ||
++        protectedDescriptor < 0 || protectedDescriptor >= DescriptorLimit ||
++        kernelCall(SYS_fcntl, protectedDescriptor, F_GETFD) != -9)
++      return refuse();
++
++    record.mappingBytes = bytes;
++    record.mappingSlotsReserved = 2;
++    record.mappingStorageReserved = 2 * bytes;
++    record.protectedDescriptor = protectedDescriptor;
++    return true;
++  }
++
++  /** Creates a new file exclusively; an existing pathname is never adopted. */
++  int openOriginal(const char *path)
++  {
++    if (!current() || record.openAttempt != 1 || record.openCompleted || !path)
++      return failedDescriptor();
++    const long descriptor = kernelCall(SYS_openat, AT_FDCWD,
++        reinterpret_cast<long>(path), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
++    record.sourceDescriptor = descriptor;
++    if (descriptor < 0) return failedDescriptor();
++
++    struct stat actual{};
++    if (kernelCall(SYS_fstat, descriptor, reinterpret_cast<long>(&actual)) != 0 ||
++        !S_ISREG(actual.st_mode) || (actual.st_mode & 07777) != 0600 ||
++        actual.st_nlink != 1 || actual.st_uid != record.uid || actual.st_size != 0)
++      return failedDescriptor();
++
++    record.device = actual.st_dev;
++    record.inode = actual.st_ino;
++    record.openCompleted = true;
++    return int(descriptor);
++  }
++
++  /** Extends the held original file, without resolving its pathname again. */
++  bool extendOriginal()
++  {
++    if (!current() || !record.openCompleted || record.resizeAttempt) return refuse();
++    record.resizeAttempt = 1;
++    if (kernelCall(SYS_ftruncate, record.sourceDescriptor, record.mappingBytes) != 0 ||
++        !fileCurrent(record.sourceDescriptor, record.mappingBytes))
++      return refuse();
++
++    record.fileBytes = record.mappingBytes;
++    record.resizeCompleted = true;
++    return true;
++  }
++
++  /** Retains the exact duplicate and one-way source-descriptor retirement. */
++  bool transferOriginal()
++  {
++    if (!current() || !record.resizeCompleted || record.duplicateAttempt ||
++        !fileCurrent(record.sourceDescriptor, record.fileBytes))
++      return refuse();
++    record.duplicateAttempt = 1;
++    if (record.sourceDescriptor != record.protectedDescriptor &&
++        kernelCall(SYS_fcntl, record.protectedDescriptor, F_GETFD) != -9)
++      return refuse();
++    if (kernelCall(SYS_dup2, record.sourceDescriptor, record.protectedDescriptor) !=
++        record.protectedDescriptor ||
++        !fileCurrent(record.protectedDescriptor, record.fileBytes))
++      return refuse();
++    record.duplicateCompleted = true;
++
++    const long flags = kernelCall(SYS_fcntl, record.protectedDescriptor, F_GETFD);
++    if (flags < 0 || kernelCall(SYS_fcntl, record.protectedDescriptor,
++                                F_SETFD, flags & ~FD_CLOEXEC) != 0)
++      return refuse();
++
++    if (record.sourceDescriptor != record.protectedDescriptor) {
++      record.closeAttempt = 1;
++      const int original = int(record.sourceDescriptor);
++      record.sourceDescriptor = -1;
++      if (kernelCall(SYS_close, original) != 0) {
++        record.closeUnknown = true;
++        return refuse();
++      }
++      record.closeCompleted = true;
++    }
++    return true;
++  }
++
++  /** Consumes original mapping storage before the source mmap call. */
++  bool beginMapping()
++  {
++    authenticateOwner();
++    const std::uint64_t expectedAttempt = record.execImported ? 1 : 0;
++    if (!current() || !record.duplicateCompleted ||
++        record.mappingAttempt != expectedAttempt ||
++        record.mappingSlotsReserved != 2 ||
++        record.mappingStorageReserved != 2 * record.mappingBytes ||
++        !fileCurrent(record.protectedDescriptor, record.fileBytes))
++      return refuse();
++    ++record.mappingAttempt;
++    return true;
++  }
++
++  bool mappedOriginal(void *actual)
++  {
++    authenticateOwner();
++    const bool library = record.execImported;
++    if (!current() || record.mappingAttempt != (library ? 2u : 1u) ||
++        (library ? record.libraryMappingCompleted : record.mappingCompleted) ||
++        actual == nullptr || actual == MAP_FAILED ||
++        reinterpret_cast<std::uintptr_t>(actual) % 4096 != 0)
++      return refuse();
++    if (library) {
++      record.libraryMappingAddress = reinterpret_cast<std::uintptr_t>(actual);
++      record.libraryMappingCompleted = true;
++    } else {
++      record.mappingAddress = reinterpret_cast<std::uintptr_t>(actual);
++      record.mappingCompleted = true;
++    }
++    return true;
++  }
++
++  /** Joins the actual header writer's existing final one-byte file extension. */
++  bool headerWritten()
++  {
++    if (!current() || !record.mappingCompleted || record.headerCompleted ||
++        !fileCurrent(record.protectedDescriptor, record.mappingBytes + 1))
++      return refuse();
++    record.fileBytes = record.mappingBytes + 1;
++    record.headerCompleted = true;
++    return true;
++  }
++
++  /** Observes current exec preservation; this does not issue a native cut. */
++  bool observeExec() const
++  {
++    if (!current()) return false;
++    return record.execImported && record.libraryMappingCompleted &&
++        record.mappingAttempt == 2 && record.headerCompleted &&
++        fileCurrent(record.protectedDescriptor, record.fileBytes);
++  }
++
++  const OriginalRecord &originalRecord() const
++  {
++    authenticateOwner();
++    return record;
++  }
++
++  /** Imports full original preservation data on the SAME kernel exec lineage.
++   *
++   * The selected exec receiver authenticates its original inherited journal
++   * and whole descriptor census first. This import cannot issue a cut or
++   * adopt a restored process; changed PID, aliases and renewed counters refuse.
++   */
++  bool importExecPreservation(const OriginalRecord &preserved)
++  {
++    authenticateOwner();
++    if (importConsumed || record.openAttempt || record.refused) return refuse();
++    importConsumed = true;
++    const long process = kernelCall(SYS_getpid);
++    if (process <= 0 || kernelCall(SYS_gettid) != process ||
++        preserved.process != std::uint64_t(process) ||
++        preserved.uid != std::uint64_t(kernelCall(SYS_geteuid)) ||
++        preserved.gid != std::uint64_t(kernelCall(SYS_getegid)) ||
++        preserved.storageBytes != sizeof(*this) || preserved.refused || preserved.closeUnknown ||
++        preserved.execImported || !preserved.openCompleted || !preserved.resizeCompleted ||
++        !preserved.duplicateCompleted || !preserved.mappingCompleted || !preserved.headerCompleted ||
++        preserved.openAttempt != 1 || preserved.resizeAttempt != 1 ||
++        preserved.duplicateAttempt != 1 || preserved.mappingAttempt != 1 ||
++        preserved.mappingSlotsReserved != 2 || preserved.mappingBytes == 0 ||
++        preserved.mappingBytes > MappingLimit || preserved.mappingBytes % 4096 != 0 ||
++        preserved.mappingStorageReserved != 2 * preserved.mappingBytes ||
++        preserved.fileBytes != preserved.mappingBytes + 1 ||
++        !preserved.mappingAddress || preserved.mappingAddress % 4096 != 0 ||
++        preserved.libraryMappingAddress || preserved.libraryMappingCompleted ||
++        (preserved.sourceDescriptor == -1 &&
++         (preserved.closeAttempt != 1 || !preserved.closeCompleted)) ||
++        (preserved.sourceDescriptor != -1 &&
++         (preserved.sourceDescriptor != preserved.protectedDescriptor ||
++          preserved.closeAttempt != 0 || preserved.closeCompleted)))
++      return refuse();
++
++    struct stat actual{};
++    if (preserved.protectedDescriptor < 0 ||
++        preserved.protectedDescriptor >= DescriptorLimit ||
++        kernelCall(SYS_fstat, preserved.protectedDescriptor, reinterpret_cast<long>(&actual)) != 0 ||
++        !S_ISREG(actual.st_mode) || (actual.st_mode & 07777) != 0600 ||
++        actual.st_uid != preserved.uid || actual.st_nlink != 1 ||
++        actual.st_dev != preserved.device || actual.st_ino != preserved.inode ||
++        actual.st_size != std::int64_t(preserved.fileBytes) ||
++        kernelCall(SYS_fcntl, preserved.protectedDescriptor, F_GETFD) != 0 ||
++        (kernelCall(SYS_fcntl, preserved.protectedDescriptor, F_GETFL) & O_ACCMODE) != O_RDWR)
++      return refuse();
++
++    // Preserve every earlier debit and original mapping address. The library
++    // consumes the second constructor-reserved slot; no balance is reset.
++    record = preserved;
++    record.execImported = true;
++    return true;
++  }
++
++private:
++  void authenticateOwner() const
++  {
++    if (ownerProcess <= 0 || kernelCall(SYS_getpid) != ownerProcess ||
++        kernelCall(SYS_gettid) != ownerProcess ||
++        kernelCall(SYS_geteuid) != ownerUid || kernelCall(SYS_getegid) != ownerGid) {
++      kernelCall(SYS_exit_group, 125);
++      __builtin_unreachable();
++    }
++  }
++
++  bool current() const
++  {
++    authenticateOwner();
++    if (record.openAttempt && (kernelCall(SYS_getpid) != long(record.process) ||
++        kernelCall(SYS_gettid) != long(record.process) ||
++        kernelCall(SYS_geteuid) != long(record.uid) ||
++        kernelCall(SYS_getegid) != long(record.gid))) {
++      kernelCall(SYS_exit_group, 125);
++      __builtin_unreachable();
++    }
++    return record.openAttempt && !record.refused && !record.closeUnknown;
++  }
++
++  bool fileCurrent(int descriptor, std::uint64_t bytes) const
++  {
++    struct stat actual{};
++    return descriptor >= 0 &&
++        kernelCall(SYS_fstat, descriptor, reinterpret_cast<long>(&actual)) == 0 &&
++        actual.st_dev == record.device && actual.st_ino == record.inode &&
++        actual.st_uid == record.uid && (actual.st_mode & 07777) == 0600 &&
++        actual.st_nlink == 1 && actual.st_size == std::int64_t(bytes);
++  }
++
++  bool refuse() { record.refused = true; return false; }
++  int failedDescriptor() { refuse(); return -1; }
++
++  const long ownerProcess;
++  const long ownerUid;
++  const long ownerGid;
++  OriginalRecord record{};
++  bool importConsumed = false;
++};
++
++inline OriginalSharedArea &original()
++{
++  static OriginalSharedArea owner;
++  return owner;
++}
++
++/** Encodes the complete bank explicitly; native object bytes never cross exec. */
++template<class Codec>
++inline void preservationFields(Codec &codec, OriginalRecord &record)
++{
++  codec.unsigned_value(record.process);
++  codec.unsigned_value(record.uid);
++  codec.unsigned_value(record.gid);
++  codec.unsigned_value(record.storageBytes);
++  codec.unsigned_value(record.device);
++  codec.unsigned_value(record.inode);
++  codec.unsigned_value(record.mappingBytes);
++  codec.unsigned_value(record.fileBytes);
++  codec.unsigned_value(record.mappingAddress);
++  codec.unsigned_value(record.libraryMappingAddress);
++  codec.unsigned_value(record.mappingSlotsReserved);
++  codec.unsigned_value(record.mappingStorageReserved);
++  codec.signed_value(record.sourceDescriptor);
++  codec.signed_value(record.protectedDescriptor);
++  codec.unsigned_value(record.openAttempt);
++  codec.unsigned_value(record.resizeAttempt);
++  codec.unsigned_value(record.duplicateAttempt);
++  codec.unsigned_value(record.closeAttempt);
++  codec.unsigned_value(record.mappingAttempt);
++  codec.boolean(record.openCompleted);
++  codec.boolean(record.resizeCompleted);
++  codec.boolean(record.duplicateCompleted);
++  codec.boolean(record.closeCompleted);
++  codec.boolean(record.closeUnknown);
++  codec.boolean(record.mappingCompleted);
++  codec.boolean(record.headerCompleted);
++  codec.boolean(record.libraryMappingCompleted);
++  codec.boolean(record.execImported);
++  codec.boolean(record.refused);
++}
++
++} // namespace dmtcp_crucible::original_shared_area
++
++#endif
+--- /dev/null
++++ b/src/crucible_original_thread_owner.h
+@@ -0,0 +1,274 @@
++// SPDX-License-Identifier: LGPL-3.0-or-later
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef DMTCP_CRUCIBLE_ORIGINAL_THREAD_OWNER_H
++#define DMTCP_CRUCIBLE_ORIGINAL_THREAD_OWNER_H
++
++#include "crucible_raw_kernel_call.h"
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include "threadinfo.h"
++
++#include <atomic>
++#include <cstdlib>
++#include <pthread.h>
++
++namespace dmtcp_crucible::original_thread_owner
++{
++
++using raw_kernel_call::kernelCall;
++
++/** Reserves the selected diagnostic's two original native thread owners.
++ *
++ * The source constructor binds the literal checkpoint callback before thread
++ * creation. Its Thread and stack backing are static, so an allocation failure
++ * or retirement cannot obtain replacement backing or renew a birth. Ordinary
++ * DMTCP threads continue to use their existing allocation route.
++ *
++ * These owners are a component of process closure, not a cut issuer. Glibc's
++ * independently allocated TLS, loader state, descriptors and other mappings
++ * still require actual source ownership joins before native capture is allowed.
++ */
++class OriginalThreadOwner
++{
++public:
++  using Callback = void *(*)(void *);
++  static constexpr std::size_t StackBytes = 8 * 1024 * 1024;
++
++  enum class Phase : unsigned char
++  {
++    Unselected, Reserved, BirthConsumed, Born, Refused
++  };
++
++  OriginalThreadOwner() = default;
++  OriginalThreadOwner(const OriginalThreadOwner &) = delete;
++  OriginalThreadOwner &operator=(const OriginalThreadOwner &) = delete;
++
++  static constexpr std::size_t storageBytes() { return sizeof(OriginalThreadOwner); }
++
++  /** Selects the explicit new route before mother-thread preparation effects. */
++  bool select(Thread *motherStorage, Callback literalCheckpoint)
++  {
++    if (selectionConsumed) return refuse();
++    selectionConsumed = true;
++    sourceProcess = kernelCall(SYS_getpid);
++    sourceUid = kernelCall(SYS_geteuid);
++    if (sourceProcess <= 0 || sourceUid < 0 ||
++        kernelCall(SYS_gettid) != sourceProcess || !motherStorage || !literalCheckpoint)
++      return refuse();
++
++    mother = motherStorage;
++    checkpointCallback = literalCheckpoint;
++    phase.store(Phase::Reserved, std::memory_order_release);
++    return true;
++  }
++
++  /** Refuses inherited selected state before any old thread/list lock is used. */
++  void authenticateProcess() const
++  {
++    if (selectionConsumed && (kernelCall(SYS_getpid) != sourceProcess ||
++                             kernelCall(SYS_geteuid) != sourceUid))
++      kernelExit(125);
++  }
++
++  bool selected() const { return selectionConsumed; }
++
++  /** Rejects unrelated creation before inherited wrapper/list locks are used. */
++  void authenticateCreate(Callback callback, void *argument)
++  {
++    authenticateProcess();
++    if (selected() && (kernelCall(SYS_gettid) != sourceProcess ||
++        callback != checkpointCallback || argument != nullptr || !motherBound ||
++        phase.load(std::memory_order_acquire) != Phase::Reserved)) {
++      refuse();
++      kernelExit(86);
++    }
++  }
++
++  /** Consumes the original callback birth before pthread or allocator effects. */
++  Thread *reserveCheckpoint(Callback callback, void *argument)
++  {
++    authenticateProcess();
++    Phase expected = Phase::Reserved;
++    if (kernelCall(SYS_gettid) != sourceProcess || callback != checkpointCallback ||
++        argument != nullptr || !motherBound ||
++        !phase.compare_exchange_strong(expected, Phase::BirthConsumed,
++                                       std::memory_order_acq_rel)) {
++      refuse();
++      return nullptr;
++    }
++
++    return &checkpoint;
++  }
++
++  /** Binds actual kernel identity and source-created TLS pointers at initThread. */
++  bool bindThread(Thread *thread, long actualTid, void *actualPthreadSelf)
++  {
++    authenticateProcess();
++    if (!thread || actualTid != kernelCall(SYS_gettid) || actualTid <= 0 ||
++        !actualPthreadSelf || !thread->ptid || thread->ctid != thread->ptid)
++      return refuse();
++
++    if (thread == mother) {
++      if (kernelCall(SYS_gettid) != sourceProcess || motherBound ||
++          phase.load(std::memory_order_acquire) != Phase::Reserved ||
++          thread->fn != nullptr || thread->arg != nullptr)
++        return refuse();
++
++      motherSelf = actualPthreadSelf;
++      motherTidPointer = thread->ptid;
++      motherBound = true;
++      return true;
++    }
++
++    if (thread != &checkpoint || actualTid == sourceProcess ||
++        phase.load(std::memory_order_acquire) != Phase::BirthConsumed ||
++        thread->fn != checkpointCallback || thread->arg != nullptr)
++      return refuse();
++
++    // Check the actual helper's current stack pointer, not an imported range.
++    const unsigned char marker = 0;
++    const auto address = reinterpret_cast<std::uintptr_t>(&marker);
++    const auto begin = reinterpret_cast<std::uintptr_t>(checkpointStack.data());
++    const auto self = reinterpret_cast<std::uintptr_t>(actualPthreadSelf);
++    const auto tidPointer = reinterpret_cast<std::uintptr_t>(thread->ptid);
++    if (address < begin || address >= begin + checkpointStack.size() ||
++        self < begin || self >= begin + checkpointStack.size() ||
++        tidPointer < begin || tidPointer > begin + checkpointStack.size() - sizeof(pid_t))
++      return refuse();
++
++    checkpointSelf = actualPthreadSelf;
++    checkpointTidPointer = thread->ptid;
++    checkpointTid = actualTid;
++    // A concurrent refusal consumes this birth permanently. Publication may
++    // join only the SAME original BirthConsumed state; it cannot revive one.
++    Phase expected = Phase::BirthConsumed;
++    if (!phase.compare_exchange_strong(expected, Phase::Born,
++                                       std::memory_order_acq_rel))
++      return refuse();
++    return true;
++  }
++
++  /** Records the one source pthread_create return on the original mother. */
++  bool finishBirth(int actualResult)
++  {
++    authenticateProcess();
++    if (kernelCall(SYS_gettid) != sourceProcess || birthResultConsumed.load(std::memory_order_acquire) ||
++        (phase.load(std::memory_order_acquire) != Phase::BirthConsumed &&
++         phase.load(std::memory_order_acquire) != Phase::Born))
++      return refuse();
++
++    birthResult = actualResult;
++    birthResultConsumed.store(true, std::memory_order_release);
++    if (actualResult != 0) return refuse();
++    return true;
++  }
++
++  /** Checks exact original owners at the actual suspended checkpoint cut.
++   *
++   * A successful check provides only source thread ownership. It grants no
++   * permission from a snapshot, PID label, callback name or thread count.
++   */
++  bool inspectCut(Thread *actualMother, Thread *actualCheckpoint, Thread *active)
++  {
++    authenticateProcess();
++    if (cutConsumed.exchange(true, std::memory_order_acq_rel)) return refuse();
++    if (phase.load(std::memory_order_acquire) != Phase::Born ||
++        !birthResultConsumed.load(std::memory_order_acquire) ||
++        birthResult != 0 || kernelCall(SYS_gettid) != checkpointTid ||
++        actualMother != mother || actualCheckpoint != &checkpoint ||
++        actualMother->state != ST_SUSPENDED || actualCheckpoint->state != ST_CKPNTHREAD ||
++        actualMother->exiting || actualCheckpoint->exiting ||
++        actualMother->fn != nullptr || actualMother->arg != nullptr ||
++        actualCheckpoint->fn != checkpointCallback || actualCheckpoint->arg != nullptr ||
++        actualMother->pthreadSelf != motherSelf ||
++        actualCheckpoint->pthreadSelf != checkpointSelf ||
++        actualMother->ptid != motherTidPointer || actualMother->ctid != motherTidPointer ||
++        actualCheckpoint->ptid != checkpointTidPointer ||
++        actualCheckpoint->ctid != checkpointTidPointer ||
++        kernelCall(SYS_gettid) == sourceProcess ||
++        reinterpret_cast<void *>(pthread_self()) != checkpointSelf)
++      return refuse();
++
++    // Authenticate the original intrusive links; an unrelated pair cannot
++    // pass by supplying a count or a separately reconstructed list.
++    if (!active || active->prev != nullptr ||
++        (active != mother && active != &checkpoint) || !active->next ||
++        active->next->prev != active || active->next->next != nullptr ||
++        (active->next != mother && active->next != &checkpoint) || active->next == active)
++      return refuse();
++
++    cutObserved = true;
++    return true;
++  }
++
++  bool owns(const Thread *thread) const
++  {
++    return selectionConsumed && (thread == mother || thread == &checkpoint);
++  }
++
++  /** Refuses retirement before freeing or reusing selected backing. */
++  [[noreturn]] void refuseRetirement()
++  {
++    authenticateProcess();
++    refuse();
++    kernelExit(86);
++  }
++
++  void *stackAddress()
++  {
++    authenticateProcess();
++    if (!motherBound || phase.load(std::memory_order_acquire) != Phase::Reserved)
++      kernelExit(86);
++    return checkpointStack.data();
++  }
++
++  bool observedCut() const { return cutObserved; }
++  Phase state() const { return phase.load(std::memory_order_acquire); }
++
++private:
++  static_assert(std::atomic<Phase>::is_always_lock_free);
++  static_assert(std::atomic<bool>::is_always_lock_free);
++
++  [[noreturn]] static void kernelExit(int status)
++  {
++    kernelCall(SYS_exit_group, status);
++    __builtin_trap();
++  }
++
++  bool refuse()
++  {
++    phase.store(Phase::Refused, std::memory_order_release);
++    return false;
++  }
++
++  std::atomic<Phase> phase{Phase::Unselected};
++  std::atomic<bool> cutConsumed{false};
++  long sourceProcess = 0;
++  long sourceUid = -1;
++  long checkpointTid = 0;
++  Thread *mother = nullptr;
++  Callback checkpointCallback = nullptr;
++  void *motherSelf = nullptr;
++  void *checkpointSelf = nullptr;
++  pid_t *motherTidPointer = nullptr;
++  pid_t *checkpointTidPointer = nullptr;
++  bool selectionConsumed = false;
++  bool motherBound = false;
++  std::atomic<bool> birthResultConsumed{false};
++  int birthResult = 0;
++  bool cutObserved = false;
++  Thread checkpoint{};
++  alignas(4096) std::array<unsigned char, StackBytes> checkpointStack{};
++};
++
++inline OriginalThreadOwner &original()
++{
++  static OriginalThreadOwner owner;
++  return owner;
++}
++
++} // namespace dmtcp_crucible::original_thread_owner
++
++#endif
+--- /dev/null
++++ b/src/crucible_raw_kernel_call.h
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: LGPL-3.0-or-later
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef DMTCP_CRUCIBLE_RAW_KERNEL_CALL_H
++#define DMTCP_CRUCIBLE_RAW_KERNEL_CALL_H
++
++#include <cerrno>
++#include <sys/syscall.h>
++
++namespace dmtcp_crucible::raw_kernel_call
++{
++
++// Bypasses process-image interposition before its restart owners are repaired.
++inline long kernelCall(long number, long a = 0, long b = 0, long c = 0,
++                       long d = 0, long e = 0, long f = 0)
++{
++#if defined(__x86_64__)
++  register long r10 __asm__("r10") = d;
++  register long r8 __asm__("r8") = e;
++  register long r9 __asm__("r9") = f;
++  long result;
++  __asm__ volatile("syscall" : "=a"(result)
++      : "a"(number), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
++      : "rcx", "r11", "memory");
++  return result;
++#elif defined(__aarch64__)
++  register long x8 __asm__("x8") = number;
++  register long x0 __asm__("x0") = a;
++  register long x1 __asm__("x1") = b;
++  register long x2 __asm__("x2") = c;
++  register long x3 __asm__("x3") = d;
++  register long x4 __asm__("x4") = e;
++  register long x5 __asm__("x5") = f;
++  __asm__ volatile("svc 0" : "+r"(x0)
++      : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
++      : "memory", "cc");
++  return x0;
++#else
++// Generic builds retain their existing routes. The selected exact native
++  // source profile refuses hosts without the audited raw syscall adapter.
++  (void)number; (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
++  return -ENOSYS;
++#endif
++}
++
++} // namespace dmtcp_crucible::raw_kernel_call
++
++#endif
+--- a/src/shareddata.cpp
++++ b/src/shareddata.cpp
+@@ -36,6 +36,7 @@
+ #include "membarrier.h"
+ #include "protectedfds.h"
+ #include "shareddata.h"
++#include "crucible_original_shared_area.h"
+ #include "syscallwrappers.h"
+ #include "uniquepid.h"
+ #include "util.h"
+@@ -145,6 +146,13 @@
+    * it in postCkpt/postRestart phase.
+    */
+   bool needToInitialize = false;
++  const char *birthPolicy = getenv("CRUCIBLE_NATIVE_SHARED_PROFILE");
++  const bool sourceBirthSelected = birthPolicy != nullptr;
++  if (sourceBirthSelected && strcmp(birthPolicy, "shared-birth.v1") != 0)
++    _real_syscall(SYS_exit_group, 86);
++  // Ordinary routes must not construct or authenticate a selected owner.
++  auto *sourceSharedArea = sourceBirthSelected
++      ? &dmtcp_crucible::original_shared_area::original() : nullptr;
+ 
+   JASSERT((coordInfo != NULL && localIPAddr != NULL) ||
+           Util::isValidFd(PROTECTED_SHM_FD));
+@@ -157,8 +165,20 @@
+     // argument to it.
+     off_t size = CEIL(SHM_MAX_SIZE, Util::pageSize());
+ 
+-    int fd = _real_open(o.str().c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+-    if (fd == -1 && errno == EEXIST) {
++    int fd;
++    if (sourceBirthSelected) {
++      // Reserve the source file and mapping birth before resolving a path.
++      // The original held descriptor, not the path, owns resize and aliasing.
++      if (!sourceSharedArea->begin(size, PROTECTED_SHM_FD))
++        _real_syscall(SYS_exit_group, 86);
++      fd = sourceSharedArea->openOriginal(o.str().c_str());
++      if (fd < 0) _real_syscall(SYS_exit_group, 86);
++      needToInitialize = true;
++    } else {
++      fd = _real_open(o.str().c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
++    }
++
++    if (!sourceBirthSelected && fd == -1 && errno == EEXIST) {
+       /* If the shared data area already exists, it's probably a conflict
+        * and two independent computations might have been launched at the
+        * same time.
+@@ -176,17 +196,24 @@
+     // too small. This can cause a SIGBUS later when we try to read beyond
+     // the end of the file. So we must truncate the file to the correct size
+     // in both the if and else branch, above.
+-    JASSERT(truncate(o.str().c_str(), size) == 0);
+-    JASSERT(fd != -1) (JASSERT_ERRNO);
+-    JASSERT(_real_dup2(fd, PROTECTED_SHM_FD) == PROTECTED_SHM_FD)
+-      (JASSERT_ERRNO);
+-    if (fd != PROTECTED_SHM_FD) {
+-      _real_close(fd);
++    if (sourceBirthSelected) {
++      if (!sourceSharedArea->extendOriginal() || !sourceSharedArea->transferOriginal())
++        _real_syscall(SYS_exit_group, 86);
++    } else {
++      JASSERT(truncate(o.str().c_str(), size) == 0);
++      JASSERT(fd != -1) (JASSERT_ERRNO);
++      JASSERT(_real_dup2(fd, PROTECTED_SHM_FD) == PROTECTED_SHM_FD)
++        (JASSERT_ERRNO);
++      if (fd != PROTECTED_SHM_FD) {
++        _real_close(fd);
++      }
+     }
+   }
+ 
+   size_t size = CEIL(SHM_MAX_SIZE, Util::pageSize());
+   void *addr;
++  if (sourceBirthSelected && !sourceSharedArea->beginMapping())
++    _real_syscall(SYS_exit_group, 86);
+   if (sharedDataHeader == NULL) {
+     addr = mmap((void *)sharedDataHeader, size,
+                 PROT_READ | PROT_WRITE, MAP_SHARED,
+@@ -208,6 +235,8 @@
+   JASSERT(addr != MAP_FAILED) (JASSERT_ERRNO)
+   .Text("Unable to find shared area.");
+ 
++  if (sourceBirthSelected && !sourceSharedArea->mappedOriginal(addr))
++    _real_syscall(SYS_exit_group, 86);
+   sharedDataHeader = (struct Header *)addr;
+ 
+   if (needToInitialize) {
+@@ -215,6 +244,8 @@
+     initializeHeader(
+       tmpDir, compId, coordInfo, localIPAddr);
+     Util::unlockFile(PROTECTED_SHM_FD);
++    if (sourceBirthSelected && !sourceSharedArea->headerWritten())
++      _real_syscall(SYS_exit_group, 86);
+   } else {
+     struct stat statbuf;
+     while (1) {
+@@ -835,3 +866,24 @@
+   }
+   return false;
+ }
++
++// Native-only diagnostic for the actual launcher/library exec route. Scalar
++// observations do not grant checkpoint, branch, adoption or Ready authority.
++extern "C" int
++dmtcp_crucible_observe_original_shared_exec(uint64_t *fields, size_t count)
++{
++  const char *policy = getenv("CRUCIBLE_NATIVE_SHARED_PROFILE");
++  if (!fields || count != 6 || !policy || strcmp(policy, "shared-birth.v1") != 0)
++    return -1;
++
++  auto &owner = dmtcp_crucible::original_shared_area::original();
++  if (!owner.observeExec()) return -1;
++  const auto &record = owner.originalRecord();
++  fields[0] = record.process;
++  fields[1] = record.mappingBytes;
++  fields[2] = record.fileBytes;
++  fields[3] = record.openAttempt;
++  fields[4] = record.mappingAttempt;
++  fields[5] = record.mappingSlotsReserved;
++  return 0;
++}
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -18,6 +18,7 @@
+ // defined(HAS_PR_SET_PTRACER)
+ #include "ckptserializer.h"
+ #include "crucible_capture_budget.h"
++#include "crucible_original_thread_owner.h"
+ #include "constants.h"
+ #include "coordinatorapi.h"
+ #include "dmtcpalloc.h"
+@@ -291,6 +292,7 @@
+ void
+ ThreadList::resetOnFork()
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   while (activeThreads != NULL) {
+     ThreadList::threadIsDead(activeThreads);  // takes care of updating
+                                              // "activeThreads" ptr.
+@@ -313,9 +315,18 @@
+ void
+ ThreadList::init()
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   if (motherofall == nullptr) {
+     // We need to use static storage for motherofall to avoid calling
+     // JALLOC_MALLOC during initialization which could lead to infinite recursion.
++    auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++    const char *nativePolicy = getenv("CRUCIBLE_NATIVE_THREAD_PROFILE");
++    if (nativePolicy != nullptr) {
++      if (strcmp(nativePolicy, "atomic-loop.v1") != 0 ||
++          !originalThreads.select(&motherofallStorage, &checkpointhread))
++        _real_syscall(SYS_exit_group, 86);
++    }
++
+     motherofall = &motherofallStorage;
+     prepareThread(motherofall, NULL, NULL);
+     /* Set up caller as one of our threads so we can work on it */
+@@ -339,6 +350,7 @@
+ void
+ ThreadList::createCkptThread()
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   sem_init(&sem_launch, 0, 0);
+   sem_init(&semNotifyCkptThread, 0, 0);
+   sem_init(&semWaitForCkptThreadSignal, 0, 0);
+@@ -348,8 +360,25 @@
+   originalstartup = true;
+   pthread_t checkpointhreadid;
+ 
+-  /* Spawn off a thread that will perform the checkpoints from time to time */
+-  JASSERT(pthread_create(&checkpointhreadid, NULL, checkpointhread, NULL) == 0);
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateProcess();
++  if (originalThreads.selected()) {
++    // The selected source owns helper stack backing before pthread creates it.
++    // Glibc TLS remains an independent owner; this grants no native cut permit.
++    pthread_attr_t selectedAttributes;
++    if (pthread_attr_init(&selectedAttributes) != 0 ||
++        pthread_attr_setguardsize(&selectedAttributes, 0) != 0 ||
++        pthread_attr_setstack(&selectedAttributes, originalThreads.stackAddress(),
++                             originalThreads.StackBytes) != 0)
++      _real_syscall(SYS_exit_group, 86);
++
++    const int result = pthread_create(&checkpointhreadid, &selectedAttributes,
++                                      checkpointhread, nullptr);
++    if (pthread_attr_destroy(&selectedAttributes) != 0 || result != 0)
++      _real_syscall(SYS_exit_group, 86);
++  } else {
++    JASSERT(pthread_create(&checkpointhreadid, NULL, checkpointhread, NULL) == 0);
++  }
+ 
+   /* Stop until checkpoint thread has finished initializing.
+    * Some programs (like gcl) implement their own glibc functions in
+@@ -369,7 +398,16 @@
+ Thread *
+ ThreadList::getNewThread(void *(*fn)(void *), void *arg)
+ {
+-  Thread *th = (Thread*) JALLOC_MALLOC(sizeof(Thread));
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateProcess();
++  Thread *th;
++  if (originalThreads.selected()) {
++    th = originalThreads.reserveCheckpoint(fn, arg);
++    if (!th) _real_syscall(SYS_exit_group, 86);
++  } else {
++    th = (Thread*) JALLOC_MALLOC(sizeof(Thread));
++  }
++
+   prepareThread(th, fn, arg);
+   return th;
+ }
+@@ -401,6 +439,9 @@
+ void
+ ThreadList::threadExit()
+ {
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateProcess();
++  if (originalThreads.selected()) originalThreads.refuseRetirement();
+   curThread->exiting = 1;
+ }
+ 
+@@ -410,6 +451,8 @@
+ void
+ ThreadList::initThread(Thread *th)
+ {
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateProcess();
+   if (curThread == NULL) {
+     curThread = th;
+   }
+@@ -424,6 +467,14 @@
+   th->ptid = (pid_t*)((char*) pthread_self() + TLSInfo_GetTidOffset());
+   th->ctid = th->ptid;
+ 
++  // DMTCP's next syscall symbol may return a virtual TID. The native
++  // owner binds kernel identity while th->tid retains upstream semantics.
++  if (originalThreads.selected() &&
++      !originalThreads.bindThread(
++          th, dmtcp_crucible::raw_kernel_call::kernelCall(SYS_gettid),
++          (void *)pthread_self()))
++    _real_syscall(SYS_exit_group, 86);
++
+   JTRACE("starting thread") (th->tid);
+ 
+   // Check and remove any thread descriptor which has the same tid as ours.
+@@ -439,6 +490,7 @@
+ void
+ ThreadList::writeCkpt()
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   // Remove stale threads from activeThreads list.
+   SigInfo::saveSigHandlers();
+ 
+@@ -456,6 +508,11 @@
+   // TODO(kapil): re-add this block after handling non-4096 sizes.
+   // const ssize_t pagesize = Util::pageSize();
+   // ASSERT_EQ(sizeof(header) % pagesize, 0ul);
++
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  if (originalThreads.selected() &&
++      !originalThreads.inspectCut(motherofall, ckptThread, activeThreads))
++    _real_syscall(SYS_exit_group, 86);
+ 
+   crucibleRecordDescriptors();
+   crucibleRecordThreadContexts();
+@@ -1143,6 +1200,9 @@
+ void
+ ThreadList::threadIsDead(Thread *thread)
+ {
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateProcess();
++  if (originalThreads.selected()) originalThreads.refuseRetirement();
+   JASSERT(thread != NULL);
+   JTRACE("Putting thread on freelist") (thread->tid);
+ 
+--- a/src/threadwrappers.cpp
++++ b/src/threadwrappers.cpp
+@@ -30,6 +30,7 @@
+ #include "siginfo.h"
+ #include "syscallwrappers.h"
+ #include "threadlist.h"
++#include "crucible_original_thread_owner.h"
+ #include "threadsync.h"
+ #include "uniquepid.h"
+ #include "util.h"
+@@ -47,6 +48,7 @@
+ static void
+ processChildThread(Thread *thread)
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   dmtcp_init_virtual_tid();
+   JASSERT(thread->wrapperLockCount != 0);
+ 
+@@ -96,6 +98,8 @@
+                void *(*start_routine)(void *),
+                void *arg)
+ {
++  auto &originalThreads = dmtcp_crucible::original_thread_owner::original();
++  originalThreads.authenticateCreate(start_routine, arg);
+   WrapperLock wrapperLock;
+   Thread *thread = dmtcp_get_current_thread();
+ 
+@@ -106,6 +110,8 @@
+   JASSERT(Thread_UpdateState(thread, ST_THREAD_CREATE, ST_RUNNING));
+ 
+   int retval = _real_pthread_create(pth, attr, thread_start, newThread);
++  if (originalThreads.selected() && !originalThreads.finishBirth(retval))
++    _real_syscall(SYS_exit_group, 86);
+ 
+   JASSERT(Thread_UpdateState(thread, ST_RUNNING, ST_THREAD_CREATE));
+ 
+@@ -149,6 +155,7 @@
+         struct user_desc *newtls,
+         int *child_tidptr)
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   Thread *thread = dmtcp_get_current_thread();
+   if (thread->state == ST_THREAD_CREATE) {
+     return _real_clone(
+@@ -164,6 +171,7 @@
+ extern "C" long
+ clone3(struct clone_args *cl_args, size_t size)
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   Thread *thread = dmtcp_get_current_thread();
+   if (thread->state == ST_THREAD_CREATE) {
+     return NEXT_FNC(clone3)(cl_args, size);
+@@ -178,6 +186,7 @@
+ extern "C" void
+ pthread_exit(void *retval)
+ {
++  dmtcp_crucible::original_thread_owner::original().authenticateProcess();
+   {
+     WrapperLock wrapperLock;
+ 

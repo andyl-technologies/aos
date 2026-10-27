@@ -1,0 +1,189 @@
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -728,6 +728,41 @@
+ 	return tsc;
+ }
+ 
++/* Guest counter effects require the fresh loaded readback from this same RUN.
++ * Cold constructor output and a physical ceiling alone cannot grant access. */
++static bool clock_ps_counter_live_locked(struct kvm_vcpu *vcpu, bool host)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_run_return_state *run = &vcpu->crucible_run_return;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return !host && !in_interrupt() && !kvm->crucible_irq_input.tainted &&
++		clock->ps.phase == KVM_CRUCIBLE_PS_ACTIVE &&
++		kvm_crucible_clock_admission_live(clock->active,
++			kvm->crucible_host_ceiling_ns, ktime_get_ns()) &&
++		q35_ps_run_counter_current_locked(vcpu) &&
++		run->ps_counter_attempted && run->ps_counter_known &&
++		!run->ps_counter_result;
++}
++
++/* Seal clock admission before containment; no timer is canceled here. */
++static void clock_counter_fault_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (clock->ps.selected && clock->ps.plan.version == 2) {
++		clock->ps.current_ps = q35_ps_now_locked(clock, ktime_get_ns());
++		clock->frozen_ns = clock->ps.current_ps / 1000;
++		clock->active = false;
++		kvm->crucible_active = false;
++		clock->close_acknowledged = false;
++		clock->ps.phase = KVM_CRUCIBLE_PS_UNKNOWN;
++	}
++	kvm_arch_crucible_irq_taint_locked(kvm);
++}
++
+ /* A scalar host flag is not an original RUN permission. Initial host sync
+  * precedes the frozen roster; later counter effects require the actual RUN. */
+ static bool clock_tsc_writer_allowed_locked(struct kvm_vcpu *vcpu, bool host)
+@@ -737,7 +772,11 @@
+ 	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
+ 
+ 	lockdep_assert_held(&kvm->crucible_gate_lock);
+-	if (!kvm->crucible_irq_input.enabled || !kvm->crucible_continuation_roster_frozen)
++	if (!kvm->crucible_continuation_roster_frozen)
++		return true;
++	if (clock->ps.selected && clock->ps.plan.version == 2)
++		return clock_ps_counter_live_locked(vcpu, host);
++	if (!kvm->crucible_irq_input.enabled)
+ 		return true;
+ 	return !host && !in_interrupt() && !kvm->crucible_irq_input.tainted &&
+ 		kvm_crucible_clock_admission_live(clock->active,
+@@ -759,29 +798,71 @@
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	valid = clock_tsc_writer_allowed_locked(vcpu, host);
+ 	if (!valid)
+-		kvm_arch_crucible_irq_taint_locked(kvm);
++		clock_counter_fault_locked(kvm);
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 	if (!valid)
+ 		kvm_vm_dead(kvm);
+ 	return valid;
+ }
+ 
++/* Guest reads never use the pre-roster host-initialization inverse. */
++static bool clock_ps_counter_read_admit(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	unsigned long flags;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = clock_ps_counter_live_locked(vcpu, false);
++	if (!valid)
++		clock_counter_fault_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++/* The typed LAPIC arm/output owner is not installed yet. Refuse deadline
++ * writes before the legacy cancellation/restart path can change native work. */
++static int clock_tsc_write_prepare(struct kvm_vcpu *vcpu, bool host)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned long flags;
++	bool ps_v2 = READ_ONCE(clock->ps.selected) &&
++		READ_ONCE(clock->ps.plan.version) == 2;
++
++	if (!READ_ONCE(kvm->crucible_continuation_roster_frozen) ||
++	    (!ps_v2 && !READ_ONCE(kvm->crucible_irq_input.enabled)))
++		return 0;
++	if (!clock_tsc_writer_admit(vcpu, host))
++		return -EAGAIN;
++	if (ps_v2) {
++		if (kvm_crucible_lapic_tsc_prepare_write(vcpu))
++			return 0;
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		clock_counter_fault_locked(kvm);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kvm_vm_dead(kvm);
++		return -EOPNOTSUPP;
++	}
++	return kvm_crucible_lapic_tsc_prepare_write(vcpu) ? 0 : -EAGAIN;
++}
++
+ int kvm_crucible_clock_write_tsc(struct kvm_vcpu *vcpu, u64 value, bool host)
+ {
+ 	struct kvm *kvm = vcpu->kvm;
+ 	unsigned long flags;
+ 	u64 ns, base, delta;
+-
+-	if (READ_ONCE(kvm->crucible_irq_input.enabled) &&
+-	    READ_ONCE(kvm->crucible_continuation_roster_frozen)) {
+-		if (!clock_tsc_writer_admit(vcpu, host) ||
+-		    !kvm_crucible_lapic_tsc_prepare_write(vcpu))
+-			return -EAGAIN;
+-	}
++	int result;
++
++	result = clock_tsc_write_prepare(vcpu, host);
++	if (result)
++		return result;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	if (!clock_tsc_writer_allowed_locked(vcpu, host)) {
+-		kvm_arch_crucible_irq_taint_locked(kvm);
++		clock_counter_fault_locked(kvm);
+ 		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 		kvm_vm_dead(kvm);
+ 		return -EAGAIN;
+@@ -805,17 +886,15 @@
+ {
+ 	struct kvm *kvm = vcpu->kvm;
+ 	unsigned long flags;
+-
+-	if (READ_ONCE(kvm->crucible_irq_input.enabled) &&
+-	    READ_ONCE(kvm->crucible_continuation_roster_frozen)) {
+-		if (!clock_tsc_writer_admit(vcpu, host) ||
+-		    !kvm_crucible_lapic_tsc_prepare_write(vcpu))
+-			return -EAGAIN;
+-	}
++	int result;
++
++	result = clock_tsc_write_prepare(vcpu, host);
++	if (result)
++		return result;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	if (!clock_tsc_writer_allowed_locked(vcpu, host)) {
+-		kvm_arch_crucible_irq_taint_locked(kvm);
++		clock_counter_fault_locked(kvm);
+ 		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 		kvm_vm_dead(kvm);
+ 		return -EAGAIN;
+@@ -839,6 +918,12 @@
+ 	if (!kvm_crucible_clock_enabled(vcpu->kvm))
+ 		return auxiliary ? kvm_handle_invalid_op(vcpu) :
+ 			kvm_emulate_instruction(vcpu, 0);
++	/* Admission precedes exception injection, AUX reads and destination writes.
++	 * Unsupported/foreign/stopped actors cannot turn this callback into time. */
++	if (READ_ONCE(vcpu->kvm->arch.crucible_clock.ps.selected) &&
++	    READ_ONCE(vcpu->kvm->arch.crucible_clock.ps.plan.version) == 2 &&
++	    !clock_ps_counter_read_admit(vcpu))
++		return -EAGAIN;
+ 	if (auxiliary && !guest_cpu_cap_has(vcpu, X86_FEATURE_RDTSCP)) {
+ 		kvm_queue_exception(vcpu, UD_VECTOR);
+ 		return 1;
+--- a/arch/x86/kvm/lapic.c
++++ b/arch/x86/kvm/lapic.c
+@@ -3939,6 +3939,11 @@
+ {
+ 	if (!lapic_in_kernel(vcpu) || !apic_lvtt_tscdeadline(vcpu->arch.apic))
+ 		return true;
++	/* Typed PS v2 has no issued deadline queue owner yet. A counter write
++	 * must not enter the legacy cancel/restart path through that absence. */
++	if (READ_ONCE(vcpu->kvm->arch.crucible_clock.ps.selected) &&
++	    READ_ONCE(vcpu->kvm->arch.crucible_clock.ps.plan.version) == 2)
++		return false;
+ 	if (!lapic_timer_ancestry_selected(vcpu->arch.apic))
+ 		return true;
+ 	return lapic_timer_original_prepare_write(vcpu->arch.apic);

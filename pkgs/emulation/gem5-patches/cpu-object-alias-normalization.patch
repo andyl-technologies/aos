@@ -1,0 +1,48 @@
+--- a/src/arch/arm/isa.cc
++++ b/src/arch/arm/isa.cc
+@@ -149,9 +149,17 @@
+     writer.set("sve_quadwords", sveVL);
+     writer.set("sme_quadwords", smeVL);
+     writer.set("implementation_defined_as_nop", impdefAsNop);
+-    writer.reference("pmu", pmu, "isa-device");
+-    writer.reference("generic_timer", timer.get(), "isa-device");
+-    writer.reference("gic_cpu_interface", gicv3CpuInterface.get(), "isa-device");
++    // BaseISADevice can be a secondary subobject of a real SimObject (PMU).
++    // Timer/GIC interface wrappers remain distinct non-SimObject identities.
++    const auto device = [&](const std::string &key, const BaseISADevice *native) {
++        if (const auto *object = dynamic_cast<const SimObject *>(native))
++            writer.reference(key, object, "sim-object");
++        else
++            writer.reference(key, native, "isa-device");
++    };
++    device("pmu", pmu);
++    device("generic_timer", timer.get());
++    device("gic_cpu_interface", gicv3CpuInterface.get());
+     writer.reference("self_debug", selfDebug, "arm-self-debug");
+     writer.set("misc_registers.count", NUM_MISCREGS);
+     for (size_t index = 0; index < NUM_MISCREGS; ++index)
+--- a/src/cpu/thread_state.hh
++++ b/src/cpu/thread_state.hh
+@@ -71,7 +71,7 @@
+         writer.set(prefix + ".lastSuspend", lastSuspend);
+         writer.set(prefix + ".storeCondFailures", storeCondFailures);
+         writer.string(prefix + ".cpu", baseCpu ? baseCpu->name() : "");
+-        writer.reference(prefix + ".process", process, "process");
++        writer.reference(prefix + ".process", static_cast<const SimObject *>(process), "sim-object");
+     }
+ 
+     int cpuId() const { return baseCpu->cpuId(); }
+--- a/src/sim/crucible_state.hh
++++ b/src/sim/crucible_state.hh
+@@ -50,7 +50,10 @@
+         auto existing = identities.find(pointer);
+         if (existing != identities.end()) {
+             if (records[existing->second].kind != kind)
+-                throw std::runtime_error("modeled alias has conflicting kinds");
++                throw std::runtime_error(
++                    "modeled alias has conflicting kinds: identity=" +
++                    std::to_string(existing->second) + " existing=" +
++                    records[existing->second].kind + " requested=" + kind);
+             return std::to_string(existing->second);
+         }
+         if (records.size() >= 1048576)

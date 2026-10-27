@@ -5,6 +5,7 @@
   src,
   cargoDepsHash,
   controllerPackage ? null,
+  sourceBirthWorkerPackage ? null,
   pluginPackage ? null,
   debugGatewayPackage ? null,
   gdbPackage ? null,
@@ -123,6 +124,13 @@
         license = "Apache-2.0";
         boundary = "separate-process-controller";
       };
+      sourceBirthWorker = {
+        package = "crucible-source-birth-worker";
+        path = componentPath sourceBirthWorkerPackage;
+        license = "Apache-2.0";
+        boundary = "separate-process-pure-derivation-worker";
+        installationManifest = "share/crucible/source-birth-worker/installation.json";
+      };
       qemu = {
         package = "qemu-crucible";
         path = componentPath qemuPackage;
@@ -160,7 +168,7 @@
         boundary = "operator-guest-bridge-client";
       };
       boundaryCrates = {
-        packages = ["crucible-qemu-protocol" "crucible-qemu-shmem"];
+        packages = ["crucible-qemu-protocol" "crucible-qemu-shmem" "crucible-node-format"];
         license = "MIT";
         selection = "gpl-plugin-consumption";
       };
@@ -267,7 +275,7 @@
     ssh_path=${manifest.components.ssh.path}
     ssh_license=BSD-2-Clause
     ssh_boundary=operator-guest-bridge-client
-    boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem
+    boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem,crucible-node-format
     boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source
     qemu_corresponding_source_path=${manifest.components.correspondingSource.path}

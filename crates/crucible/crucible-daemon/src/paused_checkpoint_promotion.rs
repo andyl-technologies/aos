@@ -318,7 +318,7 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     ProductionClosure(#[from] LifecycleApiError),
     /// Root-bound and repository choice records do not authenticate the schedule.
     #[error(transparent)]
-    ReplayChoices(#[from] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    ReplayChoices(#[from] crate::campaign_replay_closure::GuardedCampaignReplayClosureError),
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
@@ -704,7 +704,7 @@ where
         target.cancellation,
     )?;
     let owned_choices =
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+        crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_canonical_bytes(
             installed.loaded().choice_closure(),
         )?;
     let choices = match target.replay_store {

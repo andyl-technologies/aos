@@ -1381,9 +1381,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   };
   aosWorkspaceVendor = fetchCargoVendor {
     src = aosWorkspaceVendorSource;
+    lockFile = ../crates/Cargo.lock;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-0AGsSmmxR5ED9d+EXSKSSBxF4tm8f+iqbfRVvvQNVhk=";
+    hash = import ./build-support/_workspace-cargo-deps-hash.nix;
   };
 
   # Auto-discover packages from subdirectories.
@@ -1821,7 +1822,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # All Linux QEMU variants enable compressed disk-image support when bzip2
   # is found. Retain that target library through runtime-reference scrubbing.
   mkQemuPackage = args: let
-    package = callPackage ./emulation/qemu.nix args;
+    package = callPackage ./emulation/qemu.nix (
+      {inherit linuxSource;}
+      // args
+      // {requireQomPrivateUnwind = args.applyCruciblePatch or false;}
+    );
   in
     if stdenv.isCross && stdenv.hostPlatform.isLinux
     then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
@@ -1948,6 +1953,21 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     // outputPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
+      # Preserve the source-pinned Ninja recipe while supporting callers that
+      # select their build-platform shell through the package factory.
+      ninja = let
+        package = discoveredPackages.ninja;
+      in
+        package
+        // {
+          passthru =
+            (package.passthru or {})
+            // {
+              withCommandShell = shell:
+                callPackage ./toolchain/ninja.nix {bash = shell;};
+            };
+        };
+
       # GLib bootstraps GObject Introspection, while downstream consumers need
       # GLib's GIR metadata. Rebuild this internal variant after the bootstrap
       # scanner exists to break that dependency cycle cleanly.
@@ -1957,6 +1977,105 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
       kernel-interface = callPackage ./kernel/kernel-interface.nix {};
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux-controller-clock = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [./kernel/crucible-controller-clock-7.2.3.patch];
+      };
+      linux-controller-clock-check = callPackage ./kernel/linux-controller-clock-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-clock-stage2 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+        ];
+      };
+      linux-controller-clock-stage2-check = callPackage ./kernel/_linux-controller-clock-stage2-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-clock-stage3 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+        ];
+      };
+      linux-controller-clock-stage3-check = callPackage ./kernel/_linux-controller-clock-stage3-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-clock-stage4 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage4-7.2.3.patch
+        ];
+      };
+      linux-controller-clock-stage4-check = callPackage ./kernel/_linux-controller-clock-stage4-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-completion-stage5 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage4-7.2.3.patch
+          ./kernel/crucible-controller-completion-stage5-7.2.3.patch
+        ];
+      };
+      linux-controller-completion-stage5-check = callPackage ./kernel/linux-controller-completion-stage5-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-run-return-stage6 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage4-7.2.3.patch
+          ./kernel/crucible-controller-completion-stage5-7.2.3.patch
+          ./kernel/crucible-controller-run-return-stage6-7.2.3.patch
+        ];
+      };
+      linux-controller-run-return-stage6-check = callPackage ./kernel/linux-controller-run-return-stage6-check.nix {
+        inherit linuxSource;
+      };
+      linux-controller-response-bytes-stage7 = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [
+          ./kernel/crucible-controller-clock-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage2-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage3-7.2.3.patch
+          ./kernel/crucible-controller-clock-stage4-7.2.3.patch
+          ./kernel/crucible-controller-completion-stage5-7.2.3.patch
+          ./kernel/crucible-controller-run-return-stage6-7.2.3.patch
+          ./kernel/crucible-controller-response-bytes-stage7-7.2.3.patch
+        ];
+      };
+      linux-controller-response-bytes-stage7-check = callPackage ./kernel/linux-controller-response-bytes-stage7-check.nix {
+        inherit linuxSource;
+      };
+      # Source component only: no installed kernel or admitted PIC board.
+      linux-controller-q35-cold-kernel = callPackage ./kernel/linux-controller-q35-cold-kernel.nix {
+        inherit linuxSource;
+      };
+      linux-controller-q35-cold-source = callPackage ./kernel/linux-controller-q35-cold-source.nix {
+        inherit linuxSource;
+      };
+      linux-controller-q35-ps-kernel = callPackage ./kernel/linux-controller-q35-ps-kernel.nix {
+        inherit linuxSource;
+      };
+      linux-controller-q35-ps-source = callPackage ./kernel/linux-controller-q35-ps-source.nix {
+        inherit linuxSource;
+      };
+      linux-controller-pic-source-check = callPackage ./kernel/linux-controller-pic-source-check.nix {
+        inherit linuxSource;
+        linuxStage7Check = self.linux-controller-response-bytes-stage7-check;
+      };
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
@@ -2826,6 +2945,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               else "16.2.0";
           }
         );
+      # Only the private observer uses this context. Generic QEMU and all
+      # ordinary compiler recipes retain their existing dependency graph.
+      unwindContext = callPackage ./emulation/_qom-unwind-context.nix {
+        fileProbe = resolvedBuildPackages.stdenv.gccUnwindFile;
+      };
       gcc-libs = withPlatformSupport discoveredPackages.gcc-libs (withDistributionMeta {
           description = "GCC runtime libraries";
           homepage = "https://gcc.gnu.org/";
@@ -2984,6 +3108,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # Rebuild the shipped patched identity and run QEMU's complete configured
       # regression target without adding that cost to normal installation.
       qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
+        inherit linuxSource;
+        requireQomPrivateUnwind = true;
         pname = "qemu-crucible";
         enablePlugins = true;
         applyCruciblePatch = true;

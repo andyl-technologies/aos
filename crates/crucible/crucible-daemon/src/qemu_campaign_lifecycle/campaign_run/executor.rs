@@ -29,129 +29,18 @@ use crate::{
     reconcile_published_checkpoint_result, stage_prepared_checkpoint_result,
 };
 use crucible_campaign::{
-    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignCodecError,
-    CampaignExecutorStore, CampaignHash, CancelAttemptExecutionDisposition,
-    CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
-    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest,
-    CheckpointAttemptExecutionResponse, DaemonEpoch, ExecutorControlService, ExecutorRejection,
-    ExecutorResumeService, ExecutorService, ExecutorStatusService, GetAttemptExecutionDisposition,
-    GetAttemptExecutionRequest, GetAttemptExecutionResponse, ObservationId,
-    PlannerExecutionSupervisor, PlannerRequest, PurePlannerEngine,
-    ResumeAttemptExecutionDisposition, ResumeAttemptExecutionRequest,
-    ResumeAttemptExecutionResponse, SubmitAttemptDisposition, SubmitAttemptRequest,
-    SubmitAttemptResponse, SupervisedPlannerExecution,
+    AssignmentId, AttemptExecutionScope, AttemptResourceLimits, CampaignExecutorStore,
+    CampaignHash, CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CancelAttemptExecutionResponse, CheckpointAttemptExecutionDisposition,
+    CheckpointAttemptExecutionRequest, CheckpointAttemptExecutionResponse, DaemonEpoch,
+    ExecutorControlService, ExecutorRejection, ExecutorResumeService, ExecutorService,
+    ExecutorStatusService, GetAttemptExecutionDisposition, GetAttemptExecutionRequest,
+    GetAttemptExecutionResponse, ObservationId, ResumeAttemptExecutionDisposition,
+    ResumeAttemptExecutionRequest, ResumeAttemptExecutionResponse, SubmitAttemptDisposition,
+    SubmitAttemptRequest, SubmitAttemptResponse,
 };
 
 use super::DEFAULT_RUN_RECONCILIATION_STEPS;
-
-pub(super) struct LocalPlannerMeter;
-
-#[derive(Debug)]
-pub(super) enum LocalPlannerMeterError {
-    FuelOverflow,
-    FuelExceeded,
-}
-
-impl fmt::Display for LocalPlannerMeterError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FuelOverflow => formatter.write_str("canonical planner measured fuel overflow"),
-            Self::FuelExceeded => {
-                formatter.write_str("canonical planner measured fuel exceeds request budget")
-            }
-        }
-    }
-}
-
-impl Error for LocalPlannerMeterError {}
-
-impl PlannerExecutionSupervisor<crucible_campaign::CanonicalFrontierPlanner> for LocalPlannerMeter {
-    type Error = LocalPlannerMeterError;
-
-    fn execute(
-        &mut self,
-        engine: &mut crucible_campaign::CanonicalFrontierPlanner,
-        request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .ok()
-            .and_then(|positions| positions.checked_add(1))
-            .ok_or(LocalPlannerMeterError::FuelOverflow)?;
-        if measured_fuel > request.invocation().budget().fuel() {
-            return Err(LocalPlannerMeterError::FuelExceeded);
-        }
-        Ok(SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
-
-impl PlannerExecutionSupervisor<crucible_campaign::CanonicalSearchPlanner> for LocalPlannerMeter {
-    type Error = LocalPlannerMeterError;
-
-    fn execute(
-        &mut self,
-        engine: &mut crucible_campaign::CanonicalSearchPlanner,
-        request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .ok()
-            .and_then(|positions| positions.checked_add(1))
-            .ok_or(LocalPlannerMeterError::FuelOverflow)?;
-        if measured_fuel > request.invocation().budget().fuel() {
-            return Err(LocalPlannerMeterError::FuelExceeded);
-        }
-        Ok(SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
-
-impl PlannerExecutionSupervisor<crucible_campaign::CanonicalPuctPlanner> for LocalPlannerMeter {
-    type Error = LocalPlannerMeterError;
-
-    fn execute(
-        &mut self,
-        engine: &mut crucible_campaign::CanonicalPuctPlanner,
-        request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .ok()
-            .and_then(|positions| positions.checked_add(1))
-            .ok_or(LocalPlannerMeterError::FuelOverflow)?;
-        if measured_fuel > request.invocation().budget().fuel() {
-            return Err(LocalPlannerMeterError::FuelExceeded);
-        }
-        Ok(SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
-
-impl PlannerExecutionSupervisor<crucible_campaign::CanonicalBeamPlanner> for LocalPlannerMeter {
-    type Error = LocalPlannerMeterError;
-
-    fn execute(
-        &mut self,
-        engine: &mut crucible_campaign::CanonicalBeamPlanner,
-        request: &PlannerRequest,
-    ) -> Result<SupervisedPlannerExecution<CampaignCodecError>, Self::Error> {
-        let measured_fuel = u64::try_from(request.invocation().scan_page().positions().len())
-            .ok()
-            .and_then(|positions| positions.checked_add(1))
-            .ok_or(LocalPlannerMeterError::FuelOverflow)?;
-        if measured_fuel > request.invocation().budget().fuel() {
-            return Err(LocalPlannerMeterError::FuelExceeded);
-        }
-        Ok(SupervisedPlannerExecution::new(
-            engine.plan(request),
-            measured_fuel,
-        ))
-    }
-}
 
 pub(super) struct SynchronousCampaignExecutor<M> {
     store: CampaignExecutorStore,
@@ -910,6 +799,7 @@ where
 #[allow(clippy::expect_used, clippy::panic)]
 mod lock_tests {
     use super::*;
+    use crucible_campaign::CampaignCodecError;
 
     use crate::executor_supervisor::AllowAllAttemptAdmission;
     use crucible_campaign::{

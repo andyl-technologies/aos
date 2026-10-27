@@ -1258,7 +1258,7 @@ impl Properties {
         validate_properties_for_world(world, &self.assertions)
     }
 
-    fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Self {
+    pub(super) fn from_canonical_assertions(assertions: Vec<AssertionDef>) -> Self {
         Self {
             id: ContentHash::from_canonical_material(
                 PROPERTY_SCHEMA_DOMAIN,

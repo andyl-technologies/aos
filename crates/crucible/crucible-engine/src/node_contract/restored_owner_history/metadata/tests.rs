@@ -1,0 +1,469 @@
+//! Checks actual capacity geometry, repeated views and the separate packet limit.
+
+use super::*;
+use crate::node_contract::{OwnerIdentity, SavedRuntimeActivation};
+use crucible_node_format::{HashRef, Id, Phase, Position, U64};
+use std::{collections::BTreeMap, mem::align_of, rc::Rc};
+
+#[test]
+fn empty_weak_view_has_no_allocation_even_with_zero_selected_rows() {
+    let owner = std::rc::Weak::<String>::new();
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe_weak_allocation_data(&owner).unwrap();
+
+    assert_eq!(census.finish(), RetainedProtocolMetadataFacts::default());
+    assert!(owner.upgrade().is_none());
+}
+
+#[test]
+fn expired_weak_view_retains_its_actual_shell_without_traversing_dropped_payload() {
+    #[repr(align(64))]
+    struct Payload {
+        _text: String,
+    }
+    let payload = Rc::new(Payload {
+        _text: String::with_capacity(173),
+    });
+    let owner = Rc::downgrade(&payload);
+    let mut live = OriginalOwnerCapacityMetadataData::new(1, None);
+    live.observe_weak_allocation_data(&owner).unwrap();
+    let expected = live.finish();
+
+    drop(payload);
+    let mut expired = OriginalOwnerCapacityMetadataData::new(2, None);
+    expired.observe_weak_allocation_data(&owner).unwrap();
+    let actual = expired.finish();
+
+    assert!(owner.upgrade().is_none());
+    assert_eq!(actual, expected);
+    assert_eq!(actual.shared_value_bytes, size_of::<Payload>());
+    assert_eq!(actual.maximum_shared_value_alignment, align_of::<Payload>());
+    assert_eq!(actual.shared_backing_views, 1);
+    assert_eq!(actual.capacity_records, 1);
+    assert_eq!(actual.string_banks, 0);
+    assert_eq!(actual.string_capacity_bytes, 0);
+    assert_eq!(actual.observed_nodes, 0);
+
+    let mut short = OriginalOwnerCapacityMetadataData::new(0, None);
+    assert!(short.observe_weak_allocation_data(&owner).is_err());
+}
+
+#[test]
+fn repeated_zero_sized_weak_views_keep_each_real_shared_header() {
+    let payload = Rc::new(());
+    let owner = Rc::downgrade(&payload);
+    drop(payload);
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+
+    census.observe_weak_allocation_data(&owner).unwrap();
+    census.observe_weak_allocation_data(&owner).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(facts.shared_value_bytes, 0);
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<()>());
+    assert_eq!(facts.capacity_records, 2);
+    assert!(owner.upgrade().is_none());
+}
+
+fn activation() -> SavedRuntimeActivation {
+    let mut algorithm = String::with_capacity(113);
+    algorithm.push_str("sha256");
+    let mut owners = Vec::with_capacity(11);
+    owners.push(OwnerIdentity {
+        owner: Id::new("owner").unwrap(),
+        incarnation: Id::new("incarnation").unwrap(),
+        generation: U64::new(3),
+    });
+    SavedRuntimeActivation {
+        generation: U64::new(7),
+        activation_id: Id::new("activation").unwrap(),
+        world_binding_hash: HashRef {
+            algorithm,
+            domain: "world".into(),
+            digest: "original".into(),
+        },
+        owners,
+        boundary: Position::new(U64::new(5), U64::new(0), Phase::BoundaryControl),
+    }
+}
+
+#[test]
+fn saved_activation_keeps_original_spare_capacity_and_independent_owner_strings() {
+    let value = activation();
+    let mut census = OriginalOwnerCapacityMetadataData::new(7, None);
+    census.observe(&value).unwrap();
+    let facts = census.finish();
+    let hash = &value.world_binding_hash;
+    let owner = &value.owners[0];
+
+    assert_eq!(facts.capacity_records, 7);
+    assert_eq!(facts.vector_banks, 1);
+    assert_eq!(
+        facts.vector_capacity_bytes,
+        value.owners.capacity() * size_of::<OwnerIdentity>()
+    );
+    assert_eq!(facts.string_banks, 6);
+    assert_eq!(
+        facts.string_capacity_bytes,
+        value.activation_id.allocated_capacity()
+            + hash.algorithm.capacity()
+            + hash.domain.capacity()
+            + hash.digest.capacity()
+            + owner.owner.allocated_capacity()
+            + owner.incarnation.allocated_capacity()
+    );
+    // Root plus two inline fields, one Id, HashRef plus its three Strings,
+    // one Vec, and OwnerIdentity plus its inline generation and two Ids.
+    assert_eq!(facts.observed_nodes, 13);
+    assert!(value.world_binding_hash.algorithm.capacity() >= 113);
+}
+
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+#[repr(align(64))]
+struct Aligned;
+
+impl OriginalRestoredOwnerCapacityWalk for Aligned {
+    fn capacities(
+        &self,
+        _depth: usize,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
+    ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn actual_empty_trees_keep_tuple_padding_and_zero_sized_alignment() {
+    let padded = BTreeMap::<u8, Aligned>::new();
+    let zero = BTreeMap::<Aligned, Aligned>::new();
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+    census.observe(&padded).unwrap();
+    census.observe(&zero).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.tree_containers, 2);
+    assert_eq!(facts.tree_entries, 0);
+    assert_eq!(
+        facts.maximum_tree_key_value_bytes,
+        size_of::<(u8, Aligned)>()
+    );
+    assert_eq!(
+        facts.maximum_tree_entry_alignment,
+        align_of::<(Aligned, Aligned)>()
+    );
+    assert_eq!(facts.capacity_records, 2);
+}
+
+#[test]
+fn actual_shared_views_and_boxed_payloads_receive_no_alias_discount() {
+    let mut text = String::with_capacity(257);
+    text.push('x');
+    let shared = Rc::new(text);
+    let boxed = Box::new(Id::new("boxed").unwrap());
+    let mut census = OriginalOwnerCapacityMetadataData::new(6, None);
+    census.observe(&shared).unwrap();
+    census.observe(&shared).unwrap();
+    census.observe(&boxed).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(facts.shared_value_bytes, 2 * size_of::<String>());
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<String>());
+    assert_eq!(facts.boxed_value_bytes, size_of::<Id>());
+    assert_eq!(
+        facts.string_capacity_bytes,
+        2 * shared.capacity() + boxed.allocated_capacity()
+    );
+    assert_eq!(facts.capacity_records, 6);
+    assert_eq!(Rc::strong_count(&shared), 1);
+}
+
+#[test]
+fn packet_capacity_census_does_not_enlarge_the_legacy_common_reader() {
+    use super::super::{MAXIMUM_ROWS, OriginalRestoredOwnerCapacityRows};
+
+    let values = vec![String::new(); MAXIMUM_ROWS];
+    let mut census = OriginalOwnerCapacityMetadataData::new(MAXIMUM_ROWS + 1, None);
+    census.observe(&values).unwrap();
+    let facts = census.finish();
+    assert_eq!(facts.capacity_records, MAXIMUM_ROWS + 1);
+    assert_eq!(
+        facts.vector_capacity_bytes,
+        values.capacity() * size_of::<String>()
+    );
+    assert_eq!(
+        OriginalRestoredOwnerCapacityRows(&values).metadata_demand_data(),
+        Err(RuntimeError::ResourceLimit)
+    );
+
+    let mut short = OriginalOwnerCapacityMetadataData::new(MAXIMUM_ROWS, None);
+    assert_eq!(short.observe(&values), Err(RuntimeError::ResourceLimit));
+    assert_eq!(short.finish().capacity_records, MAXIMUM_ROWS);
+    assert_eq!(values.len(), MAXIMUM_ROWS);
+}
+
+#[test]
+fn pointer_and_alias_data_never_enter_four_field_packet_rows() {
+    let value = Rc::new(Aligned);
+    let mut records = Vec::new();
+    value
+        .capacities(0, &mut |row| {
+            records.push(packet_row_data(row)?);
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        serde_json::to_string(&records).unwrap(),
+        "[[\"shared\",0,1,64]]"
+    );
+    assert_eq!(Rc::strong_count(&value), 1);
+}
+
+#[test]
+fn malformed_row_geometry_and_population_overflow_are_refused() {
+    let mut row = OriginalRestoredOwnerCapacityRow::byte_buffer_data(3, 4).unwrap();
+    row.capacity = Some(2);
+    assert!(packet_row_data(row).is_err());
+    let mut row = OriginalRestoredOwnerCapacityRow::tree_population_data::<u8, u64>(3);
+    row.capacity = Some(3);
+    assert!(packet_row_data(row).is_err());
+
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+    assert!(
+        census
+            .record(MetadataCapacityRecord {
+                kind: MetadataRecordKind::Vector,
+                extent: usize::MAX,
+                element_bytes: 2,
+                alignment: 8,
+            })
+            .is_err()
+    );
+    assert_eq!(census.finish().capacity_records, 0);
+    let mut target = RetainedProtocolMetadataFacts {
+        shared_backing_views: usize::MAX,
+        ..Default::default()
+    };
+    let additional = RetainedProtocolMetadataFacts {
+        shared_backing_views: 1,
+        ..Default::default()
+    };
+    assert_eq!(
+        merge_capacity_metadata_data(&mut target, &additional),
+        Err(RuntimeError::ResourceLimit)
+    );
+}
+
+#[test]
+fn independently_observed_geometry_merges_without_widening_by_byte_count() {
+    let mut target = RetainedProtocolMetadataFacts {
+        tree_containers: 1,
+        tree_entries: 2,
+        maximum_tree_key_value_bytes: 17,
+        maximum_tree_entry_alignment: 8,
+        ..Default::default()
+    };
+    let additional = RetainedProtocolMetadataFacts {
+        tree_containers: 1,
+        tree_entries: 3,
+        maximum_tree_key_value_bytes: 1,
+        maximum_tree_entry_alignment: 64,
+        shared_value_bytes: 1_000_000,
+        shared_backing_views: 2,
+        maximum_shared_value_alignment: 128,
+        capacity_records: 3,
+        ..Default::default()
+    };
+    merge_capacity_metadata_data(&mut target, &additional).unwrap();
+
+    assert_eq!(target.tree_containers, 2);
+    assert_eq!(target.tree_entries, 5);
+    assert_eq!(target.maximum_tree_key_value_bytes, 17);
+    assert_eq!(target.maximum_tree_entry_alignment, 64);
+    assert_eq!(target.maximum_shared_value_alignment, 128);
+    assert_eq!(target.shared_backing_views, 2);
+    assert_eq!(target.capacity_records, 3);
+}
+
+#[test]
+fn strong_shared_census_keeps_actual_aligned_shell_without_walking_child_owners() {
+    #[repr(align(64))]
+    struct Payload {
+        _text: String,
+    }
+    let owner = Rc::new(Payload {
+        _text: String::with_capacity(173),
+    });
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+
+    census.observe_shared_allocation_data(&owner).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 1);
+    assert_eq!(facts.shared_backing_views, 1);
+    assert_eq!(facts.shared_value_bytes, size_of::<Payload>());
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<Payload>());
+    assert_eq!(facts.string_banks, 0);
+    assert_eq!(facts.observed_nodes, 0);
+    assert_eq!(Rc::strong_count(&owner), 1);
+}
+
+#[test]
+fn repeated_strong_zero_sized_views_keep_each_header_and_refused_prefix() {
+    let owner = Rc::new(());
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+    census.observe_shared_allocation_data(&owner).unwrap();
+    census.observe_shared_allocation_data(&owner).unwrap();
+
+    assert_eq!(
+        census.observe_shared_allocation_data(&owner),
+        Err(RuntimeError::ResourceLimit)
+    );
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 2);
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(facts.shared_value_bytes, 0);
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<()>());
+    assert_eq!(Rc::strong_count(&owner), 1);
+}
+
+#[test]
+fn scalar_and_absent_owners_report_work_without_allocating_record_rows() {
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe(&U64::new(19)).unwrap();
+    census.observe(&Option::<Id>::None).unwrap();
+    census.observe(&serde_json::Value::Null).unwrap();
+    census.observe(&serde_json::Value::Bool(true)).unwrap();
+    census.observe(&serde_json::json!(42)).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.observed_nodes, 5);
+    assert_eq!(facts.capacity_records, 0);
+    assert_eq!(facts.string_banks, 0);
+    assert_eq!(facts.vector_banks, 0);
+}
+
+#[test]
+fn initialized_inline_elements_add_work_while_spare_slots_keep_only_capacity() {
+    use super::super::OriginalRestoredOwnerCapacityRows;
+
+    let mut values = Vec::<U64>::with_capacity(257);
+    let mut empty = OriginalOwnerCapacityMetadataData::new(1, None);
+    empty.observe(&values).unwrap();
+    let empty = empty.finish();
+    let allocated = values.capacity();
+
+    values.extend((0..7).map(U64::new));
+    let mut initialized = OriginalOwnerCapacityMetadataData::new(1, None);
+    initialized.observe(&values).unwrap();
+    let initialized = initialized.finish();
+
+    assert_eq!(values.capacity(), allocated);
+    assert_eq!(empty.capacity_records, 1);
+    assert_eq!(initialized.capacity_records, 1);
+    assert_eq!(
+        empty.vector_capacity_bytes,
+        initialized.vector_capacity_bytes
+    );
+    assert_eq!(empty.observed_nodes, 1);
+    assert_eq!(initialized.observed_nodes, 8);
+    assert_eq!(
+        serde_json::to_value(OriginalRestoredOwnerCapacityRows(&values)).unwrap(),
+        serde_json::json!([{
+            "kind": "vector",
+            "length": 7,
+            "capacity": allocated,
+            "element_bytes": size_of::<U64>(),
+            "alignment": align_of::<U64>(),
+            "shared_group": null
+        }])
+    );
+}
+
+#[test]
+fn inline_work_overflow_preserves_the_previous_capacity_prefix() {
+    let values = vec![U64::new(1), U64::new(2)];
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+    census.observe(&values).unwrap();
+    let before = census.facts;
+    census.facts.observed_nodes = usize::MAX;
+
+    assert_eq!(
+        census.observe(&Option::<Id>::None),
+        Err(RuntimeError::ResourceLimit)
+    );
+    let after = census.finish();
+
+    assert_eq!(after.observed_nodes, usize::MAX);
+    assert_eq!(after.capacity_records, before.capacity_records);
+    assert_eq!(after.vector_capacity_bytes, before.vector_capacity_bytes);
+    assert_eq!(values, [U64::new(1), U64::new(2)]);
+}
+
+#[test]
+fn repeated_shared_scalar_views_count_each_visit_without_alias_discount() {
+    let original = Rc::new(U64::new(41));
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+
+    census.observe(&original).unwrap();
+    census.observe(&original).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.observed_nodes, 4);
+    assert_eq!(facts.capacity_records, 2);
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(Rc::strong_count(&original), 1);
+    assert_eq!(*original, U64::new(41));
+}
+
+#[test]
+fn inline_copy_fields_add_work_without_changing_capacity_geometry() {
+    let values = vec![U64::new(1), U64::new(2)];
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+    census.observe(&values).unwrap();
+    let before = census.facts;
+
+    census.observe_inline_data(&false).unwrap();
+    census.observe_inline_data(&Some(17usize)).unwrap();
+    census.observe_inline_data(&[3u8; 32]).unwrap();
+    let mut expected = before;
+    expected.observed_nodes += 3;
+
+    assert_eq!(census.facts, expected);
+
+    census.facts.observed_nodes = usize::MAX;
+    let before_refusal = census.facts;
+    assert_eq!(
+        census.observe_inline_data(&false),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(census.finish(), before_refusal);
+    assert_eq!(values, [U64::new(1), U64::new(2)]);
+}
+
+#[test]
+fn inline_cell_visit_preserves_the_original_lifecycle_flag_on_success_and_refusal() {
+    let flag = std::cell::Cell::new(Some(17usize));
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe_inline_cell_data(&flag).unwrap();
+
+    assert_eq!(census.facts.observed_nodes, 1);
+    assert_eq!(census.facts.capacity_records, 0);
+    assert_eq!(flag.get(), Some(17));
+
+    census.facts.observed_nodes = usize::MAX;
+    let previous = census.facts;
+    assert_eq!(
+        census.observe_inline_cell_data(&flag),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(census.finish(), previous);
+    assert_eq!(flag.get(), Some(17));
+}

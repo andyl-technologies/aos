@@ -66,7 +66,7 @@ fn debug_attach_instantiates_checkpoint_and_reports_fourth_channel() -> Result<(
     );
     assert_eq!(report.gdbstub.node, node_id("guest-a"));
     assert_eq!(
-        report.gdbstub.qemu_endpoint.as_str(),
+        report.gdbstub.backend_endpoint.as_str(),
         "unix:/tmp/crucible-qemu-gdbstub.sock,server=on,wait=off"
     );
     assert_eq!(report.gdbstub.operator_listen.as_str(), "127.0.0.1:9000");
@@ -88,7 +88,7 @@ fn debug_attach_rejects_invalid_endpoint_and_unknown_node() -> Result<(), Box<dy
     assert!(matches!(
         DebugAttachRequest::new(root.clone(), node_id("guest-a"), "", "127.0.0.1:9000"),
         Err(EngineError::DebugGdbEndpointInvalid {
-            field: "qemu_gdbstub",
+            field: "backend_gdbstub",
             ..
         })
     ));

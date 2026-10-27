@@ -7,6 +7,7 @@
 }: let
   repositoryRoot = ../..;
   repositoryRootString = toString repositoryRoot;
+  isCargoBuildDirectory = import ../../pkgs/build-support/_cargo-build-directory.nix;
   campaignRfcDirectory = "${repositoryRootString}/docs/rfcs/0020-crucible-campaigns";
   requiredCampaignRfcFiles = [
     "${campaignRfcDirectory}/schema-registry.tsv"
@@ -23,7 +24,8 @@
       base
       != ".git"
       && base != ".crucible"
-      && base != "target"
+      # Preserve Rust modules named target while pruning Cargo build outputs.
+      && !(isCargoBuildDirectory repositoryRoot path)
       && (
         pathString
         == repositoryRootString

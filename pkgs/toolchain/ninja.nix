@@ -4,9 +4,13 @@
   mkDerivation,
   fetchurl,
   gnumake,
-  commandShell ? null,
+  bash,
+  patch,
+  stdenv,
 }: let
   version = "1.13.2";
+  recipe = ./ninja.nix;
+  shellPatch = ./ninja-aos-shell.patch;
 in
   mkDerivation {
     platformSupport = {
@@ -43,6 +47,7 @@ in
       role = "public-package";
     };
     pname = "ninja";
+    outputs = ["out" "source"];
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
@@ -99,30 +104,34 @@ in
       hash = "sha256-l01rL07u+iViXTTaPLNr3Ovn+85A9MFqwINf0cDLrhc=";
     };
 
-    buildDeps = [gnumake];
-    runtimeDeps = lib.optional (commandShell != null) commandShell;
+    buildDeps = [gnumake bash patch];
+    runtimeDeps = [bash];
     propagatedDeps = [];
 
     phases = [
       {
         name = "unpack";
         script = ''
-          tar xf $src
+          tar --no-same-owner -xf "$src"
           cd ninja-${version}
         '';
       }
       {
         name = "configure";
-        script =
-          ''
-            # No configure step — ninja is bootstrapped directly from C++ sources
-            true
-          ''
-          + lib.optionalString (commandShell != null) ''
-            # Some source builders execute shell commands in a sandbox without
-            # host /bin/sh. Opt in without changing ordinary toolchain identities.
-            sed -i 's|/bin/sh|${commandShell}/bin/bash|g' src/subprocess-posix.cc
-          '';
+        script = ''
+          # Pin both sides of the source change; no fuzz or shell fallback is
+          # permitted when an upstream launcher changes.
+          printf '%s  %s\n' \
+            a9a4ea4280ac4e9e3d275dc4458c30baf0c067c8cd51b3c6d2034fe6eab88fdc \
+            src/subprocess-posix.cc | sha256sum --check --status
+          ${patch}/bin/patch --batch --fuzz=0 -p1 < ${shellPatch}
+          printf '%s  %s\n' \
+            ad0a0bee985acbc592479b022b568ed51b98e48e0a087c431cfcca4a0256652d \
+            src/subprocess-posix.cc | sha256sum --check --status
+
+          # Retain every original file before the existing bootstrap exclusions.
+          tar -czf ../ninja-patched-source.tar.gz .
+        '';
       }
       {
         name = "build";
@@ -144,7 +153,48 @@ in
               *) srcs="$srcs $f" ;;
             esac
           done
-          $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
+          printf '%s\n' "$CXX" "''${CXXFLAGS:-}" \
+            '-DAOS_NINJA_COMMAND_SHELL="${bash}/bin/bash"' \
+            "$srcs" > ../ninja-build-inputs.txt
+          $CXX ''${CXXFLAGS:-} \
+            '-DAOS_NINJA_COMMAND_SHELL="${bash}/bin/bash"' \
+            -Isrc -o ninja $srcs -lpthread
+        '';
+      }
+      {
+        name = "check";
+        script = lib.optionalString (!stdenv.isCross) ''
+          mkdir shell-check
+          cat > shell-check/build.ninja <<'EOF'
+          rule shell
+            command = test -n "$$BASH_VERSION" && test "$$0" = sh && printf 'answer=42' > answer.txt; if test -e /proc/$$$$/exe; then readlink /proc/$$$$/exe > shell-path.txt; fi; :
+          rule console_shell
+            command = test -n "$$BASH_VERSION" && test "$$0" = sh && printf 'console=42' > console.txt; if test -e /proc/$$$$/exe; then readlink /proc/$$$$/exe > console-path.txt; fi; :
+            pool = console
+          build answer.txt: shell
+          build console.txt: console_shell
+          default answer.txt console.txt
+          EOF
+          SHELL=/aos-test-must-not-use-env-shell ./ninja -C shell-check -j1
+          test "$(cat shell-check/answer.txt)" = answer=42
+          test "$(cat shell-check/console.txt)" = console=42
+          if test -e /proc/self/exe; then
+            test "$(cat shell-check/shell-path.txt)" = '${bash}/bin/bash'
+            test "$(cat shell-check/console-path.txt)" = '${bash}/bin/bash'
+          fi
+
+          # A failing command must still fail its build edge.
+          cat > shell-check/failure.ninja <<'EOF'
+          rule fail
+            command = exit 33
+          build rejected: fail
+          EOF
+          if ./ninja -C shell-check -f failure.ninja; then
+            echo 'Ninja accepted a failing command' >&2
+            exit 1
+          else
+            test "$?" = 33
+          fi
         '';
       }
       {
@@ -152,17 +202,18 @@ in
         script = ''
           mkdir -p $out/bin
           install -m 755 ninja $out/bin/ninja
+
+          source_root="$source/share/ninja-source"
+          mkdir -p "$source_root" "$out/share/ninja"
+          cp "$src" "$source_root/ninja-${version}.tar.gz"
+          cp ../ninja-patched-source.tar.gz ../ninja-build-inputs.txt COPYING \
+            "$source_root/"
+          cp ${recipe} "$source_root/ninja.nix"
+          cp ${shellPatch} "$source_root/ninja-aos-shell.patch"
+          ln -s "$source" "$out/share/ninja/source"
         '';
       }
     ];
-
-    # mkDerivation.override changes final attributes rather than package inputs.
-    # Keep this factory explicit so the source patch and runtime closure agree.
-    passthru.withCommandShell = shell:
-      import ./ninja.nix {
-        inherit lib mkDerivation fetchurl gnumake;
-        commandShell = shell;
-      };
 
     meta = {
       description = "Small build system with a focus on speed";

@@ -8,21 +8,25 @@
 }: let
   repoRoot = ../..;
   repoRootString = toString repoRoot;
+  isCargoBuildDirectory = import ../../pkgs/build-support/_cargo-build-directory.nix;
   source = builtins.path {
     path = repoRoot;
     name = "crucible-production-rust-flight-src";
     # The suite retains its complete source. This package only compiles the
-    # workspace, the fixture embedded by daemon tests, and the QMP schema.
+    # workspace, fixtures, QMP schema and normative qualification catalogue.
     filter = path: _type: let
       pathString = toString path;
       base = baseNameOf path;
       crates = "${repoRootString}/crates";
       licenses = "${repoRootString}/LICENSES";
+      nodeContract = "${repoRootString}/docs/rfcs/0025-crucible-node-contract";
     in
       base
       != ".git"
       && base != ".crucible"
-      && base != "target"
+      && base != "run-state"
+      # Preserve Rust modules named target while pruning Cargo build outputs.
+      && !(isCargoBuildDirectory repoRoot path)
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
       && (
@@ -37,6 +41,8 @@
         || pathString == "${repoRootString}/docs/rfcs"
         || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
         || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
+        || pathString == nodeContract
+        || lib.hasPrefix "${nodeContract}/" pathString
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/crucible"
         || pathString == "${repoRootString}/tests/crucible/fixtures"

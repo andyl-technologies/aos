@@ -14,28 +14,22 @@ members = [
     "activation/aos-activation-storage",
     "activation/aos-activation-sysctl",
     "activation/aos-activation-systemd",
-
     "artifacts/aos-artifact-evidence",
     "artifacts/aos-nar",
     "artifacts/aos-oci",
     "artifacts/aos-oci-types",
-
     "bindings/libssh2-sys",
-
     "boot/aos-boot-identity",
     "boot/aos-boot-runtime",
     "boot/aos-configuration-image",
     "boot/aos-platform-metadata",
     "boot/aos-recovery",
     "boot/aos-storage-layout",
-
     "cli/aos-cli",
     "cli/aos-cli-ui",
     "cli/aos-closure-analysis",
     "cli/aos-nix-docs",
-
     "core/aos-core",
-
     "crucible/crucible-campaign",
     "crucible/crucible-cli",
     "crucible/crucible-control-api",
@@ -46,16 +40,20 @@ members = [
     "crucible/crucible-device",
     "crucible/crucible-engine",
     "crucible/crucible-guest",
+    "crucible/crucible-host-resources",
+    "crucible/crucible-node-format",
+    "crucible/crucible-node-transport",
     "crucible/crucible-qemu-debug-gateway",
     "crucible/crucible-qemu-host",
     "crucible/crucible-qemu-plugin",
     "crucible/crucible-qemu-protocol",
     "crucible/crucible-qemu-shmem",
     "crucible/crucible-session",
+    "crucible/crucible-source-birth-data",
+    "crucible/crucible-source-birth-worker",
     "crucible/crucible-store",
     "crucible/crucible-store-s3",
     "crucible/crucible-test-support",
-
     "hub/aos-hub-api",
     "hub/aos-hub-client",
     "hub/aos-hub-console",
@@ -65,15 +63,11 @@ members = [
     "hub/aos-hub-service",
     "hub/aos-hub-ui",
     "hub/aos-hub-worker",
-
     "linux/aos-linux-project-quota",
     "linux/aos-systemd-client",
-
     "modules/aos-module-docs",
     "modules/aos-module-format",
-
     "nix/aos-nix",
-
     "packages/aos-build-api",
     "packages/aos-build-client",
     "packages/aos-build-server",
@@ -81,18 +75,15 @@ members = [
     "packages/aos-deployment-format",
     "packages/aos-nix-cache",
     "packages/aos-package-manager",
-
     "registry/aos-registry-authoring",
     "registry/aos-registry-client",
     "registry/aos-registry-format",
     "registry/aos-registry-web",
-
     "release/aos-image-finalizer",
     "release/aos-package-maintenance",
     "release/aos-release-coordinator",
     "release/aos-release-format",
     "release/aos-release-signer",
-
     "transfer/aos-transfer",
 ]
 
@@ -100,6 +91,10 @@ members = [
 license = "Apache-2.0"
 
 [workspace.dependencies]
+crucible-node-format = { path = "crucible/crucible-node-format" }
+crucible-source-birth-data = { path = "crucible/crucible-source-birth-data", default-features = false }
+crucible-node-transport = { path = "crucible/crucible-node-transport" }
+crucible-host-resources = { path = "crucible/crucible-host-resources" }
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"
@@ -118,7 +113,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "sign
 sha2 = { version = "0.10", features = ["compress"] }
 sha1 = "0.10"
 md-5 = "0.11"
-blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
+blake3 = { version = "1", default-features = false, features = ["std", "prefer_intrinsics"] }
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"

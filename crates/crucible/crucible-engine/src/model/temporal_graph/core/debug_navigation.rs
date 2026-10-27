@@ -46,7 +46,7 @@ impl TemporalGraph {
             channel_set: DebugAttachChannelSet::four_channel_debug_session(),
             gdbstub: DebugGdbstubChannel {
                 node: request.node.clone(),
-                qemu_endpoint: request.qemu_gdbstub.clone(),
+                backend_endpoint: request.backend_gdbstub.clone(),
                 operator_listen: request.gdb_listen.clone(),
                 mediated_by_crucible: true,
                 out_of_band: true,

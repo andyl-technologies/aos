@@ -9,7 +9,7 @@ over the defaults below. Third-party files retain their existing licenses.
 | Scope | License |
 | --- | --- |
 | Original AOS code without a more specific notice | Apache-2.0 |
-| `crucible-qemu-protocol` and `crucible-qemu-shmem` | MIT OR Apache-2.0 |
+| `crucible-qemu-protocol`, `crucible-qemu-shmem`, and `crucible-node-format` | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
 | `crucible-qemu-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |

@@ -1,0 +1,365 @@
+--- a/src/mem/cache/replacement_policies/lru_rp.cc
++++ b/src/mem/cache/replacement_policies/lru_rp.cc
+@@ -50,6 +50,7 @@
+ void
+ LRU::invalidate(const std::shared_ptr<ReplacementData>& replacement_data)
+ {
++    requireOriginalData(replacement_data);
+     // Reset last touch timestamp
+     std::static_pointer_cast<LRUReplData>(
+         replacement_data)->lastTouchTick = Tick(0);
+@@ -58,6 +59,7 @@
+ void
+ LRU::touch(const std::shared_ptr<ReplacementData>& replacement_data) const
+ {
++    requireOriginalData(replacement_data);
+     // Update last touch timestamp
+     std::static_pointer_cast<LRUReplData>(
+         replacement_data)->lastTouchTick = curTick();
+@@ -66,6 +68,7 @@
+ void
+ LRU::reset(const std::shared_ptr<ReplacementData>& replacement_data) const
+ {
++    requireOriginalData(replacement_data);
+     // Set last touch timestamp
+     std::static_pointer_cast<LRUReplData>(
+         replacement_data)->lastTouchTick = curTick();
+@@ -80,6 +83,8 @@
+     // Visit all candidates to find victim
+     ReplaceableEntry* victim = candidates[0];
+     for (const auto& candidate : candidates) {
++        requireOriginalData(candidate->replacementData);
++        requireOriginalData(victim->replacementData);
+         // Update victim entry if necessary
+         if (std::static_pointer_cast<LRUReplData>(
+                     candidate->replacementData)->lastTouchTick <
+@@ -95,7 +100,24 @@
+ std::shared_ptr<ReplacementData>
+ LRU::instantiateEntry()
+ {
+-    return std::shared_ptr<ReplacementData>(new LRUReplData());
++    auto *scope = crucible::OriginalNodeScope::selected();
++    if (!scope) return std::shared_ptr<ReplacementData>(new LRUReplData());
++
++    // Consume backing before either the concrete object or control block can
++    // allocate. A throw leaves this exact reservation unpublished and unusable.
++    auto reservation = scope->reserveReplacement(this);
++    std::shared_ptr<ReplacementData> data(new LRUReplData());
++    scope->publishReplacement(reservation, this, data);
++    return data;
++}
++
++void
++LRU::requireOriginalData(const std::shared_ptr<ReplacementData> &data) const
++{
++    if (auto *scope = crucible::OriginalNodeScope::selected()) {
++        if (!scope->replacementCurrent(this, data) || typeid(*this) != typeid(LRU))
++            scope->failReplacement();
++    }
+ }
+ 
+ bool
+@@ -109,8 +131,9 @@
+ bool
+ LRU::crucibleNativeData(const std::shared_ptr<ReplacementData> &data) const
+ {
+-    if (typeid(*this) != typeid(LRU) || !data ||
+-        typeid(*data) != typeid(LRUReplData))
++    auto *scope = crucible::OriginalNodeScope::selected();
++    if (!scope || !scope->replacementCurrent(this, data) ||
++        typeid(*this) != typeid(LRU))
+         return false;
+     const auto *original = static_cast<const LRUReplData *>(data.get());
+     return original->lastTouchTick <= curTick();
+--- a/src/mem/cache/replacement_policies/lru_rp.hh
++++ b/src/mem/cache/replacement_policies/lru_rp.hh
+@@ -110,6 +110,10 @@
+      * @return A shared pointer to the new replacement data.
+      */
+     std::shared_ptr<ReplacementData> instantiateEntry() override;
++
++  private:
++    /** Checks selected constructor ownership before ordinary policy casts. */
++    void requireOriginalData(const std::shared_ptr<ReplacementData> &data) const;
+ };
+ 
+ } // namespace replacement_policy
+--- /dev/null
++++ b/src/sim/crucible_lru_births.hh
+@@ -0,0 +1,139 @@
++// SPDX-License-Identifier: BSD-3-Clause
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef __SIM_CRUCIBLE_LRU_BIRTHS_HH__
++#define __SIM_CRUCIBLE_LRU_BIRTHS_HH__
++
++#include <array>
++#include <cstddef>
++#include <memory>
++
++namespace gem5
++{
++
++class SimObject;
++namespace replacement_policy { struct ReplacementData; }
++
++namespace crucible
++{
++
++class OriginalNodeScope;
++
++/** Retains literal LRU-constructor births in the original fixed scope bank.
++ *
++ * ReplacementData is deliberately nonpolymorphic upstream. A live pointer is
++ * never a substitute for its constructor and original shared ownership. Weak
++ * ownership keeps an expired control block distinct from a later allocation,
++ * without extending the data lifetime or allocating another control block.
++ * This bank grants no execution, process-resource or checkpoint authority.
++ */
++class LruConstructorBirths
++{
++  private:
++    friend class OriginalNodeScope;
++
++    LruConstructorBirths() = default;
++    LruConstructorBirths(const LruConstructorBirths &) = delete;
++    LruConstructorBirths &operator=(const LruConstructorBirths &) = delete;
++    LruConstructorBirths(LruConstructorBirths &&) = delete;
++    LruConstructorBirths &operator=(LruConstructorBirths &&) = delete;
++
++    // The unchanged selected ARM tables contain 64+64+1280+32+32 entries.
++    static constexpr std::size_t Capacity = 1472;
++    using Data = replacement_policy::ReplacementData;
++
++    struct Reservation
++    {
++        const LruConstructorBirths *bank = nullptr;
++        std::size_t slot = Capacity;
++    };
++
++    enum class State : unsigned char { Empty, Reserved, Published };
++
++    struct Birth
++    {
++        const SimObject *policy = nullptr;
++        const Data *data = nullptr;
++        std::weak_ptr<Data> ownership;
++        State state = State::Empty;
++    };
++
++    Reservation reserve(const SimObject *policy)
++    {
++        if (failed || !policy || used == Capacity) {
++            failed = true;
++            return {};
++        }
++
++        const auto slot = used++;
++        auto &birth = births[slot];
++        birth.policy = policy;
++        birth.state = State::Reserved;
++        return {this, slot};
++    }
++
++    bool publish(const Reservation &reservation, const SimObject *policy,
++                 const std::shared_ptr<Data> &data)
++    {
++        if (failed || reservation.bank != this || reservation.slot >= used ||
++            !data || data.use_count() != 1) {
++            failed = true;
++            return false;
++        }
++        auto &birth = births[reservation.slot];
++        if (birth.state != State::Reserved || birth.policy != policy) {
++            failed = true;
++            return false;
++        }
++
++        for (std::size_t slot = 0; slot < used; ++slot) {
++            const auto &prior = births[slot];
++            if (prior.state != State::Published) continue;
++            if (prior.data == data.get() ||
++                (!prior.ownership.owner_before(data) &&
++                 !data.owner_before(prior.ownership))) {
++                failed = true;
++                return false;
++            }
++        }
++
++        birth.data = data.get();
++        birth.ownership = data;
++        birth.state = State::Published;
++        return true;
++    }
++
++    bool matches(const SimObject *policy, const std::shared_ptr<Data> &data) const
++    {
++        if (failed || !policy || !data) return false;
++        for (std::size_t slot = 0; slot < used; ++slot) {
++            const auto &birth = births[slot];
++            if (birth.state != State::Published || birth.policy != policy ||
++                birth.data != data.get() || birth.ownership.expired())
++                continue;
++            if (!birth.ownership.owner_before(data) &&
++                !data.owner_before(birth.ownership))
++                return true;
++        }
++        return false;
++    }
++
++    bool complete() const
++    {
++        if (failed) return false;
++        for (std::size_t slot = 0; slot < used; ++slot) {
++            const auto &birth = births[slot];
++            if (birth.state != State::Published || birth.ownership.expired())
++                return false;
++        }
++        return true;
++    }
++
++    std::array<Birth, Capacity> births{};
++    std::size_t used = 0;
++    bool failed = false;
++};
++
++} // namespace crucible
++} // namespace gem5
++
++#endif
+--- a/src/sim/crucible_native_scope.cc
++++ b/src/sim/crucible_native_scope.cc
+@@ -33,7 +33,10 @@
+ 
+ ProcessLifetimeScope lifetime;
+ 
+-const Digest diagnosticProfileDigest = {0xcb, 0xf0, 0xf2, 0x00, 0xd6, 0x9a, 0x5c, 0xcc, 0x39, 0x5f, 0x7c, 0xbc, 0x36, 0x7d, 0xe0, 0xbb, 0x2d, 0xf3, 0x03, 0x9c, 0x34, 0xcc, 0x17, 0x7c, 0x1c, 0x39, 0x77, 0xca, 0x67, 0x68, 0xe3, 0x70};
++// The matching check retains these profile-v2 bytes and verifies their digest.
++// Constructor-birth backing is reserved before objects, without changing the
++// ordinary ReplacementData layout or granting execution/capture authority.
++const Digest diagnosticProfileDigest = {0xfe, 0x6a, 0xcd, 0x44, 0x3a, 0x31, 0x4b, 0xea, 0xfc, 0x89, 0x87, 0x21, 0xe6, 0x0b, 0x60, 0x95, 0x4f, 0x64, 0xce, 0x7e, 0xd3, 0x18, 0xce, 0xdf, 0x7e, 0xee, 0x78, 0xb6, 0x0a, 0x4e, 0xb3, 0x62};
+ 
+ bool
+ nonzero(const Digest &bytes)
+@@ -129,6 +132,47 @@
+         __builtin_unreachable();
+     }
+     return phase != State::Refused;
++}
++
++LruConstructorBirths::Reservation
++OriginalNodeScope::reserveReplacement(const SimObject *policy)
++{
++    if (!current() || phase != State::Constructing ||
++        ordinal(policy) == ObjectCapacity)
++        failReplacement();
++    auto reservation = replacementBirths.reserve(policy);
++    if (reservation.bank != &replacementBirths) failReplacement();
++    return reservation;
++}
++
++void
++OriginalNodeScope::publishReplacement(
++    const LruConstructorBirths::Reservation &reservation, const SimObject *policy,
++    const std::shared_ptr<replacement_policy::ReplacementData> &data)
++{
++    if (!current() || phase != State::Constructing ||
++        !replacementBirths.publish(reservation, policy, data))
++        failReplacement();
++}
++
++bool
++OriginalNodeScope::replacementCurrent(
++    const SimObject *policy,
++    const std::shared_ptr<replacement_policy::ReplacementData> &data)
++{
++    return current() && replacementBirths.matches(policy, data);
++}
++
++[[noreturn]] void
++OriginalNodeScope::failReplacement()
++{
++    using kernel_process_detail::rawCall;
++    current();
++    refuse(Refusal::InvalidReplacement);
++    // The failed source-owned attempt remains consumed. Never return through
++    // a policy cast, allocator or callback with unauthenticated data.
++    rawCall(SYS_exit_group, 126);
++    __builtin_unreachable();
+ }
+ 
+ void
+@@ -376,6 +420,7 @@
+ {
+     if (!current()) return false;
+     if (phase != State::Constructing) return refuse(Refusal::InvalidPhase);
++    if (!replacementBirths.complete()) return refuse(Refusal::InvalidReplacement);
+     phase = State::Walking;
+     if (!objectsUsed || numMainEventQueues != 1 || mainEventQueue.size() != 1 ||
+         mainEventQueue[0] != &queue || inParallelMode ||
+@@ -392,6 +437,7 @@
+     if (!queue.crucibleNativeClosure(*this)) return false;
+     if (!current() || queue.getCurTick() != stoppedTick)
+         return refuse(Refusal::ChangedTick);
++    if (!replacementBirths.complete()) return refuse(Refusal::InvalidReplacement);
+ 
+     // Walked only authenticates these native ownership records. It never
+     // substitutes for the process-resource/image/final-delivery source gate.
+--- a/src/sim/crucible_native_scope.hh
++++ b/src/sim/crucible_native_scope.hh
+@@ -9,6 +9,7 @@
+ 
+ #include "sim/crucible_kernel_process.hh"
+ #include "sim/crucible_native_cut.hh"
++#include "sim/crucible_lru_births.hh"
+ 
+ namespace gem5
+ {
+@@ -20,6 +21,7 @@
+ class ReplaceableEntry;
+ class StaticInst;
+ class PCStateBase;
++namespace replacement_policy { class LRU; }
+ 
+ namespace crucible
+ {
+@@ -86,7 +88,8 @@
+         UnknownObject, UnknownVisitor, EdgeCapacity, InvalidEdge,
+         CallbackCapacity, InvalidCallback, QueueOwnership, PendingAsync,
+         MissingCallback, ChangedTick, InvalidPhase, PortCapacity,
+-        InvalidPort, MissingPeer, InvalidTable, TableCapacity, TableEntryCapacity
++        InvalidPort, MissingPeer, InvalidTable, TableCapacity, TableEntryCapacity,
++        InvalidReplacement
+     };
+ 
+     /** Selects original native storage before any SimObject is constructed.
+@@ -138,6 +141,7 @@
+     friend class SourceCheckpointIssuer;
+     friend class EarlyRestoreAdopter;
+     friend class ::gem5::EventQueue;
++    friend class ::gem5::replacement_policy::LRU;
+ 
+     enum class Visit : unsigned char { Unvisited, Visiting, Complete };
+ 
+@@ -186,6 +190,14 @@
+     OriginalNodeScope(const OriginalScopeBinding &binding,
+                       const KernelProcessObservation &process);
+     ~OriginalNodeScope() = default;
++
++    LruConstructorBirths::Reservation reserveReplacement(const SimObject *policy);
++    void publishReplacement(const LruConstructorBirths::Reservation &reservation,
++                            const SimObject *policy,
++                            const std::shared_ptr<replacement_policy::ReplacementData> &data);
++    bool replacementCurrent(const SimObject *policy,
++                            const std::shared_ptr<replacement_policy::ReplacementData> &data);
++    [[noreturn]] void failReplacement();
+ 
+     bool current();
+     bool refuse(Refusal failure);
+@@ -219,6 +231,7 @@
+     std::array<CallbackOwner, CallbackCapacity> callbacks{};
+     std::array<PortOwner, PortCapacity> ports{};
+     std::array<TableOwner, TableCapacity> tables{};
++    LruConstructorBirths replacementBirths;
+     std::size_t objectsUsed = 0;
+     std::size_t edgesUsed = 0;
+     std::size_t callbacksUsed = 0;

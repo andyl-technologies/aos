@@ -10,7 +10,7 @@ MIGRATION = runpy.run_path(str(SCRIPT))
 
 class CrateMigrationTests(unittest.TestCase):
     def rewrite(self, source):
-        return MIGRATION["rust"](source, Path("crates/aos/src/main.rs"))
+        return MIGRATION["rust"](source, Path("crates/cli/aos-cli/src/main.rs"))
 
     def test_quotes_in_character_literals_do_not_hide_imports(self):
         source = "let quote = '\"';\nlet result = aos_release::Release::new();\n"
@@ -35,7 +35,7 @@ class CrateMigrationTests(unittest.TestCase):
         self.assertEqual(self.rewrite(source), source)
 
     def test_bare_build_source_paths_follow_the_workspace_hierarchy(self):
-        source = 'cp aos-hub-core/src/web/static_assets/app.js "$out/assets/app.js"'
+        source = 'cp hub/aos-hub-service/src/web/static_assets/app.js "$out/assets/app.js"'
         expected = 'cp hub/aos-hub-service/src/web/static_assets/app.js "$out/assets/app.js"'
         self.assertEqual(MIGRATION["source_path"](source), expected)
 

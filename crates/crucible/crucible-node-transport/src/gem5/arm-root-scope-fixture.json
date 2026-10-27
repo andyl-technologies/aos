@@ -1,0 +1,48 @@
+{
+  "clock": {
+    "cpu_clock_hz": "100000000",
+    "mapping_id": "gem5/even-reaction-odd-publication-v1",
+    "maximum_microsteps": "1000000",
+    "native_tick_ps": "1"
+  },
+  "host_abi": {
+    "architecture": "x86_64",
+    "endian": "little",
+    "image_format": "dmtcp-4.2.0/mtcp",
+    "os": "linux",
+    "page_bytes": "4096",
+    "pointer_bits": "64"
+  },
+  "model": {
+    "board": "VExpress_GEM5_V2",
+    "configuration_tree": {
+      "bytes": "1319943",
+      "files": "168",
+      "sha256": "6d3acc22920994fe328fb4be7d265b249ea053bf882e17e51f5ade831cfba8f8"
+    },
+    "cpu": "ArmAtomicSimpleCPU",
+    "exposed_facets": [
+      {
+        "causal_parent": "0",
+        "direction": "output",
+        "kind": "serial",
+        "terminal": "system.terminal"
+      }
+    ],
+    "guest_isa": "aarch64",
+    "memory": "SimpleMemory",
+    "memory_bytes": "268435456",
+    "width": "16"
+  },
+  "native_dialect": "crucible.gem5.arm-linux-native/1",
+  "policy_id": "arm-linux-vexpress-atomic-root-functional-v1",
+  "qualification": {
+    "cpu_timing_qualified": false,
+    "device_parity_qualified": false,
+    "execution_admission_qualified": false,
+    "full_system_admission_qualified": false,
+    "guest_readiness_qualified": false,
+    "opaque_capture_mechanism_verified": true
+  },
+  "schema": "crucible.gem5.installed-arm-root-profile-mechanism.v1"
+}

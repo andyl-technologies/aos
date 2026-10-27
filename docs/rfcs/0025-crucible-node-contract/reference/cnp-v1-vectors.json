@@ -1,0 +1,86 @@
+{
+  "format": "cnp-v1-primitive-vectors",
+  "revision": 1,
+  "scope": "Normative primitive expectations only. JSON objects here are not complete node descriptors, bindings, or requests.",
+  "framing": "ASCII(CNP/1) || 00 || u32be(domain_length) || ASCII(domain) || u64be(payload_length) || payload",
+  "hash": "BLAKE3-256",
+  "positive": [
+    {
+      "id": "empty-blob",
+      "domain": "cnp.blob.v1",
+      "payload_hex": "",
+      "framed_input_hex": "434e502f31000000000b636e702e626c6f622e76310000000000000000",
+      "digest_hex": "493153ee1b4d07570e6b4659bdd6e96e47ce4d29e7a754ab89e9a8645aaeb9ce"
+    },
+    {
+      "id": "binary-blob",
+      "domain": "cnp.blob.v1",
+      "payload_hex": "00ff",
+      "framed_input_hex": "434e502f31000000000b636e702e626c6f622e7631000000000000000200ff",
+      "digest_hex": "8fcdff24189cb41339b899af10fd86a3400665e4890e031a4d8921615f1fdbc4"
+    },
+    {
+      "id": "jcs-key-order",
+      "domain": "cnp.node-descriptor.v1",
+      "payload_hex": "7b22636f756e74223a2230222c226964223a2261227d",
+      "framed_input_hex": "434e502f310000000016636e702e6e6f64652d64657363726970746f722e763100000000000000167b22636f756e74223a2230222c226964223a2261227d",
+      "digest_hex": "c6e27bae2710423f4638777325944eb02a73cdfcfc670eedd05f1cae377b408e",
+      "source_json": " { \"id\": \"a\", \"count\": \"0\" } ",
+      "canonical_json": "{\"count\":\"0\",\"id\":\"a\"}"
+    },
+    {
+      "id": "jcs-equivalent",
+      "domain": "cnp.node-descriptor.v1",
+      "payload_hex": "7b22636f756e74223a2230222c226964223a2261227d",
+      "framed_input_hex": "434e502f310000000016636e702e6e6f64652d64657363726970746f722e763100000000000000167b22636f756e74223a2230222c226964223a2261227d",
+      "digest_hex": "c6e27bae2710423f4638777325944eb02a73cdfcfc670eedd05f1cae377b408e",
+      "source_json": "{\"count\":\"0\",\"id\":\"a\"}",
+      "canonical_json": "{\"count\":\"0\",\"id\":\"a\"}"
+    },
+    {
+      "id": "domain-separation",
+      "domain": "cnp.node-binding.v1",
+      "payload_hex": "7b22636f756e74223a2230222c226964223a2261227d",
+      "framed_input_hex": "434e502f310000000013636e702e6e6f64652d62696e64696e672e763100000000000000167b22636f756e74223a2230222c226964223a2261227d",
+      "digest_hex": "71042cd4418f5c70db268f505ccfc5524ff157c254e90afd3645e3f98bc8a21c"
+    }
+  ],
+  "negative": [
+    {
+      "id": "duplicate-key",
+      "type": "json",
+      "input": "{\"id\":\"a\",\"id\":\"b\"}",
+      "result": "reject"
+    },
+    {
+      "id": "invalid-utf8",
+      "type": "json-utf8",
+      "input_hex": "7b226964223a22ff227d",
+      "result": "reject"
+    },
+    {
+      "id": "uint-leading-zero",
+      "type": "uint64-decimal-string",
+      "input": "01",
+      "result": "reject"
+    },
+    {
+      "id": "uint-json-number",
+      "type": "uint64-decimal-string",
+      "input_json": "1",
+      "result": "reject"
+    },
+    {
+      "id": "uint-overflow",
+      "type": "uint64-decimal-string",
+      "input": "18446744073709551616",
+      "result": "reject"
+    },
+    {
+      "id": "signed-negative-zero",
+      "type": "signed-offset-decimal-string",
+      "input": "-0",
+      "result": "reject"
+    }
+  ]
+}

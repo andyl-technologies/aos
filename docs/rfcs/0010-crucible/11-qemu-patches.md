@@ -231,6 +231,15 @@ manifests; and retained hot-fork worker quiescence. Sections 11.4 through 11.8
 specify their normative behavior without presenting them as independently
 applicable changes.
 
+The FW_CFG directory insertion mechanism retains original entry, payload,
+callback, selector, table, and live directory-backing identities across
+native insertion. Its ordinary QEMU unit controls exercise valid sorted
+moves and reject altered lineage before publication, supporting DET-1,
+DET-35, and the PATCH-8 verification obligations. This mechanism remains
+within the class-F atomic integration; it does not establish full FW_CFG
+payload or callback ownership, ROM closure, Ready admission, or exact
+capture and fresh restore.
+
 - **[PATCH-10]** The catalog above is the **authoritative inventory** of the atomic patch and
   its capability labels. A different shipped patch or an unmapped capability
   MUST fail the packaging conformance check (26). Diagnostic-only capabilities

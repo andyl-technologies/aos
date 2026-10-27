@@ -1,0 +1,48 @@
+id = "blake3:51192dd974a5faf760133fca78ad07f770fd49c8de42927dd66afff9904c9f60"
+
+[[node]]
+id = "a"
+arch = "x86_64"
+memory_mib = 512
+cmdline = "console=ttyS0 quiet"
+smp_vcpus = 2
+kernel = "blake3:7b28c281c83b5ff162d9b2a6e697daca7b3b261a4577a619dd0b8689d871830a"
+initrd = "blake3:d0e017f7addc7dfb42ae2667742f85835d094cfc94385e7f3864e487b880aab5"
+white_box = "disabled"
+
+[node.ready_point]
+kind = "fixed_icount"
+retired = 42
+
+[[node]]
+id = "b"
+arch = "aarch64"
+memory_mib = 512
+cmdline = "console=ttyS0 quiet"
+smp_vcpus = 2
+kernel = "blake3:7b28c281c83b5ff162d9b2a6e697daca7b3b261a4577a619dd0b8689d871830a"
+initrd = "blake3:d0e017f7addc7dfb42ae2667742f85835d094cfc94385e7f3864e487b880aab5"
+white_box = "disabled"
+
+[node.ready_point]
+kind = "fixed_icount"
+retired = 42
+
+[[node]]
+kind = "block"
+id = "disk"
+owner = "a"
+artifact = "blake3:db7e3b25d50971860c8e4b4ed89fa5dfa2d393f23a4aae430c32f190438dae50"
+artifact_length = 4096
+read_base_ns = 2
+write_base_ns = 3
+flush_ns = 4
+get_length_ns = 5
+per_byte_ns = 1
+
+[[link]]
+endpoint_a = "a"
+endpoint_b = "b"
+latency_nanos = 1
+jitter_nanos = 0
+loss_millionths = 0

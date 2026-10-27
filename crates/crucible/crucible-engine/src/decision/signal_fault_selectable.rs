@@ -21,7 +21,8 @@ use std::collections::BTreeSet;
 
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceClassContext, ChoiceCoordinate, ChoiceDiscovery,
-    ChoiceDomain, ChoiceSource, ConfigurationId, ScenarioDefId, SelectableDeclaration, Selection,
+    ChoiceDomain, ChoiceSource, ConfigurationId, ImmutableChoiceDomain, ScenarioDefId,
+    SelectableDeclaration, Selection,
 };
 use thiserror::Error;
 
@@ -56,7 +57,7 @@ pub struct SignalFaultSelectable {
     candidate_count: u32,
     semantics: SignalFaultChoiceSemantics,
     declaration: SelectableDeclaration,
-    domain: ChoiceDomain,
+    domain: ImmutableChoiceDomain,
     opportunity: crucible_campaign::ChoiceOpportunity,
 }
 
@@ -234,10 +235,10 @@ impl SignalFaultSelectable {
             semantics.semantic_tags(),
             false,
         )?;
-        let opportunity = crucible_campaign::ChoiceOpportunity::new(
+        let (opportunity, domain) = crucible_campaign::ChoiceOpportunity::new_with_owned_domain(
             ScenarioDefId::from_hash(CampaignHash::from_bytes(parent.def.id().bytes)),
             &declaration,
-            &domain,
+            domain,
             ChoiceCoordinate {
                 scheduler: CampaignHash::from_bytes(parent.id().bytes),
                 producer: CampaignHash::from_bytes(candidates_digest.bytes),
@@ -299,7 +300,7 @@ impl SignalFaultSelectable {
             semantics,
         )?;
         if reconstructed.declaration != *declaration
-            || reconstructed.domain != *domain
+            || reconstructed.domain.as_domain() != domain
             || reconstructed.opportunity != *opportunity
         {
             return Err(SignalFaultSelectableError::ProducerContractMismatch);
@@ -340,7 +341,7 @@ impl SignalFaultSelectable {
     /// Returns the typed Boolean or discrete campaign domain.
     #[must_use]
     pub const fn domain(&self) -> &ChoiceDomain {
-        &self.domain
+        self.domain.as_domain()
     }
 
     /// Returns the exact runtime opportunity.
@@ -358,7 +359,7 @@ impl SignalFaultSelectable {
     pub fn discovery(&self) -> Result<ChoiceDiscovery, SignalFaultSelectableError> {
         Ok(ChoiceDiscovery::new(
             self.declaration.clone(),
-            self.domain.clone(),
+            self.domain.as_domain().clone(),
             self.opportunity.clone(),
         )?)
     }
@@ -402,7 +403,7 @@ impl SignalFaultSelectable {
         }
         let value = self.semantics.choice_value(candidate_index)?;
         let parent = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
-        Ok(Selection::new_campaign_branch(
+        Ok(Selection::new_campaign_branch_owned_domain(
             &self.opportunity,
             &self.domain,
             value,
@@ -422,7 +423,7 @@ impl SignalFaultSelectable {
     ) -> Result<SignalFaultCampaignBranch, SignalFaultSelectableError> {
         let parent_id =
             ConfigurationId::from_hash(CampaignHash::from_bytes(self.parent.id().bytes));
-        selection.validate_branch_replay(
+        selection.validate_branch_replay_owned_domain(
             &self.opportunity,
             &self.domain,
             self.opportunity.branch_point_id(parent_id),
@@ -431,19 +432,19 @@ impl SignalFaultSelectable {
 
         let mut decisions = vec![Decision::Selection(SelectionDecision::new(selection))];
         if index < self.candidate_count {
-            let basis = BindingSearchChoice {
-                id: self.choice,
-                candidates_digest: self.candidates_digest,
-                candidate_count: self.candidate_count,
-                candidate_semantics: self.semantics.runtime_semantics(),
-                selected_index: Some(index),
-                overridden: true,
-            };
-            let override_decision = basis
-                .override_decisions(self.parent.id())
-                .into_iter()
-                .nth(index as usize)
+            // This owner validates the complete roster in from_basis and
+            // retains it privately without mutation or deserialization.
+            let candidate = self
+                .semantics
+                .runtime_candidate(index)
                 .ok_or(SignalFaultSelectableError::CandidateOutsideDomain)?;
+            let override_decision = BindingSearchChoice::materialize_candidate_decision(
+                self.choice,
+                self.candidates_digest,
+                self.parent.id(),
+                index,
+                candidate,
+            );
             decisions.push(Decision::Override(override_decision));
         }
         let selected = decisions
@@ -1121,5 +1122,77 @@ mod tests {
             selectable.branch_selection(&frontier.configuration, 3),
             Err(SignalFaultSelectableError::CandidateOutsideDomain)
         );
+    }
+
+    #[test]
+    fn promoted_basis_keeps_original_roster_after_public_choice_mutation() {
+        let (frontier, mut raw) = fixture(2);
+        let owner =
+            SignalFaultSelectable::from_binding_choice(&frontier.configuration, frontier.at, &raw)
+                .expect("original immutable basis");
+        let duplicate = crate::ContentHash::from_bytes(b"duplicate");
+        raw.candidate_semantics =
+            BindingSearchCandidateSemantics::Transition(vec![duplicate, duplicate]);
+
+        assert_eq!(raw.override_decision(frontier.configuration.id(), 0), None);
+        assert_eq!(
+            SignalFaultSelectable::from_binding_choice(&frontier.configuration, frontier.at, &raw),
+            Err(SignalFaultSelectableError::MixedCandidateSemantics)
+        );
+        for (index, expected) in frontier.choices.choices().iter().enumerate() {
+            let index = u32::try_from(index).expect("small candidate index");
+            let selection = owner
+                .branch_selection(&frontier.configuration, index)
+                .expect("retained choice");
+            let branch = owner.resolve_branch(&selection).expect("retained branch");
+            assert_eq!(branch.decisions(), expected.decisions());
+        }
+    }
+
+    #[test]
+    fn promoted_owned_identity_preserves_raw_branches_and_owned_discovery() {
+        let (frontier, _) = fixture(2);
+        let owner = SignalFaultSelectable::from_frontier(&frontier).expect("original owner");
+        let parent =
+            ConfigurationId::from_hash(CampaignHash::from_bytes(owner.parent().id().bytes));
+        let point = owner.opportunity().branch_point_id(parent);
+
+        assert_eq!(
+            format!("{:?}", owner.domain),
+            format!("{:?}", owner.domain())
+        );
+        let restored = SignalFaultSelectable::from_records(
+            owner.parent(),
+            owner.declaration(),
+            owner.opportunity(),
+            owner.domain(),
+        )
+        .expect("record reconstruction");
+        assert_eq!(restored, owner);
+        assert_eq!(owner.discovery(), restored.discovery());
+        for index in 0..=2 {
+            let value = owner.semantics.choice_value(index).expect("typed value");
+            let raw =
+                Selection::new_campaign_branch(owner.opportunity(), owner.domain(), value, point)
+                    .expect("ordinary canonical branch");
+            let owned = owner
+                .branch_selection(owner.parent(), index)
+                .expect("immutable canonical branch");
+            assert_eq!(owned.canonical_bytes(), raw.canonical_bytes());
+            assert_eq!(owned.id(), raw.id());
+            assert_eq!(
+                owned.validate_branch_replay_owned_domain(
+                    owner.opportunity(),
+                    &owner.domain,
+                    point
+                ),
+                raw.validate_branch_replay(owner.opportunity(), owner.domain(), point)
+            );
+            let actual = owner.resolve_branch(&owned).expect("typed branch");
+            assert_eq!(
+                actual.decisions(),
+                frontier.choices.choices()[index as usize].decisions()
+            );
+        }
     }
 }

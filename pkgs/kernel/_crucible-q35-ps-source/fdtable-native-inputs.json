@@ -1,0 +1,30 @@
+{
+  "fs/file.o": [
+    "fs/file.c",
+    "fs/crucible_fdtable.inc.c",
+    "include/linux/fdtable.h",
+    "include/linux/crucible_fdtable.h",
+    "include/linux/crucible_allocator.h",
+    "include/linux/sched.h"
+  ],
+  "mm/crucible_allocator.o": [
+    "mm/crucible_allocator.c",
+    "mm/crucible_allocator_retirement.inc.c",
+    "include/linux/crucible_allocator.h",
+    "include/linux/sched.h"
+  ],
+  "mm/slub.o": [
+    "mm/slub.c",
+    "include/linux/crucible_allocator.h",
+    "include/linux/sched.h"
+  ],
+  "virt/kvm/kvm_main.o": [
+    "virt/kvm/kvm_main.c",
+    "virt/kvm/crucible-original-kernel-resource.inc.c",
+    "include/linux/crucible_allocator.h",
+    "include/linux/fdtable.h",
+    "include/linux/crucible_fdtable.h",
+    "include/linux/sched.h",
+    "include/uapi/linux/kvm.h"
+  ]
+}

@@ -36,6 +36,12 @@ pub mod exact_checkpoint;
 pub mod example_corpus;
 mod local_backend;
 pub mod model;
+pub mod node_admission;
+pub mod node_adapters;
+pub mod node_contract;
+pub mod node_dispatch;
+pub mod node_scheduling;
+pub mod node_state;
 pub mod node_time;
 pub mod scheduler;
 #[cfg(feature = "test-double")]
@@ -53,7 +59,7 @@ pub use backend::{
     BackendNetworkFaultContinuation, BackendNetworkFaultCursor, BackendNetworkFaultCursorError,
     BackendNetworkOutput, BackendNetworkOutputCodecError, BackendNetworkPreservedAvailability,
     BackendNetworkRoute, BackendPhysicalStop, BackendSnapshot, ExecutionFingerprint,
-    ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen, SimulationBackend,
+    ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen, NodeRuntimeSet, SimulationBackend,
     StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
 #[cfg(any(test, feature = "test-double"))]
@@ -72,9 +78,9 @@ pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, d
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,
     DeviceSchedulingSubNode, DeviceSchedulingSubNodeCheckpoint,
-    DeviceSchedulingSubNodeCheckpointError, DeviceSubNodeBindingError, WorldIoInstantiationError,
-    WorldIoInstantiationLayout, WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoRuntimeLayout,
-    instantiate_world_io_sub_nodes,
+    DeviceSchedulingSubNodeCheckpointError, DeviceSubNodeBindingError, ScheduledIoNode,
+    WorldIoInstantiationError, WorldIoInstantiationLayout, WorldIoLayoutError, WorldIoLayoutPolicy,
+    WorldIoRuntimeLayout, instantiate_world_io_sub_nodes,
 };
 pub use event_catalog::{
     EVENT_KIND_CATALOG_VERSION, EventKindCatalogDependency, EventKindCatalogEntry,
@@ -102,14 +108,14 @@ pub use model::{
     AppRandomBranchConfig, AppRandomBranchError, AppRandomBranchRun, AppRandomDrawSite,
     AppRandomSampleBudget, AssertionDef, AssertionId, AssertionPhase,
     AssertionProximityGuidanceSignal, BackendRngEvidence, Checkpoint, CheckpointKind,
-    CheckpointMeta, ChoiceTag, CodePoint, Configuration, ContentAddressedBlobRef, ContentHash,
-    CoverageGuidanceSignal, CoverageGuidedCorpus, CoverageGuidedCorpusAdmission,
-    CoverageGuidedCorpusAdmissionDecision, CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry,
-    CoverageGuidedCorpusEntryOrigin, CoverageGuidedCorpusError, CoverageGuidedCorpusRun,
-    CoverageGuidedFuzzConfig, CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun,
-    CoverageGuidedFuzzThroughputReport, CoverageGuidedFuzzThroughputTarget,
-    CoverageGuidedFuzzingEvidence, CowDeltaKind, CowDeltaRef, CowSharingStats,
-    DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS, DEFAULT_APP_RANDOM_DRAW_CAP,
+    CheckpointMeta, ChoiceTag, CodePoint, ComputeNodeDef, ComputeNodeTemplate, Configuration,
+    ContentAddressedBlobRef, ContentHash, CoverageGuidanceSignal, CoverageGuidedCorpus,
+    CoverageGuidedCorpusAdmission, CoverageGuidedCorpusAdmissionDecision,
+    CoverageGuidedCorpusConfig, CoverageGuidedCorpusEntry, CoverageGuidedCorpusEntryOrigin,
+    CoverageGuidedCorpusError, CoverageGuidedCorpusRun, CoverageGuidedFuzzConfig,
+    CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, CoverageGuidedFuzzThroughputReport,
+    CoverageGuidedFuzzThroughputTarget, CoverageGuidedFuzzingEvidence, CowDeltaKind, CowDeltaRef,
+    CowSharingStats, DEFAULT_ADAPTIVE_UCB_EXPLORATION_WEIGHT_MICROS, DEFAULT_APP_RANDOM_DRAW_CAP,
     DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET, DagStore, DagStoreError,
     DagStoreReproductionArtifact, DebugAttachChannelKind, DebugAttachChannelSet, DebugAttachReport,
     DebugAttachRequest, DebugBreakpointClientKind, DebugBreakpointMechanism, DebugBreakpointReport,
@@ -217,7 +223,7 @@ pub use scheduler::{
     BackendQuantumLoop, BackendRunCapBoundary, BackendRunDispatchBoundary, BackendRunInputBoundary,
     BackendRunResult, CheckpointTerminalCause, ComposedRunVerdict, ComposedRunVerdictFailure,
     ConcurrentBackendRun, ConcurrentBackendRunOutcome, ConcurrentBackendRunResult,
-    ConcurrentQuantumLoop, ConcurrentSimulationBackend, ConservativeAdvanceAuthorization,
+    ConcurrentNodeRuntimeSet, ConcurrentQuantumLoop, ConcurrentSimulationBackend, ConservativeAdvanceAuthorization,
     ControlOperation, ControlOperationKind, DeviceGroupSelectionPublication, EventAttributeValue,
     EventDiagnosticPayload, EventLevel, EventLog, EventLogAssertionProximityProjection,
     EventLogAssertionProximityProjectionEntry, EventLogCausalDivergencePoint,

@@ -5,6 +5,45 @@ use crucible_device::block::BlockTransportRequestIds;
 use crucible_engine::{ContentHash, MarkerId};
 
 #[test]
+fn raw_copy_disk_allowance_preserves_ordinary_admission_and_bounds_diagnostics() {
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/firmware",
+        "/run/crucible",
+    )
+    .with_vm_shape(128, 4)
+    .with_runtime_determinism_trace()
+    .with_runtime_determinism_trace_budget(PRODUCTION_RUNTIME_TRACE_BYTES)
+    .expect("the production trace budget is bounded");
+    let ordinary = config.resource_requirements();
+    let diagnostic = config.with_apic_origin_trace().resource_requirements();
+    let mebibyte = 1024_u64 * 1024;
+
+    assert_eq!(MEMORY_BYTES, 512 * mebibyte);
+    assert_eq!(attempt_writable_bytes(false), 1024 * mebibyte);
+    assert_eq!(attempt_writable_bytes(true), 1280 * mebibyte);
+    assert_eq!(ordinary.minimum_writable_bytes(), 896 * mebibyte);
+    assert_eq!(diagnostic.minimum_writable_bytes(), 1152 * mebibyte);
+    assert!(
+        ordinary
+            .validate_ceiling(4, MEMORY_BYTES, attempt_writable_bytes(false))
+            .is_ok()
+    );
+    assert!(matches!(
+        diagnostic.validate_ceiling(4, MEMORY_BYTES, attempt_writable_bytes(false)),
+        Err(crucible_qemu_host::QemuLaunchResourceError::WritableBytes { required, admitted })
+            if required == 1152 * mebibyte && admitted == 1024 * mebibyte
+    ));
+    assert!(
+        diagnostic
+            .validate_ceiling(4, MEMORY_BYTES, attempt_writable_bytes(true))
+            .is_ok()
+    );
+}
+
+#[test]
 fn preemption_after_adjacent_sample_uses_the_next_retirement() {
     let calibration = QemuLogicalTimeCalibration {
         logical_icount: 2_000_001,

@@ -7,6 +7,7 @@ use super::*;
 use crate::CampaignHash;
 use crucible_store::content_store::{ContentId, ObjectKind};
 
+mod backend_identity;
 mod retention_policy;
 
 use retention_policy::assert_retention_policy_materialized_start;

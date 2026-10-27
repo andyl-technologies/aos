@@ -1,0 +1,196 @@
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1470,11 +1470,26 @@
+ 	bool uncertain;
+ };
+ 
++/* Lifetime control receipts are private original VM storage. The payload
++ * result and normalized syscall delivery are distinct retained outcomes. */
++struct kvm_crucible_ps_control_row {
++	struct kvm_crucible_q35_ps_clock input;
++	struct kvm_crucible_q35_ps_clock output;
++	struct task_struct *actor;
++	u64 ordinal;
++	s32 syscall_result;
++	u32 uncopied;
++	bool output_known;
++	bool delivery_attempted;
++	bool delivery_known;
++};
++
+ struct kvm_crucible_ps_clock_state {
+ 	struct kvm_crucible_q35_ps_clock plan;
+ 	struct kvm_crucible_q35_ps_clock last_request;
+ 	struct kvm_crucible_q35_ps_clock last_result;
+ 	struct task_struct *controller;
++	struct kvm_crucible_ps_control_row *history;
+ 	struct kvm_crucible_q35_device_effect *pit_birth;
+ 	struct kvm_pit *native_pit;
+ 	bool pit_birth_bound;
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -201,6 +201,8 @@
+ {
+ 	/* Destruction precedes vCPU/IRQ resources that the callback can visit. */
+ 	hrtimer_cancel(&kvm->arch.crucible_clock.ceiling_timer);
++	kfree(kvm->arch.crucible_clock.ps.history);
++	kvm->arch.crucible_clock.ps.history = NULL;
+ 	kfree(kvm->arch.crucible_clock.ps.irq.route_storage);
+ 	kvm->arch.crucible_clock.ps.irq.route_storage = NULL;
+ 	kfree(kvm->arch.crucible_clock.ps.irq.rows);
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -191,6 +191,39 @@
+ 		result->flags |= KVM_CRUCIBLE_Q35_PS_RUNS_CLOSED;
+ }
+ 
++/* Each accepted operation, including cached QUERY delivery, consumes a new
++ * lifetime slot before effects. No operation replaces an earlier receipt. */
++static struct kvm_crucible_ps_control_row *q35_ps_history_reserve_locked(
++	struct kvm *kvm, const struct kvm_crucible_q35_ps_clock *input,
++	struct kvm_crucible_ps_control_row *history, u32 maximum)
++{
++	struct kvm_crucible_ps_clock_state *ps = &kvm->arch.crucible_clock.ps;
++	struct kvm_crucible_ps_control_row *row;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!history || !maximum || maximum > KVM_CRUCIBLE_Q35_PS_MAX_CONTROLS ||
++	    ps->controls_used >= maximum)
++		return NULL;
++	row = &history[ps->controls_used];
++	if (row->ordinal || row->actor || row->output_known || row->delivery_known)
++		return NULL;
++	row->input = *input;
++	row->actor = current;
++	row->ordinal = ps->controls_used + 1;
++	return row;
++}
++
++static void q35_ps_history_output_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_control_row *row,
++	const struct kvm_crucible_q35_ps_clock *output)
++{
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!row)
++		return;
++	row->output = *output;
++	row->output_known = true;
++}
++
+ /* Locks are acquired without waiting on a native RUN owner. A failed trylock
+  * cannot certify physical stop. Control/configuration precede native resources;
+  * the original gate is last and is released before hrtimer cancellation/kicks.
+@@ -200,12 +233,14 @@
+ 	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
+ 	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
+ 	struct kvm_crucible_q35_ps_clock request, output, identity;
++	struct kvm_crucible_ps_control_row *allocation = NULL, *history_row = NULL;
+ 	struct kvm_vcpu *vcpu;
+ 	void __user *argument = u64_to_user_ptr(cap->args[0]);
+ 	unsigned long flags, index;
+ 	u64 closed_workers = 0, pending = 0, now;
+-	u32 locked = 0;
++	u32 locked = 0, uncopied = 0;
+ 	bool kick = false, arm = false, contain = false;
++	bool delivery_attempted = false;
+ 	int result = -EOPNOTSUPP;
+ 
+ 	BUILD_BUG_ON(sizeof(request) != 208);
+@@ -217,6 +252,13 @@
+ 		return -EINVAL;
+ 	if (!mutex_trylock(&clock->control_lock))
+ 		return -EBUSY;
++	if (request.version == 2 && request.operation == KVM_CRUCIBLE_Q35_PS_SELECT) {
++		allocation = kcalloc(request.maximum_controls, sizeof(*allocation), GFP_KERNEL_ACCOUNT);
++		if (!allocation) {
++			result = -ENOMEM;
++			goto unlock_control;
++		}
++	}
+ 	result = -EBUSY;
+ 	if (!mutex_trylock(&kvm->crucible_configuration_lock))
+ 		goto unlock_control;
+@@ -245,6 +287,15 @@
+ 		    request.start_ps || request.end_ps || request.expected_phase ||
+ 		    !kvm_arch_crucible_q35_ps_plan_cut_locked(kvm, &request))
+ 			goto unlock_gate;
++
++		if (request.version == 2) {
++			history_row = q35_ps_history_reserve_locked(kvm, &request,
++				allocation, request.maximum_controls);
++			if (!history_row)
++				goto unlock_gate;
++			ps->history = allocation;
++			allocation = NULL;
++		}
+ 
+ 		/* This changes no old clock/IRQ fields. The actual ordinary vCPU
+ 		 * allocation will allocate its private byte journal after this cut. */
+@@ -266,10 +317,17 @@
+ 			    memcmp(&identity, &ps->last_request, sizeof(identity)) ||
+ 			    ps->controls_used >= ps->plan.maximum_controls)
+ 				goto unlock_gate;
++			if (request.version == 2) {
++				history_row = q35_ps_history_reserve_locked(kvm, &request,
++					ps->history, ps->plan.maximum_controls);
++				if (!history_row)
++					goto unlock_gate;
++			}
+ 			ps->cached_query = true;
+ 			ps->controls_used++;
+ 			output = ps->last_result;
+ 			output.operation = request.operation;
++			q35_ps_history_output_locked(kvm, history_row, &output);
+ 			result = 0;
+ 			goto unlock_gate;
+ 		}
+@@ -286,6 +344,13 @@
+ 	}
+ 	if (ps->controls_used >= ps->plan.maximum_controls)
+ 		goto unlock_gate;
++
++	if (request.version == 2 && !history_row) {
++		history_row = q35_ps_history_reserve_locked(kvm, &request,
++			ps->history, ps->plan.maximum_controls);
++		if (!history_row)
++			goto unlock_gate;
++	}
+ 
+ 	/* The original operation is charged and retained before a native effect.
+ 	 * Even a refused operation cannot be retried as a fresh Apply. */
+@@ -385,6 +450,7 @@
+ 	q35_ps_report_locked(kvm, &output, closed_workers, pending);
+ 	ps->last_result = output;
+ 	ps->result_known = true;
++	q35_ps_history_output_locked(kvm, history_row, &output);
+ unlock_gate:
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ unlock_vcpus:
+@@ -408,9 +474,23 @@
+ 		}
+ 	}
+ 	mutex_unlock(&clock->control_lock);
++	kfree(allocation);
+ 	if (contain)
+ 		kvm_vm_dead(kvm);
+-	if (result)
+-		return result;
+-	return copy_to_user(argument, &output, sizeof(output)) ? -EFAULT : 0;
+-}
++	if (!result) {
++		delivery_attempted = true;
++		uncopied = copy_to_user(argument, &output, sizeof(output));
++		result = uncopied ? -EFAULT : 0;
++	}
++	if (history_row) {
++		/* The syscall owns its original VM reference through delivery. A
++		 * short user copy cannot replace the already retained native output. */
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		history_row->syscall_result = result;
++		history_row->uncopied = uncopied;
++		history_row->delivery_attempted = delivery_attempted;
++		history_row->delivery_known = true;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	}
++	return result;
++}

@@ -208,8 +208,8 @@ pub struct DebugRuntimeRepositionEvidenceMismatch {
     pub expected_configuration: ContentHash,
     /// Target checkpoint required by the session transaction.
     pub expected_checkpoint: ContentHash,
-    /// Previous private QEMU endpoint that must not remain selected.
-    pub expected_previous_qemu_gdbstub: DebugGdbEndpoint,
+    /// Previous private backend endpoint that must not remain selected.
+    pub expected_previous_backend_gdbstub: DebugGdbEndpoint,
     /// Node claimed by the backend.
     pub actual_node: NodeId,
     /// Current configuration claimed by the backend.
@@ -218,8 +218,8 @@ pub struct DebugRuntimeRepositionEvidenceMismatch {
     pub actual_configuration: ContentHash,
     /// Checkpoint claimed by the backend.
     pub actual_checkpoint: ContentHash,
-    /// Private QEMU endpoint claimed by the backend.
-    pub actual_qemu_gdbstub: DebugGdbEndpoint,
+    /// Private backend endpoint claimed by the backend.
+    pub actual_backend_gdbstub: DebugGdbEndpoint,
     /// Gateway generation claimed by the backend.
     pub actual_gateway_generation: u64,
 }
@@ -228,17 +228,17 @@ impl fmt::Display for DebugRuntimeRepositionEvidenceMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_qemu_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} qemu_gdbstub={:?} gateway_generation={}",
+            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_backend_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} backend_gdbstub={:?} gateway_generation={}",
             self.expected_node,
             self.expected_previous_configuration,
             self.expected_configuration,
             self.expected_checkpoint,
-            self.expected_previous_qemu_gdbstub,
+            self.expected_previous_backend_gdbstub,
             self.actual_node,
             self.actual_previous_configuration,
             self.actual_configuration,
             self.actual_checkpoint,
-            self.actual_qemu_gdbstub,
+            self.actual_backend_gdbstub,
             self.actual_gateway_generation,
         )
     }

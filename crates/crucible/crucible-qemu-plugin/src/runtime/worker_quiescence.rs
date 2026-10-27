@@ -10,24 +10,25 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use thiserror::Error;
 
-pub(super) const WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
-pub(super) const WORKER_TEARDOWN: u64 = 1_u64 << 1;
-pub(super) const WORKER_FINGERPRINT: u64 = 1_u64 << 2;
-pub(super) const WORKER_REQUIRED: u64 = WORKER_RUN_CONTROL | WORKER_TEARDOWN;
-pub(super) const WORKER_ALL: u64 = (1_u64 << 3) - 1;
+pub(crate) const WORKER_RUN_CONTROL: u64 = 1_u64 << 0;
+pub(crate) const WORKER_TEARDOWN: u64 = 1_u64 << 1;
+pub(crate) const WORKER_FINGERPRINT: u64 = 1_u64 << 2;
+pub(crate) const WORKER_REQUIRED: u64 = WORKER_RUN_CONTROL | WORKER_TEARDOWN;
+pub(crate) const WORKER_NATIVE_CONTROL: u64 = 1_u64 << 3;
+pub(crate) const WORKER_ALL: u64 = (1_u64 << 4) - 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct WorkerQuiescenceSnapshot {
-    pub(super) held: bool,
-    pub(super) worker_mask: u64,
-    pub(super) parked_mask: u64,
-    pub(super) pending_mask: u64,
-    pub(super) operations_in_flight: u64,
+pub(crate) struct WorkerQuiescenceSnapshot {
+    pub(crate) held: bool,
+    pub(crate) worker_mask: u64,
+    pub(crate) parked_mask: u64,
+    pub(crate) pending_mask: u64,
+    pub(crate) operations_in_flight: u64,
 }
 
 /// Failure to replace parked template workers with fresh fork-child workers.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub(super) enum WorkerForkChildResetError {
+pub(crate) enum WorkerForkChildResetError {
     /// The template worker set was not completely parked and empty.
     #[error("template worker set is not quiescent for fork-child replacement")]
     NotQuiescent {
@@ -35,6 +36,11 @@ pub(super) enum WorkerForkChildResetError {
         snapshot: WorkerQuiescenceSnapshot,
     },
 }
+
+/// Refuses poisoned original worker ownership rather than inferring a hold.
+#[derive(Debug, Error)]
+#[error("original worker admission ownership is poisoned")]
+pub(crate) struct NativeWorkerOwnershipError;
 
 #[derive(Debug)]
 struct WorkerQuiescenceState {
@@ -46,14 +52,14 @@ struct WorkerQuiescenceState {
 
 /// Process-lifetime owner of reversible worker admission and parking state.
 #[derive(Debug)]
-pub(super) struct LiveWorkerQuiescence {
+pub(crate) struct LiveWorkerQuiescence {
     worker_mask: u64,
     state: Mutex<WorkerQuiescenceState>,
     released: Condvar,
 }
 
 impl LiveWorkerQuiescence {
-    pub(super) fn new(worker_mask: u64) -> Arc<Self> {
+    pub(crate) fn new(worker_mask: u64) -> Arc<Self> {
         debug_assert_eq!(worker_mask & !WORKER_ALL, 0);
         debug_assert_eq!(worker_mask & WORKER_REQUIRED, WORKER_REQUIRED);
         Arc::new(Self {
@@ -68,12 +74,12 @@ impl LiveWorkerQuiescence {
         })
     }
 
-    pub(super) const fn worker_mask(&self) -> u64 {
+    pub(crate) const fn worker_mask(&self) -> u64 {
         self.worker_mask
     }
 
     /// Marks one worker as parked at a blocking receive safe point.
-    pub(super) fn idle(self: &Arc<Self>, worker: u64) -> WorkerIdleGuard {
+    pub(crate) fn idle(self: &Arc<Self>, worker: u64) -> WorkerIdleGuard {
         self.assert_worker(worker);
         let mut state = self.lock_state();
         debug_assert_eq!(state.active_mask & worker, 0);
@@ -86,18 +92,52 @@ impl LiveWorkerQuiescence {
         }
     }
 
-    pub(super) fn hold(&self) -> WorkerQuiescenceSnapshot {
+    pub(crate) fn hold(&self) -> WorkerQuiescenceSnapshot {
         let mut state = self.lock_state();
         state.held = true;
         self.snapshot_locked(&state)
     }
 
-    pub(super) fn snapshot(&self) -> WorkerQuiescenceSnapshot {
+    /// Tries to retain the original modeled-worker hold without waiting under BQL.
+    ///
+    /// None reports only concurrent ownership. A successful hold persists after
+    /// the caller returns or drops its snapshot; this method grants no release.
+    ///
+    /// # Errors
+    /// Refuses poisoned ownership without adopting its accounting as a proof.
+    pub(crate) fn try_hold(
+        &self,
+    ) -> Result<Option<WorkerQuiescenceSnapshot>, NativeWorkerOwnershipError> {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeWorkerOwnershipError),
+        };
+        state.held = true;
+        Ok(Some(self.snapshot_locked(&state)))
+    }
+
+    /// Observes the same original held worker accounting without lock waits.
+    ///
+    /// # Errors
+    /// Refuses poisoned ownership. None reports a busy owner, never quiescence.
+    pub(crate) fn try_snapshot(
+        &self,
+    ) -> Result<Option<WorkerQuiescenceSnapshot>, NativeWorkerOwnershipError> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(NativeWorkerOwnershipError),
+        };
+        Ok(Some(self.snapshot_locked(&state)))
+    }
+
+    pub(crate) fn snapshot(&self) -> WorkerQuiescenceSnapshot {
         let state = self.lock_state();
         self.snapshot_locked(&state)
     }
 
-    pub(super) fn release(&self) -> WorkerQuiescenceSnapshot {
+    pub(crate) fn release(&self) -> WorkerQuiescenceSnapshot {
         let mut state = self.lock_state();
         state.held = false;
         let snapshot = self.snapshot_locked(&state);
@@ -110,7 +150,7 @@ impl LiveWorkerQuiescence {
     /// The reversible hold remains active. Fresh child workers must each enter
     /// their idle safe point, after which [`Self::fork_child_workers_ready`]
     /// authorizes the ordinary release transition.
-    pub(super) fn reset_fork_child_workers(
+    pub(crate) fn reset_fork_child_workers(
         &self,
     ) -> Result<WorkerQuiescenceSnapshot, WorkerForkChildResetError> {
         let mut state = self.lock_state();
@@ -130,7 +170,7 @@ impl LiveWorkerQuiescence {
     }
 
     /// Returns whether every fresh child worker is parked behind the hold.
-    pub(super) fn fork_child_workers_ready(&self) -> bool {
+    pub(crate) fn fork_child_workers_ready(&self) -> bool {
         let snapshot = self.snapshot();
         snapshot.held
             && snapshot.parked_mask == snapshot.worker_mask
@@ -161,15 +201,43 @@ impl LiveWorkerQuiescence {
 }
 
 /// RAII marker for a worker blocked at a process-safe receive boundary.
-pub(super) struct WorkerIdleGuard {
+pub(crate) struct WorkerIdleGuard {
     quiescence: Arc<LiveWorkerQuiescence>,
     worker: u64,
     parked: bool,
 }
 
 impl WorkerIdleGuard {
+    /// Admits a bounded nonblocking receive before any socket bytes are dequeued.
+    ///
+    /// A held reader remains parked with its original bytes in the socket. Unlike
+    /// `received`, this path owns no stack-local message while waiting for release.
+    /// The caller must perform only nonblocking I/O under the returned guard.
+    pub(crate) fn enter_before_nonblocking_receive(mut self) -> WorkerOperationGuard {
+        let mut state = self.quiescence.lock_state();
+        while state.held {
+            debug_assert_ne!(state.parked_mask & self.worker, 0);
+            debug_assert_eq!(state.pending_mask & self.worker, 0);
+            debug_assert_eq!(state.active_mask & self.worker, 0);
+            state = self
+                .quiescence
+                .released
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state.parked_mask &= !self.worker;
+        state.active_mask |= self.worker;
+        drop(state);
+
+        self.parked = false;
+        WorkerOperationGuard {
+            quiescence: Arc::clone(&self.quiescence),
+            worker: self.worker,
+        }
+    }
+
     /// Transfers one received item into explicit worker-local ownership.
-    pub(super) fn received(mut self) -> WorkerPendingGuard {
+    pub(crate) fn received(mut self) -> WorkerPendingGuard {
         // The receive has completed, but the worker cannot inspect, publish,
         // or otherwise act on the item until this mutex transition makes its
         // local ownership visible to the barrier snapshot.
@@ -200,7 +268,7 @@ impl Drop for WorkerIdleGuard {
 }
 
 /// RAII marker for one item dequeued but not yet admitted for processing.
-pub(super) struct WorkerPendingGuard {
+pub(crate) struct WorkerPendingGuard {
     quiescence: Arc<LiveWorkerQuiescence>,
     worker: u64,
     pending: bool,
@@ -208,7 +276,7 @@ pub(super) struct WorkerPendingGuard {
 
 impl WorkerPendingGuard {
     /// Waits for a reversible hold to release, then admits the pending item.
-    pub(super) fn enter(mut self) -> WorkerOperationGuard {
+    pub(crate) fn enter(mut self) -> WorkerOperationGuard {
         let mut state = self.quiescence.lock_state();
         while state.held {
             debug_assert_ne!(state.pending_mask & self.worker, 0);
@@ -246,7 +314,7 @@ impl Drop for WorkerPendingGuard {
 }
 
 /// RAII marker for one admitted worker operation.
-pub(super) struct WorkerOperationGuard {
+pub(crate) struct WorkerOperationGuard {
     quiescence: Arc<LiveWorkerQuiescence>,
     worker: u64,
 }
@@ -386,3 +454,7 @@ mod tests {
         assert!(!quiescence.release().held);
     }
 }
+
+#[cfg(test)]
+#[path = "native_worker_hold_tests.rs"]
+mod native_worker_hold_tests;

@@ -1,0 +1,210 @@
+static bool initialized;
+
+static void setup(void)
+{
+    if (initialized) {
+        assert(!pthread_mutex_destroy(&vm.crucible_gate_lock));
+        assert(!pthread_mutex_destroy(&vm.target.mutex));
+        assert(!pthread_mutex_destroy(&pic.lock));
+    }
+    memset(&vm, 0, sizeof(vm));
+    memset(&pic, 0, sizeof(pic));
+    memset(&route, 0, sizeof(route));
+    assert(!pthread_mutex_init(&vm.crucible_gate_lock, NULL));
+    assert(!pthread_mutex_init(&vm.target.mutex, NULL));
+    assert(!pthread_mutex_init(&pic.lock, NULL));
+    initialized = true;
+    host_now = 10;
+    vm.arch.crucible_clock.active = true;
+    vm.arch.crucible_clock.window_generation = 7;
+    vm.crucible_host_ceiling_ns = 100;
+    vm.crucible_continuation_roster_frozen = true;
+    vm.crucible_irq_input.enabled = true;
+    vm.arch.vpic = &pic;
+    vm.target.kvm = &vm;
+    vm.target.vcpu_id = 0;
+    vm.target.crucible_timer_run_owner = current;
+    vm.target.crucible_timer_run_invocation = 99;
+    vm.target.crucible_run_return.outstanding = true;
+    vm.target.crucible_run_return.original.invocation = 99;
+    vm.target.crucible_run_return.original.generation_begin = 7;
+    pic.kvm = &vm;
+    pic.pics[0].pics_state = &pic;
+    pic.pics[1].pics_state = &pic;
+    pic.pics[0].irq_base = 80;
+    route.type = KVM_IRQ_ROUTING_IRQCHIP;
+    route.irqchip.irqchip = KVM_IRQCHIP_PIC_MASTER;
+    route.set = kvm_pic_set_irq;
+    birth_live = accept_pic = true;
+    close_after_injection = change_queued_vector = false;
+    close_after_pic_collection = false;
+    native_wakes = native_requests = native_queues = native_injections = 0;
+    dead_calls = generic_notifiers = 0;
+}
+
+static struct kvm_crucible_pit_irq_birth original(void)
+{
+    return (struct kvm_crucible_pit_irq_birth) {
+        .generation = 7, .invocation = 5, .sequence = 11,
+        .native_vcpu_id = 0, .host_ns = 10, .logical_ns = 20,
+    };
+}
+
+static void produce(void)
+{
+    struct kvm_crucible_pit_irq_birth birth = original();
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm,
+        KVM_PIT_IRQ_SOURCE_ID, 1, false, &birth) == 1);
+    birth.phase = 1;
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm,
+        KVM_PIT_IRQ_SOURCE_ID, 0, false, &birth) == 1);
+    assert(pic.crucible_pit[0].high_known && pic.crucible_pit[0].low_known);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].last_irr && !pic.irq_states[0]);
+}
+
+static void cases(void)
+{
+    struct kvm_crucible_pit_irq_birth birth;
+    struct crucible_irq_injection_lease lease;
+    struct kvm_crucible_pic_pit_line retained;
+
+    setup();
+    produce();
+    assert(!architecture_irq_tail(&vm.target));
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_CONSUMED);
+    assert(pic.crucible_pit[0].target_id == 0 &&
+        pic.crucible_pit[0].consume_invocation == 99);
+    assert(!pic.pics[0].irr && pic.pics[0].isr == 1);
+    assert(native_queues == 1 && native_injections == 1 && !generic_notifiers);
+    assert(!vm.crucible_effect_owners && !vm.target.crucible_apic_target.injection_active);
+    pic_lock(&pic);
+    assert(!pic_pit_controller_write_safe_locked(&pic));
+    spin_unlock(&pic.lock);
+
+    /* A failed source admission cannot set IRR or dispatch a native wake. */
+    setup();
+    birth = original();
+    birth_live = false;
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm,
+        KVM_PIT_IRQ_SOURCE_ID, 1, false, &birth) == -EAGAIN);
+    assert(!pic.pics[0].irr && !pic.pics[0].last_irr && !native_wakes);
+
+    setup();
+    produce();
+    retained = pic.crucible_pit[0];
+    birth = original();
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm,
+        KVM_PIT_IRQ_SOURCE_ID, 1, false, &birth) == -EAGAIN);
+    assert(!memcmp(&retained, &pic.crucible_pit[0], sizeof(retained)));
+
+    /* Existing scalar IRR alone is not an enrolled original receiver. */
+    setup();
+    pic.pics[0].irr = pic.output = 1;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && pic.output == 1);
+    assert(!native_queues && !native_injections);
+
+    setup();
+    produce();
+    pic.crucible_pit[0].phase = CRUCIBLE_PIC_PIT_CONSUMED;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && !native_queues);
+
+    setup();
+    produce();
+    pic.crucible_pit[0].high_known = false;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && !native_queues);
+
+    setup();
+    produce();
+    pic.crucible_pit[0].original.generation++;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && !native_queues);
+
+    setup();
+    produce();
+    pic.pics[0].irq_base ^= 8;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && !native_queues);
+
+    setup();
+    produce();
+    pic.pics[0].auto_eoi = 1;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !generic_notifiers && !native_queues);
+
+    setup();
+    produce();
+    pic.pics[1].irr = 1;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr && !native_queues);
+
+    setup();
+    produce();
+    change_queued_vector = true;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(native_queues == 1 && native_injections == 1 &&
+        !vm.crucible_effect_owners && vm.crucible_irq_input.tainted);
+
+    setup();
+    produce();
+    close_after_injection = true;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(native_injections == 1 && !vm.crucible_effect_owners);
+
+    /* The final architecture cut can follow successful local PIC collection. */
+    setup();
+    produce();
+    close_after_pic_collection = true;
+    assert(architecture_irq_tail(&vm.target) == -EAGAIN);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(native_queues == 1 && native_injections == 1);
+    assert(!vm.crucible_effect_owners &&
+        !vm.target.crucible_apic_target.injection_active);
+    assert(vm.crucible_irq_input.tainted &&
+        vm.arch.crucible_clock.continuation.uncertain);
+
+    /* Finish(false) retains a reserved intack as Unknown, never CONSUMED. */
+    setup();
+    produce();
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(crucible_irq_injection_begin(&vm.target, &lease));
+    assert(kvm_crucible_pic_read_irq(&vm.target) == 80);
+    assert(crucible_irq_injection_finish(&vm.target, &lease, false) == -EAGAIN);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+
+    setup();
+    produce();
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(crucible_irq_injection_begin(&vm.target, &lease));
+    vm.target.crucible_timer_run_owner = NULL;
+    pic_lock(&pic);
+    assert(!pic_pit_consume_begin_locked(&pic, &vm.target, 0));
+    spin_unlock(&pic.lock);
+    assert(pic.pics[0].irr == 1 && !pic.pics[0].isr);
+    assert(crucible_irq_injection_finish(&vm.target, &lease, false) == -EAGAIN);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+
+    /* Default generic producer and intack keep native register behavior. */
+    setup();
+    vm.crucible_irq_input.enabled = false;
+    birth = original();
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm,
+        KVM_PIT_IRQ_SOURCE_ID, 1, false, &birth) == 1);
+    assert(kvm_pic_read_irq(&vm) == 80);
+    assert(!pic.crucible_pit_issued && pic.pics[0].isr == 1 && !pic.pics[0].irr);
+    pic_lock(&pic);
+    assert(pic_pit_controller_write_safe_locked(&pic));
+    spin_unlock(&pic.lock);
+}
+
+int main(void)
+{
+    cases();
+    puts("Source-extracted PIC producer/intack/EXTINT custody controls passed");
+    return 0;
+}

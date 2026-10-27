@@ -362,7 +362,7 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
 
     let allowed = qemu_specific_boundary_failures(
         "crucible-qemu-host",
-        Path::new("crucible-qemu/src/lib.rs"),
+        Path::new("crucible/crucible-qemu-host/src/lib.rs"),
         "pub struct QemuNode;\n",
     );
     assert!(allowed.is_empty(), "{allowed:?}");

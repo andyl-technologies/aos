@@ -42,7 +42,7 @@ pub(super) fn prepare_production_source(
         native_retirement: None,
         promotion_source: None,
         promotion_evidence: None,
-        choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+        choice_closure: crate::campaign_replay_closure::GuardedCampaignReplayClosure::empty()
             .to_canonical_bytes()
             .map_err(|_| invalid_root("empty choice closure could not be encoded"))?,
         reuse: None,
@@ -176,7 +176,7 @@ pub(super) fn prepare_production_source_with_cancellation(
     {
         return Err(invalid_root("checkpoint choice closure length is invalid"));
     }
-    crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+    crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_canonical_bytes(
         &choice_closure,
     )
     .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;

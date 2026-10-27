@@ -15,6 +15,15 @@ impl DirectoryRefBackend {
         Self { root: root.into() }
     }
 
+    /// Observes retained pathname capacity without accessing the store.
+    ///
+    /// Excludes this value's inline slot and filesystem or allocator overhead.
+    #[must_use]
+    pub fn retained_configuration_requested_storage_data(&self) -> usize {
+        let Self { root } = self;
+        root.capacity()
+    }
+
     /// Returns the authoritative ref root.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -176,7 +185,7 @@ impl MutableRefBackend for DirectoryRefBackend {
     }
 }
 
-struct DirectoryRefPublicationGuard {
+pub(super) struct DirectoryRefPublicationGuard {
     _lock: File,
 }
 

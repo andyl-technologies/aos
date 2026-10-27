@@ -1,0 +1,4488 @@
+--- a/src/ckptserializer.cpp
++++ b/src/ckptserializer.cpp
+@@ -48,6 +48,8 @@
+ #include "protectedfds.h"
+ #include "syscallwrappers.h"
+ #include "util.h"
++#include "crucible_capture_budget.h"
++#include "crucible_single_worker.h"
+ 
+ // aarch64 and riscv don't define SYS_pipe kernel call by default.
+ #if defined(__aarch64__) || defined(__riscv)
+@@ -110,6 +112,8 @@
+ static forked_rc_t
+ double_fork()
+ {
++  JASSERT(dmtcp_crucible::extra_worker_admitted());
++
+   pid_t pid;
+   // 0. This assumes SIGCHLD is already blocked.  This works during checkpoint.
+   struct sigaction saved_sigchld_action;
+@@ -223,10 +227,20 @@
+   /* 1. Open fd to checkpoint image on disk */
+   /* Create temp checkpoint file and write magic number to it */
+   int flags = O_CREAT | O_TRUNC | O_WRONLY;
++  int ticket = dmtcp_crucible_reserve_capture_file(tempCkptFilename);
++  JASSERT(ticket != -1);
++  if (dmtcp_crucible_capture_budget_selected()) flags = O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW;
+   int fd = _real_open(tempCkptFilename, flags, 0600);
++  JASSERT(dmtcp_crucible_adopt_capture_file(ticket, fd));
+   *fdCkptFileOnDisk = fd; /* if use_compression, fd will be reset to pipe */
+   JASSERT(fd != -1) (tempCkptFilename) (JASSERT_ERRNO)
+   .Text("Error creating file.");
++
++  // The selected account admits no compressor child or pipe writer.
++  if (dmtcp_crucible_capture_budget_selected() ||
++      dmtcp_crucible::selected_single_worker()) {
++    return fd;
++  }
+ 
+ #ifdef FAST_RST_VIA_MMAP
+   return fd;
+@@ -272,6 +286,13 @@
+ static forked_rc_t
+ test_and_prepare_for_forked_ckpt()
+ {
++  if (dmtcp_crucible_capture_budget_selected() ||
++      dmtcp_crucible::selected_single_worker()) {
++    JASSERT(getenv(ENV_VAR_FORKED_CKPT) == NULL);
++    return FORKED_CKPT_FAILED;
++  }
++
++
+ #ifdef TEST_FORKED_CHECKPOINTING
+   return FORKED_CKPT_PARENT;
+ #endif  // ifdef TEST_FORKED_CHECKPOINTING
+@@ -348,6 +369,7 @@
+ CkptSerializer::createCkptDir()
+ {
+   string ckptDir = ProcessInfo::instance().getCkptDir();
++  JASSERT(dmtcp_crucible_require_capture_root(ckptDir.c_str()));
+ 
+   JASSERT(!ckptDir.empty());
+   JASSERT(mkdir(ckptDir.c_str(), S_IRWXU) == 0 || errno == EEXIST)
+@@ -368,6 +390,7 @@
+                                const string& ckptFilename)
+ {
+   JTRACE("Thread performing checkpoint.");
++  JASSERT(dmtcp_crucible_capture_process_current());
+   createCkptDir();
+   forked_ckpt_status = test_and_prepare_for_forked_ckpt();
+   if (forked_ckpt_status == FORKED_CKPT_PARENT) {
+@@ -389,7 +412,9 @@
+ 
+   // Write ckpt header twice. It's read once by dmtcp_restart and again by
+   // mtcp_restart.
++  JASSERT(dmtcp_crucible_charge_capture_write(fd, sizeof(ckptHdr)));
+   JASSERT(Util::writeAll(fd, &ckptHdr, sizeof(ckptHdr)) == sizeof(ckptHdr));
++  JASSERT(dmtcp_crucible_charge_capture_write(fd, sizeof(ckptHdr)));
+   JASSERT(Util::writeAll(fd, &ckptHdr, sizeof(ckptHdr)) == sizeof(ckptHdr));
+ 
+   JTRACE("MTCP is about to write checkpoint image.")(ckptFilename);
+--- a/src/dmtcprestartinternal.cpp
++++ b/src/dmtcprestartinternal.cpp
+@@ -19,6 +19,7 @@
+  *  <http://www.gnu.org/licenses/>.                                         *
+  ****************************************************************************/
+ 
++#include "crucible_single_worker.h"
+ #include <elf.h>
+ #include <fcntl.h>
+ #include <limits.h>
+@@ -241,6 +242,7 @@
+ void
+ RestoreTarget::createDependentChildProcess()
+ {
++  JASSERT(dmtcp_crucible::extra_worker_admitted());
+   pid_t pid = fork();
+ 
+   JASSERT(pid != -1);
+@@ -253,6 +255,7 @@
+ void
+ RestoreTarget::createDependentNonChildProcess()
+ {
++  JASSERT(dmtcp_crucible::extra_worker_admitted());
+   pid_t pid = fork();
+ 
+   JASSERT(pid != -1);
+@@ -271,6 +274,7 @@
+ void
+ RestoreTarget::createOrphanedProcess(bool createIndependentRootProcesses)
+ {
++  JASSERT(dmtcp_crucible::extra_worker_admitted());
+   pid_t pid = fork();
+ 
+   JASSERT(pid != -1);
+@@ -436,6 +440,7 @@
+ runMtcpRestart(int fd, RestoreTarget *restoreTarget)
+ {
+   if (requestedDebugLevel > 0) {
++    JASSERT(dmtcp_crucible::extra_worker_admitted());
+     int debugPipe[2];
+     socketpair(AF_UNIX, SOCK_STREAM, 0, debugPipe);
+     pid_t pid = fork();
+@@ -550,6 +555,7 @@
+   ASSERT_EQ(0, lseek(fd, 0, SEEK_SET));
+ 
+   if (fc == GZIP_FIRST) {
++    JASSERT(dmtcp_crucible::extra_worker_admitted());
+     decomp_path = gzip_path;
+     decomp_args = gzip_args;
+ 
+@@ -876,6 +882,8 @@
+ void
+ DmtcpRestart::processCkptImages()
+ {
++  JASSERT(dmtcp_crucible::join_coordinator_admitted(allowedModes == COORD_JOIN));
++  JASSERT(!dmtcp_crucible::selected_single_worker() || ckptImages.size() == 1);
+   for (const string& ckptImage : ckptImages) {
+       RestoreTarget *t = new RestoreTarget(ckptImage);
+       targets[t->upid()] = t;
+@@ -921,6 +929,9 @@
+ 
+   JASSERT(t != NULL);
+   JASSERT(t->pid() != 0);
++  JASSERT(dmtcp_crucible::original_restore_admitted(
++    ckptImages.size(), targets.size(), independentProcessTreeRoots.size(),
++    t->numPeers(), t->isOrphan()));
+ 
+   if (foundNonOrphan) {
+     t->createProcess(true);
+--- a/src/dmtcpmessagetypes.cpp
++++ b/src/dmtcpmessagetypes.cpp
+@@ -124,6 +124,9 @@
+     OSHIFTPRINTF(DMT_KVDB_REQUEST)
+     OSHIFTPRINTF(DMT_KVDB_RESPONSE)
+ 
++    OSHIFTPRINTF(DMT_CRUCIBLE_WRITER_FINAL)
++    OSHIFTPRINTF(DMT_CRUCIBLE_WRITER_FINAL_ACK)
++
+   default:
+     JASSERT(false) (s).Text("Invalid Message Type");
+ 
+--- a/src/coordinatorapi.h
++++ b/src/coordinatorapi.h
+@@ -79,6 +79,9 @@
+ 
+ void sendCkptFilename();
+ 
++// Selected terminal history exchange, never a durable host or restore ACK.
++bool publishFinalWriterHistory();
++
+ 
+ kvdb::KVDBResponse
+ kvdbRequest(DmtcpMessage const& msg,
+--- a/src/lookup_service.cpp
++++ b/src/lookup_service.cpp
+@@ -1,3 +1,4 @@
++#include "crucible_control_frame.h"
+ /****************************************************************************
+  *   Copyright (C) 2006-2013 by Jason Ansel, Kapil Arya, and Gene Cooperman *
+  *   jansel@csail.mit.edu, kapil@ccs.neu.edu, gene@ccs.neu.edu              *
+@@ -72,7 +73,12 @@
+ {
+   DmtcpMessage reply(DMT_KVDB_RESPONSE);
+   reply.kvdbResponse = response;
+-  remote << reply;
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), reply, nullptr, 0))
++      _exit(86);
++  } else {
++    remote << reply;
++  }
+ }
+ 
+ void
+@@ -84,8 +90,14 @@
+   reply.valLen = val.size() + 1;
+   reply.extraBytes = reply.valLen;
+ 
+-  remote << reply;
+-  remote.writeAll(val.data(), reply.valLen);
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    if (val.size() >= dmtcp_crucible::ControlPayloadBytes ||
++        !dmtcp_crucible::selected_send_frame(remote.sockfd(), reply,
++                                            val.c_str(), reply.valLen)) _exit(86);
++  } else {
++    remote << reply;
++    remote.writeAll(val.data(), reply.valLen);
++  }
+ }
+ 
+ void
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -73,6 +73,7 @@
+ # headers:
+ nobase_noinst_HEADERS =						\
+ 			ckptserializer.h			\
++			crucible_capture_budget.h		\
+ 			constants.h 				\
+ 			coordinatorapi.h			\
+ 			coordinatorplugin.h			\
+@@ -184,6 +185,7 @@
+ 				  threadwrappers.cpp 		\
+ 				  wrapperlock.cpp		\
+ 				  wrappers.cpp 			\
++				  crucible_capture_budget.cpp \
+ 				  writeckpt.cpp
+ 
+ __d_libdir__libdmtcp_so_LDFLAGS = -shared -Xlinker -znow
+--- /dev/null
++++ b/src/crucible_single_worker.h
+@@ -0,0 +1,148 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Selected native process producer restrictions, never execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_SINGLE_WORKER_H
++#define DMTCP_CRUCIBLE_SINGLE_WORKER_H
++
++#include <atomic>
++#include <cstdlib>
++#include <cstring>
++#include <sys/resource.h>
++
++namespace dmtcp_crucible {
++
++inline bool selected_single_worker()
++{
++    return std::getenv("CRUCIBLE_CAPTURE_PROCESS_POLICY") != nullptr;
++}
++
++inline bool process_policy_admitted()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_PROCESS_POLICY");
++    if (policy == nullptr) {
++        return true;
++    }
++    if (std::strcmp(policy, "cfi-single-worker-control.v3") != 0) {
++        return false;
++    }
++
++    struct rlimit limits;
++    return getrlimit(RLIMIT_NOFILE, &limits) == 0 &&
++           limits.rlim_cur <= 1024 && limits.rlim_max <= 1024;
++}
++
++inline bool join_coordinator_admitted(bool actual_join_mode)
++{
++    return !selected_single_worker() ||
++           (process_policy_admitted() && actual_join_mode);
++}
++
++inline bool foreground_coordinator_admitted(bool daemon)
++{
++    return !selected_single_worker() ||
++           (process_policy_admitted() && !daemon);
++}
++
++inline bool original_restore_admitted(size_t images, size_t targets,
++                                     size_t independent_roots, int peers,
++                                     bool orphan)
++{
++    return !selected_single_worker() ||
++           (process_policy_admitted() && images == 1 && targets == 1 &&
++            independent_roots == 1 && peers == 1 && !orphan);
++}
++
++inline bool coordinator_worker_admitted(size_t current_workers,
++                                       bool worker_connection, int peers)
++{
++    return !selected_single_worker() ||
++           (process_policy_admitted() && current_workers == 0 &&
++            worker_connection && peers == 1);
++}
++
++
++inline bool load_control_cookie(unsigned char *cookie)
++{
++    const char *text = std::getenv("CRUCIBLE_CAPTURE_CONTROL_COOKIE");
++    if (text == nullptr || ::strnlen(text, 65) != 64) {
++        return false;
++    }
++
++    for (unsigned index = 0; index < 32; ++index) {
++        unsigned value = 0;
++        for (unsigned half = 0; half < 2; ++half) {
++            unsigned char digit = text[2 * index + half];
++            unsigned decoded;
++            if (digit >= '0' && digit <= '9') {
++                decoded = digit - '0';
++            } else if (digit >= 'a' && digit <= 'f') {
++                decoded = digit - 'a' + 10;
++            } else {
++                return false;
++            }
++            value = 16 * value + decoded;
++        }
++        cookie[index] = static_cast<unsigned char>(value);
++    }
++    return true;
++}
++
++inline bool reserve_control_request(unsigned command)
++{
++    if (!selected_single_worker()) {
++        return true;
++    }
++    if (!process_policy_admitted() || (command != 'c' && command != 's')) {
++        return false;
++    }
++
++    // Both endpoints retain their own attempted-request debit. Transport failure
++    // or an unaccepted body never replenishes a selected connection slot.
++    static std::atomic<unsigned> attempted{0};
++    unsigned previous = attempted.load();
++    while (previous < 64) {
++        if (attempted.compare_exchange_weak(previous, previous + 1)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++inline bool control_cookie_matches(const unsigned char *supplied)
++{
++    unsigned char expected[32];
++    if (!load_control_cookie(expected)) {
++        return false;
++    }
++
++    unsigned difference = 0;
++    for (unsigned index = 0; index < 32; ++index) {
++        difference |= supplied[index] ^ expected[index];
++    }
++    return difference == 0;
++}
++
++inline bool reserve_original_probe()
++{
++    if (!selected_single_worker()) {
++        return true;
++    }
++    if (!process_policy_admitted()) {
++        return false;
++    }
++
++    // The launcher owns one original synchronous testFsGsBase child. Failure
++    // never replenishes this debit; later native checkpoint workers are denied.
++    static std::atomic<unsigned> reserved{0};
++    unsigned expected = 0;
++    return reserved.compare_exchange_strong(expected, 1);
++}
++
++inline bool extra_worker_admitted()
++{
++    return !selected_single_worker();
++}
++
++} // namespace dmtcp_crucible
++#endif
+--- a/src/restartscript.cpp
++++ b/src/restartscript.cpp
+@@ -20,6 +20,7 @@
+  ****************************************************************************/
+ 
+ #include "restartscript.h"
++#include "crucible_restart_writer.h"
+ 
+ #include <iomanip>
+ #include <iostream>
+@@ -350,6 +351,10 @@
+             const map<string, vector<string> >& rshCmdFileNames,
+             const map<string, vector<string> >& sshCmdFileNames)
+ {
++  dmtcp_crucible::restart_writer::preflight_inputs(
++      ckptDir, uniqueCkptFilenames, restartFilenames,
++      rshCmdFileNames, sshCmdFileNames);
++
+   ostringstream o;
+   string uniqueFilename;
+ 
+@@ -388,28 +393,37 @@
+ 
+   char hostname[80];
+   char timestamp[80];
+-  gethostname(hostname, 80);
++  int hostname_result = gethostname(hostname, 80);
++  if (dmtcp_crucible::restart_writer::selected()) {
++    JASSERT(hostname_result == 0 && memchr(hostname, '\0', sizeof(hostname)) != nullptr);
++  }
+ 
+   JTRACE("writing restart script") (uniqueFilename);
+ 
+-  FILE *fp = fopen(uniqueFilename.c_str(), "w");
++  FILE *fp = dmtcp_crucible::restart_writer::open_script(
++      ckptDir.c_str(), uniqueFilename.c_str());
+   JASSERT(fp != 0)(JASSERT_ERRNO)(uniqueFilename)
+   .Text("failed to open file");
+ 
+-  fprintf(fp, "%s", header);
+-  fprintf(fp, "%s", checkLocal);
+-  fprintf(fp, "%s", slurmHelperContactFunction);
+-  fprintf(fp, "%s", usage);
+-
+-  ctime_r(&ckptTimeStamp, timestamp);
++  dmtcp_crucible::restart_writer::print_script(fp, "%s", header);
++  dmtcp_crucible::restart_writer::print_script(fp, "%s", checkLocal);
++  dmtcp_crucible::restart_writer::print_script(fp, "%s", slurmHelperContactFunction);
++  dmtcp_crucible::restart_writer::print_script(fp, "%s", usage);
++
++  char *timestamp_result = ctime_r(&ckptTimeStamp, timestamp);
++  if (dmtcp_crucible::restart_writer::selected()) {
++    JASSERT(timestamp_result == timestamp &&
++            memchr(timestamp, '\0', sizeof(timestamp)) != nullptr &&
++            timestamp[0] != '\0');
++  }
+ 
+   // Remove the trailing '\n'
+   timestamp[strlen(timestamp) - 1] = '\0';
+-  fprintf(fp, "ckpt_timestamp=\"%s\"\n\n", timestamp);
+-
+-  fprintf ( fp, "remote_shell_cmd=\"ssh\"\n\n");
+-
+-  fprintf(fp,
++  dmtcp_crucible::restart_writer::print_script(fp, "ckpt_timestamp=\"%s\"\n\n", timestamp);
++
++  dmtcp_crucible::restart_writer::print_script ( fp, "remote_shell_cmd=\"ssh\"\n\n");
++
++  dmtcp_crucible::restart_writer::print_script(fp,
+           "coord_host=$" ENV_VAR_NAME_HOST "\n"
+           "if test -z \"$" ENV_VAR_NAME_HOST "\"; then\n"
+           "  coord_host=%s\nfi\n\n"
+@@ -424,9 +438,9 @@
+           thePort,
+           theCheckpointInterval);
+ 
+-  fprintf(fp, "%s", cmdlineArgHandler);
+-
+-  fprintf(fp,
++  dmtcp_crucible::restart_writer::print_script(fp, "%s", cmdlineArgHandler);
++
++  dmtcp_crucible::restart_writer::print_script(fp,
+           "dmt_rstr_cmd=%s/" DMTCP_RESTART_CMD "\n"
+           "which $dmt_rstr_cmd > /dev/null 2>&1"
+           " || dmt_rstr_cmd=" DMTCP_RESTART_CMD "\n"
+@@ -435,7 +449,7 @@
+           "which $dmt_rstr_cmd > /dev/null 2>&1 || exit 1\n\n",
+           jalib::Filesystem::GetProgramDir().c_str());
+ 
+-  fprintf(fp, "# Number of hosts in the computation = %zu\n"
++  dmtcp_crucible::restart_writer::print_script(fp, "# Number of hosts in the computation = %zu\n"
+           "# Number of processes in the computation = %zu\n\n",
+           (restartFilenames.size()
+             + sshCmdFileNames.size() + rshCmdFileNames.size()),
+@@ -449,39 +463,39 @@
+     for (file = host->second.begin(); file != host->second.end(); ++file) {
+       o << " " << *file;
+     }
+-    fprintf(fp, "given_ckpt_files=\"%s\"\n\n", o.str().c_str());
+-
+-    fprintf(fp, "%s", singleHostProcessing);
++    dmtcp_crucible::restart_writer::print_script(fp, "given_ckpt_files=\"%s\"\n\n", o.str().c_str());
++
++    dmtcp_crucible::restart_writer::print_script(fp, "%s", singleHostProcessing);
+   } else {
+-    fprintf(fp, "%s",
++    dmtcp_crucible::restart_writer::print_script(fp, "%s",
+             "# SYNTAX:\n"
+             "#  :: <HOST> :<MODE>: <CHECKPOINT_IMAGE> ... :<REMOTE SHELL CMD>\n"
+             "# Host names and filenames must not include \':\'\n"
+             "# At most one fg (foreground) mode allowed; it must be last.\n"
+             "# \'maybexterm\' and \'maybebg\' are set from <MODE>.\n");
+ 
+-    fprintf(fp, "%s", "worker_ckpts=\'");
++    dmtcp_crucible::restart_writer::print_script(fp, "%s", "worker_ckpts=\'");
+     for ( host=rshCmdFileNames.begin(); host!=rshCmdFileNames.end(); ++host ) {
+-      fprintf ( fp, "\n :: %s :bg:", host->first.c_str() );
++      dmtcp_crucible::restart_writer::print_script ( fp, "\n :: %s :bg:", host->first.c_str() );
+       for ( file=host->second.begin(); file!=host->second.end(); ++file ) {
+-        fprintf( fp," %s", file->c_str() );
++        dmtcp_crucible::restart_writer::print_script( fp," %s", file->c_str() );
+       }
+-      fprintf(fp, " : rsh");
++      dmtcp_crucible::restart_writer::print_script(fp, " : rsh");
+     }
+     for ( host=sshCmdFileNames.begin(); host!=sshCmdFileNames.end(); ++host ) {
+-      fprintf ( fp, "\n :: %s :bg:", host->first.c_str() );
++      dmtcp_crucible::restart_writer::print_script ( fp, "\n :: %s :bg:", host->first.c_str() );
+       for ( file=host->second.begin(); file!=host->second.end(); ++file ) {
+-        fprintf( fp," %s", file->c_str() );
++        dmtcp_crucible::restart_writer::print_script( fp," %s", file->c_str() );
+       }
+-      fprintf(fp, " : ssh");
++      dmtcp_crucible::restart_writer::print_script(fp, " : ssh");
+     }
+     string defaultShellType;
+     for (host = restartFilenames.begin();
+          host != restartFilenames.end();
+          ++host) {
+-      fprintf(fp, "\n :: %s :bg:", host->first.c_str());
++      dmtcp_crucible::restart_writer::print_script(fp, "\n :: %s :bg:", host->first.c_str());
+       for (file = host->second.begin(); file != host->second.end(); ++file) {
+-        fprintf(fp, " %s", file->c_str());
++        dmtcp_crucible::restart_writer::print_script(fp, " %s", file->c_str());
+       }
+ 
+       /*
+@@ -499,11 +513,11 @@
+       } else {
+         defaultShellType = rshCmdFileNames.empty() ? "ssh" : "rsh";
+       }
+-      fprintf (fp, " : %s", defaultShellType.c_str());
++      dmtcp_crucible::restart_writer::print_script (fp, " : %s", defaultShellType.c_str());
+     }
+-    fprintf(fp, "%s", "\n\'\n\n");
+-
+-    fprintf(fp,
++    dmtcp_crucible::restart_writer::print_script(fp, "%s", "\n\'\n\n");
++
++    dmtcp_crucible::restart_writer::print_script(fp,
+             "# Check for resource manager\n"
+             "ibrun_path=$(which ibrun 2> /dev/null)\n"
+             "if [ ! -n \"$ibrun_path\" ]; then\n"
+@@ -585,10 +599,14 @@
+             "\n\n"
+             );
+ 
+-    fprintf(fp, "%s", multiHostProcessing);
+-  }
+-
+-  fclose(fp);
++    dmtcp_crucible::restart_writer::print_script(fp, "%s", multiHostProcessing);
++  }
++
++  dmtcp_crucible::restart_writer::close_script(fp);
++  if (dmtcp_crucible::restart_writer::selected()) {
++    dmtcp_crucible::restart_writer::publish_script(
++        uniqueFilename.c_str(), RESTART_SCRIPT_BASENAME "." RESTART_SCRIPT_EXT);
++  } else
+   {
+     string filename = RESTART_SCRIPT_BASENAME "." RESTART_SCRIPT_EXT;
+     string dirname = jalib::Filesystem::DirName(uniqueFilename);
+--- a/src/dmtcp_coordinator.cpp
++++ b/src/dmtcp_coordinator.cpp
+@@ -57,6 +57,9 @@
+  *   DmtcpCoordinator::broadcastMessage                                     *
+  ****************************************************************************/
+ 
++#include "crucible_single_worker.h"
++#include "crucible_control_frame.h"
++#include "crucible_final_frame.h"
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <limits.h>  // for HOST_NAME_MAX
+@@ -279,11 +282,18 @@
+ }
+ 
+ void
+-CoordClient::readProcessInfo(DmtcpMessage &msg)
++CoordClient::readProcessInfo(DmtcpMessage &msg, const char *retained)
+ {
+   if (msg.extraBytes > 0) {
++    const bool selectedCohort = dmtcp_crucible::selected_writer_cohort();
++    if (selectedCohort && (!retained || !dmtcp_crucible::exact_cstrings(
++          retained, msg.extraBytes, 2))) _exit(86);
+     char *extraData = new char[msg.extraBytes];
+-    _sock.readAll(extraData, msg.extraBytes);
++    if (selectedCohort) {
++      memcpy(extraData, retained, msg.extraBytes);
++    } else {
++      _sock.readAll(extraData, msg.extraBytes);
++    }
+     _hostname = extraData;
+     _progname = extraData + _hostname.length() + 1;
+     delete[] extraData;
+@@ -600,7 +610,12 @@
+ 
+       // These were set in DmtcpCoordinator::onConnect in this file
+       jalib::JSocket remote(blockUntilDoneRemote);
+-      remote << blockUntilDoneReply;
++      if (dmtcp_crucible::selected_writer_cohort()) {
++        if (!dmtcp_crucible::selected_send_frame(remote.sockfd(),
++              blockUntilDoneReply, nullptr, 0)) _exit(86);
++      } else {
++        remote << blockUntilDoneReply;
++      }
+       remote.close();
+       blockUntilDone = false;
+       blockUntilDoneRemote = -1;
+@@ -622,7 +637,28 @@
+ 
+   JASSERT(client != NULL);
+ 
+-  if (client->sock().readAll((char*)&msg, sizeof(msg)) != sizeof(msg)) {
++  dmtcp_crucible::OriginalControlFrame *selectedOriginal = nullptr;
++  const bool selectedCohort = dmtcp_crucible::selected_writer_cohort();
++  dmtcp_crucible::OriginalControlDeadline selectedDeadline(selectedCohort);
++  if (selectedCohort) {
++    selectedOriginal = dmtcp_crucible::reserve_control_frame(false);
++    if (!selectedOriginal ||
++        !dmtcp_crucible::selected_read_header(client->sock().sockfd(), msg,
++                                             *selectedOriginal, selectedDeadline)) _exit(86);
++    if (msg.type == DMT_CRUCIBLE_WRITER_FINAL) {
++      // The generic row retains just this original header. The distinct final
++      // bank owns the bounded two-MiB body and its separate copy ACK.
++      if (clients.size() != 1 || msg.from != client->identity() ||
++          !dmtcp_crucible::selected_receive_final(client->sock().sockfd(), msg,
++                                                 client->realPid(), selectedDeadline,
++                                                 *selectedOriginal)) _exit(86);
++      return;
++    }
++    if (!dmtcp_crucible::selected_read_body(client->sock().sockfd(), msg,
++                                           *selectedOriginal, selectedDeadline) ||
++        msg.from != client->identity() ||
++        !dmtcp_crucible::selected_worker_message(msg, selectedOriginal->body)) _exit(86);
++  } else if (client->sock().readAll((char*)&msg, sizeof(msg)) != sizeof(msg)) {
+     JTRACE("Failed to read DmtcpMessage; probably dead connection.")
+       (client->identity());
+     return;
+@@ -632,7 +668,11 @@
+   char *extraData = 0;
+   if (msg.extraBytes > 0) {
+     extraData = new char[msg.extraBytes];
+-    client->sock().readAll(extraData, msg.extraBytes);
++    if (selectedOriginal) {
++      memcpy(extraData, selectedOriginal->body, msg.extraBytes);
++    } else {
++      client->sock().readAll(extraData, msg.extraBytes);
++    }
+   }
+ 
+   WorkerState::eWorkerState prevClientState = client->state();
+@@ -689,8 +729,13 @@
+   {
+     DmtcpMessage reply(DMT_GET_CKPT_DIR_RESULT);
+     reply.extraBytes = flags.ckptDir.length() + 1;
+-    client->sock() << reply;
+-    client->sock().writeAll(flags.ckptDir.c_str(), reply.extraBytes);
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(client->sock().sockfd(), reply,
++            flags.ckptDir.c_str(), reply.extraBytes)) _exit(86);
++    } else {
++      client->sock() << reply;
++      client->sock().writeAll(flags.ckptDir.c_str(), reply.extraBytes);
++    }
+     break;
+   }
+   case DMT_UPDATE_CKPT_DIR:
+@@ -871,10 +916,59 @@
+   DmtcpMessage hello_remote;
+   hello_remote.poison();
+   JTRACE("Reading from incoming connection...");
+-  remote >> hello_remote;
++  dmtcp_crucible::OriginalControlFrame *originalHello = nullptr;
++  const bool selectedCohort = dmtcp_crucible::selected_writer_cohort();
++  dmtcp_crucible::OriginalControlDeadline originalDeadline(selectedCohort);
++  if (selectedCohort) {
++    originalHello = dmtcp_crucible::reserve_control_frame(false);
++    if (!originalHello || !dmtcp_crucible::selected_read_header(remote.sockfd(),
++          hello_remote, *originalHello, originalDeadline)) _exit(86);
++    // Both the original worker hello and c/s cookie are bounded and retained
++    // before any string reader, client allocation or control administration.
++    if (!dmtcp_crucible::selected_read_body(remote.sockfd(), hello_remote,
++          *originalHello, originalDeadline)) _exit(86);
++    if (hello_remote.type != DMT_USER_CMD &&
++        !dmtcp_crucible::exact_cstrings(originalHello->body,
++                                      hello_remote.extraBytes, 2)) _exit(86);
++  } else {
++    remote >> hello_remote;
++  }
+   if (!remote.isValid()) {
+     remote.close();
+     return;
++  }
++
++  if (dmtcp_crucible::selected_single_worker()) {
++    if (hello_remote.type == DMT_USER_CMD) {
++      // Compare only the fixed original field; malformed magic must not enter
++      // the legacy string-based validator before selected shape admission.
++      static_assert(sizeof(DMTCP_MAGIC_STRING) <=
++                    sizeof(hello_remote._magicBits),
++                    "control magic must fit its original header field");
++      JASSERT(std::memcmp(hello_remote._magicBits, DMTCP_MAGIC_STRING,
++                          sizeof(DMTCP_MAGIC_STRING)) == 0 &&
++              hello_remote._msgSize == sizeof(hello_remote));
++      hello_remote.assertValid();
++      JASSERT(clients.size() == 1 &&
++              hello_remote.from == clients[0]->identity() &&
++              hello_remote.extraBytes == 32);
++      unsigned char suppliedCookie[32];
++      JASSERT(dmtcp_crucible::reserve_control_request(hello_remote.coordCmd));
++      if (selectedCohort) {
++        memcpy(suppliedCookie, originalHello->body, sizeof(suppliedCookie));
++      } else {
++        JASSERT(remote.readAll(reinterpret_cast<char *>(suppliedCookie),
++                               sizeof(suppliedCookie)) == sizeof(suppliedCookie));
++      }
++      JASSERT(dmtcp_crucible::control_cookie_matches(suppliedCookie));
++    } else {
++      bool worker = hello_remote.type == DMT_NEW_WORKER ||
++                    hello_remote.type == DMT_RESTART_WORKER;
++      int peers = hello_remote.type == DMT_RESTART_WORKER ?
++                  hello_remote.numPeers : 1;
++      JASSERT(dmtcp_crucible::coordinator_worker_admitted(clients.size(),
++                                                        worker, peers));
++    }
+   }
+ 
+   if (hello_remote.type == DMT_NAME_SERVICE_WORKER) {
+@@ -901,7 +995,12 @@
+           "Sending it the kill message.");
+     DmtcpMessage msg;
+     msg.type = DMT_KILL_PEER;
+-    remote << msg;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), msg, nullptr, 0))
++        _exit(86);
++    } else {
++      remote << msg;
++    }
+     remote.close();
+     return;
+   }
+@@ -916,7 +1015,8 @@
+                                         hello_remote);
+ 
+   if (hello_remote.extraBytes > 0) {
+-    client->readProcessInfo(hello_remote);
++    client->readProcessInfo(hello_remote, originalHello ?
++      reinterpret_cast<const char *>(originalHello->body) : nullptr);
+   }
+ 
+   if (hello_remote.type == DMT_RESTART_WORKER) {
+@@ -958,6 +1058,9 @@
+   reply.type = DMT_USER_CMD_RESULT;
+ 
+   string cmd(1, hello_remote.coordCmd);
++  if (dmtcp_crucible::selected_single_worker()) {
++    JASSERT(hello_remote.coordCmd == 'c' || hello_remote.coordCmd == 's');
++  }
+ 
+   // if previous 'b' blocking prefix command had set blockUntilDone
+   if (blockUntilDone && blockUntilDoneRemote == -1 &&
+@@ -971,7 +1074,15 @@
+     remote.close();
+   } else {
+     handleUserCommand(cmd, &reply);
+-    remote << reply;
++    if (dmtcp_crucible::selected_single_worker()) {
++      JASSERT(reply.extraBytes == 0);
++    }
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), reply, nullptr, 0))
++        _exit(86);
++    } else {
++      remote << reply;
++    }
+     if (reply.extraBytes > 0) {
+       remote.writeAll(replyData.c_str(), reply.extraBytes);
+     }
+@@ -1029,7 +1140,12 @@
+           "  Reject incoming computation process requesting restart.")
+       (compId) (hello_remote.compGroup) (minimumState());
+     hello_local.type = DMT_REJECT_NOT_RESTARTING;
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+     remote.close();
+     return false;
+   } else if (hello_remote.compGroup != compId) {
+@@ -1037,7 +1153,12 @@
+           " since it is not from current computation.")
+       (compId) (hello_remote.compGroup);
+     hello_local.type = DMT_REJECT_WRONG_COMP;
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+     remote.close();
+     return false;
+   }
+@@ -1055,7 +1176,12 @@
+   } else {
+     memcpy(&hello_local.ipAddr, &sin->sin_addr, sizeof localhostIPAddr);
+   }
+-  remote << hello_local;
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                           nullptr, 0)) _exit(86);
++  } else {
++    remote << hello_local;
++  }
+ 
+   // NOTE: Sending the same message twice. We want to make sure that the
+   // worker process receives/processes the first messages as soon as it
+@@ -1095,7 +1221,12 @@
+   // participate in the current checkpoint
+   DmtcpMessage suspendMsg(DMT_DO_CHECKPOINT);
+   suspendMsg.compGroup = compId;
+-  client->sock() << suspendMsg;
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    if (!dmtcp_crucible::selected_send_frame(client->sock().sockfd(), suspendMsg,
++                                           nullptr, 0)) _exit(86);
++  } else {
++    client->sock() << suspendMsg;
++  }
+ }
+ 
+ bool
+@@ -1132,7 +1263,12 @@
+   if (workersRunningAndSuspendMsgSent == true) {
+     // Handshake
+     hello_local.compGroup = compId;
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+ 
+     ResendDoCheckpointMsgToWorker(client);
+   } else if (s.numPeers > 0 && s.minimumState != WorkerState::RUNNING &&
+@@ -1143,7 +1279,12 @@
+       (compId) (hello_remote.from)
+       (s.numPeers) (s.minimumState);
+     hello_local.type = DMT_REJECT_NOT_RUNNING;
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+     remote.close();
+     return false;
+   } else if (hello_remote.compGroup != UniquePid()) {
+@@ -1153,7 +1294,12 @@
+       (hello_remote.compGroup);
+ 
+     hello_local.type = DMT_REJECT_WRONG_COMP;
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+     remote.close();
+     return false;
+   } else {
+@@ -1181,7 +1327,12 @@
+     } else {
+       memcpy(&hello_local.ipAddr, &sin->sin_addr, sizeof localhostIPAddr);
+     }
+-    remote << hello_local;
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (!dmtcp_crucible::selected_send_frame(remote.sockfd(), hello_local,
++                                             nullptr, 0)) _exit(86);
++    } else {
++      remote << hello_local;
++    }
+   }
+   return true;
+ }
+@@ -1248,9 +1399,14 @@
+ 
+   JTRACE("sending message")(type);
+   for (size_t i = 0; i < clients.size(); i++) {
+-    clients[i]->sock() << msg;
+-    if (extraBytes > 0) {
+-      clients[i]->sock().writeAll((const char *)extraData, extraBytes);
++    if (dmtcp_crucible::selected_writer_cohort()) {
++      if (clients.size() != 1 || !dmtcp_crucible::selected_send_frame(
++            clients[i]->sock().sockfd(), msg, extraData, extraBytes)) _exit(86);
++    } else {
++      clients[i]->sock() << msg;
++      if (extraBytes > 0) {
++        clients[i]->sock().writeAll((const char *)extraData, extraBytes);
++      }
+     }
+   }
+   workersAtCurrentBarrier = 0;
+@@ -1772,6 +1928,8 @@
+     fprintf(stderr, "\n    Exit on last client: %d\n", flags.exitOnLast);
+   }
+ 
++  JASSERT(dmtcp_crucible::foreground_coordinator_admitted(flags.daemon));
++
+   if (flags.daemon) {
+     if (!flags.quiet) {
+       JASSERT_STDERR << "Backgrounding...\n";
+--- a/src/dmtcpmessagetypes.h
++++ b/src/dmtcpmessagetypes.h
+@@ -84,7 +84,11 @@
+   DMT_KILL_PEER,             // send kill message to peer
+ 
+   DMT_KVDB_REQUEST,
+-  DMT_KVDB_RESPONSE
++  DMT_KVDB_RESPONSE,
++
++  // Appended values preserve every original/default message discriminant.
++  DMT_CRUCIBLE_WRITER_FINAL,
++  DMT_CRUCIBLE_WRITER_FINAL_ACK
+ };
+ 
+ namespace CoordCmdStatus
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -13,6 +13,7 @@
+ #endif  // if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 11) ||
+ // defined(HAS_PR_SET_PTRACER)
+ #include "ckptserializer.h"
++#include "crucible_capture_budget.h"
+ #include "constants.h"
+ #include "coordinatorapi.h"
+ #include "dmtcpalloc.h"
+@@ -758,6 +759,14 @@
+   TLSInfo_RestoreTLSState(motherofall);
+   TLSInfo_RestoreTLSTidPid(motherofall);
+ 
++  // Selected original writer custody must be established before shared-data
++  // writers, restored thread creation, coordinator traffic or plugin effects.
++  // This draft has no installed final-account consumer and therefore refuses
++  // selected restore. The outer owner must retain the exited original Child.
++  if (!dmtcp_crucible_require_early_restore_account()) {
++    _exit(86);
++  }
++
+   restartPauseLevel = restartPause;
+   DMTCP_RESTART_PAUSE_WHILE(restartPauseLevel == 2);
+ 
+--- a/src/coordinatorapi.cpp
++++ b/src/coordinatorapi.cpp
+@@ -22,6 +22,9 @@
+ // CAN REMOVE BOOL enableCheckpointing ARG OF DmtcpWorker WHEN WE'RE DONE.
+ // DmtcpWorker CAN INHERIT THIS CLASS, CoordinatorAPI
+ 
++#include "crucible_single_worker.h"
++#include "crucible_control_frame.h"
++#include "crucible_final_frame.h"
+ #include "coordinatorapi.h"
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+@@ -296,9 +299,30 @@
+                           int *isRunning,
+                           int *ckptInterval)
+ {
++  bool selectedControl = dmtcp_crucible::selected_single_worker();
++  unsigned char controlCookie[32] = {};
++  if (selectedControl) {
++    JASSERT(dmtcp_crucible::load_control_cookie(controlCookie));
++    JASSERT(dmtcp_crucible::reserve_control_request(c));
++  }
++
++  const bool selectedCohort = dmtcp_crucible::selected_writer_cohort();
++  dmtcp_crucible::OriginalControlFrame *originalRequest = nullptr;
++  dmtcp_crucible::OriginalControlFrame *originalResponse = nullptr;
++  dmtcp_crucible::OriginalControlFrame *originalRetirement = nullptr;
++  if (selectedCohort && !dmtcp_crucible::reserve_control_exchange(
++        &originalRequest, &originalResponse, &originalRetirement)) _exit(86);
++  dmtcp_crucible::OriginalControlDeadline originalDeadline(selectedCohort);
++
+   char *replyData = NULL;
+   int coordFd = createNewSocketToCoordinator(COORD_ANY);
+   if (coordFd == -1) {
++    if (selectedCohort) {
++      const int originalError = errno ? errno : ECONNREFUSED;
++      dmtcp_crucible::abandon_control_frame(originalRequest, originalError);
++      dmtcp_crucible::abandon_control_frame(originalResponse, originalError);
++      dmtcp_crucible::abandon_control_frame(originalRetirement, originalError);
++    }
+     *coordCmdStatus = CoordCmdStatus::ERROR_COORDINATOR_NOT_FOUND;
+     return replyData;
+   }
+@@ -306,6 +330,9 @@
+   // Tell the coordinator to run given user command
+   DmtcpMessage msg(DMT_USER_CMD);
+   msg.coordCmd = c;
++  if (selectedControl) {
++    msg.extraBytes = sizeof(controlCookie);
++  }
+ 
+   if (c == 'i') {
+     const char *interval = getenv(ENV_VAR_CKPT_INTR);
+@@ -313,7 +340,16 @@
+       msg.theCheckpointInterval = jalib::StringToInt(interval);
+     }
+   }
+-  JASSERT(Util::writeAll(coordFd, &msg, sizeof(msg)) == sizeof(msg));
++  if (selectedCohort) {
++    if (!dmtcp_crucible::selected_send_reserved(coordFd, msg, controlCookie,
++          sizeof(controlCookie), originalRequest, originalDeadline)) _exit(86);
++  } else {
++    JASSERT(Util::writeAll(coordFd, &msg, sizeof(msg)) == sizeof(msg));
++    if (selectedControl) {
++      JASSERT(Util::writeAll(coordFd, controlCookie, sizeof(controlCookie)) ==
++              sizeof(controlCookie));
++    }
++  }
+ 
+   // The coordinator will violently close our socket...
+   if (c == 'q' || c == 'Q') {
+@@ -324,9 +360,27 @@
+   // Receive REPLY
+   DmtcpMessage reply;
+   reply.poison();
+-  recvMsgFromCoordinatorRaw(coordFd, &reply, (void**)&replyData);
+-  reply.assertValid();
+-  JASSERT(reply.type == DMT_USER_CMD_RESULT);
++  if (selectedCohort) {
++    if (!dmtcp_crucible::selected_read_header(coordFd, reply,
++          *originalResponse, originalDeadline) || reply.type != DMT_USER_CMD_RESULT ||
++        reply.extraBytes != 0 ||
++        !dmtcp_crucible::selected_read_body(coordFd, reply,
++          *originalResponse, originalDeadline)) _exit(86);
++  } else if (selectedControl) {
++    // Selected c/s commands return only the fixed header. Reject a body extent
++    // before the generic reader could allocate from unvalidated wire bytes.
++    JASSERT(Util::readAll(coordFd, &reply, sizeof(reply)) == sizeof(reply));
++    static_assert(sizeof(DMTCP_MAGIC_STRING) <= sizeof(reply._magicBits),
++                  "control magic must fit its original header field");
++    JASSERT(std::memcmp(reply._magicBits, DMTCP_MAGIC_STRING,
++                        sizeof(DMTCP_MAGIC_STRING)) == 0 &&
++            reply._msgSize == sizeof(reply) &&
++            reply.type == DMT_USER_CMD_RESULT && reply.extraBytes == 0);
++  } else {
++    recvMsgFromCoordinatorRaw(coordFd, &reply, (void**)&replyData);
++    reply.assertValid();
++    JASSERT(reply.type == DMT_USER_CMD_RESULT);
++  }
+ 
+   if (coordCmdStatus != NULL) {
+     *coordCmdStatus = reply.coordCmdStatus;
+@@ -341,7 +395,17 @@
+     *ckptInterval = reply.theCheckpointInterval;
+   }
+ 
+-  _real_close(coordFd);
++  if (selectedCohort) {
++    // A third row reserved before socket birth owns close uncertainty. Earlier
++    // published request/response rows stay immutable for concurrent exporters.
++    const int result = _real_close(coordFd);
++    originalRetirement->close_error = result == 0 ? 0 : errno;
++    originalRetirement->complete = result == 0;
++    originalRetirement->settled.store(true, std::memory_order_release);
++    if (result != 0) _exit(86);
++  } else {
++    _real_close(coordFd);
++  }
+ 
+   return replyData;
+ }
+@@ -352,6 +416,14 @@
+                         const void *extraData,
+                         size_t len)
+ {
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    if (!dmtcp_crucible::selected_send_frame(fd, msg, extraData, len)) {
++      // Original frame and actual partial prefix remain in the native bank.
++      // Outer Child/control Unknown custody remains mandatory on terminal exit.
++      _exit(86);
++    }
++    return;
++  }
+   if (extraData != NULL) {
+     msg.extraBytes = len;
+   }
+@@ -364,6 +436,15 @@
+ void
+ recvMsgFromCoordinatorRaw(int fd, DmtcpMessage *msg, void **extraData)
+ {
++  const bool selectedCohort = dmtcp_crucible::selected_writer_cohort();
++  dmtcp_crucible::OriginalControlFrame *selectedOriginal = nullptr;
++  if (selectedCohort) {
++    selectedOriginal = dmtcp_crucible::reserve_control_frame(false);
++    if (!selectedOriginal) _exit(86);
++  }
++  dmtcp_crucible::OriginalControlDeadline selectedDeadline(selectedCohort);
++  // Selected receive credit precedes even the original semaphore release.
++  // Ordinary launch/receive ordering and socket expressions remain unchanged.
+   msg->poison();
+   if (sem_launch_first_time) {
+     // Release user thread now that we've initialized the checkpoint thread.
+@@ -377,6 +458,23 @@
+   // Read into a temporary buffer in case the process exits after reading the
+   // message but before receiving the extradata.
+   DmtcpMessage tmpMsg;
++  if (selectedCohort) {
++    dmtcp_crucible::OriginalControlFrame *original = selectedOriginal;
++    if (!dmtcp_crucible::selected_read_header(fd, tmpMsg, *original, selectedDeadline) ||
++        !dmtcp_crucible::selected_read_body(fd, tmpMsg, *original, selectedDeadline)) _exit(86);
++    if (tmpMsg.extraBytes != 0) {
++      if (!extraData) _exit(86);
++      // The worst-case row was reserved before receiving the first header byte.
++      // Caller-owned decoded allocation is bounded and separately admitted; it
++      // is not returned as a pointer into the original retained bank.
++      void *copy = JALLOC_HELPER_MALLOC(tmpMsg.extraBytes);
++      if (!copy) _exit(86);
++      memcpy(copy, original->body, tmpMsg.extraBytes);
++      *extraData = copy;
++    }
++    *msg = tmpMsg;
++    return;
++  }
+   if (Util::readAll(fd, &tmpMsg, sizeof(tmpMsg)) != sizeof(tmpMsg)) {
+     // Perhaps the process is exit()'ing.
+     return;
+@@ -474,6 +572,7 @@
+ void
+ startNewCoordinator(CoordinatorMode mode)
+ {
++  JASSERT(dmtcp_crucible::extra_worker_admitted());
+   string host = "";
+   int port = UNINITIALIZED_PORT;
+   getCoordHostAndPort(mode, &host, &port);
+@@ -590,6 +689,10 @@
+ 
+   string hostname = jalib::Filesystem::GetCurrentHostname();
+ 
++  if (dmtcp_crucible::selected_writer_cohort() &&
++      (hostname.length() > dmtcp_crucible::ControlPayloadBytes - 2 ||
++       progname.length() > dmtcp_crucible::ControlPayloadBytes - 2 - hostname.length()))
++    _exit(86);
+   size_t buflen = hostname.length() + progname.length() + 2;
+   char buf[buflen];
+   strcpy(buf, hostname.c_str());
+@@ -721,6 +824,13 @@
+   JTRACE("Coordinator handshake RECEIVED!!!!!");
+ }
+ 
++bool
++publishFinalWriterHistory()
++{
++  return !dmtcp_crucible::selected_writer_cohort() ||
++         dmtcp_crucible::selected_publish_final(coordinatorSocket);
++}
++
+ void
+ sendCkptFilename()
+ {
+@@ -741,6 +851,11 @@
+   }
+   JTRACE("recording filenames") (ckptFilename) (hostname) (shellType);
+ 
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    const size_t maximum = dmtcp_crucible::ControlPayloadBytes - 3;
++    if (hostname.length() > maximum || shellType.length() > maximum - hostname.length() ||
++        ckptFilename.length() > maximum - hostname.length() - shellType.length()) _exit(86);
++  }
+   size_t buflen = hostname.length() + shellType.length() +
+                   ckptFilename.length() + 3;
+   char buf[buflen];
+@@ -763,6 +878,9 @@
+   if (dmtcp_is_running_state() &&
+       dmtcp_is_ckpt_thread /* weak symbol */ &&
+       !dmtcp_is_ckpt_thread()) {
++    // This selection has no original namespace-channel admission. Refuse
++    // before creating a socket; checkpoint-thread KVDB uses the owned channel.
++    JASSERT(!dmtcp_crucible::selected_single_worker());
+     if (nsSock == -1) {
+       nsSock = createNewSocketToCoordinator(COORD_ANY);
+       JASSERT(nsSock != -1);
+@@ -774,6 +892,35 @@
+     sock = nsSock;
+   }
+ 
++  if (dmtcp_crucible::selected_writer_cohort()) {
++    // The original key/value bodies and both full control frames are reserved
++    // before the first send. This creates no extra namespace socket.
++    if (msg.keyLen == 0 || msg.valLen == 0 ||
++        msg.keyLen != key.size() + 1 || msg.valLen != val.size() + 1 ||
++        msg.keyLen > dmtcp_crucible::ControlPayloadBytes ||
++        msg.valLen > dmtcp_crucible::ControlPayloadBytes - msg.keyLen ||
++        msg.extraBytes != msg.keyLen + msg.valLen) _exit(86);
++    dmtcp_crucible::OriginalControlFrame *request = nullptr;
++    dmtcp_crucible::OriginalControlFrame *response = nullptr;
++    if (!dmtcp_crucible::reserve_control_exchange(&request, &response)) _exit(86);
++    memcpy(request->body, key.c_str(), msg.keyLen);
++    memcpy(request->body + msg.keyLen, val.c_str(), msg.valLen);
++    DmtcpMessage originalMessage = msg;
++    dmtcp_crucible::OriginalControlDeadline deadline;
++    if (!dmtcp_crucible::selected_send_reserved(sock, originalMessage,
++          request->body, msg.extraBytes, request, deadline)) _exit(86);
++    DmtcpMessage reply;
++    if (!dmtcp_crucible::selected_read_header(sock, reply, *response, deadline) ||
++        !dmtcp_crucible::selected_read_body(sock, reply, *response, deadline) ||
++        reply.type != DMT_KVDB_RESPONSE || reply.valLen != reply.extraBytes ||
++        (reply.extraBytes && !dmtcp_crucible::exact_cstrings(
++          response->body, reply.extraBytes, 1))) _exit(86);
++    if (oldVal && reply.extraBytes) {
++      oldVal->assign(reinterpret_cast<const char *>(response->body), reply.valLen - 1);
++    }
++    return reply.kvdbResponse;
++  }
++
+   JASSERT(Util::writeAll(sock, &msg, sizeof(msg)) == sizeof(msg));
+   JASSERT(Util::writeAll(sock, key.data(), msg.keyLen) ==
+     (ssize_t)msg.keyLen);
+@@ -799,3 +946,22 @@
+ }
+ } // namespace CoordinatorAPI {
+ } // namespace dmtcp {
++
++// Complete fixed native evidence is exported by copy under the original live
++// process. No caller can set a bank, adopt a source account or grant execution.
++extern "C" size_t dmtcp_crucible_selected_control_storage_bytes()
++{
++  return sizeof(dmtcp_crucible::OriginalControlBank) +
++         sizeof(dmtcp_crucible::OriginalControlChannels) +
++         sizeof(dmtcp_crucible::OriginalFinalExchange);
++}
++
++extern "C" size_t dmtcp_crucible_export_selected_control_history(void *output, size_t capacity)
++{
++  return dmtcp_crucible::export_control_history(output, capacity);
++}
++
++extern "C" size_t dmtcp_crucible_export_selected_final_exchange(void *output, size_t capacity)
++{
++  return dmtcp_crucible::export_final_exchange(output, capacity);
++}
+--- a/src/writeckpt.cpp
++++ b/src/writeckpt.cpp
+@@ -38,6 +38,7 @@
+ #include "procselfmaps.h"
+ #include "shareddata.h"
+ #include "util.h"
++#include "crucible_capture_budget.h"
+ 
+ #define DEV_ZERO_DELETED_STR "/dev/zero (deleted)"
+ #define DEV_NULL_DELETED_STR "/dev/null (deleted)"
+@@ -81,6 +82,7 @@
+ {
+   JASSERT(area->addr + area->size == area->endAddr)
+     ((void*)area->addr)((int)area->size);
++  JASSERT(dmtcp_crucible_charge_capture_write(fd, sizeof(*area)));
+   JASSERT(Util::writeAll(fd, area, sizeof(*area)) == (ssize_t) sizeof(*area));
+ }
+ 
+@@ -207,7 +209,11 @@
+ 
+   area.addr = NULL; // End of data
+   area.size = -1; // End of data
++  JASSERT(dmtcp_crucible_charge_capture_write(fd, sizeof(area)));
+   JASSERT(Util::writeAll(fd, &area, sizeof(area)) == sizeof(area));
++
++  /* Retain the original identity while its live descriptor is still owned. */
++  JASSERT(dmtcp_crucible_retire_capture_fd(fd));
+ 
+   /* That's all folks */
+   JASSERT(_real_close(fd) == 0);
+@@ -322,6 +328,7 @@
+     writeAreaHeader(fd, &a);
+ 
+     if (!is_zero) {
++      JASSERT(dmtcp_crucible_charge_capture_write(fd, a.size));
+       JASSERT(Util::writeAll(fd, a.addr, a.size) == (ssize_t) a.size)
+         .Text("writeAll failed during ckpt");
+     } else {
+@@ -558,9 +565,11 @@
+     // NOTE: We cannot use lseek(SEEK_CUR) to detect how much data was
+     // actually written here. This is because fd might be a pipe to gzip.
+     if (area.mmapFileSize > 0) {
++      JASSERT(dmtcp_crucible_charge_capture_write(fd, area.mmapFileSize));
+       JASSERT(Util::writeAll(fd, area.addr, area.mmapFileSize) ==
+               (ssize_t)area.mmapFileSize);
+     } else {
++      JASSERT(dmtcp_crucible_charge_capture_write(fd, area.size));
+       JASSERT(Util::writeAll(fd, area.addr, area.size) == (ssize_t)area.size);
+     }
+   }
+--- /dev/null
++++ b/src/crucible_capture_budget.cpp
+@@ -0,0 +1,576 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * This file is part of DMTCP, under LGPL version 3 or any later version.
++ * It comes without any warranty; see COPYING and COPYING.LESSER.
++ */
++#include "crucible_capture_budget.h"
++
++#include <atomic>
++#include <cerrno>
++#include <cstdint>
++#include <cstring>
++#include <cstdlib>
++#include <limits.h>
++#include <sys/resource.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++extern "C" pid_t dmtcp_get_real_pid() __attribute__((weak));
++
++namespace {
++constexpr std::uint64_t FileBytes = 2ULL * 1024 * 1024 * 1024;
++constexpr std::uint64_t ArchiveBytes = 4ULL * 1024 * 1024 * 1024;
++constexpr unsigned FileCount = 4096;
++constexpr unsigned DescriptorLimit = 1024;
++constexpr size_t CopyBufferBytes = 4 * 1024 * 1024;
++constexpr size_t RelativePathBytes = 256;
++
++struct OriginalFile {
++    char relative[RelativePathBytes] = {};
++    int fd = -1;
++    dev_t device = 0;
++    ino_t inode = 0;
++    std::uint64_t charged = 0;
++    bool adopted = false;
++    bool directory = false;
++};
++
++struct OriginalBudget {
++    std::atomic_flag lock = ATOMIC_FLAG_INIT;
++    bool selected = false;
++    bool finalized = false;
++    pid_t process = 0;
++    uid_t uid = 0;
++    dev_t device = 0;
++    ino_t root_inode = 0;
++    char root[PATH_MAX] = {};
++    size_t root_length = 0;
++    OriginalFile files[FileCount];
++    unsigned count = 0;
++    char supplementary[RelativePathBytes] = {};
++    std::uint64_t charged = 0;
++    bool copy_buffer = false;
++};
++
++OriginalBudget budget;
++
++// This fixed storage is part of the selected native declaration. An installed
++// caller must reserve its complete native image and host decoding before Child.
++// It does not imply that any current profile has admitted these added bytes.
++constexpr size_t RestorePrefixBytes = 2 * 1024 * 1024;
++
++struct OriginalRestoreAttempt {
++    bool attempted = false;
++    pid_t process = 0;
++    uid_t uid = 0;
++    int reason = 0;
++    size_t prefix_length = 0;
++    unsigned char prefix[RestorePrefixBytes] = {};
++};
++
++OriginalRestoreAttempt restore_attempt;
++
++struct Guard {
++    Guard()
++    {
++        while (budget.lock.test_and_set(std::memory_order_acquire)) {}
++    }
++
++    ~Guard()
++    {
++        budget.lock.clear(std::memory_order_release);
++    }
++};
++
++bool refuse(int reason)
++{
++    errno = reason;
++    return false;
++}
++
++bool owns_process()
++{
++    return dmtcp_get_real_pid && budget.process > 0 &&
++           budget.process == dmtcp_get_real_pid() && budget.uid == geteuid();
++}
++
++bool current_account()
++{
++    // Reject a restored foreign owner before inspecting any original pathname.
++    // This is a selected writer gate, not imported-source or restore authority.
++    if (!owns_process()) return false;
++
++    struct rlimit descriptors;
++    struct stat directory;
++    return getrlimit(RLIMIT_NOFILE, &descriptors) == 0 &&
++           descriptors.rlim_cur <= DescriptorLimit &&
++           descriptors.rlim_max <= DescriptorLimit &&
++           lstat(budget.root, &directory) == 0 && S_ISDIR(directory.st_mode) &&
++           directory.st_uid == budget.uid && (directory.st_mode & 0777) == 0700 &&
++           directory.st_dev == budget.device && directory.st_ino == budget.root_inode;
++}
++
++bool file_path_identity(const OriginalFile &file, const struct stat &actual)
++{
++    // The fixed trusted opener must still enforce its original path/descriptor
++    // custody. These stopped identity checks do not promise atomic filesystem
++    // adoption against other processes or replace that opener's admission.
++    char path[PATH_MAX];
++    const size_t relative_length = strnlen(file.relative, RelativePathBytes);
++    if (relative_length == RelativePathBytes || budget.root_length == 0 ||
++        budget.root_length + 1 + relative_length >= sizeof(path)) return false;
++    memcpy(path, budget.root, budget.root_length);
++    path[budget.root_length] = '/';
++    memcpy(path + budget.root_length + 1, file.relative, relative_length + 1);
++
++    const char *slash = strchr(file.relative, '/');
++    struct stat visible;
++    if (slash) {
++        const size_t parent_length = budget.root_length + 1 +
++                                     static_cast<size_t>(slash - file.relative);
++        path[parent_length] = '\0';
++        const bool private_parent = lstat(path, &visible) == 0 &&
++            S_ISDIR(visible.st_mode) && visible.st_uid == budget.uid &&
++            (visible.st_mode & 0777) == 0700 && visible.st_dev == budget.device;
++        path[parent_length] = '/';
++        if (!private_parent) return false;
++    }
++
++    return lstat(path, &visible) == 0 && S_ISREG(visible.st_mode) &&
++           visible.st_uid == budget.uid && visible.st_nlink == 1 &&
++           (visible.st_mode & 0777) == 0600 &&
++           visible.st_dev == actual.st_dev && visible.st_ino == actual.st_ino;
++}
++
++bool identity(const OriginalFile &file, int fd)
++{
++    struct stat current;
++    return file.adopted && file.fd == fd && current_account() &&
++           fstat(fd, &current) == 0 && S_ISREG(current.st_mode) &&
++           current.st_uid == budget.uid && current.st_nlink == 1 &&
++           (current.st_mode & 0777) == 0600 && current.st_dev == file.device &&
++           current.st_ino == file.inode && file_path_identity(file, current);
++}
++
++bool relative_path(const char *path, const char **relative)
++{
++    if (!path || strnlen(path, PATH_MAX) == PATH_MAX ||
++        strncmp(path, budget.root, budget.root_length) != 0 ||
++        path[budget.root_length] != '/') return false;
++    *relative = path + budget.root_length + 1;
++    size_t length = strnlen(*relative, RelativePathBytes);
++    if (length == 0 || length == RelativePathBytes) return false;
++    unsigned components = 0;
++    const char *part = *relative;
++    for (const char *cursor = part;; ++cursor) {
++        if (*cursor == '/' || *cursor == '\0') {
++            size_t count = static_cast<size_t>(cursor - part);
++            if (count == 0 || (count == 1 && part[0] == '.') ||
++                (count == 2 && part[0] == '.' && part[1] == '.') ||
++                ++components > 2) return false;
++            if (*cursor == '\0') break;
++            part = cursor + 1;
++        }
++    }
++    return true;
++}
++} // namespace
++
++extern "C" int dmtcp_crucible_select_capture_budget(const char *root)
++{
++    Guard guard;
++    if (budget.selected || !root || !dmtcp_get_real_pid) {
++        errno = EINVAL; return -1;
++    }
++    char canonical[PATH_MAX];
++    struct stat directory;
++    struct rlimit descriptors;
++    if (!realpath(root, canonical) || strcmp(root, canonical) != 0 ||
++        stat(root, &directory) != 0 || !S_ISDIR(directory.st_mode) ||
++        directory.st_uid != geteuid() || (directory.st_mode & 0777) != 0700 ||
++        getrlimit(RLIMIT_NOFILE, &descriptors) != 0 ||
++        descriptors.rlim_cur > DescriptorLimit || descriptors.rlim_max > DescriptorLimit) {
++        errno = EINVAL; return -1;
++    }
++    budget.process = dmtcp_get_real_pid();
++    budget.uid = geteuid();
++    budget.device = directory.st_dev;
++    budget.root_inode = directory.st_ino;
++    budget.root_length = strlen(root);
++    memcpy(budget.root, root, budget.root_length + 1);
++    budget.selected = true;
++    return 0;
++}
++
++extern "C" bool dmtcp_crucible_capture_budget_selected()
++{
++    Guard guard;
++    return budget.selected;
++}
++
++extern "C" bool dmtcp_crucible_capture_process_current()
++{
++    Guard guard;
++    return !budget.selected || (current_account() && !budget.finalized);
++}
++
++extern "C" bool dmtcp_crucible_require_capture_root(const char *root)
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    struct stat directory;
++    if (!current_account() || budget.finalized || !root || strcmp(root, budget.root) != 0 ||
++        stat(root, &directory) != 0 || directory.st_dev != budget.device ||
++        directory.st_ino != budget.root_inode || !S_ISDIR(directory.st_mode) ||
++        directory.st_uid != budget.uid || (directory.st_mode & 0777) != 0700)
++        return refuse(EINVAL);
++    return true;
++}
++
++extern "C" int dmtcp_crucible_reserve_capture_file(const char *path)
++{
++    Guard guard;
++    if (!budget.selected) return -2;
++    const char *relative;
++    if (!current_account() || budget.finalized || !relative_path(path, &relative) || budget.count == FileCount) {
++        errno = EFBIG; return -1;
++    }
++    for (unsigned index = 0; index < budget.count; ++index) {
++        if (strcmp(relative, budget.files[index].relative) == 0) {
++            errno = EALREADY; return -1;
++        }
++    }
++    const char *slash = strchr(relative, '/');
++    if (slash) {
++        size_t length = static_cast<size_t>(slash - relative);
++        if (length < 6 || memcmp(slash - 6, "_files", 6) != 0) {
++            errno = EINVAL; return -1;
++        }
++        if (budget.supplementary[0] == '\0') {
++            if (budget.count + 2 > FileCount) { errno = EFBIG; return -1; }
++            memcpy(budget.supplementary, relative, length);
++            budget.supplementary[length] = '\0';
++            OriginalFile &directory = budget.files[budget.count++];
++            memcpy(directory.relative, budget.supplementary, length + 1);
++            directory.directory = true;
++        } else if (strlen(budget.supplementary) != length ||
++                   memcmp(budget.supplementary, relative, length) != 0) {
++            errno = EINVAL; return -1;
++        }
++    }
++    unsigned index = budget.count++;
++    memcpy(budget.files[index].relative, relative, strlen(relative) + 1);
++    return static_cast<int>(index);
++}
++
++extern "C" bool dmtcp_crucible_adopt_capture_file(int ticket, int fd)
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    struct stat file;
++    if (!current_account() || budget.finalized || ticket < 0 || static_cast<unsigned>(ticket) >= budget.count ||
++        fd < 0 || static_cast<unsigned>(fd) >= DescriptorLimit ||
++        fstat(fd, &file) != 0 || !S_ISREG(file.st_mode) || file.st_size != 0 ||
++        file.st_uid != budget.uid || file.st_nlink != 1 ||
++        (file.st_mode & 0777) != 0600 || file.st_dev != budget.device) return refuse(EINVAL);
++    OriginalFile &original = budget.files[ticket];
++    if (original.adopted || original.directory) return refuse(EALREADY);
++    if (!file_path_identity(original, file)) return refuse(EINVAL);
++    for (unsigned index = 0; index < budget.count; ++index) {
++        const OriginalFile &previous = budget.files[index];
++        if (previous.adopted && (previous.fd == fd ||
++            (previous.device == file.st_dev && previous.inode == file.st_ino)))
++            return refuse(EALREADY);
++    }
++    original.fd = fd;
++    original.device = file.st_dev;
++    original.inode = file.st_ino;
++    original.adopted = true;
++    return true;
++}
++
++extern "C" bool dmtcp_crucible_charge_capture_write(int fd, size_t count)
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    if (budget.finalized) return refuse(EBUSY);
++    for (unsigned index = 0; index < budget.count; ++index) {
++        OriginalFile &file = budget.files[index];
++        if (file.fd != fd) continue;
++        if (!identity(file, fd) || count > FileBytes - file.charged ||
++            count > ArchiveBytes - budget.charged) return refuse(EFBIG);
++        file.charged += count;
++        budget.charged += count;
++        return true;
++    }
++    return refuse(EBADF);
++}
++
++extern "C" bool dmtcp_crucible_retire_capture_fd(int fd)
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    if (budget.finalized) return refuse(EBUSY);
++    for (unsigned index = 0; index < budget.count; ++index) {
++        OriginalFile &file = budget.files[index];
++        if (file.fd != fd) continue;
++        if (!identity(file, fd)) return refuse(EBADF);
++        file.fd = -1; // The original path, inode and charged bytes remain retained.
++        return true;
++    }
++    return refuse(EBADF);
++}
++
++extern "C" bool dmtcp_crucible_capture_copy_buffer(size_t bytes)
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    if (!current_account() || budget.finalized || budget.copy_buffer || bytes > CopyBufferBytes) return refuse(ENOMEM);
++    budget.copy_buffer = true;
++    return true;
++}
++
++extern "C" bool dmtcp_crucible_release_capture_copy_buffer()
++{
++    Guard guard;
++    if (!budget.selected) return true;
++    if (!current_account() || budget.finalized || !budget.copy_buffer) return refuse(EINVAL);
++    budget.copy_buffer = false;
++    return true;
++}
++
++namespace {
++size_t history_extent()
++{
++    // Eight magic bytes, six explicit U64 header fields and original root bytes.
++    size_t extent = 8 + 6 * 8 + budget.root_length;
++    for (unsigned index = 0; index < budget.count; ++index) {
++        extent += 7 * 8 + strlen(budget.files[index].relative);
++    }
++    return extent;
++}
++
++void put_u64(unsigned char *&cursor, std::uint64_t value)
++{
++    for (unsigned index = 0; index < 8; ++index) {
++        *cursor++ = static_cast<unsigned char>(value >> (56 - index * 8));
++    }
++}
++} // namespace
++
++extern "C" size_t dmtcp_crucible_capture_budget_storage_bytes()
++{
++    return sizeof(OriginalBudget);
++}
++
++extern "C" size_t dmtcp_crucible_capture_history_bytes()
++{
++    Guard guard;
++    if (!budget.selected || !current_account()) {
++        errno = EINVAL;
++        return 0;
++    }
++    return history_extent();
++}
++
++namespace {
++// The caller holds the one original budget lock. This encoder makes no writer
++// calls, allocation, reset or new root adoption; its v1 byte layout is unchanged.
++size_t encode_history(void *output, size_t capacity)
++{
++    const size_t extent = history_extent();
++    if (capacity < extent) {
++        errno = ENOBUFS;
++        return 0;
++    }
++
++    auto *cursor = static_cast<unsigned char *>(output);
++    memcpy(cursor, "DCPBUD01", 8);
++    cursor += 8;
++    put_u64(cursor, budget.process);
++    put_u64(cursor, budget.uid);
++    put_u64(cursor, budget.count);
++    put_u64(cursor, budget.charged);
++    put_u64(cursor, budget.copy_buffer ? 1 : 0);
++    put_u64(cursor, budget.root_length);
++    memcpy(cursor, budget.root, budget.root_length);
++    cursor += budget.root_length;
++
++    for (unsigned index = 0; index < budget.count; ++index) {
++        const OriginalFile &file = budget.files[index];
++        const size_t length = strlen(file.relative);
++        put_u64(cursor, length);
++        put_u64(cursor, file.directory ? 1 : 0);
++        put_u64(cursor, file.adopted ? 1 : 0);
++        put_u64(cursor, file.fd >= 0 ? 1 : 0);
++        put_u64(cursor, file.charged);
++        put_u64(cursor, file.device);
++        put_u64(cursor, file.inode);
++        memcpy(cursor, file.relative, length);
++        cursor += length;
++    }
++    return extent;
++}
++} // namespace
++
++extern "C" size_t dmtcp_crucible_export_capture_history(void *output, size_t capacity)
++{
++    Guard guard;
++    if (!budget.selected || !current_account() || !output) {
++        errno = EINVAL;
++        return 0;
++    }
++    return encode_history(output, capacity);
++}
++
++extern "C" size_t dmtcp_crucible_finalize_capture_history(void *output, size_t capacity)
++{
++    Guard guard;
++    if (!budget.selected || !current_account() || !output || budget.copy_buffer) {
++        errno = EINVAL;
++        return 0;
++    }
++    const size_t extent = history_extent();
++    if (capacity < extent) {
++        errno = ENOBUFS;
++        return 0;
++    }
++    for (unsigned index = 0; index < budget.count; ++index) {
++        if (budget.files[index].fd >= 0) {
++            errno = EBUSY;
++            return 0;
++        }
++    }
++
++    // The selected checkpoint/saved-file producer becomes monotone terminal
++    // before copying its final attempted charges. No later producer may reopen
++    // this account or use an earlier in-image snapshot as replenished credit.
++    budget.finalized = true;
++    return encode_history(output, capacity);
++}
++
++extern "C" bool dmtcp_crucible_capture_history_finalized()
++{
++    Guard guard;
++    return budget.selected && current_account() && budget.finalized;
++}
++
++namespace {
++struct RestoreGuard {
++    bool acquired;
++
++    RestoreGuard()
++        : acquired(!budget.lock.test_and_set(std::memory_order_acquire))
++    {}
++
++    ~RestoreGuard()
++    {
++        if (acquired) budget.lock.clear(std::memory_order_release);
++    }
++};
++
++bool captured_prefix_shape()
++{
++    // Inspect only bounded captured native fields, not any original source path.
++    if (budget.count > FileCount || budget.root_length == 0 ||
++        budget.root_length >= sizeof(budget.root) ||
++        strnlen(budget.root, sizeof(budget.root)) != budget.root_length ||
++        budget.charged > ArchiveBytes) return false;
++
++    std::uint64_t total = 0;
++    for (unsigned index = 0; index < budget.count; ++index) {
++        const OriginalFile &file = budget.files[index];
++        const size_t length = strnlen(file.relative, RelativePathBytes);
++        if (length == 0 || length == RelativePathBytes || file.charged > FileBytes ||
++            file.charged > ArchiveBytes - total) return false;
++        total += file.charged;
++    }
++    return total == budget.charged;
++}
++
++size_t restore_attempt_extent()
++{
++    // Versioned explicit integers; no native struct/pointer/FD layout is emitted.
++    return 8 + 4 * 8 + restore_attempt.prefix_length;
++}
++} // namespace
++
++extern "C" bool dmtcp_crucible_require_early_restore_account()
++{
++    // This is the first restored native thread. Never spin on a serialized lock
++    // whose captured owner might not have been reconstructed yet.
++    if (!budget.selected) return true;
++    RestoreGuard guard;
++    if (!guard.acquired) return refuse(EBUSY);
++    if (restore_attempt.attempted) return refuse(restore_attempt.reason);
++
++    // Retain the one original attempted owner before any validation failure.
++    // In-memory retention alone does not survive terminal process exit: the
++    // outer installed owner must retain its signed original image/history and
++    // actual Child/exit/Unknown custody. There is no new successful receipt.
++    restore_attempt.attempted = true;
++    restore_attempt.process = dmtcp_get_real_pid ? dmtcp_get_real_pid() : 0;
++    restore_attempt.uid = geteuid();
++    restore_attempt.reason = ENOTSUP;
++    if (restore_attempt.process <= 0 || !captured_prefix_shape()) {
++        restore_attempt.reason = EINVAL;
++        return refuse(restore_attempt.reason);
++    }
++
++    restore_attempt.prefix_length = encode_history(restore_attempt.prefix,
++                                                  sizeof(restore_attempt.prefix));
++    if (restore_attempt.prefix_length == 0) {
++        restore_attempt.reason = errno ? errno : EINVAL;
++        return refuse(restore_attempt.reason);
++    }
++
++    // No parser, caller-controlled expected digest or root pathname grants
++    // installed source permission. A later separately qualified consumer must
++    // bind the genuine original final post-write body to this captured prefix,
++    // complete signed image/capture/dependencies and a finite lineage account.
++    // Until then, do not rewrite original PID/root/counters or run restart work.
++    return refuse(restore_attempt.reason);
++}
++
++extern "C" size_t dmtcp_crucible_early_restore_storage_bytes()
++{
++    return sizeof(restore_attempt);
++}
++
++extern "C" size_t dmtcp_crucible_early_restore_attempt_bytes()
++{
++    Guard guard;
++    if (!restore_attempt.attempted || !dmtcp_get_real_pid ||
++        restore_attempt.process != dmtcp_get_real_pid() ||
++        restore_attempt.uid != geteuid()) {
++        errno = EINVAL;
++        return 0;
++    }
++    return restore_attempt_extent();
++}
++
++extern "C" size_t dmtcp_crucible_export_early_restore_attempt(void *output, size_t capacity)
++{
++    Guard guard;
++    if (!restore_attempt.attempted || !dmtcp_get_real_pid ||
++        restore_attempt.process != dmtcp_get_real_pid() ||
++        restore_attempt.uid != geteuid() || !output) {
++        errno = EINVAL;
++        return 0;
++    }
++    const size_t extent = restore_attempt_extent();
++    if (capacity < extent) {
++        errno = ENOBUFS;
++        return 0;
++    }
++
++    auto *cursor = static_cast<unsigned char *>(output);
++    memcpy(cursor, "DCPRATT1", 8);
++    cursor += 8;
++    put_u64(cursor, restore_attempt.process);
++    put_u64(cursor, restore_attempt.uid);
++    put_u64(cursor, static_cast<unsigned>(restore_attempt.reason));
++    put_u64(cursor, restore_attempt.prefix_length);
++    memcpy(cursor, restore_attempt.prefix, restore_attempt.prefix_length);
++    return extent;
++}
+--- a/src/dmtcp_coordinator.h
++++ b/src/dmtcp_coordinator.h
+@@ -74,7 +74,7 @@
+ 
+     int isNSWorker() { return _isNSWorker; }
+ 
+-    void readProcessInfo(DmtcpMessage &msg);
++    void readProcessInfo(DmtcpMessage &msg, const char *retained = nullptr);
+ 
+   private:
+     UniquePid _identity;
+--- a/src/util_init.cpp
++++ b/src/util_init.cpp
+@@ -121,6 +121,14 @@
+ void
+ Util::initializeLogFile(const char *tmpDir, const char *prefix)
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    // These borrowed bounds precede the original path-building stream.
++    dmtcp_crucible::log_writer::require(
++      tmpDir != nullptr && ::strnlen(tmpDir, PATH_MAX) < PATH_MAX - 512 &&
++      prefix != nullptr && ::strnlen(prefix, 129) <= 128,
++      dmtcp_crucible::log_writer::Refusal::SinkIdentity);
++  }
++
+   const char *logFile = getenv(ENV_VAR_LOG_FILE);
+   if (logFile != NULL) {
+     JASSERT_SET_LOG(logFile);
+--- a/src/dmtcpworker.cpp
++++ b/src/dmtcpworker.cpp
+@@ -519,6 +519,9 @@
+   WorkerState::setCurrentState(WorkerState::RUNNING);
+   JTRACE("Informing coordinator of RUNNING status") (UniquePid::ThisProcess());
+   CoordinatorAPI::sendMsgToCoordinator(DMT_WORKER_RESUMING);
++  if (!CoordinatorAPI::publishFinalWriterHistory()) {
++    _exit(86);
++  }
+ }
+ 
+ void
+--- /dev/null
++++ b/src/crucible_capture_budget.h
+@@ -0,0 +1,75 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ *
++ * This file is part of DMTCP. It is free software: you may redistribute it
++ * and/or modify it under the GNU Lesser General Public License, version 3
++ * or (at your option) any later version. It comes without any warranty.
++ * See the matching DMTCP COPYING and COPYING.LESSER notices.
++ */
++#ifndef DMTCP_CRUCIBLE_CAPTURE_BUDGET_H
++#define DMTCP_CRUCIBLE_CAPTURE_BUDGET_H
++
++#include <stddef.h>
++#include <sys/types.h>
++
++/* Selection is only a producer limit, never capture or execution authority.
++ * It requires a pre-existing private canonical capture directory. The fixed
++ * source caller must enroll its process/descriptor admission before selection.
++ * One account cannot be reset: restored peers require a separately authenticated
++ * operational rebind; this edition refuses foreign process identity instead.
++ * Selected operations also revalidate current UID/descriptor limits, the same
++ * private root inode and original ticket-to-file identity before writer use.
++ * These checks preserve fixed opener custody; they are not atomic filesystem
++ * adoption or imported-source authorization.
++ */
++extern "C" int dmtcp_crucible_select_capture_budget(const char *root);
++extern "C" bool dmtcp_crucible_capture_budget_selected();
++extern "C" bool dmtcp_crucible_capture_process_current();
++extern "C" bool dmtcp_crucible_require_capture_root(const char *root);
++extern "C" int dmtcp_crucible_reserve_capture_file(const char *path);
++extern "C" bool dmtcp_crucible_adopt_capture_file(int ticket, int fd);
++extern "C" bool dmtcp_crucible_charge_capture_write(int fd, size_t count);
++extern "C" bool dmtcp_crucible_retire_capture_fd(int fd);
++extern "C" bool dmtcp_crucible_capture_copy_buffer(size_t bytes);
++extern "C" bool dmtcp_crucible_release_capture_copy_buffer();
++
++/* A bounded versioned byte record, not native struct memory. The caller retains
++ * the complete final attempted debit record after checkpoint return alongside
++ * the authentic capture response. This does not authenticate an imported source
++ * or permit foreign-PID rebinding. Returns zero on missing identity/capacity.
++ */
++extern "C" size_t dmtcp_crucible_capture_history_bytes();
++extern "C" size_t dmtcp_crucible_export_capture_history(void *output, size_t capacity);
++extern "C" size_t dmtcp_crucible_capture_budget_storage_bytes();
++
++/* This opt-in terminal producer snapshot requires all original write FDs and
++ * copy-buffer credit to be retired. On success, later selected writer calls
++ * refuse; retries return the same retained attempted history. It authenticates
++ * neither checkpoint success nor a caller/source, and has no reset/rebind API.
++ */
++extern "C" size_t dmtcp_crucible_finalize_capture_history(void *output, size_t capacity);
++extern "C" bool dmtcp_crucible_capture_history_finalized();
++
++/* Native restart entry gate, called only after actual TLS/PID restoration and
++ * before shared-data/thread/coordinator/plugin effects. Ordinary accounts pass.
++ * Selected accounts retain one original bounded attempt and refuse: no installed
++ * authenticated final-history consumer or operational lineage bank exists yet.
++ * No source/body/hash/DTO argument can enable this gate in this edition.
++ */
++extern "C" bool dmtcp_crucible_require_early_restore_account();
++extern "C" size_t dmtcp_crucible_early_restore_attempt_bytes();
++extern "C" size_t dmtcp_crucible_early_restore_storage_bytes();
++extern "C" size_t dmtcp_crucible_export_early_restore_attempt(void *output, size_t capacity);
++
++// Private selected process evidence. Byte getters issue no source authority.
++#ifdef __cplusplus
++extern "C" {
++#endif
++size_t dmtcp_crucible_selected_control_storage_bytes();
++size_t dmtcp_crucible_export_selected_control_history(void *output, size_t capacity);
++size_t dmtcp_crucible_export_selected_final_exchange(void *output, size_t capacity);
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+--- a/src/dmtcp_launch.cpp
++++ b/src/dmtcp_launch.cpp
+@@ -19,6 +19,7 @@
+  *  <http://www.gnu.org/licenses/>.                                         *
+  ****************************************************************************/
+ 
++#include "crucible_single_worker.h"
+ #include <sys/resource.h>
+ #include <linux/version.h>
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 11)
+@@ -379,6 +380,7 @@
+ int
+ main(int argc, const char **argv)
+ {
++  JASSERT(dmtcp_crucible::process_policy_admitted());
+   for (size_t fd = PROTECTED_FD_START; fd < PROTECTED_FD_END; fd++) {
+     close(fd);
+   }
+@@ -389,6 +391,7 @@
+ 
+   // This will change argv to refer to the target application.
+   processArgs(&argc, &argv);
++  JASSERT(dmtcp_crucible::join_coordinator_admitted(allowedModes == COORD_JOIN));
+ 
+   initializeJalib();
+ 
+@@ -722,6 +725,7 @@
+ testFsGsBase()
+ {
+ #ifdef __x86_64__
++  JASSERT(dmtcp_crucible::reserve_original_probe());
+   pid_t childPid = fork();
+   JASSERT(childPid != -1);
+ 
+--- a/jalib/jassert.cpp
++++ b/jalib/jassert.cpp
+@@ -53,6 +53,12 @@
+ static int
+ jwrite(int fd, const char *str)
+ {
++  // Selected writes must carry the original retained message row and sink.
++  if (dmtcp_crucible::log_writer::selected()) {
++    dmtcp_crucible::log_writer::refuse(
++      dmtcp_crucible::log_writer::Refusal::UnsupportedPrinter);
++  }
++
+   jalib::writeAll(fd, str, strlen(str));
+ 
+   return strlen(str);
+@@ -70,6 +76,23 @@
+ jassert_internal::JAssert::JAssert(JAssertType type)
+   : JASSERT_CONT_A(*this), JASSERT_CONT_B(*this), _type(type)
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    selected_message = dmtcp_crucible::log_writer::reserve_message();
++    if (type != JAssertType::Raw) {
++      Print(JAssertTypeToColor(type));
++      Print("[");
++      Print(jalib::getTimestampStr());
++      Print(", ");
++      Print(getpid());
++      Print(", ");
++      Print(jalib::gettid());
++      Print(", ");
++      Print(JAssertTypeToStr(type));
++      Print("]");
++    }
++    return;
++  }
++
+   if (type == JAssertType::Raw) {
+     return;
+   }
+@@ -81,6 +104,22 @@
+ 
+ jassert_internal::JAssert::~JAssert()
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    if (_type == JAssertType::Error) {
++      // Backtrace/proc-map/custom failure printers are not covered by this
++      // fixed scalar diagnostic policy. This is a terminal producer refusal.
++      dmtcp_crucible::log_writer::refuse(
++        dmtcp_crucible::log_writer::Refusal::ErrorExpansion);
++    }
++    if (_type != JAssertType::Trace) {
++      Print(clearEscapeStr);
++    }
++    Print("\n");
++    writeToConsole(nullptr);
++    writeToLog(nullptr);
++    return;
++  }
++
+   if (_type != JAssertType::Error) {
+     if (_type != JAssertType::Trace) {
+       Print(clearEscapeStr);
+@@ -158,6 +197,11 @@
+ void
+ jassert_internal::jassert_init()
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    errConsoleFd = dmtcp_crucible::log_writer::adopt_console(jalib::stderrFd());
++    return;
++  }
++
+   // Check if we already have a valid stderrFd
+   if (jalib::dup2(jalib::stderrFd(), jalib::stderrFd()) != jalib::stderrFd()) {
+     const char *errpath = getenv("JALIB_STDERR_PATH");
+@@ -195,6 +239,12 @@
+ void
+ jassert_internal::close_stderr()
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    dmtcp_crucible::log_writer::close_console(errConsoleFd);
++    errConsoleFd = -1;
++    return;
++  }
++
+   jalib::close(errConsoleFd);
+ 
+   errConsoleFd = -1;
+@@ -258,6 +308,11 @@
+ void
+ jassert_internal::set_log_file(const dmtcp::string &path)
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    dmtcp_crucible::log_writer::set_log_path(path.c_str());
++    return;
++  }
++
+   if (theLogFileFd != -1) {
+     jalib::close(theLogFileFd);
+     theLogFileFd = -1;
+@@ -265,8 +320,60 @@
+   strncpy(logFilePath, path.c_str(), sizeof(logFilePath) - 1);
+ }
+ 
++void
++jassert_internal::set_log_file(const char *path)
++{
++  if (dmtcp_crucible::log_writer::selected()) {
++    dmtcp_crucible::log_writer::set_log_path(path);
++    return;
++  }
++  set_log_file(dmtcp::string(path));
++}
++
+ void jassert_internal::open_log_file()
+ {
++  if (dmtcp_crucible::log_writer::selected()) {
++    using namespace dmtcp_crucible::log_writer;
++    // Admit borrowed environment text before the original log file is born.
++    // The complete environment remains original data, including control keys.
++    size_t entries = 0;
++    size_t environment_bytes = 0;
++    for (; environ[entries] != nullptr; ++entries) {
++      require(entries < 128, Refusal::EnvironmentExpansion);
++      size_t length = ::strnlen(environ[entries], 4097);
++      require(length <= 4096 && length + 6 <= 4096 - environment_bytes,
++              Refusal::EnvironmentExpansion);
++      environment_bytes += length + 6;
++    }
++    dmtcp::string program = Filesystem::GetProgramName();
++    require(program.size() < 1024, Refusal::EnvironmentExpansion);
++    unsigned row = reserve_message();
++    print(row, "[");
++    print(row, jalib::getTimestampStr());
++    print(row, ", ");
++    print(row, getpid());
++    print(row, ", ");
++    print(row, jalib::gettid());
++    print(row, ", INFO] at ");
++    print(row, JASSERT_FILE);
++    print(row, ":");
++    print(row, JASSERT_LINE);
++    print(row, " in ");
++    print(row, JASSERT_FUNC);
++    print(row, "; REASON='Program: ");
++    print(row, program);
++    print(row, "'\n  Environment:");
++    for (size_t index = 0; index < entries; ++index) {
++      print(row, "\n    ");
++      print(row, environ[index]);
++      print(row, ";");
++    }
++    print(row, "\n");
++    theLogFileFd = open_log(jalib::logFd());
++    emit(row, 1, theLogFileFd);
++    return;
++  }
++
+   dmtcp::string path = logFilePath;
+   if (path.length() > 0) {
+     theLogFileFd = _open_log_safe(path, jalib::logFd());
+@@ -305,6 +412,14 @@
+ void
+ jassert_internal::JAssert::writeToConsole(const char *str)
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    if (errConsoleFd == -1) {
++      jassert_init();
++    }
++    dmtcp_crucible::log_writer::emit(selected_message, 0, errConsoleFd);
++    return;
++  }
++
+   if (errConsoleFd != -1) {
+     jwrite(errConsoleFd, str);
+   }
+@@ -313,6 +428,14 @@
+ void
+ jassert_internal::JAssert::writeToLog(const char *str)
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    if (theLogFileFd == -1) {
++      open_log_file();
++    }
++    dmtcp_crucible::log_writer::emit(selected_message, 1, theLogFileFd);
++    return;
++  }
++
+   // Lazily open log file.
+   if (theLogFileFd == -1) {
+     if (write(jalib::logFd(), str, 0) != -1) {
+--- a/jalib/jassert.h
++++ b/jalib/jassert.h
+@@ -33,6 +33,7 @@
+ 
+ #include "dmtcpalloc.h"
+ #include "jalloc.h"
++#include "crucible_log_writer.h"
+ 
+ extern int jassert_quiet;
+ 
+@@ -171,6 +172,7 @@
+     /// if set true (on construction) call exit() on destruction
+     JAssertType _type;
+     dmtcp::ostringstream ss;
++    unsigned selected_message = dmtcp_crucible::log_writer::InvalidMessage;
+ };
+ 
+ class JTrace : public JAssert
+@@ -224,6 +226,11 @@
+ inline JAssert&
+ JAssert::Print(const T &t)
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    dmtcp_crucible::log_writer::print(selected_message, t);
++    return *this;
++  }
++
+   ss << t;
+   return *this;
+ }
+@@ -237,6 +244,11 @@
+ inline JAssert&
+ JAssert::Print(const char *t)
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    dmtcp_crucible::log_writer::print(selected_message, t);
++    return *this;
++  }
++
+   if (t == NULL) {
+     ss << "<NULL>";
+   } else if (t[0] == '\0') {
+@@ -252,6 +264,12 @@
+ inline JAssert&
+ JAssert::Print(const dmtcp::vector<T> &t)
+ {
++  if (selected_message != dmtcp_crucible::log_writer::InvalidMessage) {
++    // No arbitrary element printer is entered in the selected scalar policy.
++    dmtcp_crucible::log_writer::refuse(
++      dmtcp_crucible::log_writer::Refusal::UnsupportedPrinter);
++  }
++
+   if (t.size() > 0) {
+     ss << "[" << t[0];
+   }
+@@ -263,6 +281,7 @@
+ }
+ 
+ void set_log_file(const dmtcp::string &path);
++void set_log_file(const char *path);
+ void open_log_file();
+ }// jassert_internal
+ 
+--- a/src/plugin/ipc/file/fileconnection.cpp
++++ b/src/plugin/ipc/file/fileconnection.cpp
+@@ -38,6 +38,7 @@
+ #include "jfilesystem.h"
+ #include "jsocket.h"
+ #include "dmtcp.h"
++#include "../../../crucible_capture_budget.h"
+ #include "shareddata.h"
+ #include "util.h"
+ 
+@@ -211,13 +212,17 @@
+     JASSERT(SharedData::getCkptLeaderForFile(_st_dev, _st_ino, &id));
+     if (id == _id) {
+       _savedFilePath = getSavedFilePath(_path);
++      int ticket = dmtcp_crucible_reserve_capture_file(_savedFilePath.c_str());
++      JASSERT(ticket != -1);
+       JASSERT(FileConnList::createDirectoryTree(_savedFilePath))
+         (_savedFilePath)
+         .Text("Unable to create directory in File Path");
+ 
+-      int destFd = _real_open(
+-          _savedFilePath.c_str(), O_CREAT | O_WRONLY | O_TRUNC,
+-          S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
++      int destFd = dmtcp_crucible_capture_budget_selected()
++          ? _real_open(_savedFilePath.c_str(), O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW, 0600)
++          : _real_open(_savedFilePath.c_str(), O_CREAT | O_WRONLY | O_TRUNC,
++                       S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
++      JASSERT(dmtcp_crucible_adopt_capture_file(ticket, destFd));
+       JASSERT(destFd != -1) (JASSERT_ERRNO) (_path) (_savedFilePath);
+ 
+       JTRACE("Saving checkpointed copy of the file") (_path) (_savedFilePath);
+@@ -231,6 +236,7 @@
+       } else {
+         writeFileFromFd(_fds[0], destFd);
+       }
++      JASSERT(dmtcp_crucible_retire_capture_fd(destFd));
+       _real_close(destFd);
+     } else {
+       JTRACE("Not checkpointing this file") (_path);
+@@ -462,6 +468,8 @@
+ void
+ FileConnection::postRestart()
+ {
++  // A captured producer account cannot authorize a fresh operational route.
++  JASSERT(dmtcp_crucible_capture_process_current());
+   int tempfd;
+ 
+   JASSERT(_fds.size() > 0);
+@@ -594,6 +602,7 @@
+ {
+   long page_size = sysconf(_SC_PAGESIZE);
+   const size_t bufSize = 1024 * page_size;
++  JASSERT(dmtcp_crucible_capture_copy_buffer(bufSize));
+   char *buf = (char *)JALLOC_HELPER_MALLOC(bufSize);
+ 
+   // Synchronize memory buffer with data in filesystem
+@@ -612,10 +621,12 @@
+     if (readBytes == 0) {
+       break;
+     }
++    JASSERT(dmtcp_crucible_charge_capture_write(destFd, readBytes));
+     writtenBytes = Util::writeAll(destFd, buf, readBytes);
+     JASSERT(writtenBytes != -1) (JASSERT_ERRNO).Text("Write failed.");
+   }
+   JALLOC_HELPER_FREE(buf);
++  JASSERT(dmtcp_crucible_release_capture_copy_buffer());
+   JASSERT(lseek(fd, offset, SEEK_SET) != -1);
+ }
+ 
+@@ -647,6 +658,8 @@
+ void
+ FifoConnection::drain()
+ {
++  // FIFO drain writes are outside the selected regular-image/file producer.
++  JASSERT(!dmtcp_crucible_capture_budget_selected());
+   struct stat st;
+ 
+   JASSERT(_fds.size() > 0);
+--- /dev/null
++++ b/src/crucible_final_frame.h
+@@ -0,0 +1,243 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Original native final-history exchange; no durable/source authority is issued.
++ */
++#ifndef DMTCP_CRUCIBLE_FINAL_FRAME_H
++#define DMTCP_CRUCIBLE_FINAL_FRAME_H
++
++#include <type_traits>
++
++#include "crucible_capture_budget.h"
++#include "crucible_control_frame.h"
++
++namespace dmtcp_crucible {
++struct OriginalFinalExchange {
++    std::atomic_flag reservation = ATOMIC_FLAG_INIT;
++    std::atomic<bool> settled{false};
++    bool attempted = false;
++    bool received = false;
++    bool acknowledged = false;
++    pid_t process = 0;
++    size_t body_length = 0;
++    size_t request_transferred = 0;
++    size_t response_transferred = 0;
++    int error = 0;
++    unsigned char request[ControlHeaderBytes] = {};
++    unsigned char response[ControlHeaderBytes] = {};
++    unsigned char body[FinalPayloadBytes] = {};
++};
++
++inline OriginalFinalExchange &final_exchange()
++{
++    static OriginalFinalExchange original;
++    return original;
++}
++
++inline bool reserve_final_exchange()
++{
++    OriginalFinalExchange &original = final_exchange();
++    if (original.reservation.test_and_set(std::memory_order_acquire)) {
++        errno = EBUSY;
++        return false;
++    }
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    if (!writer_cohort_admitted() || actual <= 0 || original.attempted) {
++        original.reservation.clear(std::memory_order_release);
++        errno = EALREADY;
++        return false;
++    }
++    original.attempted = true;
++    original.process = actual;
++    original.reservation.clear(std::memory_order_release);
++    return true;
++}
++
++struct OriginalFinalSettlement {
++    OriginalFinalExchange &original;
++
++    ~OriginalFinalSettlement()
++    {
++        original.settled.store(true, std::memory_order_release);
++    }
++};
++
++inline void final_header(dmtcp::DmtcpMessage &message,
++                         dmtcp::DmtcpMessageType type, pid_t worker, size_t extent)
++{
++    // These are DMTCP-private messages. Preserve a deterministic full original
++    // header without exposing this native layout as the Apache host protocol.
++    static_assert(std::is_trivially_copyable<dmtcp::DmtcpMessage>::value,
++                  "native original header copy requires trivial copy semantics");
++    auto *bytes = reinterpret_cast<unsigned char *>(&message);
++    for (size_t index = 0; index < sizeof(message); ++index) bytes[index] = 0;
++    const char magic[16] = DMTCP_MAGIC_STRING;
++    std::memcpy(message._magicBits, magic, sizeof(magic));
++    message._msgSize = sizeof(message);
++    message.type = type;
++    message.state = dmtcp::WorkerState::RUNNING;
++    message.from = dmtcp::UniquePid::ThisProcess();
++    message.realPid = worker;
++    message.extraBytes = extent;
++    message.coordTimeStamp = 1; // One original final exchange, no replenishment.
++    // The caller validates the exact loaded cookie before any send.
++    load_control_cookie(reinterpret_cast<unsigned char *>(message.barrier));
++}
++
++inline bool selected_publish_final(int fd)
++{
++    if (!reserve_final_exchange()) return false;
++    OriginalFinalExchange &original = final_exchange();
++    OriginalFinalSettlement settlement{original};
++    // Both directions belong to this original whole exchange. A competing
++    // idle receiver refuses before finalization rather than stealing its ACK.
++    OriginalChannelLease outgoing(fd, true);
++    if (outgoing.channel < 0) { original.error = errno; return false; }
++    OriginalChannelLease incoming(fd, false);
++    if (incoming.channel < 0) { original.error = errno; return false; }
++    if (!dmtcp_crucible_capture_budget_selected()) {
++        original.error = EINVAL;
++        return false;
++    }
++    original.body_length = dmtcp_crucible_finalize_capture_history(
++        original.body, sizeof(original.body));
++    if (original.body_length == 0) { original.error = errno; return false; }
++
++    dmtcp::DmtcpMessage request;
++    final_header(request, dmtcp::DMT_CRUCIBLE_WRITER_FINAL, original.process,
++                 original.body_length);
++    if (!control_cookie_matches(reinterpret_cast<unsigned char *>(request.barrier))) {
++        original.error = EACCES;
++        return false;
++    }
++    std::memcpy(original.request, &request, sizeof(request));
++    OriginalControlDeadline deadline;
++    size_t header_bytes;
++    if (!original_socket_bytes(fd, original.request, sizeof(request), true,
++                               deadline, header_bytes, original.error)) {
++        original.request_transferred = header_bytes;
++        return false;
++    }
++    size_t body_bytes;
++    if (!original_socket_bytes(fd, original.body, original.body_length, true,
++                               deadline, body_bytes, original.error)) {
++        original.request_transferred = sizeof(request) + body_bytes;
++        return false;
++    }
++    original.request_transferred = sizeof(request) + body_bytes;
++    original.received = true;
++    if (!original_socket_bytes(fd, original.response, sizeof(request), false,
++                               deadline, original.response_transferred, original.error))
++        return false;
++    dmtcp::DmtcpMessage response;
++    std::memcpy(&response, original.response, sizeof(response));
++    if (!bounded_header(response) || response.type != dmtcp::DMT_CRUCIBLE_WRITER_FINAL_ACK ||
++        response.extraBytes != 0 || response.realPid != original.process ||
++        response.coordTimeStamp != 1 || response.coordCmdStatus != 0 ||
++        !control_cookie_matches(reinterpret_cast<unsigned char *>(response.barrier))) {
++        original.error = EPROTO;
++        return false;
++    }
++    // This ACK means the coordinator retained this original body in memory.
++    // It frees no slot, proves no host durability and grants no restore right.
++    original.acknowledged = true;
++    return true;
++}
++
++inline bool selected_receive_final(int fd, const dmtcp::DmtcpMessage &request,
++                                  pid_t actual_worker,
++                                  OriginalControlDeadline &deadline,
++                                  OriginalControlFrame &retained_header)
++{
++    if (!reserve_final_exchange()) return false;
++    OriginalFinalExchange &original = final_exchange();
++    OriginalFinalSettlement settlement{original};
++    // Both directions belong to this original whole exchange. A competing
++    // idle receiver refuses before finalization rather than stealing its ACK.
++    OriginalChannelLease outgoing(fd, true);
++    if (outgoing.channel < 0) { original.error = errno; return false; }
++    OriginalIncomingTransfer incoming(fd, retained_header);
++    if (incoming.channel < 0) { original.error = errno; return false; }
++    std::memcpy(original.request, &request, sizeof(request));
++    original.request_transferred = sizeof(request);
++    if (!bounded_header(request) || request.type != dmtcp::DMT_CRUCIBLE_WRITER_FINAL ||
++        request.extraBytes < 56 || request.extraBytes > FinalPayloadBytes ||
++        actual_worker <= 0 || request.realPid != actual_worker ||
++        request.coordTimeStamp != 1 ||
++        !control_cookie_matches(reinterpret_cast<const unsigned char *>(request.barrier))) {
++        original.error = EPROTO;
++        return false;
++    }
++    original.body_length = request.extraBytes;
++    size_t body_bytes;
++    if (!original_socket_bytes(fd, original.body, original.body_length, false,
++                               deadline, body_bytes, original.error)) {
++        original.request_transferred += body_bytes;
++        return false;
++    }
++    original.request_transferred += body_bytes;
++    if (std::memcmp(original.body, "DCPBUD01", 8) != 0) {
++        original.error = EPROTO;
++        return false;
++    }
++    std::uint64_t original_pid = 0;
++    for (size_t index = 8; index < 16; ++index)
++        original_pid = (original_pid << 8) | original.body[index];
++    if (original_pid != static_cast<std::uint64_t>(actual_worker)) {
++        original.error = EPROTO;
++        return false;
++    }
++    original.received = true;
++    dmtcp::DmtcpMessage response;
++    final_header(response, dmtcp::DMT_CRUCIBLE_WRITER_FINAL_ACK, actual_worker, 0);
++    if (!control_cookie_matches(reinterpret_cast<const unsigned char *>(response.barrier))) {
++        original.error = EACCES;
++        return false;
++    }
++    std::memcpy(original.response, &response, sizeof(response));
++    if (!original_socket_bytes(fd, original.response, sizeof(response), true,
++                               deadline, original.response_transferred, original.error))
++        return false;
++    original.acknowledged = true;
++    return true;
++}
++// Exports immutable original evidence only. The native headers remain opaque
++// bytes; this is not a native-layout shared-memory protocol or an authority.
++inline size_t export_final_exchange(void *output, size_t capacity)
++{
++    OriginalFinalExchange &original = final_exchange();
++    if (!writer_cohort_admitted() || !original.settled.load(std::memory_order_acquire) ||
++        original.process != static_cast<pid_t>(_real_syscall(SYS_getpid)) || !output) {
++        errno = EBUSY;
++        return 0;
++    }
++    if (original.body_length > FinalPayloadBytes ||
++        original.request_transferred > ControlHeaderBytes + original.body_length ||
++        original.response_transferred > ControlHeaderBytes) {
++        errno = EINVAL;
++        return 0;
++    }
++    const size_t extent = 8 + 9 * 8 + 2 * ControlHeaderBytes + original.body_length;
++    if (capacity < extent) { errno = ENOSPC; return 0; }
++
++    auto *cursor = static_cast<unsigned char *>(output);
++    std::memcpy(cursor, "DCPFIN01", 8);
++    cursor += 8;
++    control_number(cursor, original.process);
++    control_number(cursor, original.received ? 1 : 0);
++    control_number(cursor, original.acknowledged ? 1 : 0);
++    control_number(cursor, original.body_length);
++    control_number(cursor, original.request_transferred);
++    control_number(cursor, original.response_transferred);
++    control_number(cursor, static_cast<unsigned>(original.error));
++    control_number(cursor, ControlHeaderBytes);
++    control_number(cursor, 1); // Original exchange ordinal, never replenished.
++    std::memcpy(cursor, original.request, ControlHeaderBytes);
++    cursor += ControlHeaderBytes;
++    std::memcpy(cursor, original.response, ControlHeaderBytes);
++    cursor += ControlHeaderBytes;
++    std::memcpy(cursor, original.body, original.body_length);
++    return extent;
++}
++
++} // namespace dmtcp_crucible
++#endif
+--- /dev/null
++++ b/src/crucible_control_frame.h
+@@ -0,0 +1,595 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Selected native control custody. No source or execution authority is issued.
++ */
++#ifndef DMTCP_CRUCIBLE_CONTROL_FRAME_H
++#define DMTCP_CRUCIBLE_CONTROL_FRAME_H
++
++#include <atomic>
++#include <cerrno>
++#include <cstdint>
++#include <cstring>
++#include <poll.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <time.h>
++
++#include "crucible_single_worker.h"
++#include "dmtcpmessagetypes.h"
++#include "syscallwrappers.h"
++
++namespace dmtcp_crucible {
++
++inline bool selected_writer_cohort()
++{
++    // A separate opt-in selection preserves old worker-controlV3 behavior.
++    // Once observed, environment removal cannot resume ordinary producers.
++    static std::atomic<bool> observed{false};
++    if (std::getenv("CRUCIBLE_CAPTURE_WRITER_COHORT_POLICY") != nullptr)
++        observed.store(true, std::memory_order_release);
++    return observed.load(std::memory_order_acquire);
++}
++
++inline bool writer_cohort_admitted()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_WRITER_COHORT_POLICY");
++    return policy && std::strcmp(policy, "cohort.v1") == 0 &&
++           selected_single_worker() && process_policy_admitted();
++}
++
++constexpr size_t ControlFrames = 64;
++constexpr size_t ControlPayloadBytes = 64 * 1024;
++constexpr size_t FinalPayloadBytes = 2 * 1024 * 1024;
++constexpr size_t ControlHeaderBytes = sizeof(dmtcp::DmtcpMessage);
++static_assert(ControlHeaderBytes <= 4096, "selected native control header extent");
++
++// The finite registry keys actual kernel socket identity, so duplicated
++// descriptors cannot bypass a same-direction lease. Entries are never reused.
++struct OriginalControlChannel {
++    dev_t device = 0;
++    ino_t inode = 0;
++    std::atomic<bool> outgoing{false};
++    std::atomic<bool> incoming{false};
++};
++
++struct OriginalControlChannels {
++    std::atomic_flag reservation = ATOMIC_FLAG_INIT;
++    pid_t process = 0;
++    size_t count = 0;
++    OriginalControlChannel channels[ControlFrames];
++};
++
++inline OriginalControlChannels &control_channels()
++{
++    static OriginalControlChannels original;
++    return original;
++}
++
++inline int acquire_control_channel(int fd, bool outgoing)
++{
++    OriginalControlChannels &bank = control_channels();
++    if (bank.reservation.test_and_set(std::memory_order_acquire)) {
++        errno = EBUSY;
++        return -1;
++    }
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    struct stat identity = {};
++    if (!writer_cohort_admitted() || actual <= 0 || fd < 0 || fd >= 1024 ||
++        (bank.process != 0 && bank.process != actual) ||
++        _real_syscall(SYS_fstat, fd, &identity) != 0 || !S_ISSOCK(identity.st_mode) ||
++        identity.st_uid != static_cast<uid_t>(_real_syscall(SYS_geteuid))) {
++        bank.reservation.clear(std::memory_order_release);
++        errno = EACCES;
++        return -1;
++    }
++
++    size_t index = 0;
++    while (index < bank.count &&
++           (bank.channels[index].device != identity.st_dev ||
++            bank.channels[index].inode != identity.st_ino)) ++index;
++    if (index == bank.count) {
++        if (bank.count == ControlFrames) {
++            bank.reservation.clear(std::memory_order_release);
++            errno = ENOSPC;
++            return -1;
++        }
++        if (bank.process == 0) bank.process = actual;
++        bank.channels[index].device = identity.st_dev;
++        bank.channels[index].inode = identity.st_ino;
++        ++bank.count;
++    }
++    std::atomic<bool> &direction = outgoing ? bank.channels[index].outgoing :
++                                             bank.channels[index].incoming;
++    const bool busy = direction.exchange(true, std::memory_order_acq_rel);
++    bank.reservation.clear(std::memory_order_release);
++    if (busy) { errno = EBUSY; return -1; }
++    return static_cast<int>(index);
++}
++
++inline void release_control_channel(int channel, bool outgoing)
++{
++    if (channel < 0 || static_cast<size_t>(channel) >= ControlFrames) return;
++    OriginalControlChannels &bank = control_channels();
++    // Foreign restored owners cannot silently retire original channel custody.
++    if (bank.process != static_cast<pid_t>(_real_syscall(SYS_getpid))) return;
++    std::atomic<bool> &direction = outgoing ? bank.channels[channel].outgoing :
++                                             bank.channels[channel].incoming;
++    direction.store(false, std::memory_order_release);
++}
++
++struct OriginalChannelLease {
++    int channel;
++    bool outgoing;
++
++    OriginalChannelLease(int fd, bool direction)
++        : channel(acquire_control_channel(fd, direction)), outgoing(direction)
++    {}
++
++    ~OriginalChannelLease()
++    {
++        release_control_channel(channel, outgoing);
++    }
++
++    OriginalChannelLease(const OriginalChannelLease &) = delete;
++    OriginalChannelLease &operator=(const OriginalChannelLease &) = delete;
++};
++
++struct OriginalControlFrame {
++    std::atomic<bool> attempted{false};
++    bool outgoing = false;
++    bool complete = false;
++    int channel = 0;
++    std::atomic<bool> settled{false};
++    size_t extent = 0;
++    size_t transferred = 0;
++    int error = 0;
++    int close_error = 0;
++    unsigned char header[ControlHeaderBytes] = {};
++    unsigned char body[ControlPayloadBytes] = {};
++};
++
++
++// Transfer the already-held header lease without a release/reacquire window.
++// Only the owning header row and unchanged actual socket can supply this lease.
++inline bool original_control_frame_claimed(const OriginalControlFrame &frame);
++
++struct OriginalIncomingTransfer {
++    int channel = -1;
++
++    OriginalIncomingTransfer(int fd, OriginalControlFrame &header)
++    {
++        OriginalControlChannels &bank = control_channels();
++        struct stat identity = {};
++        if (!original_control_frame_claimed(header)) {
++            errno = EACCES;
++            return;
++        }
++        const int retained = header.channel;
++        if (retained < 0 ||
++            static_cast<size_t>(retained) >= ControlFrames ||
++            header.outgoing || header.settled.load(std::memory_order_acquire) ||
++            header.extent != ControlHeaderBytes ||
++            header.transferred != ControlHeaderBytes ||
++            bank.process != static_cast<pid_t>(_real_syscall(SYS_getpid)) ||
++            !bank.channels[retained].incoming.load(std::memory_order_acquire) ||
++            _real_syscall(SYS_fstat, fd, &identity) != 0 ||
++            !S_ISSOCK(identity.st_mode) ||
++            identity.st_dev != bank.channels[retained].device ||
++            identity.st_ino != bank.channels[retained].inode) {
++            errno = EACCES;
++            return;
++        }
++        channel = retained;
++        header.channel = -1;
++        header.complete = true;
++        header.settled.store(true, std::memory_order_release);
++    }
++
++    ~OriginalIncomingTransfer()
++    {
++        release_control_channel(channel, false);
++    }
++
++    OriginalIncomingTransfer(const OriginalIncomingTransfer &) = delete;
++    OriginalIncomingTransfer &operator=(const OriginalIncomingTransfer &) = delete;
++};
++
++struct OriginalControlBank {
++    std::atomic_flag reservation = ATOMIC_FLAG_INIT;
++    std::atomic<pid_t> process{0};
++    size_t count = 0;
++    OriginalControlFrame frames[ControlFrames];
++};
++
++inline OriginalControlBank &control_bank()
++{
++    static OriginalControlBank original;
++    return original;
++}
++
++// All unclaimed storage stays zero-filled. Identity plus release-published
++// claim state authenticates a row before its zero channel field is examined.
++inline bool original_control_frame_claimed(const OriginalControlFrame &frame)
++{
++    OriginalControlBank &bank = control_bank();
++    if (bank.process.load(std::memory_order_acquire) !=
++        static_cast<pid_t>(_real_syscall(SYS_getpid))) return false;
++    for (size_t index = 0; index < ControlFrames; ++index) {
++        if (&frame == &bank.frames[index])
++            return frame.attempted.load(std::memory_order_acquire);
++    }
++    return false;
++}
++
++// Reservation serializes the original c/s and worker-route callers without
++// spinning. Unique slots own later I/O. Full storage and decoded copies must be
++// enrolled in the selected process/image/host heap declaration before Child.
++inline OriginalControlFrame *reserve_control_frame(bool outgoing)
++{
++    OriginalControlBank &bank = control_bank();
++    if (bank.reservation.test_and_set(std::memory_order_acquire)) {
++        errno = EBUSY;
++        return nullptr;
++    }
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    if (!writer_cohort_admitted() || actual <= 0 ||
++        (bank.process != 0 && bank.process != actual) || bank.count == ControlFrames) {
++        bank.reservation.clear(std::memory_order_release);
++        errno = ENOSPC;
++        return nullptr;
++    }
++    bank.process = actual;
++    OriginalControlFrame &frame = bank.frames[bank.count++];
++    frame.channel = -1;
++    frame.outgoing = outgoing;
++    frame.attempted.store(true, std::memory_order_release);
++    bank.reservation.clear(std::memory_order_release);
++    return &frame;
++}
++
++inline bool reserve_control_exchange(OriginalControlFrame **request,
++                                     OriginalControlFrame **response,
++                                     OriginalControlFrame **retirement = nullptr)
++{
++    OriginalControlBank &bank = control_bank();
++    if (bank.reservation.test_and_set(std::memory_order_acquire)) {
++        errno = EBUSY;
++        return false;
++    }
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    const size_t required = retirement ? 3 : 2;
++    if (!request || !response || !writer_cohort_admitted() || actual <= 0 ||
++        (bank.process != 0 && bank.process != actual) ||
++        bank.count > ControlFrames - required) {
++        bank.reservation.clear(std::memory_order_release);
++        errno = ENOSPC;
++        return false;
++    }
++    bank.process = actual;
++    *request = &bank.frames[bank.count++];
++    *response = &bank.frames[bank.count++];
++    (*request)->channel = -1;
++    (*request)->outgoing = true;
++    (*request)->attempted.store(true, std::memory_order_release);
++    (*response)->channel = -1;
++    (*response)->outgoing = false;
++    (*response)->attempted.store(true, std::memory_order_release);
++    if (retirement) {
++        *retirement = &bank.frames[bank.count++];
++        (*retirement)->channel = -1;
++        (*retirement)->attempted.store(true, std::memory_order_release);
++    }
++    bank.reservation.clear(std::memory_order_release);
++    return true;
++}
++
++struct OriginalControlDeadline {
++    timespec expires = {};
++    bool valid = false;
++
++    explicit OriginalControlDeadline(bool selected = true)
++    {
++        if (selected && _real_syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &expires) == 0 &&
++            expires.tv_sec <= static_cast<time_t>(INT64_MAX - 60)) {
++            expires.tv_sec += 60;
++            valid = true;
++        }
++    }
++
++    int remaining() const
++    {
++        timespec now;
++        if (!valid || _real_syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &now) != 0)
++            return 0;
++        if (now.tv_sec > expires.tv_sec ||
++            (now.tv_sec == expires.tv_sec && now.tv_nsec >= expires.tv_nsec)) return 0;
++        const std::int64_t nanoseconds =
++            static_cast<std::int64_t>(expires.tv_sec - now.tv_sec) * 1000000000 +
++            expires.tv_nsec - now.tv_nsec;
++        return static_cast<int>((nanoseconds + 999999) / 1000000);
++    }
++};
++
++inline bool original_socket_bytes(int fd, void *data, size_t extent, bool outgoing,
++                                  OriginalControlDeadline &deadline,
++                                  size_t &transferred, int &error)
++{
++    transferred = 0;
++    error = 0;
++    while (transferred < extent) {
++        const int remaining = deadline.remaining();
++        if (remaining == 0) { error = ETIMEDOUT; return false; }
++        pollfd ready = {fd, static_cast<short>(outgoing ? POLLOUT : POLLIN), 0};
++        const long result = _real_syscall(SYS_poll, &ready, 1, remaining);
++        if (result < 0 && errno == EINTR) continue;
++        if (result <= 0) { error = result == 0 ? ETIMEDOUT : errno; return false; }
++        auto *position = static_cast<unsigned char *>(data) + transferred;
++        const size_t count = extent - transferred;
++        const long actual = outgoing
++            ? _real_syscall(SYS_sendto, fd, position, count,
++                            MSG_DONTWAIT | MSG_NOSIGNAL, nullptr, 0)
++            : _real_syscall(SYS_recvfrom, fd, position, count,
++                            MSG_DONTWAIT, nullptr, nullptr);
++        if (actual < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
++            continue;
++        if (actual <= 0 || static_cast<size_t>(actual) > count) {
++            error = actual == 0 ? ECONNRESET : errno;
++            return false;
++        }
++        transferred += static_cast<size_t>(actual);
++    }
++    return true;
++}
++
++inline bool bounded_header(const dmtcp::DmtcpMessage &message)
++{
++    const char expected[16] = DMTCP_MAGIC_STRING;
++    return message._msgSize == ControlHeaderBytes &&
++           std::memcmp(message._magicBits, expected, sizeof(expected)) == 0;
++}
++
++// Native string readers may only consume exactly the admitted terminated
++// fields. No trailing body bytes or overreading legacy strlen are admitted.
++inline bool exact_cstrings(const void *body, size_t extent, unsigned fields)
++{
++    if (!body || extent == 0 || extent > ControlPayloadBytes) return false;
++    const auto *bytes = static_cast<const unsigned char *>(body);
++    size_t cursor = 0;
++    for (unsigned index = 0; index < fields; ++index) {
++        const void *end = std::memchr(bytes + cursor, 0, extent - cursor);
++        if (!end) return false;
++        cursor = static_cast<const unsigned char *>(end) - bytes + 1;
++    }
++    return cursor == extent;
++}
++
++inline bool selected_worker_message(const dmtcp::DmtcpMessage &message,
++                                    const void *body)
++{
++    using namespace dmtcp;
++    switch (message.type) {
++    case DMT_WORKER_RESUMING:
++    case DMT_GET_CKPT_DIR:
++        return message.extraBytes == 0;
++    case DMT_BARRIER:
++        return message.extraBytes == 0 &&
++               std::memchr(message.barrier, 0, sizeof(message.barrier));
++    case DMT_CKPT_FILENAME:
++    case DMT_UNIQUE_CKPT_FILENAME:
++        return exact_cstrings(body, message.extraBytes, 3);
++    case DMT_UPDATE_CKPT_DIR:
++    case DMT_UPDATE_PROCESS_INFO_AFTER_INIT_OR_EXEC:
++        // The owning coordinator separately requires the same original peer
++        // identity. This admits its bounded program-info body, not exec or a
++        // changed installed guest/resource identity.
++        return exact_cstrings(body, message.extraBytes, 1);
++    case DMT_KVDB_REQUEST:
++        return (message.kvdbRequest == kvdb::KVDBRequest::GET ||
++                message.kvdbRequest == kvdb::KVDBRequest::SET) &&
++               std::memchr(message.kvdbId, 0, sizeof(message.kvdbId)) &&
++               message.keyLen > 0 && message.valLen > 0 &&
++               message.keyLen <= message.extraBytes &&
++               message.valLen == message.extraBytes - message.keyLen &&
++               exact_cstrings(body, message.keyLen, 1) &&
++               exact_cstrings(static_cast<const unsigned char *>(body) +
++                              message.keyLen, message.valLen, 1);
++    default:
++        // Fork/exec, namespace peers and unknown administration have no
++        // selected original process or effect closure in this cohort.
++        return false;
++    }
++}
++
++struct OriginalFrameSettlement {
++    OriginalControlFrame &frame;
++
++    ~OriginalFrameSettlement()
++    {
++        // An exporter may only read immutable finished rows. Failure retains
++        // the partial original bytes and error, not a successful completion.
++        if (!original_control_frame_claimed(frame) ||
++            frame.settled.load(std::memory_order_acquire)) return;
++        release_control_channel(frame.channel, frame.outgoing);
++        frame.channel = -1;
++        frame.settled.store(true, std::memory_order_release);
++    }
++};
++
++inline void abandon_control_frame(OriginalControlFrame *frame, int error)
++{
++    if (!frame || !original_control_frame_claimed(*frame) ||
++        frame->settled.load(std::memory_order_acquire)) {
++        errno = EACCES;
++        return;
++    }
++    frame->error = error;
++    release_control_channel(frame->channel, frame->outgoing);
++    frame->channel = -1;
++    frame->settled.store(true, std::memory_order_release);
++}
++
++inline bool selected_send_reserved(int fd, dmtcp::DmtcpMessage &message,
++                                   const void *body, size_t extent,
++                                   OriginalControlFrame *frame,
++                                   OriginalControlDeadline &deadline)
++{
++    if (!frame || !original_control_frame_claimed(*frame) ||
++        !frame->outgoing || frame->settled.load(std::memory_order_acquire)) {
++        errno = EACCES;
++        return false;
++    }
++    OriginalFrameSettlement settlement{*frame};
++    frame->channel = acquire_control_channel(fd, true);
++    if (frame->channel < 0) { frame->error = errno; return false; }
++    if (extent > ControlPayloadBytes || (extent != 0 && body == nullptr) ||
++        !bounded_header(message)) { frame->error = EINVAL; return false; }
++    message.extraBytes = extent;
++    std::memcpy(frame->header, &message, sizeof(message));
++    if (extent != 0 && body != frame->body) std::memcpy(frame->body, body, extent);
++    frame->extent = sizeof(message) + extent;
++    size_t header_bytes;
++    if (!original_socket_bytes(fd, frame->header, sizeof(message), true,
++                               deadline, header_bytes, frame->error)) {
++        frame->transferred = header_bytes;
++        return false;
++    }
++    size_t body_bytes;
++    frame->complete = original_socket_bytes(fd, frame->body, extent, true,
++                                            deadline, body_bytes, frame->error);
++    frame->transferred = header_bytes + body_bytes;
++    return frame->complete;
++}
++
++inline bool selected_send_frame(int fd, dmtcp::DmtcpMessage &message,
++                                const void *body, size_t extent)
++{
++    OriginalControlFrame *original = reserve_control_frame(true);
++    if (!original) return false;
++    OriginalControlDeadline deadline;
++    return selected_send_reserved(fd, message, body, extent, original, deadline);
++}
++
++inline bool selected_read_header(int fd, dmtcp::DmtcpMessage &message,
++                                 OriginalControlFrame &frame,
++                                 OriginalControlDeadline &deadline)
++{
++    if (!original_control_frame_claimed(frame) || frame.outgoing ||
++        frame.settled.load(std::memory_order_acquire)) {
++        errno = EACCES;
++        return false;
++    }
++    frame.extent = sizeof(message);
++    frame.channel = acquire_control_channel(fd, false);
++    if (frame.channel < 0) {
++        abandon_control_frame(&frame, errno);
++        return false;
++    }
++    if (!original_socket_bytes(fd, frame.header, sizeof(message), false,
++                               deadline, frame.transferred, frame.error)) {
++        abandon_control_frame(&frame, frame.error);
++        return false;
++    }
++    std::memcpy(&message, frame.header, sizeof(message));
++    if (!bounded_header(message)) {
++        abandon_control_frame(&frame, EPROTO);
++        return false;
++    }
++    return true;
++}
++
++inline bool selected_read_body(int fd, const dmtcp::DmtcpMessage &message,
++                               OriginalControlFrame &frame,
++                               OriginalControlDeadline &deadline)
++{
++    if (!original_control_frame_claimed(frame) || frame.outgoing ||
++        frame.settled.load(std::memory_order_acquire) || frame.channel < 0) {
++        errno = EACCES;
++        return false;
++    }
++    OriginalFrameSettlement settlement{frame};
++    if (message.extraBytes > ControlPayloadBytes) {
++        frame.error = EFBIG;
++        return false;
++    }
++    frame.extent = sizeof(message) + message.extraBytes;
++    size_t body_bytes;
++    frame.complete = original_socket_bytes(fd, frame.body, message.extraBytes,
++                                           false, deadline, body_bytes, frame.error);
++    frame.transferred = sizeof(message) + body_bytes;
++    return frame.complete;
++}
++struct OriginalControlSnapshot {
++    OriginalControlBank &bank;
++    bool acquired;
++
++    explicit OriginalControlSnapshot(OriginalControlBank &original)
++        : bank(original), acquired(!bank.reservation.test_and_set(std::memory_order_acquire))
++    {}
++
++    ~OriginalControlSnapshot()
++    {
++        if (acquired) bank.reservation.clear(std::memory_order_release);
++    }
++};
++
++inline void control_number(unsigned char *&cursor, std::uint64_t number)
++{
++    for (unsigned shift = 64; shift != 0; shift -= 8)
++        *cursor++ = static_cast<unsigned char>(number >> (shift - 8));
++}
++
++inline size_t export_control_history(void *output, size_t capacity)
++{
++    OriginalControlBank &bank = control_bank();
++    OriginalControlSnapshot snapshot(bank);
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    if (!snapshot.acquired || !writer_cohort_admitted() || actual <= 0 ||
++        bank.process != actual || !output) {
++        errno = EBUSY;
++        return 0;
++    }
++
++    size_t extent = 8 + 2 * 8;
++    for (size_t index = 0; index < bank.count; ++index) {
++        const OriginalControlFrame &frame = bank.frames[index];
++        if (!frame.settled.load(std::memory_order_acquire)) {
++            errno = EBUSY;
++            return 0;
++        }
++        if (frame.extent > ControlHeaderBytes + ControlPayloadBytes ||
++            frame.transferred > frame.extent) {
++            errno = EINVAL;
++            return 0;
++        }
++        extent += 7 * 8 + frame.extent;
++    }
++    if (capacity < extent) { errno = ENOSPC; return 0; }
++
++    auto *cursor = static_cast<unsigned char *>(output);
++    std::memcpy(cursor, "DCPCTL01", 8);
++    cursor += 8;
++    control_number(cursor, bank.process);
++    control_number(cursor, bank.count);
++    for (size_t index = 0; index < bank.count; ++index) {
++        const OriginalControlFrame &frame = bank.frames[index];
++        control_number(cursor, frame.outgoing ? 1 : 0);
++        control_number(cursor, frame.complete ? 1 : 0);
++        control_number(cursor, frame.extent);
++        control_number(cursor, frame.transferred);
++        control_number(cursor, static_cast<unsigned>(frame.error));
++        control_number(cursor, static_cast<unsigned>(frame.close_error));
++        control_number(cursor, index);
++        const size_t header = frame.extent < ControlHeaderBytes ?
++                              frame.extent : ControlHeaderBytes;
++        std::memcpy(cursor, frame.header, header);
++        cursor += header;
++        const size_t body = frame.extent - header;
++        if (body != 0) std::memcpy(cursor, frame.body, body);
++        cursor += body;
++    }
++    return extent;
++}
++
++} // namespace dmtcp_crucible
++#endif
+--- /dev/null
++++ b/jalib/crucible_log_writer.h
+@@ -0,0 +1,465 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Selected assertion/log producer storage; never execution authority.
++ */
++#ifndef DMTCP_CRUCIBLE_LOG_WRITER_H
++#define DMTCP_CRUCIBLE_LOG_WRITER_H
++
++#include "../src/crucible_single_worker.h"
++#include "jalib.h"
++
++#include <atomic>
++#include <cerrno>
++#include <cstdio>
++#include <cstdint>
++#include <cstring>
++#include <fcntl.h>
++#include <limits.h>
++#include <string>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <type_traits>
++#include <unistd.h>
++
++namespace dmtcp_crucible {
++namespace log_writer {
++
++constexpr unsigned MessageLimit = 128;
++constexpr size_t MessageBytes = 8192;
++constexpr unsigned SinkLimit = 2;
++constexpr unsigned AttemptLimit = MessageLimit * SinkLimit;
++constexpr std::uint64_t SinkBytes = 1024 * 1024;
++constexpr std::uint64_t AttemptedBytes = 2 * SinkBytes;
++constexpr unsigned InvalidMessage = MessageLimit;
++
++enum class Refusal : unsigned {
++    None,
++    Policy,
++    ForeignProcess,
++    MessageCredit,
++    MessageExtent,
++    UnsupportedPrinter,
++    SinkIdentity,
++    SinkCredit,
++    WriteFailure,
++    ErrorExpansion,
++    EnvironmentExpansion,
++};
++
++struct OriginalMessage {
++    char body[MessageBytes + 1] = {};
++    size_t length = 0;
++    bool completed = false;
++    bool attempted[SinkLimit] = {};
++    std::int64_t written[SinkLimit] = {-2, -2};
++    int write_error[SinkLimit] = {};
++};
++
++struct OriginalSink {
++    int descriptor = -1;
++    int original_descriptor = -1;
++    dev_t device = 0;
++    ino_t inode = 0;
++    std::uint64_t attempted = 0;
++    bool adopted = false;
++    bool birth_attempted = false;
++    bool close_attempted = false;
++    bool retired = false;
++};
++
++struct OriginalAttempt {
++    unsigned message = 0;
++    unsigned sink = 0;
++    size_t charged = 0;
++    std::int64_t written = -2;
++    int write_error = 0;
++};
++
++struct OriginalAccount {
++    std::atomic_flag lock = ATOMIC_FLAG_INIT;
++    bool initialized = false;
++    pid_t process = 0;
++    uid_t uid = 0;
++    unsigned count = 0;
++    std::atomic<Refusal> refusal{Refusal::None};
++    unsigned attempt_count = 0;
++    std::uint64_t attempted = 0;
++    char log_path[PATH_MAX] = {};
++    char log_leaf[PATH_MAX] = {};
++    int root_descriptor = -1;
++    dev_t root_device = 0;
++    ino_t root_inode = 0;
++    OriginalMessage messages[MessageLimit];
++    OriginalSink sinks[SinkLimit];
++    OriginalAttempt attempts[AttemptLimit];
++};
++
++inline OriginalAccount &account()
++{
++    static OriginalAccount original;
++    return original;
++}
++
++class Guard {
++  public:
++    Guard()
++    {
++        while (account().lock.test_and_set(std::memory_order_acquire)) {}
++    }
++
++    ~Guard()
++    {
++        account().lock.clear(std::memory_order_release);
++    }
++};
++
++inline bool selected()
++{
++    static std::atomic<bool> seen{false};
++    bool requested = std::getenv("CRUCIBLE_CAPTURE_LOG_WRITER_POLICY") != nullptr;
++    if (requested) {
++        seen.store(true);
++    }
++    return requested || seen.load();
++}
++
++// This is a native producer failure, not a successful checkpoint or NoEffects
++// receipt. The outer owner must retain the exited Child and original work.
++[[noreturn]] inline void refuse(Refusal reason)
++{
++    Refusal empty = Refusal::None;
++    account().refusal.compare_exchange_strong(empty, reason);
++    _exit(86);
++}
++
++inline void require(bool condition, Refusal reason)
++{
++    if (!condition) {
++        refuse(reason);
++    }
++}
++
++inline void admit_original()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_LOG_WRITER_POLICY");
++    require(policy != nullptr && std::strcmp(policy, "assert-log.v1") == 0 &&
++            selected_single_worker() && process_policy_admitted(), Refusal::Policy);
++
++    OriginalAccount &original = account();
++    if (!original.initialized) {
++        original.process = getpid();
++        original.uid = geteuid();
++        original.initialized = true;
++    }
++    require(original.process == getpid() && original.uid == geteuid(),
++            Refusal::ForeignProcess);
++}
++
++inline long original_syscall(long number, std::uintptr_t first,
++                             std::uintptr_t second, std::uintptr_t third,
++                             std::uintptr_t fourth);
++
++inline void prepare_interface()
++{
++    long observed = original_syscall(SYS_getpid, 0, 0, 0, 0);
++    require(observed == getpid(), Refusal::ForeignProcess);
++}
++
++inline unsigned reserve_message()
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    require(account().count < MessageLimit, Refusal::MessageCredit);
++    return account().count++;
++}
++
++inline void append(unsigned row, const char *body, size_t length)
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    require(row < account().count && body != nullptr,
++            Refusal::MessageExtent);
++    OriginalMessage &message = account().messages[row];
++    require(!message.completed && length <= MessageBytes - message.length,
++            Refusal::MessageExtent);
++
++    // The complete extent is admitted before any copy. Failure never turns a
++    // full original message into a truncated successful diagnostic.
++    std::memcpy(message.body + message.length, body, length);
++    message.length += length;
++    message.body[message.length] = '\0';
++}
++
++inline void print(unsigned row, const char *text)
++{
++    if (text == nullptr) {
++        append(row, "<NULL>", 6);
++        return;
++    }
++    size_t length = ::strnlen(text, MessageBytes + 1);
++    require(length <= MessageBytes, Refusal::MessageExtent);
++    if (length == 0) {
++        append(row, "\"\"", 2);
++    } else {
++        append(row, text, length);
++    }
++}
++
++inline void print(unsigned row, char *text)
++{
++    print(row, static_cast<const char *>(text));
++}
++
++template<size_t Size>
++inline void print(unsigned row, const char (&text)[Size])
++{
++    print(row, static_cast<const char *>(text));
++}
++
++template<class Traits, class Allocator>
++inline void print(unsigned row,
++                  const std::basic_string<char, Traits, Allocator> &text)
++{
++    append(row, text.data(), text.size());
++}
++
++inline void print(unsigned row, char value)
++{
++    append(row, &value, 1);
++}
++
++inline void print(unsigned row, signed char value)
++{
++    print(row, static_cast<char>(value));
++}
++
++inline void print(unsigned row, unsigned char value)
++{
++    print(row, static_cast<char>(value));
++}
++
++template<class Value>
++inline typename std::enable_if<std::is_integral<Value>::value>::type
++print(unsigned row, Value value)
++{
++    char formatted[64];
++    int length = std::is_signed<Value>::value
++        ? std::snprintf(formatted, sizeof(formatted), "%lld",
++                        static_cast<long long>(value))
++        : std::snprintf(formatted, sizeof(formatted), "%llu",
++                        static_cast<unsigned long long>(value));
++    require(length >= 0 && static_cast<size_t>(length) < sizeof(formatted),
++            Refusal::MessageExtent);
++    append(row, formatted, static_cast<size_t>(length));
++}
++
++// Arbitrary operator<< implementations can allocate or call other producers.
++// They are not invoked merely because their final text might fit the buffer.
++template<class Value>
++inline typename std::enable_if<!std::is_integral<Value>::value>::type
++print(unsigned, const Value &)
++{
++    refuse(Refusal::UnsupportedPrinter);
++}
++
++// The pinned jalib variadic adapter reads seven void* arguments, including
++// unused slots. Supply their exact native ABI types; no pointer leaves process.
++inline long original_syscall(long number, std::uintptr_t first = 0,
++                             std::uintptr_t second = 0,
++                             std::uintptr_t third = 0,
++                             std::uintptr_t fourth = 0)
++{
++    return jalib::syscall(number, reinterpret_cast<void *>(first),
++                          reinterpret_cast<void *>(second),
++                          reinterpret_cast<void *>(third),
++                          reinterpret_cast<void *>(fourth),
++                          static_cast<void *>(nullptr),
++                          static_cast<void *>(nullptr),
++                          static_cast<void *>(nullptr));
++}
++
++inline bool same_sink(const OriginalSink &sink, int descriptor)
++{
++    struct stat current;
++    return sink.adopted && !sink.close_attempted && !sink.retired &&
++           descriptor == sink.descriptor &&
++           original_syscall(SYS_fstat, descriptor,
++                            reinterpret_cast<std::uintptr_t>(&current)) == 0 &&
++           S_ISREG(current.st_mode) && current.st_uid == account().uid &&
++           (current.st_mode & 0777) == 0600 && current.st_nlink == 1 &&
++           current.st_dev == sink.device && current.st_ino == sink.inode &&
++           current.st_size >= 0 &&
++           static_cast<std::uint64_t>(current.st_size) == sink.attempted &&
++           original_syscall(SYS_lseek, descriptor, 0, SEEK_CUR) ==
++               static_cast<long>(sink.attempted);
++}
++
++inline void adopt_sink(unsigned index, int descriptor, int protected_descriptor,
++                       bool close_source)
++{
++    OriginalSink &sink = account().sinks[index];
++    require(!sink.adopted && !sink.close_attempted && descriptor >= 0 &&
++            descriptor < 1024 && protected_descriptor >= 0 &&
++            protected_descriptor < 1024, Refusal::SinkIdentity);
++    sink.original_descriptor = descriptor;
++    sink.descriptor = descriptor;
++    struct stat current;
++    require(original_syscall(SYS_fstat, descriptor,
++                             reinterpret_cast<std::uintptr_t>(&current)) == 0 &&
++            S_ISREG(current.st_mode) &&
++            current.st_uid == account().uid && (current.st_mode & 0777) == 0600 &&
++            current.st_nlink == 1 && current.st_size == 0,
++            Refusal::SinkIdentity);
++
++    // Retain the actual first descriptor before dup2/close can fail. Numerical
++    // reuse cannot manufacture a newly admitted sink from a retired original.
++    sink.descriptor = descriptor;
++    sink.device = current.st_dev;
++    sink.inode = current.st_ino;
++    sink.adopted = true;
++    require(protected_descriptor != account().root_descriptor,
++            Refusal::SinkIdentity);
++    for (unsigned other = 0; other < SinkLimit; ++other) {
++        require(other == index || !account().sinks[other].adopted ||
++                account().sinks[other].descriptor != protected_descriptor,
++                Refusal::SinkIdentity);
++    }
++    if (descriptor != protected_descriptor) {
++        int status = original_syscall(SYS_fcntl, protected_descriptor, F_GETFD);
++        require(status == -1 && errno == EBADF, Refusal::SinkIdentity);
++    }
++    int duplicate = original_syscall(SYS_dup2, descriptor, protected_descriptor);
++    require(duplicate == protected_descriptor, Refusal::SinkIdentity);
++    sink.descriptor = duplicate;
++    if (close_source && descriptor != duplicate) {
++        require(original_syscall(SYS_close, descriptor) == 0, Refusal::SinkIdentity);
++    }
++}
++
++inline int adopt_console(int protected_descriptor)
++{
++    Guard guard;
++    admit_original();
++    OriginalSink &console = account().sinks[0];
++    if (!console.adopted) {
++        adopt_sink(0, STDERR_FILENO, protected_descriptor, false);
++    }
++    require(same_sink(console, protected_descriptor), Refusal::SinkIdentity);
++    return protected_descriptor;
++}
++
++inline void set_log_path(const char *path)
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    require(path != nullptr && ::strnlen(path, PATH_MAX) < PATH_MAX &&
++            account().log_path[0] == '\0', Refusal::SinkIdentity);
++    const char *root = std::getenv("CRUCIBLE_CAPTURE_LOG_ROOT");
++    char canonical[PATH_MAX];
++    require(root != nullptr && ::strnlen(root, PATH_MAX) < PATH_MAX &&
++            ::realpath(root, canonical) != nullptr && std::strcmp(root, canonical) == 0,
++            Refusal::SinkIdentity);
++    size_t root_length = std::strlen(root);
++    require(std::strncmp(path, root, root_length) == 0 &&
++            path[root_length] == '/', Refusal::SinkIdentity);
++    const char *leaf = path + root_length + 1;
++    require(*leaf != '\0' && std::strchr(leaf, '/') == nullptr &&
++            std::strcmp(leaf, ".") != 0 && std::strcmp(leaf, "..") != 0,
++            Refusal::SinkIdentity);
++    require(account().root_descriptor == -1, Refusal::SinkIdentity);
++    account().root_descriptor = original_syscall(SYS_openat, static_cast<std::uintptr_t>(AT_FDCWD),
++                            reinterpret_cast<std::uintptr_t>(root),
++                            O_DIRECTORY | O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++    struct stat directory;
++    require(account().root_descriptor >= 0 && account().root_descriptor < 1024 &&
++            original_syscall(SYS_fstat, account().root_descriptor,
++                             reinterpret_cast<std::uintptr_t>(&directory)) == 0 &&
++            S_ISDIR(directory.st_mode) && directory.st_uid == account().uid &&
++            (directory.st_mode & 0777) == 0700, Refusal::SinkIdentity);
++    account().root_device = directory.st_dev;
++    account().root_inode = directory.st_ino;
++    std::memcpy(account().log_path, path, std::strlen(path) + 1);
++    std::memcpy(account().log_leaf, leaf, std::strlen(leaf) + 1);
++}
++
++inline int open_log(int protected_descriptor)
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    OriginalSink &sink = account().sinks[1];
++    require(account().log_path[0] != '\0' && !sink.birth_attempted,
++            Refusal::SinkIdentity);
++    struct stat directory;
++    require(original_syscall(SYS_fstat, account().root_descriptor,
++                             reinterpret_cast<std::uintptr_t>(&directory)) == 0 &&
++            S_ISDIR(directory.st_mode) && directory.st_uid == account().uid &&
++            (directory.st_mode & 0777) == 0700 &&
++            directory.st_dev == account().root_device &&
++            directory.st_ino == account().root_inode, Refusal::SinkIdentity);
++    // There is no unaccounted _2..._5 fallback or adoption of an old logfile.
++    sink.birth_attempted = true;
++    int descriptor = original_syscall(SYS_openat, account().root_descriptor,
++                            reinterpret_cast<std::uintptr_t>(account().log_leaf),
++                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++                            0600);
++    require(descriptor >= 0, Refusal::SinkIdentity);
++    adopt_sink(1, descriptor, protected_descriptor, true);
++    return protected_descriptor;
++}
++
++inline void emit(unsigned row, unsigned sink_index, int descriptor)
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    require(row < account().count && sink_index < SinkLimit,
++            Refusal::SinkIdentity);
++    OriginalMessage &message = account().messages[row];
++    OriginalSink &sink = account().sinks[sink_index];
++    require(same_sink(sink, descriptor) && !message.attempted[sink_index],
++            Refusal::SinkIdentity);
++    require(message.length <= SinkBytes - sink.attempted &&
++            message.length <= AttemptedBytes - account().attempted &&
++            account().attempt_count < AttemptLimit,
++            Refusal::SinkCredit);
++    OriginalAttempt &attempt = account().attempts[account().attempt_count++];
++    attempt.message = row;
++    attempt.sink = sink_index;
++    attempt.charged = message.length;
++    message.completed = true;
++    message.attempted[sink_index] = true;
++    sink.attempted += message.length;
++    account().attempted += message.length;
++
++    // Each original byte range is attempted once; failed/short writes retain
++    // the full debit and body. Host-held Unknown must own the resulting exit.
++    ssize_t written = original_syscall(SYS_write, descriptor,
++                                       reinterpret_cast<std::uintptr_t>(message.body),
++                                       message.length);
++    message.written[sink_index] = written;
++    message.write_error[sink_index] = written < 0 ? errno : 0;
++    attempt.written = message.written[sink_index];
++    attempt.write_error = message.write_error[sink_index];
++    require(written >= 0 && static_cast<size_t>(written) == message.length,
++            Refusal::WriteFailure);
++}
++
++inline void close_console(int descriptor)
++{
++    prepare_interface();
++    Guard guard;
++    admit_original();
++    OriginalSink &console = account().sinks[0];
++    require(same_sink(console, descriptor), Refusal::SinkIdentity);
++    console.close_attempted = true;
++    require(original_syscall(SYS_close, descriptor) == 0, Refusal::SinkIdentity);
++    console.retired = true;
++}
++
++} // namespace log_writer
++} // namespace dmtcp_crucible
++#endif
+--- /dev/null
++++ b/src/crucible_restart_writer.h
+@@ -0,0 +1,420 @@
++/* SPDX-License-Identifier: LGPL-3.0-or-later
++ * Copyright (C) 2026 Andyl, Inc.
++ * Selected coordinator script producer credit; no capture authority.
++ */
++#ifndef DMTCP_CRUCIBLE_RESTART_WRITER_H
++#define DMTCP_CRUCIBLE_RESTART_WRITER_H
++
++#include "crucible_single_worker.h"
++#include "../jalib/jassert.h"
++
++#include <atomic>
++#include <cerrno>
++#include <cstdarg>
++#include <cstdlib>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <fcntl.h>
++#include <limits.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace dmtcp_crucible {
++namespace restart_writer {
++
++constexpr unsigned FileLimit = 64;
++constexpr unsigned LinkLimit = 64;
++constexpr std::uint64_t FileBytes = 128 * 1024;
++constexpr std::uint64_t AttemptedBytes = 4 * 1024 * 1024;
++constexpr size_t FormatBytes = 16 * 1024;
++constexpr size_t LeafBytes = 256;
++constexpr size_t HistoryBytes = 64 * 1024;
++
++inline bool selected()
++{
++    // Once observed, removal of a selected environment cannot bypass its debit.
++    static std::atomic<bool> seen{false};
++    bool requested = std::getenv("CRUCIBLE_CAPTURE_COORDINATOR_WRITER_POLICY") != nullptr;
++    if (requested) {
++        seen.store(true);
++    }
++    return requested || seen.load();
++}
++
++inline bool admitted()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_COORDINATOR_WRITER_POLICY");
++    return policy != nullptr && std::strcmp(policy, "restart-script.v1") == 0 &&
++           selected_single_worker() && process_policy_admitted();
++}
++
++// Validate borrowed source inputs before writeScript creates streams or files.
++// This closed scope has one worker and one filename, not a multi-host script.
++template<class Text, class Filenames>
++inline void preflight_inputs(const Text &root, bool unique_filenames,
++                             const Filenames &local,
++                             const Filenames &remote_shell,
++                             const Filenames &secure_shell)
++{
++    if (!selected()) {
++        return;
++    }
++    JASSERT(admitted() && unique_filenames && !root.empty() &&
++            root.size() < PATH_MAX - LeafBytes &&
++            root.find('\0') == Text::npos &&
++            local.size() == 1 && remote_shell.empty() && secure_shell.empty());
++
++    const auto &host = *local.begin();
++    JASSERT(!host.first.empty() && host.first.size() < 80 &&
++            host.first.find('\0') == Text::npos && host.second.size() == 1);
++    const auto &filename = host.second.front();
++    JASSERT(!filename.empty() && filename.size() < PATH_MAX &&
++            filename.find('\0') == Text::npos);
++}
++
++struct OriginalFile {
++    char leaf[LeafBytes] = {};
++    int descriptor = -1;
++    dev_t device = 0;
++    ino_t inode = 0;
++    std::uint64_t charged = 0;
++    bool adopted = false;
++    bool close_attempted = false;
++    bool closed = false;
++};
++
++struct OriginalLink {
++    char alias[LeafBytes] = {};
++    unsigned file_index = 0;
++    std::uint64_t charged = 0;
++    bool unlink_attempted = false;
++    bool unlinked = false;
++    bool create_attempted = false;
++    bool created = false;
++};
++
++struct OriginalAccount {
++    std::atomic_flag lock = ATOMIC_FLAG_INIT;
++    bool initialized = false;
++    pid_t process = 0;
++    uid_t uid = 0;
++    int root_descriptor = -1;
++    dev_t device = 0;
++    ino_t root_inode = 0;
++    char root[PATH_MAX] = {};
++    unsigned count = 0;
++    unsigned attempted_links = 0;
++    std::uint64_t charged = 0;
++    OriginalFile files[FileLimit];
++    OriginalLink links[LinkLimit];
++};
++
++inline OriginalAccount &account()
++{
++    static OriginalAccount original;
++    return original;
++}
++
++class Guard {
++  public:
++    Guard()
++    {
++        while (account().lock.test_and_set(std::memory_order_acquire)) {}
++    }
++
++    ~Guard()
++    {
++        account().lock.clear(std::memory_order_release);
++    }
++};
++
++inline bool owns_root()
++{
++    const OriginalAccount &original = account();
++    struct stat directory;
++    return admitted() && original.initialized && original.process == getpid() &&
++           fstat(original.root_descriptor, &directory) == 0 &&
++           S_ISDIR(directory.st_mode) && directory.st_uid == original.uid &&
++           (directory.st_mode & 0777) == 0700 &&
++           directory.st_dev == original.device &&
++           directory.st_ino == original.root_inode;
++}
++
++inline const char *leaf(const char *path)
++{
++    const OriginalAccount &original = account();
++    JASSERT(path != nullptr && strnlen(path, PATH_MAX) < PATH_MAX);
++    size_t root_length = strlen(original.root);
++    JASSERT(strncmp(path, original.root, root_length) == 0 &&
++            path[root_length] == '/');
++
++    const char *name = path + root_length + 1;
++    size_t length = strnlen(name, LeafBytes);
++    JASSERT(length > 0 && length < LeafBytes && strchr(name, '/') == nullptr &&
++            strcmp(name, ".") != 0 && strcmp(name, "..") != 0);
++    return name;
++}
++
++inline bool owns_file(const OriginalFile &file, int descriptor)
++{
++    struct stat current;
++    return owns_root() && file.adopted && !file.close_attempted &&
++           descriptor == file.descriptor && fstat(descriptor, &current) == 0 &&
++           S_ISREG(current.st_mode) && current.st_uid == account().uid &&
++           current.st_nlink == 1 && (current.st_mode & 077) == 0 &&
++           current.st_dev == file.device && current.st_ino == file.inode;
++}
++
++inline OriginalFile &active_file(FILE *stream)
++{
++    JASSERT(stream != nullptr);
++    int descriptor = fileno(stream);
++    for (unsigned index = 0; index < account().count; ++index) {
++        OriginalFile &file = account().files[index];
++        if (file.descriptor == descriptor && owns_file(file, descriptor)) {
++            return file;
++        }
++    }
++    JASSERT(false).Text("selected script stream lacks its original live inode");
++    return account().files[0];
++}
++
++inline FILE *open_script(const char *root, const char *path)
++{
++    if (!selected()) {
++        return std::fopen(path, "w");
++    }
++
++    Guard guard;
++    JASSERT(admitted());
++    OriginalAccount &original = account();
++    if (!original.initialized) {
++        char canonical[PATH_MAX];
++        JASSERT(root != nullptr && strnlen(root, PATH_MAX) < PATH_MAX &&
++                realpath(root, canonical) != nullptr && strcmp(root, canonical) == 0);
++        original.process = getpid();
++        original.uid = geteuid();
++        memcpy(original.root, root, strlen(root) + 1);
++
++        // One retained directory descriptor anchors every selected file route.
++        // A failed first open cannot reset this original admission attempt.
++        original.initialized = true;
++        original.root_descriptor = ::open(root, O_DIRECTORY | O_RDONLY |
++                                               O_NOFOLLOW | O_CLOEXEC);
++        JASSERT(original.root_descriptor >= 0 && original.root_descriptor < 1024);
++        struct stat directory;
++        JASSERT(fstat(original.root_descriptor, &directory) == 0);
++        original.device = directory.st_dev;
++        original.root_inode = directory.st_ino;
++    }
++    JASSERT(root != nullptr && strcmp(root, original.root) == 0 && owns_root());
++    const char *name = leaf(path);
++    JASSERT(original.count < FileLimit);
++    for (unsigned index = 0; index < original.count; ++index) {
++        JASSERT(strcmp(original.files[index].leaf, name) != 0);
++    }
++
++    // Charge the original file slot before birth. fdopen/setvbuf failure leaves
++    // its descriptor and row owned; failed or short writes never refund credit.
++    OriginalFile &file = original.files[original.count++];
++    memcpy(file.leaf, name, strlen(name) + 1);
++    file.descriptor = openat(original.root_descriptor, name,
++                             O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW |
++                             O_CLOEXEC, 0600);
++    JASSERT(file.descriptor >= 0 && file.descriptor < 1024);
++    struct stat identity;
++    JASSERT(fstat(file.descriptor, &identity) == 0 &&
++            S_ISREG(identity.st_mode) && identity.st_size == 0 &&
++            identity.st_uid == original.uid && identity.st_nlink == 1 &&
++            (identity.st_mode & 0777) == 0600 &&
++            identity.st_dev == original.device);
++    file.device = identity.st_dev;
++    file.inode = identity.st_ino;
++    file.adopted = true;
++
++    FILE *stream = fdopen(file.descriptor, "w");
++    JASSERT(stream != nullptr);
++    JASSERT(setvbuf(stream, nullptr, _IONBF, 0) == 0);
++    return stream;
++}
++
++inline int print_script(FILE *stream, const char *format, ...)
++{
++    va_list arguments;
++    va_start(arguments, format);
++    if (!selected()) {
++        int result = std::vfprintf(stream, format, arguments);
++        va_end(arguments);
++        return result;
++    }
++
++    // Source formats are unchanged. Reject oversize output in fixed scratch
++    // storage instead of truncating it or giving FILE a growing output buffer.
++    char body[FormatBytes + 1];
++    int length = std::vsnprintf(body, sizeof(body), format, arguments);
++    va_end(arguments);
++    JASSERT(length >= 0 && static_cast<size_t>(length) <= FormatBytes);
++
++    Guard guard;
++    OriginalFile &file = active_file(stream);
++    size_t bytes = static_cast<size_t>(length);
++    JASSERT(bytes <= FileBytes - file.charged &&
++            bytes <= AttemptedBytes - account().charged);
++    file.charged += bytes;
++    account().charged += bytes;
++    JASSERT(std::fwrite(body, 1, bytes, stream) == bytes);
++    return length;
++}
++
++inline int close_script(FILE *stream)
++{
++    if (!selected()) {
++        return std::fclose(stream);
++    }
++
++    Guard guard;
++    OriginalFile &file = active_file(stream);
++    JASSERT(std::ferror(stream) == 0 && fflush(stream) == 0);
++    JASSERT(fchmod(file.descriptor, 0700) == 0);
++
++    // Record the attempted close before libc can retire the descriptor. Its
++    // failure is Unknown custody; it cannot adopt a later numerical fd.
++    file.close_attempted = true;
++    int result = std::fclose(stream);
++    file.closed = result == 0;
++    JASSERT(result == 0);
++    return result;
++}
++
++inline void publish_script(const char *path, const char *alias)
++{
++    Guard guard;
++    JASSERT(owns_root() && alias != nullptr);
++    const char *name = leaf(path);
++    size_t alias_length = strnlen(alias, LeafBytes);
++    JASSERT(alias_length > 0 && alias_length < LeafBytes &&
++            strchr(alias, '/') == nullptr && strcmp(alias, ".") != 0 &&
++            strcmp(alias, "..") != 0);
++
++    bool published = false;
++    unsigned target_index = 0;
++    for (unsigned index = 0; index < account().count; ++index) {
++        const OriginalFile &file = account().files[index];
++        if (strcmp(file.leaf, name) == 0 && file.adopted && file.closed) {
++            struct stat current;
++            JASSERT(fstatat(account().root_descriptor, name, &current,
++                            AT_SYMLINK_NOFOLLOW) == 0 &&
++                    S_ISREG(current.st_mode) && current.st_uid == account().uid &&
++                    current.st_nlink == 1 && (current.st_mode & 0777) == 0700 &&
++                    current.st_dev == file.device && current.st_ino == file.inode);
++            published = true;
++            target_index = index;
++        }
++    }
++    JASSERT(published && account().attempted_links < LinkLimit);
++
++    // Replace only an alias to an earlier original retained script. The full
++    // original script and its debit row remain when the alias changes.
++    char prior[LeafBytes];
++    ssize_t prior_length = readlinkat(account().root_descriptor, alias,
++                                     prior, sizeof(prior));
++    if (prior_length >= 0) {
++        JASSERT(static_cast<size_t>(prior_length) < sizeof(prior));
++        prior[prior_length] = '\0';
++        bool known = false;
++        for (unsigned index = 0; index < account().count; ++index) {
++            const OriginalFile &file = account().files[index];
++            known |= file.adopted && file.closed && strcmp(file.leaf, prior) == 0;
++        }
++        JASSERT(known);
++    } else {
++        JASSERT(errno == ENOENT);
++    }
++
++    size_t bytes = strlen(name) + 1;
++    JASSERT(bytes <= AttemptedBytes - account().charged);
++    OriginalLink &link = account().links[account().attempted_links++];
++    memcpy(link.alias, alias, alias_length + 1);
++    link.file_index = target_index;
++    link.charged = bytes;
++    account().charged += bytes;
++
++    // Preserve the exact original administration attempt, including a failure
++    // between unlink and creation. A later attempt never overwrites this row.
++    link.unlink_attempted = true;
++    int removed = unlinkat(account().root_descriptor, alias, 0);
++    link.unlinked = removed == 0 || errno == ENOENT;
++    JASSERT(link.unlinked);
++    link.create_attempted = true;
++    link.created = symlinkat(name, account().root_descriptor, alias) == 0;
++    JASSERT(link.created);
++}
++
++// This bounded portable record has no import setter. Host-held capture ancestry
++// must authenticate complete final debits before any operational rebind.
++inline size_t export_history(void *output, size_t capacity)
++{
++    static_assert(72 + PATH_MAX - 1 +
++                  (FileLimit + LinkLimit) * (56 + LeafBytes - 1) <= HistoryBytes,
++                  "complete original history must fit its fixed byte credit");
++    Guard guard;
++    if (!owns_root() || output == nullptr || capacity < HistoryBytes) {
++        return 0;
++    }
++    unsigned char *cursor = static_cast<unsigned char *>(output);
++    unsigned char *begin = cursor;
++    memcpy(cursor, "DCPRSTR1", 8);
++    cursor += 8;
++    auto number = [&cursor](std::uint64_t value) {
++        for (unsigned index = 0; index < 8; ++index) {
++            cursor[index] = static_cast<unsigned char>(value >> (56 - 8 * index));
++        }
++        cursor += 8;
++    };
++
++    const OriginalAccount &original = account();
++    number(original.process);
++    number(original.uid);
++    number(original.count);
++    number(original.attempted_links);
++    number(original.charged);
++    number(original.device);
++    number(original.root_inode);
++    size_t root_length = strlen(original.root);
++    number(root_length);
++    memcpy(cursor, original.root, root_length);
++    cursor += root_length;
++
++    for (unsigned index = 0; index < original.count; ++index) {
++        const OriginalFile &file = original.files[index];
++        size_t length = strlen(file.leaf);
++        number(length);
++        number(file.adopted);
++        number(file.close_attempted);
++        number(file.closed);
++        number(file.charged);
++        number(file.device);
++        number(file.inode);
++        memcpy(cursor, file.leaf, length);
++        cursor += length;
++    }
++    for (unsigned index = 0; index < original.attempted_links; ++index) {
++        const OriginalLink &link = original.links[index];
++        size_t length = strlen(link.alias);
++        number(link.file_index);
++        number(link.charged);
++        number(link.unlink_attempted);
++        number(link.unlinked);
++        number(link.create_attempted);
++        number(link.created);
++        number(length);
++        memcpy(cursor, link.alias, length);
++        cursor += length;
++    }
++    return static_cast<size_t>(cursor - begin);
++}
++
++} // namespace restart_writer
++} // namespace dmtcp_crucible
++#endif
+--- a/src/dmtcpnohijackstubs.cpp
++++ b/src/dmtcpnohijackstubs.cpp
+@@ -21,6 +21,8 @@
+ 
+ #include "../jalib/jassert.h"
+ #include "uniquepid.h"
++#include <cerrno>
++#include "crucible_capture_budget.h"
+ 
+ #undef dmtcp_is_enabled
+ #undef dmtcp_checkpoint
+@@ -98,3 +100,20 @@
+   JASSERT(false);
+   return 0;
+ }
++
++// Utilities link coordinatorapi through libdmtcpinternal but do not own a
++// captured worker account. Refuse that worker-only operation without writing
++// a frame, changing the output buffer or pretending to finalize an account.
++extern "C" bool
++dmtcp_crucible_capture_budget_selected()
++{
++  errno = ENOTSUP;
++  return false;
++}
++
++extern "C" size_t
++dmtcp_crucible_finalize_capture_history(void *, size_t)
++{
++  errno = ENOTSUP;
++  return 0;
++}
+--- a/src/crucible_control_frame.h
++++ b/src/crucible_control_frame.h
+@@ -38,6 +38,23 @@
+            selected_single_worker() && process_policy_admitted();
+ }
+ 
++// The old selected cohort keeps its original next-receive behavior. This
++// terminal lifecycle is independently selected and bound in its new profile.
++inline bool selected_terminal_control_park()
++{
++    static std::atomic<bool> observed{false};
++    if (std::getenv("CRUCIBLE_CAPTURE_CONTROL_PARK_POLICY") != nullptr)
++        observed.store(true, std::memory_order_release);
++    return observed.load(std::memory_order_acquire);
++}
++
++inline bool terminal_control_park_admitted()
++{
++    const char *policy = std::getenv("CRUCIBLE_CAPTURE_CONTROL_PARK_POLICY");
++    return policy && std::strcmp(policy, "terminal.v1") == 0 &&
++           writer_cohort_admitted();
++}
++
+ constexpr size_t ControlFrames = 64;
+ constexpr size_t ControlPayloadBytes = 64 * 1024;
+ constexpr size_t FinalPayloadBytes = 2 * 1024 * 1024;
+@@ -57,6 +74,7 @@
+     std::atomic_flag reservation = ATOMIC_FLAG_INIT;
+     pid_t process = 0;
+     size_t count = 0;
++    std::atomic<bool> terminal{false};
+     OriginalControlChannel channels[ControlFrames];
+ };
+ 
+@@ -75,7 +93,8 @@
+     }
+     const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
+     struct stat identity = {};
+-    if (!writer_cohort_admitted() || actual <= 0 || fd < 0 || fd >= 1024 ||
++    if (bank.terminal.load(std::memory_order_acquire) ||
++        !writer_cohort_admitted() || actual <= 0 || fd < 0 || fd >= 1024 ||
+         (bank.process != 0 && bank.process != actual) ||
+         _real_syscall(SYS_fstat, fd, &identity) != 0 || !S_ISSOCK(identity.st_mode) ||
+         identity.st_uid != static_cast<uid_t>(_real_syscall(SYS_geteuid))) {
+@@ -199,6 +218,7 @@
+     std::atomic_flag reservation = ATOMIC_FLAG_INIT;
+     std::atomic<pid_t> process{0};
+     size_t count = 0;
++    std::atomic<bool> terminal{false};
+     OriginalControlFrame frames[ControlFrames];
+ };
+ 
+@@ -233,7 +253,8 @@
+         return nullptr;
+     }
+     const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
+-    if (!writer_cohort_admitted() || actual <= 0 ||
++    if (bank.terminal.load(std::memory_order_acquire) ||
++        !writer_cohort_admitted() || actual <= 0 ||
+         (bank.process != 0 && bank.process != actual) || bank.count == ControlFrames) {
+         bank.reservation.clear(std::memory_order_release);
+         errno = ENOSPC;
+@@ -259,7 +280,8 @@
+     }
+     const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
+     const size_t required = retirement ? 3 : 2;
+-    if (!request || !response || !writer_cohort_admitted() || actual <= 0 ||
++    if (bank.terminal.load(std::memory_order_acquire) ||
++        !request || !response || !writer_cohort_admitted() || actual <= 0 ||
+         (bank.process != 0 && bank.process != actual) ||
+         bank.count > ControlFrames - required) {
+         bank.reservation.clear(std::memory_order_release);
+@@ -533,6 +555,75 @@
+     }
+ };
+ 
++// Both registries stay reserved until the terminal bits are published. No
++// future lease/frame may start between the idle census and the handoff.
++inline bool seal_terminal_control_channel(int fd, pid_t expected_process,
++                                          uid_t expected_uid,
++                                          struct stat &sealed_identity)
++{
++    OriginalControlBank &frames = control_bank();
++    OriginalControlSnapshot snapshot(frames);
++    if (!snapshot.acquired) { errno = EBUSY; return false; }
++
++    OriginalControlChannels &channels = control_channels();
++    if (channels.reservation.test_and_set(std::memory_order_acquire)) {
++        errno = EBUSY;
++        return false;
++    }
++    struct ChannelReservation {
++        OriginalControlChannels &bank;
++
++        ~ChannelReservation()
++        {
++            bank.reservation.clear(std::memory_order_release);
++        }
++    } reservation{channels};
++
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    struct stat identity = {};
++    if (!terminal_control_park_admitted() || actual <= 0 || actual != expected_process ||
++        frames.process != actual ||
++        channels.process != actual || frames.count > ControlFrames ||
++        channels.count > ControlFrames || frames.terminal.load() ||
++        channels.terminal.load() || fd < 0 || fd >= 1024 ||
++        _real_syscall(SYS_fstat, fd, &identity) != 0 || !S_ISSOCK(identity.st_mode) ||
++        identity.st_uid != expected_uid ||
++        identity.st_uid != static_cast<uid_t>(_real_syscall(SYS_geteuid))) {
++        errno = EACCES;
++        return false;
++    }
++
++    bool owns_channel = false;
++    for (size_t index = 0; index < channels.count; ++index) {
++        const OriginalControlChannel &channel = channels.channels[index];
++        if (channel.outgoing.load(std::memory_order_acquire) ||
++            channel.incoming.load(std::memory_order_acquire)) {
++            errno = EBUSY;
++            return false;
++        }
++        owns_channel |= channel.device == identity.st_dev &&
++                        channel.inode == identity.st_ino;
++    }
++    for (size_t index = 0; index < frames.count; ++index) {
++        const OriginalControlFrame &frame = frames.frames[index];
++        if (!frame.attempted.load(std::memory_order_acquire) ||
++            !frame.settled.load(std::memory_order_acquire)) {
++            errno = EBUSY;
++            return false;
++        }
++    }
++    if (!owns_channel) { errno = EACCES; return false; }
++
++    // All original rows remain retained. This is neither a reset nor an ACK of
++    // a host-durable record, and does not grant any restored-generation rights.
++    // Publish the identity checked by this exact sealed census. The caller must
++    // not export an earlier descriptor observation as the terminal owner.
++    sealed_identity = identity;
++    frames.terminal.store(true, std::memory_order_release);
++    channels.terminal.store(true, std::memory_order_release);
++    return true;
++}
++
+ inline void control_number(unsigned char *&cursor, std::uint64_t number)
+ {
+     for (unsigned shift = 64; shift != 0; shift -= 8)
+--- a/src/crucible_final_frame.h
++++ b/src/crucible_final_frame.h
+@@ -6,6 +6,8 @@
+ #define DMTCP_CRUCIBLE_FINAL_FRAME_H
+ 
+ #include <type_traits>
++#include <initializer_list>
++#include <linux/futex.h>
+ 
+ #include "crucible_capture_budget.h"
+ #include "crucible_control_frame.h"
+@@ -200,6 +202,104 @@
+     original.acknowledged = true;
+     return true;
+ }
++struct OriginalTerminalControlPark {
++    std::atomic<bool> ready{false};
++    std::uint32_t futex_word = 0;
++    pid_t process = 0;
++    pid_t thread = 0;
++    uid_t uid = 0;
++    dev_t device = 0;
++    ino_t inode = 0;
++    size_t frames = 0;
++    size_t channels = 0;
++};
++
++inline OriginalTerminalControlPark &terminal_control_park()
++{
++    static OriginalTerminalControlPark original;
++    return original;
++}
++
++inline bool prepare_terminal_control_park(int fd)
++{
++    OriginalFinalExchange &final = final_exchange();
++    OriginalTerminalControlPark &park = terminal_control_park();
++    const pid_t actual = static_cast<pid_t>(_real_syscall(SYS_getpid));
++    const pid_t thread = static_cast<pid_t>(_real_syscall(SYS_gettid));
++    const uid_t uid = static_cast<uid_t>(_real_syscall(SYS_geteuid));
++    struct stat identity = {};
++    if (park.ready.load(std::memory_order_acquire) ||
++        !final.settled.load(std::memory_order_acquire) || !final.acknowledged) {
++        errno = EBUSY;
++        return false;
++    }
++    if (!terminal_control_park_admitted() || actual <= 0 || thread <= 0 ||
++        final.process != actual ||
++        !dmtcp_crucible_capture_history_finalized()) {
++        errno = EACCES;
++        return false;
++    }
++    if (!seal_terminal_control_channel(fd, actual, uid, identity)) return false;
++
++    // No identity syscall or fallible copy follows the irreversible seal.
++    park.process = actual;
++    park.thread = thread;
++    park.uid = uid;
++    park.device = identity.st_dev;
++    park.inode = identity.st_ino;
++    park.frames = control_bank().count;
++    park.channels = control_channels().count;
++    park.futex_word = 1;
++    park.ready.store(true, std::memory_order_release);
++    return true;
++}
++
++inline bool wait_terminal_control_park()
++{
++    OriginalTerminalControlPark &park = terminal_control_park();
++    if (!park.ready.load(std::memory_order_acquire) ||
++        park.process != static_cast<pid_t>(_real_syscall(SYS_getpid)) ||
++        park.thread != static_cast<pid_t>(_real_syscall(SYS_gettid))) {
++        errno = EACCES;
++        return false;
++    }
++
++    // No wake/reset API exists. The original thread remains kernel-owned until
++    // the outer holder reclaims the process. Signals do not restart a receive.
++    for (;;) {
++        const long result = _real_syscall(SYS_futex, &park.futex_word,
++                                         FUTEX_WAIT_PRIVATE, 1, nullptr,
++                                         nullptr, 0);
++        if (result == 0 || errno == EINTR) continue;
++        return false;
++    }
++}
++
++inline size_t export_terminal_control_park(void *output, size_t capacity)
++{
++    const OriginalTerminalControlPark &park = terminal_control_park();
++    constexpr size_t extent = 8 + 7 * 8;
++    if (!park.ready.load(std::memory_order_acquire) || !output || capacity < extent ||
++        park.process != static_cast<pid_t>(_real_syscall(SYS_getpid)) ||
++        park.uid != static_cast<uid_t>(_real_syscall(SYS_geteuid))) {
++        errno = EBUSY;
++        return 0;
++    }
++    auto *cursor = static_cast<unsigned char *>(output);
++    std::memcpy(cursor, "DCPPARK1", 8);
++    cursor += 8;
++    for (std::uint64_t field : {static_cast<std::uint64_t>(park.process),
++                               static_cast<std::uint64_t>(park.thread),
++                               static_cast<std::uint64_t>(park.uid),
++                               static_cast<std::uint64_t>(park.device),
++                               static_cast<std::uint64_t>(park.inode),
++                               static_cast<std::uint64_t>(park.frames),
++                               static_cast<std::uint64_t>(park.channels)}) {
++        control_number(cursor, field);
++    }
++    return extent;
++}
++
+ // Exports immutable original evidence only. The native headers remain opaque
+ // bytes; this is not a native-layout shared-memory protocol or an authority.
+ inline size_t export_final_exchange(void *output, size_t capacity)
+--- a/src/coordinatorapi.h
++++ b/src/coordinatorapi.h
+@@ -82,6 +82,10 @@
+ // Selected terminal history exchange, never a durable host or restore ACK.
+ bool publishFinalWriterHistory();
+ 
++// Called only by the original checkpoint thread, before resuming applications.
++bool prepareFinalWriterPark();
++bool waitFinalWriterPark();
++
+ 
+ kvdb::KVDBResponse
+ kvdbRequest(DmtcpMessage const& msg,
+--- a/src/coordinatorapi.cpp
++++ b/src/coordinatorapi.cpp
+@@ -829,6 +829,20 @@
+ {
+   return !dmtcp_crucible::selected_writer_cohort() ||
+          dmtcp_crucible::selected_publish_final(coordinatorSocket);
++}
++
++bool
++prepareFinalWriterPark()
++{
++  return !dmtcp_crucible::selected_terminal_control_park() ||
++         dmtcp_crucible::prepare_terminal_control_park(coordinatorSocket);
++}
++
++bool
++waitFinalWriterPark()
++{
++  return !dmtcp_crucible::selected_terminal_control_park() ||
++         dmtcp_crucible::wait_terminal_control_park();
+ }
+ 
+ void
+@@ -953,7 +967,8 @@
+ {
+   return sizeof(dmtcp_crucible::OriginalControlBank) +
+          sizeof(dmtcp_crucible::OriginalControlChannels) +
+-         sizeof(dmtcp_crucible::OriginalFinalExchange);
++         sizeof(dmtcp_crucible::OriginalFinalExchange) +
++         sizeof(dmtcp_crucible::OriginalTerminalControlPark);
+ }
+ 
+ extern "C" size_t dmtcp_crucible_export_selected_control_history(void *output, size_t capacity)
+@@ -965,3 +980,8 @@
+ {
+   return dmtcp_crucible::export_final_exchange(output, capacity);
+ }
++
++extern "C" size_t dmtcp_crucible_export_selected_terminal_park(void *output, size_t capacity)
++{
++  return dmtcp_crucible::export_terminal_control_park(output, capacity);
++}
+--- a/src/threadlist.cpp
++++ b/src/threadlist.cpp
+@@ -567,7 +567,11 @@
+ 
+     DmtcpWorker::postCheckpoint();
+ 
++    // Seal selected terminal channel custody before application threads can
++    // observe checkpoint return. Ordinary checkpoint loops remain unchanged.
++    if (!CoordinatorAPI::prepareFinalWriterPark()) _exit(86);
+     ThreadList::resumeThreads();
++    if (!CoordinatorAPI::waitFinalWriterPark()) _exit(86);
+   }
+ 
+   return NULL;
+--- a/src/crucible_capture_budget.h
++++ b/src/crucible_capture_budget.h
+@@ -68,6 +68,8 @@
+ size_t dmtcp_crucible_selected_control_storage_bytes();
+ size_t dmtcp_crucible_export_selected_control_history(void *output, size_t capacity);
+ size_t dmtcp_crucible_export_selected_final_exchange(void *output, size_t capacity);
++// A sealed terminal registry is data custody, not proof that futex wait entered.
++size_t dmtcp_crucible_export_selected_terminal_park(void *output, size_t capacity);
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/src/dmtcpnohijackstubs.cpp
++++ b/src/dmtcpnohijackstubs.cpp
+@@ -117,3 +117,12 @@
+   errno = ENOTSUP;
+   return 0;
+ }
++
++// This utility has no captured worker history. Terminal-park queries must stay
++// unsupported; the worker library retains its actual finalized-account check.
++extern "C" bool
++dmtcp_crucible_capture_history_finalized()
++{
++  errno = ENOTSUP;
++  return false;
++}

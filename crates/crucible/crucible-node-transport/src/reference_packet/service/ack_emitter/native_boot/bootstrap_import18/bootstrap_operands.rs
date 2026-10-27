@@ -1,0 +1,240 @@
+//! Lends all four actual ACK normalization preimages under one original cut.
+//!
+//! The views borrow the original boot, measured image, immutable policy and SDK.
+//! Their projections run before allocating any normalized DOM. The caller still
+//! admits its actual normalization schedule; neither shapes nor hashes grant
+//! Source/Birth funding, a bootstrap ACK, a model or native phase permission.
+
+use super::*;
+use crate::handshake::ConnectionAuthority;
+use crate::reference_packet::service::PacketNative5SourceLaunch;
+use crate::reference_packet::service::complete_restore::import18::OriginalImport18DecodedBodyLoans;
+use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18BootstrapTypedBirthView;
+use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
+    PacketNativeImport18BootstrapKernelView, PacketNativeImport18BootstrapTypedPolicyView,
+    native_import18_bootstrap_kernel_serialization_data,
+    native_import18_bootstrap_operands_counter_scratch_data,
+};
+use crate::reference_packet::service::complete_restore::import18::hello::{
+    PacketNativeImport18CurrentRegistrationView, native_import18_current_registration_view_data,
+};
+use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
+
+/// Borrows the four actual preimages in birth, kernel, policy and native-role order.
+pub(in super::super) struct BootstrapAckOperands<'a> {
+    authority: &'a ConnectionAuthority,
+    /// Borrows the original complete birth association, excluding the signing key.
+    pub(in super::super) birth: &'a PacketNativeImport18BootstrapTypedBirthView<'a>,
+    /// Borrows the authenticated controller and actual measured native coordinates.
+    pub(in super::super) kernel: &'a PacketNativeImport18BootstrapKernelView<'a>,
+    /// Borrows the complete immutable policy and current negotiated SDK selection.
+    pub(in super::super) policy: &'a PacketNativeImport18BootstrapTypedPolicyView<'a>,
+    /// Borrows all nine original current native registration fields.
+    pub(in super::super) registration: &'a PacketNativeImport18CurrentRegistrationView<'a>,
+}
+
+impl BootstrapAckOperands<'_> {
+    /// Retains a fresh transport guard from this actual admitted SDK's parameters.
+    ///
+    /// The caller admits all cloned backing and partials before entry. The slot
+    /// survives a terminal SDK refusal. This creates no native phase permission.
+    ///
+    /// # Errors
+    /// Refuses a nonempty slot, invalid request credit or stale authority.
+    pub(super) fn retain_bootstrap_correlation_into_data(
+        &self,
+        slot: &mut Option<crate::session::CorrelationGuard>,
+    ) -> Result<(), ProviderError> {
+        if slot.is_some() {
+            return Err(refused());
+        }
+        self.authority.ensure_live()?;
+        let maximum_requests =
+            usize::try_from(self.authority.limits().requests.get()).map_err(|_| refused())?;
+        let guard = crate::session::CorrelationGuard::new(
+            self.authority.session_id().clone(),
+            self.authority.incarnation_id().clone(),
+            maximum_requests,
+            self.authority.envelope_extensions().clone(),
+        )?;
+        *slot = Some(guard);
+        self.authority.ensure_live()
+    }
+
+    /// Reads actual negotiated framing from the same live original SDK.
+    ///
+    /// These finite ceilings restrict preparation; they are not constructor
+    /// demand or Source allowance, and cannot select a different connection.
+    ///
+    /// # Errors
+    /// Refuses stale authority, invalid framing or checked integer conversion.
+    pub(super) fn current_framing_limits_data(&self) -> Result<[usize; 2], ProviderError> {
+        self.authority.ensure_live()?;
+        let limits = self.authority.limits();
+        let frame = usize::try_from(limits.frame_bytes.get()).map_err(|_| refused())?;
+        let nesting = usize::try_from(limits.nesting.get()).map_err(|_| refused())?;
+        if frame == 0
+            || frame > crate::transport::MAX_FRAME_BYTES
+            || nesting == 0
+            || nesting > crate::transport::MAX_NESTING
+        {
+            return Err(refused());
+        }
+        self.authority.ensure_live()?;
+        Ok([frame, nesting])
+    }
+
+    /// Names the actual live-SDK framing query and checked-result controls.
+    pub(super) fn framing_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&ConnectionAuthority>()
+            + size_of::<crate::handshake::Limits>()
+            + size_of::<usize>() * 2
+            + size_of::<Result<usize, std::num::TryFromIntError>>() * 2
+            + size_of::<Result<(), ProviderError>>() * 2
+            + size_of::<[usize; 2]>()
+            + size_of::<Result<[usize; 2], ProviderError>>()
+    }
+
+    /// Compares bootstrap target DATA with the actual current SDK registration.
+    ///
+    /// This comparison neither assigns a request nor authenticates its proof.
+    ///
+    /// # Errors
+    /// Refuses another session/incarnation or revoked/contained authority.
+    pub(super) fn authenticate_bootstrap_envelope_target_data(
+        &self,
+        envelope: &crate::envelope::Envelope,
+    ) -> Result<(), ProviderError> {
+        self.authority.ensure_live()?;
+        if envelope.session_id.0.as_ref() != Some(self.authority.session_id())
+            || envelope.incarnation_id.0.as_ref() != Some(self.authority.incarnation_id())
+        {
+            return Err(refused());
+        }
+        self.authority.ensure_live()
+    }
+
+    /// Rechecks the same borrowed live SDK without reopening the aggregate loan.
+    ///
+    /// # Errors
+    /// Refuses revocation or containment of the original connection.
+    pub(super) fn ensure_current_authority_data(&self) -> Result<(), ProviderError> {
+        self.authority.ensure_live()
+    }
+
+    /// Checks the original Host plan against the same borrowed native authority.
+    ///
+    /// No controller authority or connection is constructed by this comparison.
+    ///
+    /// # Errors
+    /// Refuses an incomplete plan, changed target/roster/limits or stale SDK.
+    pub(super) fn authenticate_host_plan_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+        declaration: &PacketNativeImport18HelloDeclarationData,
+        planned: &serde_json::Value,
+    ) -> Result<(), ProviderError> {
+        use crate::reference_packet::service::complete_restore::import18::hello::{
+            PacketNativeImport18RegistrationSideData,
+            authenticate_native_import18_current_host_registration_data,
+        };
+        authenticate_native_import18_current_host_registration_data(
+            launch,
+            declaration,
+            planned,
+            self.authority,
+            PacketNativeImport18RegistrationSideData::Native,
+        )
+    }
+
+    /// Projects every preimage before any allocating normalization serializer runs.
+    ///
+    /// Each result names its independent DOM/JCS, parser/output and formatter
+    /// populations. The restriction applies separately to every complete shape;
+    /// an enclosing producer must derive and admit the actual combined schedule.
+    /// Fixed projection and loan controls have their separate quote below.
+    ///
+    /// # Errors
+    /// Refuses changed field grammar, arithmetic overflow or any complete
+    /// component above the independent restriction.
+    pub(in super::super) fn serialization_shapes_data(
+        &self,
+        maximum: usize,
+    ) -> Result<[OriginalSerializationStorageData; 4], ProviderError> {
+        let Self {
+            authority: _,
+            birth,
+            kernel,
+            policy,
+            registration,
+        } = self;
+        Ok([
+            birth.serialization_data(maximum)?,
+            native_import18_bootstrap_kernel_serialization_data(kernel, maximum)?,
+            policy.serialization_data(maximum)?,
+            registration.native_serialization_data(maximum)?,
+        ])
+    }
+}
+
+impl OriginalImport18RawBootstrap {
+    /// Lends all four actual preimages under their original nested terminal guards.
+    ///
+    /// Completed actual image measurement, immutable policy and live SDK are all
+    /// required. Only Copy results escape; no original view or child owner moves.
+    /// The same input, process/thread, cut, Hello and SDK checks run around either
+    /// callback outcome. Callback allocation remains independently admitted.
+    ///
+    /// # Errors
+    /// Refuses any incomplete original stage, stale custody or SDK, callback
+    /// refusal, or any failed terminal guard after inspection.
+    pub(in super::super) fn with_bootstrap_ack_operands_data<R: Copy>(
+        &self,
+        inspect: impl FnOnce(&BootstrapAckOperands<'_>) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        if !self.bootstrap_kernel.complete {
+            return Err(refused());
+        }
+        self.with_bootstrap_kernel_policy_wire_data(|kernel, policy, authority| {
+            let bodies = self.typed_bodies_data()?;
+            let birth = bodies.boot.bootstrap_birth_wire_data()?;
+            let registration = native_import18_current_registration_view_data(authority, None)?;
+            inspect(&BootstrapAckOperands {
+                authority,
+                birth: &birth,
+                kernel,
+                policy,
+                registration: &registration,
+            })
+        })
+    }
+
+    /// Names all nested loan, shape and concrete Copy-result controls before entry.
+    ///
+    /// This quote supplies no inspection budget or live original loan.
+    ///
+    /// # Errors
+    /// Refuses checked control-layout accumulation overflow.
+    pub(in super::super) fn bootstrap_ack_operands_counter_scratch_data<R: Copy>()
+    -> Result<usize, ProviderError> {
+        [
+            PacketNativeImport18BootstrapTypedBirthView::counter_scratch_data(),
+            PacketNativeImport18CurrentRegistrationView::native_counter_scratch_data(),
+            size_of::<OriginalImport18DecodedBodyLoans<'static>>(),
+            size_of::<Result<OriginalImport18DecodedBodyLoans<'static>, ProviderError>>(),
+            native_import18_bootstrap_operands_counter_scratch_data(),
+            size_of::<BootstrapAckOperands<'static>>(),
+            size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<[OriginalSerializationStorageData; 4]>(),
+            size_of::<Result<[OriginalSerializationStorageData; 4], ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<usize>(),
+        ]
+        .into_iter()
+        .try_fold(
+            Self::bootstrap_kernel_loan_counter_scratch_data::<R>()?,
+            |sum, field| sum.checked_add(field).ok_or_else(refused),
+        )
+    }
+}

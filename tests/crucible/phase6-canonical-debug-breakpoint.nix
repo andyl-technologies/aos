@@ -95,8 +95,8 @@
         needle = "GuestMemoryPatchOnly";
       }
       {
-        label = "QEMU hardware mechanism";
-        needle = "DebugBreakpointMechanism::QemuHardwareBreakpoint";
+        label = "backend hardware mechanism";
+        needle = "DebugBreakpointMechanism::BackendHardwareBreakpoint";
       }
       {
         label = "engine condition mechanism";

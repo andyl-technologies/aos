@@ -295,6 +295,7 @@ impl QemuLogicalTimeCalibration {
 pub struct QemuNodeChild {
     child: Child,
     reaped: bool,
+    original_launch: Option<crate::spawn::OriginalQemuLaunchBinding>,
 }
 
 impl QemuNodeChild {
@@ -315,7 +316,17 @@ impl QemuNodeChild {
         Self {
             child,
             reaped: false,
+            original_launch: None,
         }
+    }
+
+    /// Takes the actual pre-spawn attempt binding without duplicating a descriptor.
+    pub(crate) fn with_original_launch_binding(
+        mut self,
+        binding: crate::spawn::OriginalQemuLaunchBinding,
+    ) -> Self {
+        self.original_launch = Some(binding);
+        self
     }
 
     /// Returns whether the owned child has been reaped by this wrapper.
@@ -576,6 +587,39 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Authenticates the original attempt contract retained before guarded spawn.
+    ///
+    /// This no-effect read checks the same private launch binding, creator process
+    /// and thread. It does not qualify QEMU's source, cgroup contents, execution,
+    /// whole device state or common readiness. Unguarded and externally adopted
+    /// children have no such issuer and remain unsupported in this edition.
+    ///
+    /// # Errors
+    /// Refuses a reaped, unguarded, external, foreign-origin or different-attempt
+    /// child. No process/channel/guard effect or descriptor duplication follows.
+    pub fn authenticate_original_launch_contract(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+    ) -> Result<(), QemuNodeError> {
+        let QemuNodeProcessControl::Direct(child) = &self.child else {
+            return Err(QemuNodeError::checkpoint(
+                "QEMU external child has no original guarded launch binding",
+            ));
+        };
+        let binding = child.original_launch.as_ref().ok_or_else(|| {
+            QemuNodeError::checkpoint("QEMU original guarded launch binding is absent")
+        })?;
+        binding.authenticate(contract).map_err(|source| {
+            QemuNodeError::checkpoint(format!("authenticate QEMU original attempt: {source}"))
+        })?;
+        if child.reaped() {
+            return Err(QemuNodeError::checkpoint(
+                "QEMU original guarded child was reaped",
+            ));
+        }
+        Ok(())
+    }
+
     /// Returns this node's authoritative live block-device handle, when present.
     #[cfg(target_os = "linux")]
     #[must_use]

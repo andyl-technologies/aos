@@ -1,0 +1,328 @@
+--- a/src/sim/simulate.cc
++++ b/src/sim/simulate.cc
+@@ -57,6 +57,8 @@
+ #include "sim/sim_exit.hh"
+ #include "sim/simulate.hh"
+ #include "sim/stat_control.hh"
++#include "sim/crucible_output.hh"
++#include <limits>
+ 
+ namespace gem5
+ {
+@@ -257,6 +259,13 @@
+ 
+ 
+ static bool crucible_model_executing = false;
++static CrucibleNativeEventPosition crucible_event_position;
++
++CrucibleNativeEventPosition
++crucibleNativeEventPosition()
++{
++    return crucible_event_position;
++}
+ 
+ bool
+ crucibleModelIsExecuting()
+@@ -301,6 +310,23 @@
+         fatal_if(curTick() > eventq->nextTick(),
+                  "Native event is scheduled before the current tick");
+ 
++        const Tick event_tick = eventq->nextTick();
++        const bool same_tick = crucible_event_position.ordinal != 0 &&
++                               crucible_event_position.tick == event_tick;
++        fatal_if(crucible_event_position.ordinal ==
++                     std::numeric_limits<uint64_t>::max() ||
++                 (same_tick && crucible_event_position.tickOrdinal ==
++                     std::numeric_limits<uint64_t>::max()),
++                 "Native event birth identity exhausted before callback");
++        ++crucible_event_position.ordinal;
++        crucible_event_position.tickOrdinal = same_tick ?
++            crucible_event_position.tickOrdinal + 1 : 1;
++        crucible_event_position.tick = event_tick;
++        struct CallbackGuard
++        {
++            CallbackGuard() { crucible_event_position.active = true; }
++            ~CallbackGuard() { crucible_event_position.active = false; }
++        } callback_guard;
+         Event *local_exit = eventq->serviceOne();
+         ++result.processedEvents;
+         if (local_exit) {
+--- a/src/sim/syscall_emul.hh
++++ b/src/sim/syscall_emul.hh
+@@ -102,6 +102,7 @@
+ #include "mem/se_translating_port_proxy.hh"
+ #include "params/Process.hh"
+ #include "sim/emul_driver.hh"
++#include "sim/crucible_output.hh"
+ #include "sim/futex_map.hh"
+ #include "sim/guest_abi.hh"
+ #include "sim/process.hh"
+@@ -2872,8 +2873,17 @@
+         return -EBADF;
+     int sim_fd = hbfdp->getSimFD();
+ 
++    const bool modeled_console = crucibleConsoleOwns(p->pid(), tgt_fd);
++    fatal_if(modeled_console && nbytes > 65536,
++             "Modeled console payload exceeds installed native credit");
+     BufferArg buf_arg(buf_ptr, nbytes);
+     buf_arg.copyIn(SETranslatingPortProxy(tc));
++    if (modeled_console) {
++        // Publication is born inside this actual guest syscall callback. Host
++        // poll/write/fsync cannot inject completion or partial-write outcomes.
++        return crucibleCaptureConsoleWrite(p->pid(), tc->contextId(), tgt_fd,
++                                           buf_arg.bufferPtr(), nbytes);
++    }
+ 
+     struct pollfd pfd;
+     pfd.fd = sim_fd;
+--- a/src/sim/SConscript
++++ b/src/sim/SConscript
+@@ -69,6 +69,7 @@
+ Source('bufval.cc')
+ Source('core.cc')
+ Source('cur_tick.cc', tags=['gem5 trace'])
++Source('crucible_output.cc')
+ Source('tags.cc')
+ Source('cxx_config.cc')
+ Source('cxx_manager.cc')
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -52,6 +52,7 @@
+ #include "sim/eventq.hh"
+ #include "sim/sim_events.hh"
+ #include "sim/sim_exit.hh"
++#include "sim/crucible_output.hh"
+ #include "sim/simulate.hh"
+ 
+ namespace py = pybind11;
+@@ -123,6 +124,38 @@
+                       py::return_value_policy::reference);
+     m.def("simulateUntilBoundary", &simulateUntilBoundary,
+           py::arg("exclusive_tick"), py::arg("max_events"));
++    m.def("crucibleEventPosition", []() {
++        const auto position = crucibleNativeEventPosition();
++        py::dict result;
++        result["tick"] = std::to_string(position.tick);
++        result["ordinal"] = std::to_string(position.ordinal);
++        result["tick_ordinal"] = std::to_string(position.tickOrdinal);
++        result["active"] = position.active;
++        return result;
++    });
++    m.def("crucibleConfigureConsole", &crucibleConfigureConsole,
++          py::arg("guest_pid"), py::arg("guest_fd"));
++    m.def("crucibleConsolePublications", []() {
++        py::list result;
++        for (const auto &output : crucibleConsolePublications()) {
++            py::dict record;
++            record["output_id"] = std::to_string(output.outputId);
++            record["tick"] = std::to_string(output.tick);
++            record["event_ordinal"] = std::to_string(output.eventOrdinal);
++            record["tick_ordinal"] = std::to_string(output.tickOrdinal);
++            record["guest_pid"] = std::to_string(output.guestPid);
++            record["context_id"] = std::to_string(output.contextId);
++            record["guest_fd"] = output.guestFd;
++            record["causal_parent"] = std::to_string(output.causalParent);
++            record["payload"] = py::cast(output.payload);
++            result.append(record);
++        }
++        return result;
++    });
++    m.def("crucibleAcknowledgeConsole", &crucibleAcknowledgeConsole,
++          py::arg("original_output_id"));
++    m.def("crucibleSetConsoleParent", &crucibleSetConsoleParent,
++          py::arg("original_parent"));
+     m.def("crucibleStateInventory", []() {
+         if (numMainEventQueues != 1 || inParallelMode || async_event ||
+             crucibleModelIsExecuting()) {
+--- a/src/python/m5/simulate.py
++++ b/src/python/m5/simulate.py
+@@ -612,3 +612,28 @@
+     listenersDisabled,
+     listenersLoopbackOnly,
+ )
++
++
++def crucibleEventPosition():
++    """Reads original native callback identity without executing an event."""
++    return _m5_event.crucibleEventPosition()
++
++
++def crucibleConfigureConsole(guest_pid, guest_fd):
++    """Installs one native modeled stdout stream before native callbacks."""
++    return _m5_event.crucibleConfigureConsole(guest_pid, guest_fd)
++
++
++def crucibleConsolePublications():
++    """Reads original native stdout publications retained before external ACK."""
++    return _m5_event.crucibleConsolePublications()
++
++
++def crucibleAcknowledgeConsole(original_output_id):
++    """Releases only an acknowledged original native stdout FIFO head."""
++    return _m5_event.crucibleAcknowledgeConsole(original_output_id)
++
++
++def crucibleSetConsoleParent(original_parent):
++    """Binds a staged original native input parent at a stopped boundary."""
++    return _m5_event.crucibleSetConsoleParent(original_parent)
+--- /dev/null
++++ b/src/sim/crucible_output.hh
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: BSD-3-Clause
++#ifndef __SIM_CRUCIBLE_OUTPUT_HH__
++#define __SIM_CRUCIBLE_OUTPUT_HH__
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++#include "base/types.hh"
++
++namespace gem5
++{
++
++/** Stable callback birth, never the time at which a controller reads output. */
++struct CrucibleNativeEventPosition
++{
++    Tick tick = 0;
++    uint64_t ordinal = 0;
++    uint64_t tickOrdinal = 0;
++    bool active = false;
++};
++
++CrucibleNativeEventPosition crucibleNativeEventPosition();
++
++struct CrucibleConsolePublication
++{
++    uint64_t outputId = 0;
++    Tick tick = 0;
++    uint64_t eventOrdinal = 0;
++    uint64_t tickOrdinal = 0;
++    uint64_t guestPid = 0;
++    uint64_t contextId = 0;
++    int guestFd = -1;
++    uint64_t causalParent = 0;
++    std::vector<uint8_t> payload;
++};
++
++void crucibleConfigureConsole(uint64_t guest_pid, int guest_fd);
++bool crucibleConsoleOwns(uint64_t guest_pid, int guest_fd);
++int64_t crucibleCaptureConsoleWrite(uint64_t guest_pid, uint64_t context_id,
++                                   int guest_fd, const void *bytes, size_t length);
++std::vector<CrucibleConsolePublication> crucibleConsolePublications();
++void crucibleAcknowledgeConsole(uint64_t original_output_id);
++void crucibleSetConsoleParent(uint64_t original_parent);
++
++} // namespace gem5
++
++#endif
+--- /dev/null
++++ b/src/sim/crucible_output.cc
+@@ -0,0 +1,107 @@
++// SPDX-License-Identifier: BSD-3-Clause
++#include "sim/crucible_output.hh"
++
++#include <deque>
++#include <limits>
++#include <utility>
++
++#include "base/logging.hh"
++#include "sim/simulate.hh"
++
++namespace gem5
++{
++
++namespace
++{
++constexpr size_t MaximumPayload = 65536;
++constexpr size_t MaximumPublications = 4096;
++constexpr size_t MaximumRetainedBytes = 16 * 1024 * 1024;
++
++bool configured = false;
++uint64_t configuredPid = 0;
++int configuredFd = -1;
++uint64_t nextOutputId = 1;
++uint64_t acknowledgedThrough = 0;
++uint64_t causalParent = 0;
++size_t retainedBytes = 0;
++std::deque<CrucibleConsolePublication> retained;
++}
++
++void
++crucibleConfigureConsole(uint64_t guest_pid, int guest_fd)
++{
++    fatal_if(configured || crucibleModelIsExecuting() ||
++             crucibleNativeEventPosition().ordinal != 0 || guest_fd != 1,
++             "Console ownership must be installed once before native events");
++    configuredPid = guest_pid;
++    configuredFd = guest_fd;
++    configured = true;
++}
++
++bool
++crucibleConsoleOwns(uint64_t guest_pid, int guest_fd)
++{
++    return configured && guest_pid == configuredPid && guest_fd == configuredFd;
++}
++
++int64_t
++crucibleCaptureConsoleWrite(uint64_t guest_pid, uint64_t context_id,
++                           int guest_fd, const void *bytes, size_t length)
++{
++    const auto birth = crucibleNativeEventPosition();
++    fatal_if(!crucibleConsoleOwns(guest_pid, guest_fd) || !birth.active,
++             "Console publication has no actual native event birth");
++    if (length == 0)
++        return 0;
++    fatal_if(length > MaximumPayload || retained.size() >= MaximumPublications ||
++             length > MaximumRetainedBytes - retainedBytes ||
++             nextOutputId == std::numeric_limits<uint64_t>::max(),
++             "Original native console publication credit exhausted");
++    CrucibleConsolePublication output;
++    output.outputId = nextOutputId;
++    output.tick = birth.tick;
++    output.eventOrdinal = birth.ordinal;
++    output.tickOrdinal = birth.tickOrdinal;
++    output.guestPid = guest_pid;
++    output.contextId = context_id;
++    output.guestFd = guest_fd;
++    output.causalParent = causalParent;
++    const auto *begin = static_cast<const uint8_t *>(bytes);
++    output.payload.assign(begin, begin + length);
++    retained.push_back(std::move(output));
++    ++nextOutputId;
++    retainedBytes += length;
++    return static_cast<int64_t>(length);
++}
++
++std::vector<CrucibleConsolePublication>
++crucibleConsolePublications()
++{
++    fatal_if(crucibleModelIsExecuting(),
++             "Native console inventory requires a stopped event boundary");
++    return std::vector<CrucibleConsolePublication>(retained.begin(), retained.end());
++}
++
++void
++crucibleAcknowledgeConsole(uint64_t original_output_id)
++{
++    fatal_if(crucibleModelIsExecuting() || original_output_id == 0,
++             "Native console ACK requires original stopped custody");
++    if (original_output_id <= acknowledgedThrough)
++        return;
++    fatal_if(retained.empty() || retained.front().outputId != original_output_id,
++             "Native console ACK does not match the original FIFO head");
++    retainedBytes -= retained.front().payload.size();
++    retained.pop_front();
++    acknowledgedThrough = original_output_id;
++}
++
++void
++crucibleSetConsoleParent(uint64_t original_parent)
++{
++    fatal_if(!configured || crucibleModelIsExecuting() || !retained.empty(),
++             "Native input parent may change only beneath stopped output custody");
++    causalParent = original_parent;
++}
++
++} // namespace gem5

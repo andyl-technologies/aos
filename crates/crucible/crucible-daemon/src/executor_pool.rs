@@ -354,7 +354,7 @@ where
     ///
     /// The worker count is additionally bounded by the supervisor's configured
     /// execution-slot capacity. Exact captures are prepared and published
-    /// through `checkpoints` after their worker session has reaped QEMU. No
+    /// through `checkpoints` after the worker completes its required teardown. No
     /// thread is created after the constructor returns.
     ///
     /// # Errors

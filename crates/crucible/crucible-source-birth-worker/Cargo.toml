@@ -1,0 +1,28 @@
+[package]
+name = "crucible-source-birth-worker"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+autobins = false
+autotests = false
+description = "Private bounded source-birth derivation worker"
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-source-birth-data = { workspace = true, default-features = false }
+
+[[bin]]
+name = "crucible-source-birth-worker"
+path = "src/main.rs"
+
+[dev-dependencies]
+crucible-node-format = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[[test]]
+name = "worker_stdio"
+path = "tests/worker_stdio.rs"

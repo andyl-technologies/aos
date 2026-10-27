@@ -1,0 +1,9 @@
+scope=PUBLIC_FRAME_AND_CNP_BLOB_ONLY_NO_SOURCE_AUTHORITY
+delivery_icount=17
+source_slot=0
+sequence=9
+content_algorithm=blake3-256
+content_domain=cnp.blob.v1
+content_digest=e9de1a7690384bfda331091e5f882118b97f3b26ecc9993fe0f19bbbc1a233f2
+content_length=16
+media_type=application/octet-stream

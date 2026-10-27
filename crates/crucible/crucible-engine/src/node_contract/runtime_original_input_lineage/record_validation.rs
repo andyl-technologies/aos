@@ -1,0 +1,283 @@
+//! Credits historical Runtime7 metadata before any original-body reader is used.
+
+use super::*;
+use crucible_node_format::Validate;
+use std::io::{self, Write};
+
+impl OriginalLineageRuntimeRecord {
+    /// Checks closed edition, input association geometry and aggregate references.
+    ///
+    /// This check performs no body read and grants no native permission. A selected
+    /// codec must separately authenticate every original body, actual source
+    /// scope and fresh producer/consumer mapping before world readiness.
+    ///
+    /// # Errors
+    /// Refuses other editions, missing lineage, unordered or reused logical
+    /// identities, impossible staging commits, changed successful ACK tuples,
+    /// malformed scope/rows, combined unsupported external input or exceeded
+    /// encoded/role/byte/edge credits.
+    pub fn validate_metadata(
+        &self,
+        limits: OriginalInputLineageLimits,
+        maximum_record_bytes: usize,
+    ) -> Result<(), RuntimeError> {
+        if self.schema_version != 7 || !self.inputs.iter().any(|input| input.lineage.is_some()) {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        bounded_metadata(self, maximum_record_bytes)?;
+        self.validate_logical_identities_data()?;
+        let mut available = limits;
+        for input in &self.inputs {
+            validate_input_custody_data(input)?;
+            if input
+                .deliveries
+                .iter()
+                .any(|delivery| delivery.external_root.is_some())
+            {
+                return Err(RuntimeError::UnsupportedFacet);
+            }
+            charge_references(&input.payloads, &mut available)?;
+            if let Some(provenance) = &input.provenance {
+                if provenance.schema_version != 1
+                    || provenance.node != input.node
+                    || provenance.stage_operation != input.stage_operation
+                    || provenance.batch != input.batch
+                    || provenance.inventory != input.inventory
+                    || provenance.roots.windows(2).any(|pair| pair[0] >= pair[1])
+                    || provenance
+                        .roots
+                        .iter()
+                        .any(|root| provenance.objects.binary_search(root).is_err())
+                {
+                    return Err(RuntimeError::InvalidReceipt);
+                }
+                charge_references(&provenance.objects, &mut available)?;
+            }
+            if let Some(lineage) = &input.lineage {
+                validate_lineage(input, lineage, &mut available)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_logical_identities_data(&self) -> Result<(), RuntimeError> {
+        if self
+            .operations
+            .windows(2)
+            .any(|pair| pair[0].operation >= pair[1].operation)
+            || self
+                .inputs
+                .windows(2)
+                .any(|pair| pair[0].stage_operation >= pair[1].stage_operation)
+        {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+
+        // Begin and Stage spend the same logical operation namespace. Batch
+        // identities are also world-wide, including failed or uncommitted rows.
+        // Check the original ledgers before any archive lookup or native hook;
+        // insertion into fresh maps must never silently replace a saved row.
+        for (index, input) in self.inputs.iter().enumerate() {
+            if self
+                .operations
+                .iter()
+                .any(|operation| operation.operation == input.stage_operation)
+                || self.inputs[..index]
+                    .iter()
+                    .any(|previous| previous.batch == input.batch)
+            {
+                return Err(RuntimeError::DuplicateOperation);
+            }
+        }
+        Ok(())
+    }
+
+    /// Names fixed borrowed controls for the logical identity validation walk.
+    ///
+    /// This allocation-free walk retains no set or replacement ledger. Enclosing
+    /// funded readers add these controls to their existing metadata/decoder row;
+    /// original records, formatter work and body checks remain independently priced.
+    pub const fn logical_identity_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<&Self>()
+            + size_of::<std::slice::Windows<'static, SavedRuntimeOperation>>()
+            + size_of::<std::slice::Windows<'static, OriginalLineageInputRecord>>()
+            + size_of::<&[SavedRuntimeOperation]>()
+            + size_of::<&[OriginalLineageInputRecord]>() * 2
+            + size_of::<std::iter::Enumerate<std::slice::Iter<'static, OriginalLineageInputRecord>>>(
+            )
+            + size_of::<std::slice::Iter<'static, SavedRuntimeOperation>>()
+            + size_of::<std::slice::Iter<'static, OriginalLineageInputRecord>>()
+            + size_of::<&SavedRuntimeOperation>() * 2
+            + size_of::<&OriginalLineageInputRecord>() * 4
+            + size_of::<usize>() * 2
+            + size_of::<bool>() * 4
+            + size_of::<Result<(), RuntimeError>>()
+    }
+
+    /// Names fixed borrowed controls for original staging custody validation.
+    ///
+    /// Successful ACK syntax uses an allocation-free predicate. This adds no
+    /// body read, ACK replacement, native permission or diagnostic allocation.
+    pub const fn input_custody_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<&OriginalLineageInputRecord>()
+            + size_of::<&crate::node_scheduling::NativeInputAcknowledgement>()
+            + size_of::<bool>() * 12
+            + size_of::<Result<(), RuntimeError>>()
+            + ContentRef::shape_validation_counter_scratch_bytes_data()
+    }
+}
+
+fn validate_input_custody_data(input: &OriginalLineageInputRecord) -> Result<(), RuntimeError> {
+    if input.committed && !input.coordinator_committed
+        || input.coordinator_committed
+            && (input.acknowledgement.is_none() || input.failure.is_some())
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+
+    // A failed Stage can retain a malformed native ACK as original evidence.
+    // It never acquired a coordinator commit. Keep that evidence unchanged;
+    // only a successful ACK must authenticate this exact saved input tuple.
+    if input.failure.is_some() {
+        return Ok(());
+    }
+    if let Some(ack) = &input.acknowledgement
+        && (ack.node != input.node
+            || ack.stage_operation != input.stage_operation
+            || ack.batch != input.batch
+            || ack.owners != input.owners
+            || ack.cutoff != input.cutoff
+            || ack.inventory != input.inventory
+            || ack.proof_ref.length.get() == 0
+            || !ack.proof_ref.has_valid_shape())
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    Ok(())
+}
+
+fn validate_lineage(
+    input: &OriginalLineageInputRecord,
+    lineage: &SavedOriginalInputLineage,
+    available: &mut OriginalInputLineageLimits,
+) -> Result<(), RuntimeError> {
+    let source = &lineage.source;
+    if lineage.schema_version != 1
+        || input.provenance.is_none()
+        || source.node != input.node
+        || source.stage_operation != input.stage_operation
+        || source.batch != input.batch
+        || source.cutoff != input.cutoff
+        || source.inventory != input.inventory
+        || source.owners.is_empty()
+        || source
+            .owners
+            .iter()
+            .any(|owner| !source.source_activation.owners.contains(owner))
+        || lineage.publications.len() != input.deliveries.len()
+        || lineage.publications.len() > 64
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    for publication in &lineage.publications {
+        let origin = &publication.origin;
+        if origin.world_binding_hash != source.source_activation.world_binding_hash
+            || origin.activation_id != source.source_activation.activation_id
+            || origin.world_generation != source.source_activation.generation
+            || !source.source_activation.owners.iter().any(|owner| {
+                owner.owner == origin.execution_owner_id
+                    && owner.incarnation == origin.incarnation_id
+                    && owner.generation == origin.owner_generation
+            })
+        {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        if publication.rows.len() != publication.objects.len()
+            || publication
+                .rows
+                .iter()
+                .zip(&publication.objects)
+                .any(|(row, reference)| row.object != *reference)
+        {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        let derived = geometry::validate_reference_rows(
+            &publication.rows,
+            [
+                &publication.published,
+                &publication.origin.observation_batch,
+                &publication.origin.stop_receipt,
+                &publication.origin.measurement,
+            ],
+            *available,
+        )?;
+        let direct = publication.rows.iter().try_fold(0usize, |total, row| {
+            total
+                .checked_add(row.dependencies.len())
+                .ok_or(RuntimeError::ResourceLimit)
+        })?;
+        available.maximum_edges = available
+            .maximum_edges
+            .checked_sub(direct.max(derived))
+            .ok_or(RuntimeError::ResourceLimit)?;
+        charge_references(&publication.objects, available)?;
+    }
+    Ok(())
+}
+
+fn charge_references(
+    references: &[ContentRef],
+    available: &mut OriginalInputLineageLimits,
+) -> Result<(), RuntimeError> {
+    if references.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    available.maximum_objects = available
+        .maximum_objects
+        .checked_sub(references.len())
+        .ok_or(RuntimeError::ResourceLimit)?;
+    for reference in references {
+        reference
+            .validate()
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+        let length =
+            usize::try_from(reference.length.get()).map_err(|_| RuntimeError::ResourceLimit)?;
+        available.maximum_bytes = available
+            .maximum_bytes
+            .checked_sub(length)
+            .ok_or(RuntimeError::ResourceLimit)?;
+    }
+    Ok(())
+}
+
+struct MetadataCredit {
+    remaining: usize,
+}
+
+impl Write for MetadataCredit {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes.len())
+            .ok_or_else(|| io::Error::other("original Runtime7 metadata credit exhausted"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn bounded_metadata(
+    value: &impl serde::Serialize,
+    maximum_record_bytes: usize,
+) -> Result<(), RuntimeError> {
+    let mut sink = MetadataCredit {
+        remaining: maximum_record_bytes,
+    };
+    serde_json::to_writer(&mut sink, value).map_err(|_| RuntimeError::ResourceLimit)
+}

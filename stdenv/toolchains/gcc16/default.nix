@@ -259,7 +259,7 @@
         '';
     };
 in
-  import ../lib/finalize-native.nix {
+  (import ../lib/finalize-native.nix {
     privateTools = scope // {inherit gccStage2;};
     directory = ./.;
     gccVersion = "16.2.0";
@@ -275,4 +275,11 @@ in
       then scope.perl
       else null;
     inherit buildPlatform hostPlatform targetPlatform;
+  })
+  // {
+    # This helper depends only on the completed predecessor; it must not
+    # introduce a final-compiler/file dependency cycle.
+    gccUnwindFile = import ./unwind-file.nix {
+      inherit prev buildPlatform hostPlatform targetPlatform;
+    };
   }

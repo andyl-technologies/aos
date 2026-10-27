@@ -93,6 +93,7 @@ pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 pub const QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME: &str = "crucible-runtime-determinism.trace";
 pub(crate) const QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION: &str =
     "enable=crucible_sim_determinism_*";
+pub(crate) const QEMU_APIC_ORIGIN_TRACE_SELECTION: &str = "enable=crucible_apic_origin_*";
 // Keep the diagnostic trace sparse enough that the bounded retained tail
 // includes the QMP exchange after a 60-second command timeout.
 pub(crate) const QEMU_RUNTIME_LIVENESS_TRACE_SELECTION: &str = "enable=*qmp*";
@@ -625,6 +626,7 @@ pub struct QemuLaunchCommandBuilder {
     debug_guest_activation_endpoint: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    apic_origin_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
     runtime_liveness_trace: bool,
 }
@@ -653,9 +655,47 @@ impl QemuLaunchCommandBuilder {
             debug_guest_activation_endpoint: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            apic_origin_trace: false,
             runtime_determinism_trace_budget_bytes: MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             runtime_liveness_trace: false,
         }
+    }
+
+    /// Builds a selected Preparing command without asserting a World manifest.
+    ///
+    /// Native source installation must still authenticate the original sealed
+    /// Launch2 inputs. This entry exposes no execution or readiness authority;
+    /// guarded spawn refuses this command through the ordinary launch route.
+    ///
+    /// # Errors
+    /// Refuses an absent whole constructor or an unsupported selected launch.
+    pub fn new_for_whole_preparing(
+        profile: DeterministicLaunchProfile,
+        vm: QemuVmLaunchConfig,
+        executable: impl Into<String>,
+        plugin: QemuLaunchPluginConfig,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        let setup = plugin.plugin_setup_plan();
+        let selection = setup
+            .whole_constructor()
+            .ok_or(QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        let launch = selection
+            .launch2()
+            .map_err(|_| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
+        if launch.architecture
+            != crucible_qemu_protocol::whole_control::staged::launch::LaunchArchitecture::X86_64
+            || profile.smp_vcpus != 4
+            || vm.crucible_accelerator.is_some()
+        {
+            return Err(QemuLaunchCommandError::InvalidPluginSetupPlan);
+        }
+        Ok(Self::new_for_live_gate(
+            profile,
+            vm,
+            executable,
+            plugin,
+            LivePluginGuestArchitecture::X86_64,
+        ))
     }
 
     /// Builds an internal loaded-backend gate command that discovers the live manifest.
@@ -744,6 +784,7 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_rr_control_boundary_trace(mut self) -> Self {
         self.rr_control_boundary_trace = true;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
         self
     }
@@ -758,7 +799,15 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_runtime_determinism_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = true;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Adds the separate, bounded APIC programming diagnostic to this trace.
+    #[must_use]
+    pub(crate) const fn with_apic_origin_trace(mut self, enabled: bool) -> Self {
+        self.apic_origin_trace = enabled;
         self
     }
 
@@ -778,6 +827,7 @@ impl QemuLaunchCommandBuilder {
     pub(crate) const fn with_runtime_liveness_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = true;
         self
     }
@@ -873,6 +923,11 @@ impl QemuLaunchCommandBuilder {
         } else if self.runtime_determinism_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            if self.apic_origin_trace {
+                // The host retains a full raw copy before any cross-run test.
+                resource_requirements = resource_requirements
+                    .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            }
         } else if self.runtime_liveness_trace {
             resource_requirements = resource_requirements
                 .with_diagnostic_trace_bytes(MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES);
@@ -957,6 +1012,12 @@ impl QemuLaunchCommandBuilder {
                 "-trace".to_owned(),
                 QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION.to_owned(),
             ]);
+            if self.apic_origin_trace {
+                args.extend([
+                    "-trace".to_owned(),
+                    QEMU_APIC_ORIGIN_TRACE_SELECTION.to_owned(),
+                ]);
+            }
         } else if self.runtime_liveness_trace {
             args.extend([
                 "-D".to_owned(),
@@ -965,10 +1026,15 @@ impl QemuLaunchCommandBuilder {
                 QEMU_RUNTIME_LIVENESS_TRACE_SELECTION.to_owned(),
             ]);
         }
+        let plugin_setup_plan = self.plugin.plugin_setup_plan();
+        if plugin_setup_plan.whole_constructor().is_some() {
+            args.extend([
+                "-crucible-whole-setup-fd".to_owned(),
+                crate::spawn::QEMU_WHOLE_SETUP_LAUNCH_FD.to_string(),
+            ]);
+        }
         validate_pre_spawn_qemu_launch_args(&args)
             .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
-
-        let plugin_setup_plan = self.plugin.plugin_setup_plan();
         let plugin_setup_plan_bytes = plugin_setup_plan
             .encode()
             .map_err(|_source| QemuLaunchCommandError::InvalidPluginSetupPlan)?;
@@ -1109,7 +1175,7 @@ impl QemuVmLaunchConfig {
     /// virtio-blk root disk during boot never issues block I/O that a runner
     /// without a host block-I/O runtime cannot service.
     #[must_use]
-    pub(crate) fn new_diskless(
+    pub fn new_diskless(
         node_id: impl Into<String>,
         kernel: QemuLaunchArtifact,
         firmware: QemuLaunchArtifact,
@@ -1151,6 +1217,16 @@ impl QemuVmLaunchConfig {
             crucible_shmem_network: None,
             crucible_accelerator: None,
         }
+    }
+
+    /// Retains an explicit firmware artifact for the original direct-kernel launch.
+    ///
+    /// The artifact is authenticated and sealed by selected guarded spawn before
+    /// the native board constructor can load it; naming it grants no readiness.
+    #[must_use]
+    pub fn with_firmware(mut self, firmware: QemuLaunchArtifact) -> Self {
+        self.firmware = Some(firmware);
+        self
     }
 
     /// Returns a config with a content-addressed initrd.

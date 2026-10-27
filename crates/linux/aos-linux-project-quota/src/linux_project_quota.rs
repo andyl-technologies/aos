@@ -104,6 +104,23 @@ pub struct LinuxProjectQuotaReservation {
 }
 
 impl LinuxProjectQuotaReservation {
+    /// Borrows the original diagnostic path buffer without I/O or quota changes.
+    ///
+    /// Its length and capacity describe this userspace buffer only. The borrow
+    /// exposes no descriptor, kernel quota authority or construction permission.
+    pub fn retained_path_buffer_data(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Reports the requested backing of its retained diagnostic path only.
+    ///
+    /// This reads the original PathBuf capacity without I/O or permission
+    /// changes. It excludes the reservation header, kernel quota state and
+    /// allocator metadata; it is neither admission nor a new storage grant.
+    pub fn retained_path_storage_data(&self) -> usize {
+        self.path.capacity()
+    }
+
     /// Installs one hard project quota on a fresh pinned directory.
     ///
     /// `filesystem` and `directory` must refer to the same ext4 filesystem.
@@ -339,6 +356,23 @@ pub struct LinuxProjectQuotaBinding {
 }
 
 impl LinuxProjectQuotaBinding {
+    /// Observes the retained path capacity without querying or changing quotas.
+    ///
+    /// The descriptor is inline. Kernel state, allocator overhead and the
+    /// enclosing binding's inline layout are separate accounting terms.
+    #[must_use]
+    pub fn retained_requested_storage_data(&self) -> usize {
+        let Self {
+            directory: _,
+            path,
+            device: _,
+            inode: _,
+            project_id: _,
+            limits: _,
+        } = self;
+        path.capacity()
+    }
+
     /// Pins and verifies one already configured project-quota directory.
     ///
     /// # Errors

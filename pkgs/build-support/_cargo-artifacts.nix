@@ -8,13 +8,17 @@
   lib,
   mkDerivation,
 }: let
-  generatedDirectory = name:
-    builtins.elem name [".git" ".direnv" ".worktrees" ".crucible" "target"]
+  isCargoBuildDirectory = import ./_cargo-build-directory.nix;
+  generatedDirectory = root: path: let
+    name = baseNameOf path;
+  in
+    builtins.elem name [".git" ".direnv" ".worktrees" ".crucible"]
     || lib.hasPrefix "result-" name
-    || lib.hasPrefix "target-" name;
+    || isCargoBuildDirectory root path;
 
-  excludedDirectory = relative: name:
-    generatedDirectory name || (relative == "" && name == "result");
+  excludedDirectory = root: relative: name:
+    generatedDirectory root (root + "/${lib.optionalString (relative != "") "${relative}/"}${name}")
+    || (relative == "" && name == "result");
 
   collectRustTargets = root: relative: let
     directory =
@@ -31,7 +35,7 @@
         then name
         else "${relative}/${name}";
     in
-      if kind == "directory" && !excludedDirectory relative name
+      if kind == "directory" && !excludedDirectory root relative name
       then collectRustTargets root child
       else if kind == "regular" && lib.hasSuffix ".rs" name
       then [child]
@@ -72,7 +76,7 @@ in {
         pathString = toString path;
       in
         if type == "directory"
-        then !generatedDirectory base && toString path != "${toString srcRoot}/result"
+        then !generatedDirectory srcRoot path && toString path != "${toString srcRoot}/result"
         else
           patchedCrateInput pathString
           || builtins.elem base [

@@ -1,0 +1,1951 @@
+--- a/src/arch/arm/pcstate.hh
++++ b/src/arch/arm/pcstate.hh
+@@ -41,6 +41,7 @@
+ #ifndef __ARCH_ARM_PCSTATE_HH__
+ #define __ARCH_ARM_PCSTATE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "arch/generic/pcstate.hh"
+ #include "base/bitunion.hh"
+ #include "base/types.hh"
+@@ -107,6 +108,21 @@
+ 
+     PCState() {}
+     explicit PCState(Addr val) { set(val); }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleNextFields(writer, prefix);
++        writer.set(prefix + ".flags", flags);
++        writer.set(prefix + ".next_flags", nextFlags);
++        writer.set(prefix + ".it_state", _itstate);
++        writer.set(prefix + ".next_it_state", _nextItstate);
++        writer.set(prefix + ".instruction_size", _size);
++        writer.set(prefix + ".illegal_execution", _illegalExec);
++        writer.set(prefix + ".debug_step", _debugStep);
++        writer.set(prefix + ".stepped", _stepped);
++        if (typeid(*this) != typeid(PCState))
++            writer.string(prefix + ".coverage.unsupported", "unknown-arm-pc-subclass");
++    }
+ 
+     PCStateBase *clone() const override { return new PCState(*this); }
+ 
+--- a/src/arch/generic/pcstate.hh
++++ b/src/arch/generic/pcstate.hh
+@@ -42,6 +42,7 @@
+ #ifndef __ARCH_GENERIC_TYPES_HH__
+ #define __ARCH_GENERIC_TYPES_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <iostream>
+ #include <memory>
+ #include <type_traits>
+@@ -66,6 +67,19 @@
+     PCStateBase() {}
+ 
+   public:
++    /** Visits the guaranteed PC fields without invoking advance or update. */
++    void crucibleBaseFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".pc", _pc);
++        writer.set(prefix + ".micro_pc", _upc);
++    }
++
++    virtual void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "unknown-pc-state-subclass");
++    }
++
+     virtual ~PCStateBase() = default;
+ 
+     template<class Target>
+@@ -271,6 +285,19 @@
+     Addr pc() const { return _pc; }
+     void pc(Addr val) { _pc = val; }
+ 
++    void crucibleNextFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".next_pc", _npc);
++        writer.set(prefix + ".next_micro_pc", _nupc);
++    }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleNextFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "unknown-pc-with-next-subclass");
++    }
++
+     Addr npc() const { return _npc; }
+     void npc(Addr val) { _npc = val; }
+ 
+--- a/src/arch/x86/pcstate.hh
++++ b/src/arch/x86/pcstate.hh
+@@ -38,6 +38,7 @@
+ #ifndef __ARCH_X86_PCSTATE_HH__
+ #define __ARCH_X86_PCSTATE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "arch/generic/pcstate.hh"
+ #include "sim/serialize.hh"
+ 
+@@ -55,6 +56,14 @@
+     uint8_t _size;
+ 
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        crucibleNextFields(writer, prefix);
++        writer.set(prefix + ".instruction_size", _size);
++        if (typeid(*this) != typeid(PCState))
++            writer.string(prefix + ".coverage.unsupported", "unknown-x86-pc-subclass");
++    }
++
+     PCStateBase *clone() const override { return new PCState(*this); }
+ 
+     void
+--- a/src/base/circular_queue.hh
++++ b/src/base/circular_queue.hh
+@@ -38,6 +38,7 @@
+ #ifndef __BASE_CIRCULAR_QUEUE_HH__
+ #define __BASE_CIRCULAR_QUEUE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <cassert>
+ #include <cstddef>
+ #include <cstdint>
+@@ -409,6 +410,18 @@
+     /**
+      * @ingroup api_base_utils
+      */
++    /** Visits physical slots and monotone cursor values without cloning owners. */
++    template<class Visitor>
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix,
++                       Visitor visitor) const
++    {
++        writer.set(prefix + ".capacity", _capacity);
++        writer.set(prefix + ".size", _size);
++        writer.set(prefix + ".head", _head);
++        for (size_t slot = 0; slot < data.size(); ++slot)
++            visitor(writer, prefix + ".slot[" + std::to_string(slot) + "]", data[slot]);
++    }
++
+     explicit CircularQueue(size_t size=0) : data(size), _capacity(size) {}
+ 
+     /**
+--- a/src/cpu/activity.hh
++++ b/src/cpu/activity.hh
+@@ -29,6 +29,7 @@
+ #ifndef __CPU_ACTIVITY_HH__
+ #define __CPU_ACTIVITY_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "base/trace.hh"
+ #include "cpu/timebuf.hh"
+ 
+@@ -56,6 +57,19 @@
+     ActivityRecorder(const std::string &name, int num_stages,
+                      int longest_latency, int count);
+     ~ActivityRecorder();
++
++    /** Visits the unchanged activity ring and stage liveness bits. */
++    void
++    crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".longest_latency", longestLatency);
++        writer.set(prefix + ".count", activityCount);
++        writer.set(prefix + ".stage_count", numStages);
++        for (int stage = 0; stage < numStages; ++stage)
++            writer.set(prefix + ".stage[" + std::to_string(stage) + "]", stageActive[stage]);
++        activityBuffer.crucibleState(writer, prefix + ".buffer", [](auto &output,
++                const auto &key, bool active) { output.set(key + ".active", active); });
++    }
+ 
+     /** Records that there is activity this cycle. */
+     void activity();
+--- a/src/cpu/func_unit.hh
++++ b/src/cpu/func_unit.hh
+@@ -29,6 +29,7 @@
+ #ifndef __CPU_FUNC_UNIT_HH__
+ #define __CPU_FUNC_UNIT_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <array>
+ #include <bitset>
+ #include <string>
+@@ -104,6 +105,21 @@
+     std::bitset<Num_OpClasses> capabilityList;
+ 
+   public:
++    /** Visits per-unit execution capabilities without allocating or issuing work. */
++    void
++    crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.string(prefix + ".name", name);
++        writer.string(prefix + ".capabilities", capabilityList.to_string());
++        for (size_t op = 0; op < Num_OpClasses; ++op) {
++            if (!capabilityList[op])
++                continue;
++            const auto key = prefix + ".operation[" + std::to_string(op) + "]";
++            writer.set(key + ".latency", opLatencies[op]);
++            writer.set(key + ".pipelined", pipelined[op]);
++        }
++    }
++
+     FuncUnit();
+     FuncUnit(const FuncUnit &fu);
+ 
+--- a/src/cpu/o3/bac.cc
++++ b/src/cpu/o3/bac.cc
+@@ -74,6 +74,32 @@
+ };
+ // clang-format on
+ 
++void
++BAC::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + ".decoupledFrontEnd", decoupledFrontEnd);
++    writer.set(prefix + ".fetchTargetWidth", fetchTargetWidth);
++    writer.set(prefix + ".minInstSize", minInstSize);
++    writer.set(prefix + ".numThreads", numThreads);
++    writer.set(prefix + ".maxFTPerCycle", maxFTPerCycle);
++    writer.set(prefix + ".maxTakenPredPerCycle", maxTakenPredPerCycle);
++    writer.string(prefix + ".predictor", bpu ? bpu->name() : "");
++    fromFetch.crucibleState(writer, prefix + ".wire.from_fetch", timeBuffer);
++    fromDecode.crucibleState(writer, prefix + ".wire.from_decode", timeBuffer);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".status", bacStatus[tid]);
++        writer.set(key + ".stall.fetch", stalls[tid].fetch);
++        writer.set(key + ".stall.drain", stalls[tid].drain);
++        writer.set(key + ".stall.predictor", stalls[tid].bpu);
++        cruciblePCReference(writer, key + ".pc", bacPC[tid].get());
++    }
++    writer.string(prefix + ".coverage.unsupported", "predictor-static-instruction-payload;probes");
++}
++
+ BAC::BAC(CPU *_cpu, const BaseO3CPUParams &params)
+     : cpu(_cpu),
+       bpu(params.branchPred),
+--- a/src/cpu/o3/bac.hh
++++ b/src/cpu/o3/bac.hh
+@@ -38,6 +38,7 @@
+ #ifndef __CPU_O3_BAC_HH__
+ #define __CPU_O3_BAC_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ 
+ #include "base/statistics.hh"
+@@ -123,6 +124,9 @@
+ 
+   public:
+     /** BAC constructor. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     BAC(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     // Interfaces to CPU ----------------------------------
+--- a/src/cpu/o3/comm.hh
++++ b/src/cpu/o3/comm.hh
+@@ -43,6 +43,7 @@
+ #ifndef __CPU_O3_COMM_HH__
+ #define __CPU_O3_COMM_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <vector>
+ 
+ #include "arch/generic/pcstate.hh"
+@@ -238,6 +239,27 @@
+     bool iewUnblock[MaxThreads];
+ };
+ 
++/** Observes semantic identities and aliases without fetching or executing an instruction. */
++void crucibleInstructionReference(CrucibleStateWriter &writer,
++                                  const std::string &prefix, const DynInstPtr &inst);
++
++/** Observes the selected base PC fields; ISA-specific payload coverage remains separate. */
++void cruciblePCReference(CrucibleStateWriter &writer, const std::string &prefix,
++                         const PCStateBase *pc);
++
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const FetchStruct &handoff);
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const DecodeStruct &handoff);
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const RenameStruct &handoff);
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const IEWStruct &handoff);
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const IssueStruct &handoff);
++void crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                    const TimeStruct &handoff);
++
+ /**
+  * Remove instructions belonging to given thread from the
+  * given comm struct's instruction array. Automatically
+--- a/src/cpu/o3/commit.cc
++++ b/src/cpu/o3/commit.cc
+@@ -101,6 +101,46 @@
+     trapSquash[tid] = true;
+ }
+ 
++void
++Commit::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + "._nextStatus", _nextStatus);
++    writer.set(prefix + ".commitPolicy", commitPolicy);
++    writer.set(prefix + ".drainPending", drainPending);
++    writer.set(prefix + ".drainImminent", drainImminent);
++    writer.set(prefix + ".canHandleInterrupts", canHandleInterrupts);
++    writer.set(prefix + ".avoidQuiesceLiveLock", avoidQuiesceLiveLock);
++    writer.set(prefix + ".interrupt_present", interrupt != NoFault);
++    toIEW.crucibleState(writer, prefix + ".wire.to_iew", timeBuffer);
++    robInfoFromIEW.crucibleState(writer, prefix + ".wire.rob_from_iew", timeBuffer);
++    fromFetch.crucibleState(writer, prefix + ".wire.from_fetch", fetchQueue);
++    fromIEW.crucibleState(writer, prefix + ".wire.from_iew", iewQueue);
++    fromRename.crucibleState(writer, prefix + ".wire.from_rename", renameQueue);
++    size_t ordinal = 0;
++    for (const auto tid : priority_list)
++        writer.set(prefix + ".priority[" + std::to_string(ordinal++) + "]", tid);
++    writer.set(prefix + ".priority.count", ordinal);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".commitStatus", commitStatus[tid]);
++        writer.set(key + ".changedROBNumEntries", changedROBNumEntries[tid]);
++        writer.set(key + ".trapSquash", trapSquash[tid]);
++        writer.set(key + ".tcSquash", tcSquash[tid]);
++        writer.set(key + ".youngestSeqNum", youngestSeqNum[tid]);
++        writer.set(key + ".lastCommitedSeqNum", lastCommitedSeqNum[tid]);
++        writer.set(key + ".trapInFlight", trapInFlight[tid]);
++        writer.set(key + ".committedStores", committedStores[tid]);
++        writer.set(key + ".checkEmptyROB", checkEmptyROB[tid]);
++        writer.set(key + ".htmStarts", htmStarts[tid]);
++        writer.set(key + ".htmStops", htmStops[tid]);
++        cruciblePCReference(writer, key + ".architectural_pc", pc[tid].get());
++        crucibleInstructionReference(writer, key + ".squash_after", squashAfterInst[tid]);
++    }
++    writer.string(prefix + ".coverage.unsupported", "interrupt-fault-payload;trap-events;thread-context-and-htm-checkpoint;probes");
++}
++
+ Commit::Commit(CPU *_cpu, const BaseO3CPUParams &params)
+     : commitPolicy(params.smtCommitPolicy),
+       cpu(_cpu),
+@@ -464,14 +504,22 @@
+     return rob->numFreeEntries(tid);
+ }
+ 
++std::map<std::string, std::string>
++Commit::TrapEvent::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.string("commit_owner", owner->name());
++    writer.set("thread", threadId);
++    writer.string("callback", "Commit::processTrapEvent");
++    return std::move(writer.fields);
++}
++
+ void
+ Commit::generateTrapEvent(ThreadID tid, Fault inst_fault)
+ {
+     DPRINTF(Commit, "Generating trap event for [tid:%i]\n", tid);
+ 
+-    EventFunctionWrapper *trap = new EventFunctionWrapper(
+-        [this, tid]{ processTrapEvent(tid); },
+-        "Trap", true, Event::CPU_Tick_Pri);
++    auto *trap = new TrapEvent(this, tid);
+ 
+     Cycles latency = std::dynamic_pointer_cast<SyscallRetryFault>(inst_fault) ?
+                      cpu->syscallRetryLatency : trapLatency;
+--- a/src/cpu/o3/commit.hh
++++ b/src/cpu/o3/commit.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_COMMIT_HH__
+ #define __CPU_O3_COMMIT_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <queue>
+ 
+ #include "base/statistics.hh"
+@@ -128,11 +129,31 @@
+     /** To probe when an instruction is squashed */
+     ProbePointArg<DynInstPtr> *ppSquash;
+ 
++    /** Typed replacement for a captured trap lambda; scheduling semantics are unchanged. */
++    class TrapEvent : public Event
++    {
++      private:
++        Commit *const owner;
++        const ThreadID threadId;
++
++      public:
++        TrapEvent(Commit *commit, ThreadID tid)
++            : Event(Event::CPU_Tick_Pri, Event::AutoDelete), owner(commit), threadId(tid)
++        {}
++
++        void process() override { owner->processTrapEvent(threadId); }
++        const char *description() const override { return "Trap"; }
++        std::map<std::string, std::string> crucibleModeledFields() const override;
++    };
++
+     /** Mark the thread as processing a trap. */
+     void processTrapEvent(ThreadID tid);
+ 
+   public:
+     /** Construct a Commit with the given parameters. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     Commit(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     /** Returns the name of the Commit. */
+--- a/src/cpu/o3/cpu.cc
++++ b/src/cpu/o3/cpu.cc
+@@ -70,11 +70,175 @@
+ namespace o3
+ {
+ 
++void
++crucibleInstructionReference(CrucibleStateWriter &writer,
++                             const std::string &prefix, const DynInstPtr &inst)
++{
++    writer.reference(prefix + ".alias", inst.get(), "instruction");
++    writer.set(prefix + ".present", static_cast<bool>(inst));
++    if (inst) {
++        writer.set(prefix + ".sequence", inst->seqNum);
++        writer.set(prefix + ".thread", inst->threadNumber);
++        writer.string(prefix + ".cpu", inst->cpu->name());
++    }
++}
++
++void
++cruciblePCReference(CrucibleStateWriter &writer, const std::string &prefix,
++                   const PCStateBase *pc)
++{
++    writer.set(prefix + ".present", pc != nullptr);
++    if (pc) {
++        writer.set(prefix + ".instruction", pc->instAddr());
++        writer.set(prefix + ".micro_instruction", pc->microPC());
++        writer.string(prefix + ".type", typeid(*pc).name());
++        pc->crucibleFields(writer, prefix + ".semantic_state");
++    }
++}
++
++template<class Handoff>
++static void
++crucibleInstructionHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                           const Handoff &handoff)
++{
++    fatal_if(handoff.size < 0 || handoff.size > MaxWidth,
++             "Invalid instruction handoff size");
++    writer.set(prefix + ".size", handoff.size);
++    // Retained references outside the active prefix are visible as well.
++    for (size_t index = 0; index < MaxWidth; ++index)
++        crucibleInstructionReference(writer,
++            prefix + ".instruction[" + std::to_string(index) + "]", handoff.insts[index]);
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const DecodeStruct &handoff)
++{
++    crucibleInstructionHandoff(writer, prefix, handoff);
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const RenameStruct &handoff)
++{
++    crucibleInstructionHandoff(writer, prefix, handoff);
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const IssueStruct &handoff)
++{
++    crucibleInstructionHandoff(writer, prefix, handoff);
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const FetchStruct &handoff)
++{
++    crucibleInstructionHandoff(writer, prefix, handoff);
++    writer.set(prefix + ".fault_present", handoff.fetchFault != NoFault);
++    writer.set(prefix + ".fault_sequence", handoff.fetchFaultSN);
++    writer.set(prefix + ".clear_fault", handoff.clearFetchFault);
++    if (handoff.fetchFault != NoFault)
++        writer.string(prefix + ".coverage.unsupported", "fetch-fault-polymorphic-payload");
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const IEWStruct &handoff)
++{
++    crucibleInstructionHandoff(writer, prefix, handoff);
++    for (ThreadID tid = 0; tid < MaxThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        crucibleInstructionReference(writer, key + ".mispredict", handoff.mispredictInst[tid]);
++        cruciblePCReference(writer, key + ".pc", handoff.pc[tid].get());
++        writer.set(key + ".mispredPC", handoff.mispredPC[tid]);
++        writer.set(key + ".squashedSeqNum", handoff.squashedSeqNum[tid]);
++        writer.set(key + ".squash", handoff.squash[tid]);
++        writer.set(key + ".branchMispredict", handoff.branchMispredict[tid]);
++        writer.set(key + ".branchTaken", handoff.branchTaken[tid]);
++        writer.set(key + ".includeSquashInst", handoff.includeSquashInst[tid]);
++    }
++}
++
++void
++crucibleHandoff(CrucibleStateWriter &writer, const std::string &prefix,
++                const TimeStruct &handoff)
++{
++    for (ThreadID tid = 0; tid < MaxThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        const auto &fetch = handoff.fetchInfo[tid];
++        const auto &decode = handoff.decodeInfo[tid];
++        const auto &iew = handoff.iewInfo[tid];
++        const auto &commit = handoff.commitInfo[tid];
++        cruciblePCReference(writer, key + ".fetch.next_pc", fetch.nextPC.get());
++        cruciblePCReference(writer, key + ".decode.next_pc", decode.nextPC.get());
++        cruciblePCReference(writer, key + ".commit.pc", commit.pc.get());
++        crucibleInstructionReference(writer, key + ".decode.mispredict", decode.mispredictInst);
++        crucibleInstructionReference(writer, key + ".decode.squash_instruction", decode.squashInst);
++        crucibleInstructionReference(writer, key + ".commit.mispredict", commit.mispredictInst);
++        crucibleInstructionReference(writer, key + ".commit.squash_instruction", commit.squashInst);
++        crucibleInstructionReference(writer, key + ".commit.strict_ordered_load", commit.strictlyOrderedLoad);
++        writer.set(key + ".fetch.block", fetch.block);
++        writer.set(key + ".fetch.squash", fetch.squash);
++        writer.set(key + ".decode.doneSeqNum", decode.doneSeqNum);
++        writer.set(key + ".decode.mispredPC", decode.mispredPC);
++        writer.set(key + ".decode.branchAddr", decode.branchAddr);
++        writer.set(key + ".decode.branchCount", decode.branchCount);
++        writer.set(key + ".decode.squash", decode.squash);
++        writer.set(key + ".decode.controlMispredict", decode.controlMispredict);
++        writer.set(key + ".decode.branchMispredict", decode.branchMispredict);
++        writer.set(key + ".decode.branchTaken", decode.branchTaken);
++        writer.set(key + ".iew.freeIQEntries", iew.freeIQEntries);
++        writer.set(key + ".iew.freeLQEntries", iew.freeLQEntries);
++        writer.set(key + ".iew.freeSQEntries", iew.freeSQEntries);
++        writer.set(key + ".iew.dispatchedToLQ", iew.dispatchedToLQ);
++        writer.set(key + ".iew.dispatchedToSQ", iew.dispatchedToSQ);
++        writer.set(key + ".iew.iqCount", iew.iqCount);
++        writer.set(key + ".iew.ldstqCount", iew.ldstqCount);
++        writer.set(key + ".iew.dispatched", iew.dispatched);
++        writer.set(key + ".iew.usedIQ", iew.usedIQ);
++        writer.set(key + ".iew.usedLSQ", iew.usedLSQ);
++        writer.set(key + ".commit.nonSpecSeqNum", commit.nonSpecSeqNum);
++        writer.set(key + ".commit.doneSeqNum", commit.doneSeqNum);
++        writer.set(key + ".commit.freeROBEntries", commit.freeROBEntries);
++        writer.set(key + ".commit.squash", commit.squash);
++        writer.set(key + ".commit.robSquashing", commit.robSquashing);
++        writer.set(key + ".commit.usedROB", commit.usedROB);
++        writer.set(key + ".commit.emptyROB", commit.emptyROB);
++        writer.set(key + ".commit.branchTaken", commit.branchTaken);
++        writer.set(key + ".commit.interruptPending", commit.interruptPending);
++        writer.set(key + ".commit.clearInterrupt", commit.clearInterrupt);
++        writer.set(key + ".commit.trapPending", commit.trapPending);
++        writer.set(key + ".commit.strictlyOrdered", commit.strictlyOrdered);
++        writer.set(key + ".decodeBlock", handoff.decodeBlock[tid]);
++        writer.set(key + ".decodeUnblock", handoff.decodeUnblock[tid]);
++        writer.set(key + ".renameBlock", handoff.renameBlock[tid]);
++        writer.set(key + ".renameUnblock", handoff.renameUnblock[tid]);
++        writer.set(key + ".iewBlock", handoff.iewBlock[tid]);
++        writer.set(key + ".iewUnblock", handoff.iewUnblock[tid]);
++    }
++}
++
+ std::map<std::string, std::string>
+ CPU::crucibleModeledFields() const
+ {
+     CrucibleStateWriter writer;
+     writer.set("cpu.status", _status);
++    writer.reference("cpu.tick_event", static_cast<const Event *>(&tickEvent), "event");
++    writer.reference("cpu.thread_exit_event", static_cast<const Event *>(&threadExitEvent), "event");
++    writer.string("cpu.tick_callback", "CPU::tick");
++    writer.string("cpu.thread_exit_callback", "CPU::exitThreads");
++    writer.set("cpu.tick_scheduled", tickEvent.scheduled());
++    writer.set("cpu.thread_exit_scheduled", threadExitEvent.scheduled());
++    if (tickEvent.scheduled()) {
++        writer.set("cpu.tick_at", tickEvent.when());
++        writer.set("cpu.tick_priority", tickEvent.priority());
++    }
++    if (threadExitEvent.scheduled()) {
++        writer.set("cpu.thread_exit_at", threadExitEvent.when());
++        writer.set("cpu.thread_exit_priority", threadExitEvent.priority());
++    }
+     writer.set("cpu.instruction_sequence", globalSeqNum);
+     writer.set("cpu.fetch_target_sequence", globalFTSeqNum);
+     writer.set("cpu.last_running_cycle", static_cast<uint64_t>(lastRunningCycle));
+@@ -84,6 +248,24 @@
+     writer.string("cpu.mmu", mmu ? mmu->name() : "");
+     writer.string("cpu.system", system ? system->name() : "");
+     writer.set("cpu.thread_count", numThreads);
++
++    const auto handoff = [](auto &output, const auto &prefix, const auto &slot) {
++        crucibleHandoff(output, prefix, slot);
++    };
++    timeBuffer.crucibleState(writer, "handoff.backward", handoff);
++    fetchQueue.crucibleState(writer, "handoff.fetch", handoff);
++    decodeQueue.crucibleState(writer, "handoff.decode", handoff);
++    renameQueue.crucibleState(writer, "handoff.rename", handoff);
++    iewQueue.crucibleState(writer, "handoff.iew", handoff);
++    activityRec.crucibleState(writer, "activity");
++    rob.crucibleState(writer, "rob");
++    bac.crucibleState(writer, "stage.bac");
++    ftq.crucibleState(writer, "fetch_target_queue");
++    fetch.crucibleState(writer, "stage.fetch");
++    decode.crucibleState(writer, "stage.decode");
++    rename.crucibleState(writer, "stage.rename");
++    commit.crucibleState(writer, "stage.commit");
++    iew.crucibleState(writer, "stage.iew");
+ 
+     regFile.crucibleState(writer, "registers.");
+     freeList.crucibleState(writer, "free_list");
+@@ -100,8 +282,11 @@
+     }
+ 
+     size_t ordinal = 0;
+-    for (const auto &inst : instList)
+-        inst->crucibleState(writer, "instruction[" + std::to_string(ordinal++) + "]");
++    for (const auto &inst : instList) {
++        const auto key = "instruction[" + std::to_string(ordinal++) + "]";
++        crucibleInstructionReference(writer, key + ".identity", inst);
++        inst->crucibleState(writer, key);
++    }
+     writer.set("instruction.count", ordinal);
+     auto removed = removeList;
+     ordinal = 0;
+@@ -122,10 +307,9 @@
+     for (const auto &[tid, mapped] : threadMap)
+         writer.set("thread_map[" + std::to_string(tid) + "]", mapped);
+     writer.string("coverage.unsupported",
+-        "architectural-pc-and-isa-hidden-state;thread-context;static-instruction-and-fault-payloads;"
+-        "instruction-results-and-memory-data;bac-ftq-fetch-decode-rename-iew-commit-stage-state;"
+-        "rob-iq-lsq-fu-ordering;time-buffer-lanes-and-wires;activity-recorder;"
+-        "translation-request-and-event-callback-payloads;htm-monitor-state;probes");
++        "isa-hidden-state-and-thread-context;static-instruction-and-fault-payloads;"
++        "instruction-results-and-memory-data;memory-dependence-predictor-and-replay;"
++        "translation-request-and-unvisited-event-callback-payloads;htm-monitor-state;probes");
+     return std::move(writer.fields);
+ }
+ 
+--- a/src/cpu/o3/decode.cc
++++ b/src/cpu/o3/decode.cc
+@@ -81,6 +81,48 @@
+ };
+ // clang-format on
+ 
++void
++Decode::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + ".decodeWidth", decodeWidth);
++    writer.set(prefix + ".skidBufferMax", skidBufferMax);
++    fromRename.crucibleState(writer, prefix + ".wire.from_rename", timeBuffer);
++    fromIEW.crucibleState(writer, prefix + ".wire.from_iew", timeBuffer);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    toFetch.crucibleState(writer, prefix + ".wire.to_fetch", timeBuffer);
++    toRename.crucibleState(writer, prefix + ".wire.to_rename", decodeQueue);
++    fromFetch.crucibleState(writer, prefix + ".wire.from_fetch", fetchQueue);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".decodeStatus", decodeStatus[tid]);
++        writer.set(key + ".bdelayDoneSeqNum", bdelayDoneSeqNum[tid]);
++        writer.set(key + ".squashAfterDelaySlot", squashAfterDelaySlot[tid]);
++        writer.set(key + ".stall.rename", stalls[tid].rename);
++        crucibleInstructionReference(writer, key + ".squash_instruction", squashInst[tid]);
++        {
++            auto remaining = insts[tid];
++            writer.set(key + ".input.count", remaining.size());
++            size_t ordinal = 0;
++            while (!remaining.empty()) {
++                crucibleInstructionReference(writer, key + ".input[" + std::to_string(ordinal++) + "]", remaining.front());
++                remaining.pop();
++            }
++        }
++        {
++            auto remaining = skidBuffer[tid];
++            writer.set(key + ".skid.count", remaining.size());
++            size_t ordinal = 0;
++            while (!remaining.empty()) {
++                crucibleInstructionReference(writer, key + ".skid[" + std::to_string(ordinal++) + "]", remaining.front());
++                remaining.pop();
++            }
++        }
++
++    }
++}
++
+ Decode::Decode(CPU *_cpu, const BaseO3CPUParams &params)
+     : cpu(_cpu),
+       renameToDecodeDelay(params.renameToDecodeDelay),
+--- a/src/cpu/o3/decode.hh
++++ b/src/cpu/o3/decode.hh
+@@ -42,6 +42,7 @@
+ #ifndef __CPU_O3_DECODE_HH__
+ #define __CPU_O3_DECODE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <queue>
+ 
+ #include "base/statistics.hh"
+@@ -99,6 +100,9 @@
+ 
+   public:
+     /** Decode constructor. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     Decode(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     void startupStage();
+--- a/src/cpu/o3/dep_graph.hh
++++ b/src/cpu/o3/dep_graph.hh
+@@ -41,6 +41,8 @@
+ #ifndef __CPU_O3_DEP_GRAPH_HH__
+ #define __CPU_O3_DEP_GRAPH_HH__
+ 
++#include "sim/crucible_state.hh"
++#include "cpu/o3/comm.hh"
+ #include "cpu/o3/comm.hh"
+ 
+ namespace gem5
+@@ -115,6 +117,24 @@
+     /** Checks if there are any dependents on a specific register. */
+     bool empty(RegIndex idx) const { return !dependGraph[idx].next; }
+ 
++    /** Visits producer and consumer order without popping the dependency lists. */
++    void
++    crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".register_count", dependGraph.size());
++        for (size_t reg = 0; reg < dependGraph.size(); ++reg) {
++            const auto key = prefix + ".register[" + std::to_string(reg) + "]";
++            crucibleInstructionReference(writer, key + ".producer", dependGraph[reg].inst);
++            size_t ordinal = 0;
++            for (auto *entry = dependGraph[reg].next; entry; entry = entry->next) {
++                fatal_if(ordinal >= 65536, "Dependency list exceeds diagnostic ceiling or cycles");
++                crucibleInstructionReference(writer,
++                    key + ".consumer[" + std::to_string(ordinal++) + "]", entry->inst);
++            }
++            writer.set(key + ".consumer_count", ordinal);
++        }
++    }
++
+     /** Debugging function to dump out the dependency graph.
+      */
+     void dump();
+--- a/src/cpu/o3/dyn_inst.hh
++++ b/src/cpu/o3/dyn_inst.hh
+@@ -252,11 +252,13 @@
+         if (pc) {
+             writer.set(prefix + ".pc", pc->instAddr());
+             writer.set(prefix + ".micro_pc", pc->microPC());
++            pc->crucibleFields(writer, prefix + ".pc_semantic_state");
+         }
+         writer.set(prefix + ".predicted_pc_present", predPC != nullptr);
+         if (predPC) {
+             writer.set(prefix + ".predicted_pc", predPC->instAddr());
+             writer.set(prefix + ".predicted_micro_pc", predPC->microPC());
++            predPC->crucibleFields(writer, prefix + ".predicted_pc_semantic_state");
+         }
+         writer.set(prefix + ".fault_present", fault != NoFault);
+         writer.set(prefix + ".source_count", _numSrcs);
+--- a/src/cpu/o3/fetch.cc
++++ b/src/cpu/o3/fetch.cc
+@@ -112,6 +112,56 @@
+         RequestPort(_cpu->name() + ".icache_port"), fetch(_fetch)
+ {}
+ 
++void
++Fetch::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + ".numInst", numInst);
++    writer.set(prefix + ".cacheBlocked", cacheBlocked);
++    writer.set(prefix + ".retryTid", retryTid);
++    writer.set(prefix + ".fetchBufferSize", fetchBufferSize);
++    writer.set(prefix + ".fetchQueueSize", fetchQueueSize);
++    writer.set(prefix + ".numFetchingThreads", numFetchingThreads);
++    writer.set(prefix + ".interruptPending", interruptPending);
++    writer.set(prefix + ".decoupledFrontEnd", decoupledFrontEnd);
++    writer.reference(prefix + ".retry_packet", retryPkt, "packet");
++    if (retryPkt)
++        retryPkt->crucibleFields(writer, prefix + ".retry_packet_state");
++    writer.reference(prefix + ".finish_translation_event", static_cast<const Event *>(&finishTranslationEvent), "event");
++    fromDecode.crucibleState(writer, prefix + ".wire.from_decode", timeBuffer);
++    fromRename.crucibleState(writer, prefix + ".wire.from_rename", timeBuffer);
++    fromIEW.crucibleState(writer, prefix + ".wire.from_iew", timeBuffer);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    toBAC.crucibleState(writer, prefix + ".wire.to_bac", timeBuffer);
++    toDecode.crucibleState(writer, prefix + ".wire.to_decode", &cpu->fetchQueue);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".fetchStatus", fetchStatus[tid]);
++        writer.set(key + ".fetchOffset", fetchOffset[tid]);
++        writer.set(key + ".delayedCommit", delayedCommit[tid]);
++        writer.set(key + ".fetchBufferPC", fetchBufferPC[tid]);
++        writer.set(key + ".fetchBufferValid", fetchBufferValid[tid]);
++        writer.set(key + ".issuePipelinedIfetch", issuePipelinedIfetch[tid]);
++        writer.set(key + ".stall.decode", stalls[tid].decode);
++        writer.set(key + ".stall.drain", stalls[tid].drain);
++        writer.reference(key + ".request", memReq[tid].get(), "request");
++        cruciblePCReference(writer, key + ".pc", pc[tid].get());
++        writer.set(key + ".macroop_present", static_cast<bool>(macroop[tid]));
++        if (fetchBufferValid[tid])
++            writer.bytes(key + ".buffer", fetchBuffer[tid], fetchBufferSize);
++        writer.set(key + ".queue.count", fetchQueue[tid].size());
++        {
++            size_t ordinal = 0;
++            for (const auto &inst : fetchQueue[tid])
++                crucibleInstructionReference(writer, key + ".queue[" + std::to_string(ordinal++) + "]", inst);
++        }
++
++    }
++    writer.string(prefix + ".coverage.unsupported",
++        "decoder-partial-instruction-state;macroop-payload;request-and-retry-packet-payload;finish-translation-event-payload;probes");
++}
++
+ Fetch::Fetch(CPU *_cpu, const BaseO3CPUParams &params)
+     : fetchPolicy(params.smtFetchPolicy),
+       cpu(_cpu),
+@@ -277,6 +327,18 @@
+ {
+     // Create wire to write information to proper place in fetch time buf.
+     toDecode = ftb_ptr->getWire(0);
++}
++
++std::map<std::string, std::string>
++Fetch::FinishTranslationEvent::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.string("fetch_owner", fetch->name());
++    writer.set("fault_present", fault != NoFault);
++    writer.reference("request", req.get(), "request");
++    writer.string("callback", "Fetch::finishTranslation");
++    writer.string("coverage.unsupported", "request-private-payload;polymorphic-fault-payload");
++    return std::move(writer.fields);
+ }
+ 
+ void
+--- a/src/cpu/o3/fetch.hh
++++ b/src/cpu/o3/fetch.hh
+@@ -42,6 +42,7 @@
+ #ifndef __CPU_O3_FETCH_HH__
+ #define __CPU_O3_FETCH_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include "arch/generic/decoder.hh"
+ #include "arch/generic/mmu.hh"
+ #include "base/random.hh"
+@@ -152,6 +153,8 @@
+             fetch->finishTranslation(fault, req);
+         }
+ 
++        std::map<std::string, std::string> crucibleModeledFields() const override;
++
+         const char *
+         description() const
+         {
+@@ -210,6 +213,9 @@
+ 
+   public:
+     /** Fetch constructor. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     Fetch(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     /** Returns the name of fetch. */
+--- a/src/cpu/o3/ftq.cc
++++ b/src/cpu/o3/ftq.cc
+@@ -51,6 +51,40 @@
+ {
+ 
+ /** Fetch Target Methods -------------------------------- */
++void
++FetchTarget::crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++{
++    writer.set(prefix + ".sequence", ftSeqNum);
++    writer.set(prefix + ".thread", tid);
++    writer.set(prefix + ".exit_is_branch", is_branch);
++    writer.set(prefix + ".taken", taken);
++    cruciblePCReference(writer, prefix + ".start_pc", startPC.get());
++    cruciblePCReference(writer, prefix + ".end_pc", endPC.get());
++    cruciblePCReference(writer, prefix + ".predicted_pc", predPC.get());
++    writer.set(prefix + ".predictor_history_present", bpuHistory != nullptr);
++    if (bpuHistory) {
++        const auto key = prefix + ".predictor_history";
++        writer.set(key + ".sequence", bpuHistory->seqNum);
++        writer.set(key + ".thread", bpuHistory->tid);
++        writer.set(key + ".pc", bpuHistory->pc);
++        writer.set(key + ".type", bpuHistory->type);
++        writer.set(key + ".call", bpuHistory->call);
++        writer.set(key + ".unconditional", bpuHistory->uncond);
++        writer.set(key + ".predicted_taken", bpuHistory->predTaken);
++        writer.set(key + ".actual_taken", bpuHistory->actuallyTaken);
++        writer.set(key + ".conditional_prediction", bpuHistory->condPred);
++        writer.set(key + ".btb_hit", bpuHistory->btbHit);
++        writer.set(key + ".target_provider", bpuHistory->targetProvider);
++        writer.set(key + ".resteered", bpuHistory->resteered);
++        writer.set(key + ".mispredicted", bpuHistory->mispredict);
++        cruciblePCReference(writer, key + ".target", bpuHistory->target.get());
++        writer.set(key + ".conditional_history_present", bpuHistory->bpHistory != nullptr);
++        writer.set(key + ".indirect_history_present", bpuHistory->indirectHistory != nullptr);
++        writer.set(key + ".return_history_present", bpuHistory->rasHistory != nullptr);
++        writer.string(key + ".coverage.unsupported", "fetch-target-opaque-predictor-history-and-static-instruction");
++    }
++}
++
+ FetchTarget::FetchTarget(const ThreadID _tid, const PCStateBase &_start_pc,
+                          InstSeqNum _seqNum)
+     : ftSeqNum(_seqNum),
+@@ -82,6 +116,22 @@
+ }
+ 
+ /** Fetch Target Queue Methods ----------------------------- */
++
++void
++FTQ::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + ".capacity_per_thread", numEntries);
++    for (ThreadID tid = 0; tid < cpu->numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".status", ftqStatus[tid]);
++        writer.set(key + ".count", ftq[tid].size());
++        size_t ordinal = 0;
++        for (const auto &target : ftq[tid])
++            target->crucibleState(writer, key + ".target[" + std::to_string(ordinal++) + "]");
++    }
++    writer.string(prefix + ".coverage.unsupported", "fetch-target-predictor-opaque-history;probes");
++}
+ 
+ FTQ::FTQ(CPU *_cpu, const BaseO3CPUParams &params)
+     : cpu(_cpu),
+--- a/src/cpu/o3/ftq.hh
++++ b/src/cpu/o3/ftq.hh
+@@ -39,6 +39,7 @@
+ #ifndef __CPU_O3_FTQ_HH__
+ #define __CPU_O3_FTQ_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ #include <string>
+ 
+@@ -214,6 +215,8 @@
+     void finalize(const PCStateBase &exit_pc, bool _is_branch, bool pred_taken,
+                   const PCStateBase &pred_pc);
+ 
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     /** Print the fetch target for debugging. */
+     std::string toString();
+ };
+@@ -230,6 +233,8 @@
+      *  @param _cpu   The cpu object pointer.
+      *  @param params The cpu params incl. several FTQ-specific parameters.
+      */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     FTQ(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     std::string name() const;
+--- a/src/cpu/o3/fu_pool.cc
++++ b/src/cpu/o3/fu_pool.cc
+@@ -82,6 +82,31 @@
+ 
+ 
+ // Constructor
++std::map<std::string, std::string>
++FUPool::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("unit_count", numFU);
++    writer.string("capabilities", capabilityList.to_string());
++    for (size_t index = 0; index < unitBusy.size(); ++index)
++        writer.set("unit[" + std::to_string(index) + "].busy", static_cast<bool>(unitBusy[index]));
++    for (size_t index = 0; index < unitsToBeFreed.size(); ++index)
++        writer.set("pending_release[" + std::to_string(index) + "]", unitsToBeFreed[index]);
++    writer.set("pending_release.count", unitsToBeFreed.size());
++    for (size_t op = 0; op < Num_OpClasses; ++op) {
++        const auto key = "operation[" + std::to_string(op) + "]";
++        fuPerCapList[op].crucibleState(writer, key + ".selection");
++        if (capabilityList[op]) {
++            writer.set(key + ".maximum_latency", static_cast<uint64_t>(maxOpLatencies[op]));
++            writer.set(key + ".pipelined", pipelined[op]);
++        }
++    }
++    for (size_t index = 0; index < funcUnits.size(); ++index)
++        funcUnits[index]->crucibleState(writer, "unit[" + std::to_string(index) + "]");
++    writer.string("coverage.unsupported", "pending-completion-event-payloads-owned-by-instruction-queue");
++    return std::move(writer.fields);
++}
++
+ FUPool::FUPool(const Params &p)
+     : SimObject(p)
+ {
+--- a/src/cpu/o3/fu_pool.hh
++++ b/src/cpu/o3/fu_pool.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_FU_POOL_HH__
+ #define __CPU_O3_FU_POOL_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <array>
+ #include <bitset>
+ #include <list>
+@@ -98,6 +99,15 @@
+     class FUIdxQueue
+     {
+       public:
++        void
++        crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++        {
++            writer.set(prefix + ".cursor", idx);
++            writer.set(prefix + ".size", size);
++            for (size_t index = 0; index < funcUnitsIdx.size(); ++index)
++                writer.set(prefix + "[" + std::to_string(index) + "]", funcUnitsIdx[index]);
++        }
++
+         /** Constructs a circular queue of FU indices. */
+         FUIdxQueue()
+             : idx(0), size(0)
+@@ -134,6 +144,8 @@
+   public:
+     typedef FUPoolParams Params;
+     /** Constructs a FU pool. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     FUPool(const Params &p);
+     ~FUPool();
+ 
+--- a/src/cpu/o3/iew.cc
++++ b/src/cpu/o3/iew.cc
+@@ -73,6 +73,56 @@
+     "unblocking",
+ };
+ // clang-format on
++
++void
++IEW::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + ".exeStatus", exeStatus);
++    writer.set(prefix + ".updateLSQNextCycle", updateLSQNextCycle);
++    writer.set(prefix + ".wbNumInst", wbNumInst);
++    writer.set(prefix + ".wbCycle", wbCycle);
++    writer.set(prefix + ".dispatchWidth", dispatchWidth);
++    writer.set(prefix + ".issueWidth", issueWidth);
++    writer.set(prefix + ".wbWidth", wbWidth);
++    toFetch.crucibleState(writer, prefix + ".wire.to_fetch", timeBuffer);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    toRename.crucibleState(writer, prefix + ".wire.to_rename", timeBuffer);
++    fromRename.crucibleState(writer, prefix + ".wire.from_rename", renameQueue);
++    fromIssue.crucibleState(writer, prefix + ".wire.from_issue", &issueToExecQueue);
++    toCommit.crucibleState(writer, prefix + ".wire.to_commit", iewQueue);
++    issueToExecQueue.crucibleState(writer, prefix + ".issue_to_execute",
++        [](auto &output, const auto &key, const auto &slot) { crucibleHandoff(output, key, slot); });
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".dispatchStatus", dispatchStatus[tid]);
++        writer.set(key + ".fetchRedirect", fetchRedirect[tid]);        {
++            auto remaining = insts[tid];
++            writer.set(key + ".input.count", remaining.size());
++            size_t ordinal = 0;
++            while (!remaining.empty()) {
++                crucibleInstructionReference(writer, key + ".input[" + std::to_string(ordinal++) + "]", remaining.front());
++                remaining.pop();
++            }
++        }
++        {
++            auto remaining = skidBuffer[tid];
++            writer.set(key + ".skid.count", remaining.size());
++            size_t ordinal = 0;
++            while (!remaining.empty()) {
++                crucibleInstructionReference(writer, key + ".skid[" + std::to_string(ordinal++) + "]", remaining.front());
++                remaining.pop();
++            }
++        }
++
++    }
++    for (size_t index = 0; index < fuPools.size(); ++index)
++        writer.string(prefix + ".functional_unit_pool[" + std::to_string(index) + "]", fuPools[index]->name());
++    instQueue.crucibleState(writer, prefix + ".instruction_queue");
++    ldstQueue.crucibleState(writer, prefix + ".load_store_queue");
++    writer.string(prefix + ".coverage.unsupported", "execution-events;probes");
++}
+ 
+ IEW::IEW(CPU *_cpu, const BaseO3CPUParams &params)
+     : issueToExecQueue(params.backComSize, params.forwardComSize),
+--- a/src/cpu/o3/iew.hh
++++ b/src/cpu/o3/iew.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_IEW_HH__
+ #define __CPU_O3_IEW_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <queue>
+ #include <set>
+ 
+@@ -128,6 +129,9 @@
+ 
+   public:
+     /** Constructs a IEW with the given parameters. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     IEW(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     /** Returns the name of the IEW stage. */
+--- a/src/cpu/o3/inst_queue.cc
++++ b/src/cpu/o3/inst_queue.cc
+@@ -64,6 +64,24 @@
+ namespace o3
+ {
+ 
++std::map<std::string, std::string>
++IQUnit::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("policy", iqPolicy);
++    writer.set("capacity", _numEntries);
++    writer.set("free_entries", _freeEntries);
++    writer.set("threads", numThreads);
++    writer.string("functional_unit_pool", _fuPool ? _fuPool->name() : "");
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = "thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".maximum", maxEntries[tid]);
++        writer.set(key + ".count", count[tid]);
++    }
++    writer.string("coverage.unsupported", "shared-instruction-order-owned-by-cpu-instruction-queue");
++    return std::move(writer.fields);
++}
++
+ IQUnit::IQUnit(const IQUnitParams &params)
+     : SimObject(params),
+       iqPolicy(params.smtIQPolicy),
+@@ -202,6 +220,21 @@
+ {
+ }
+ 
++std::map<std::string, std::string>
++InstructionQueue::FUCompletion::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    crucibleInstructionReference(writer, "instruction", inst);
++    if (inst)
++        inst->crucibleState(writer, "instruction_state");
++    writer.string("functional_unit_pool", fuPool ? fuPool->name() : "");
++    writer.set("functional_unit_index", fuIdx);
++    writer.string("instruction_queue", iqPtr ? iqPtr->name() : "");
++    writer.set("release_functional_unit", freeFU);
++    writer.string("coverage.unsupported", "instruction-static-fault-and-result-payloads");
++    return std::move(writer.fields);
++}
++
+ void
+ InstructionQueue::FUCompletion::process()
+ {
+@@ -218,6 +251,64 @@
+ InstructionQueue::FUCompletion::description() const
+ {
+     return "Functional unit completion";
++}
++
++void
++InstructionQueue::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + ".numThreads", numThreads);
++    writer.set(prefix + ".totalWidth", totalWidth);
++    writer.set(prefix + ".numPhysRegs", numPhysRegs);
++    writer.set(prefix + ".wbOutstanding", wbOutstanding);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    for (size_t index = 0; index < iqs.size(); ++index)
++        writer.string(prefix + ".partition[" + std::to_string(index) + "]", iqs[index]->name());
++    const auto list = [&](const std::string &name, const auto &instructions) {
++        writer.set(prefix + name + ".count", instructions.size());
++        size_t ordinal = 0;
++        for (const auto &inst : instructions)
++            crucibleInstructionReference(writer, prefix + name + "[" + std::to_string(ordinal++) + "]", inst);
++    };
++    list(".to_execute", instsToExecute);
++    list(".deferred_memory", deferredMemInsts);
++    list(".blocked_memory", blockedMemInsts);
++    list(".retry_memory", retryMemInsts);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = ".thread[" + std::to_string(tid) + "]";
++        list(key + ".instruction", instList[tid]);
++        writer.set(prefix + key + ".squashed_sequence", squashedSeqNum[tid]);
++    }
++    for (size_t op = 0; op < Num_OpClasses; ++op) {
++        const auto key = prefix + ".operation[" + std::to_string(op) + "]";
++        writer.set(key + ".on_age_list", queueOnList[op]);
++        if (queueOnList[op]) {
++            writer.set(key + ".age_queue_type", readyIt[op]->queueType);
++            writer.set(key + ".age_oldest_sequence", readyIt[op]->oldestInst);
++        }
++        auto ready = readyInsts[op];
++        writer.set(key + ".ready_count", ready.size());
++        size_t ordinal = 0;
++        while (!ready.empty()) {
++            crucibleInstructionReference(writer, key + ".ready[" + std::to_string(ordinal++) + "]", ready.top());
++            ready.pop();
++        }
++    }
++    size_t ordinal = 0;
++    for (const auto &age : listOrder) {
++        const auto key = prefix + ".age_order[" + std::to_string(ordinal++) + "]";
++        writer.set(key + ".queue_type", age.queueType);
++        writer.set(key + ".oldest_sequence", age.oldestInst);
++    }
++    writer.set(prefix + ".age_order.count", ordinal);
++    for (const auto &[sequence, inst] : nonSpecInsts)
++        crucibleInstructionReference(writer, prefix + ".non_speculative[" + std::to_string(sequence) + "]", inst);
++    for (size_t reg = 0; reg < regScoreboard.size(); ++reg)
++        writer.set(prefix + ".scoreboard[" + std::to_string(reg) + "]", static_cast<bool>(regScoreboard[reg]));
++    dependGraph.crucibleState(writer, prefix + ".dependency_graph");
++    for (ThreadID tid = 0; tid < numThreads; ++tid)
++        memDepUnit[tid].crucibleState(writer, prefix + ".memory_dependency[" + std::to_string(tid) + "]");
++    writer.string(prefix + ".coverage.unsupported", "dcache-interface;probes");
+ }
+ 
+ InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
+--- a/src/cpu/o3/inst_queue.hh
++++ b/src/cpu/o3/inst_queue.hh
+@@ -42,6 +42,7 @@
+ #ifndef __CPU_O3_INST_QUEUE_HH__
+ #define __CPU_O3_INST_QUEUE_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ #include <map>
+ #include <queue>
+@@ -82,6 +83,8 @@
+ class IQUnit : public SimObject
+ {
+   public:
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     IQUnit(const IQUnitParams &p);
+ 
+     void insert(const DynInstPtr &inst);
+@@ -209,8 +212,12 @@
+ 
+         virtual void process();
+         virtual const char *description() const;
++        std::map<std::string, std::string> crucibleModeledFields() const override;
+         void setFreeFU() { freeFU = true; }
+     };
++
++    /** Visits pending issue order and dependency graph without selecting work. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
+ 
+     /** Constructs an IQ. */
+     InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
+--- a/src/cpu/o3/lsq.cc
++++ b/src/cpu/o3/lsq.cc
+@@ -107,6 +107,44 @@
+     recvRespAvgRetryRate = numSendRetryResp / numRecvResp;
+ }
+ 
++void
++LSQ::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._cacheBlocked", _cacheBlocked);
++    writer.set(prefix + ".cacheStorePorts", cacheStorePorts);
++    writer.set(prefix + ".usedStorePorts", usedStorePorts);
++    writer.set(prefix + ".cacheLoadPorts", cacheLoadPorts);
++    writer.set(prefix + ".usedLoadPorts", usedLoadPorts);
++    writer.set(prefix + ".waitingForStaleTranslation", waitingForStaleTranslation);
++    writer.set(prefix + ".staleTranslationWaitTxnId", staleTranslationWaitTxnId);
++    writer.set(prefix + ".lsqPolicy", lsqPolicy);
++    writer.set(prefix + ".LQEntries", LQEntries);
++    writer.set(prefix + ".SQEntries", SQEntries);
++    writer.set(prefix + ".maxLQEntries", maxLQEntries);
++    writer.set(prefix + ".maxSQEntries", maxSQEntries);
++    writer.set(prefix + ".numThreads", numThreads);
++    writer.set(prefix + ".recvRespThrottling", recvRespThrottling);
++    writer.set(prefix + ".recvRespMaxCachelines", recvRespMaxCachelines);
++    writer.set(prefix + ".recvRespBufferSize", recvRespBufferSize);
++    writer.set(prefix + ".recvRespBytes", recvRespBytes);
++    writer.set(prefix + ".recvRespCachelines", recvRespCachelines);
++    writer.set(prefix + ".recvRespLastCachelineAddr", recvRespLastCachelineAddr);
++    writer.set(prefix + ".last_receive_cycle", static_cast<uint64_t>(recvRespLastActiveCycle));
++    writer.reference(prefix + ".retry_response_event", static_cast<const Event *>(&retryRespEvent), "event");
++    writer.string(prefix + ".retry_response_callback", "LSQ::sendRetryResp");
++    writer.set(prefix + ".retry_response_scheduled", retryRespEvent.scheduled());
++    if (retryRespEvent.scheduled()) {
++        writer.set(prefix + ".retry_response_tick", retryRespEvent.when());
++        writer.set(prefix + ".retry_response_priority", retryRespEvent.priority());
++    }
++    if (recvRespThrottling && retryRespEvent.scheduled())
++        writer.set(prefix + ".receive_pending_bytes", recvRespPendBytes);
++    for (size_t tid = 0; tid < thread.size(); ++tid)
++        thread[tid].crucibleState(writer, prefix + ".thread[" + std::to_string(tid) + "]");
++    writer.string(prefix + ".coverage.unsupported", "retry-response-callback-binding;dcache-port-inflight-responses;probes");
++}
++
+ LSQ::LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params)
+     : cpu(cpu_ptr), iewStage(iew_ptr),
+       _cacheBlocked(false),
+@@ -1058,6 +1096,70 @@
+               _inst->isLoad());
+     flags.set(Flag::IsAtomic, _inst->isAtomic());
+     install();
++}
++
++void
++LSQ::LSQRequest::crucibleState(CrucibleStateWriter &writer,
++                              const std::string &prefix) const
++{
++    const auto *sender = static_cast<const Packet::SenderState *>(this);
++    writer.reference(prefix + ".alias", sender, "sender-state");
++    if (!writer.beginBody(sender, "sender-state"))
++        return;
++    crucibleFields(writer, prefix);
++}
++
++void
++LSQ::LSQRequest::crucibleFields(CrucibleStateWriter &writer,
++                               const std::string &prefix) const
++{
++    writer.string(prefix + ".native_type", typeid(*this).name());
++    writer.string(prefix + ".unit", _port.name());
++    crucibleInstructionReference(writer, prefix + ".instruction", _inst);
++    writer.set(prefix + ".state", _state);
++    writer.set(prefix + ".flags", static_cast<uint32_t>(flags));
++    writer.set(prefix + ".task", _taskId);
++    writer.set(prefix + ".translated_fragments", numTranslatedFragments);
++    writer.set(prefix + ".pending_translations", numInTranslationFragments);
++    writer.set(prefix + ".address", _addr);
++    writer.set(prefix + ".size", _size);
++    writer.set(prefix + ".request_flags", static_cast<uint64_t>(_flags));
++    writer.set(prefix + ".pending_packets", _numOutstandingPackets);
++    writer.set(prefix + ".stale_translation", _hasStaleTranslation);
++    writer.set(prefix + ".data_present", _data != nullptr);
++    if (_data && !isLoad())
++        writer.bytes(prefix + ".store_input_data", _data, _size);
++    writer.set(prefix + ".result_storage_present", _res != nullptr);
++    writer.set(prefix + ".atomic_operation_present", _amo_op != nullptr);
++    writer.set(prefix + ".fragment_count", _reqs.size());
++    for (size_t index = 0; index < _reqs.size(); ++index)
++        writer.reference(prefix + ".request[" + std::to_string(index) + "]", _reqs[index].get(), "request");
++    for (size_t index = 0; index < _packets.size(); ++index) {
++        const auto key = prefix + ".packet[" + std::to_string(index) + "]";
++        writer.reference(key, _packets[index], "packet");
++        if (_packets[index])
++            _packets[index]->crucibleFields(writer, key + ".state");
++    }
++    for (size_t index = 0; index < _fault.size(); ++index)
++        writer.set(prefix + ".fragment_fault[" + std::to_string(index) + "].present", _fault[index] != NoFault);
++    for (size_t index = 0; index < _byteEnable.size(); ++index)
++        writer.set(prefix + ".byte_enable[" + std::to_string(index) + "]", static_cast<bool>(_byteEnable[index]));
++    writer.string(prefix + ".coverage.unsupported",
++        "request-private-payload;polymorphic-fault-and-atomic-operation;result-storage-and-load-input-data;"
++        "unknown-derived-request-class;sender-predecessor-chain");
++}
++
++void
++LSQ::SplitDataRequest::crucibleFields(CrucibleStateWriter &writer,
++                                    const std::string &prefix) const
++{
++    LSQRequest::crucibleFields(writer, prefix);
++    writer.set(prefix + ".split.fragment_count", numFragments);
++    writer.set(prefix + ".split.received_packets", numReceivedPackets);
++    writer.reference(prefix + ".split.main_request", _mainReq.get(), "request");
++    writer.reference(prefix + ".split.main_packet", _mainPacket, "packet");
++    if (_mainPacket)
++        _mainPacket->crucibleFields(writer, prefix + ".split.main_packet_state");
+ }
+ 
+ void
+--- a/src/cpu/o3/lsq.hh
++++ b/src/cpu/o3/lsq.hh
+@@ -42,6 +42,8 @@
+ #ifndef __CPU_O3_LSQ_HH__
+ #define __CPU_O3_LSQ_HH__
+ 
++#include "sim/crucible_state.hh"
++#include "sim/crucible_state.hh"
+ #include <cassert>
+ #include <cstdint>
+ #include <list>
+@@ -273,6 +275,10 @@
+         bool isDelayed() { return flags.isSet(Flag::Delayed); }
+ 
+       public:
++        /** Visits native request ownership and fragment state without initiating translation. */
++        void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++        void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override;
++
+         LSQUnit& _port;
+         const DynInstPtr _inst;
+         uint32_t _taskId;
+@@ -663,6 +669,8 @@
+         {
+             flags.set(Flag::IsSplit);
+         }
++        void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override;
++
+         virtual ~SplitDataRequest()
+         {
+             if (_mainReq) {
+@@ -691,6 +699,9 @@
+     };
+ 
+     /** Constructs an LSQ with the given parameters. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     LSQ(CPU *cpu_ptr, IEW *iew_ptr, const BaseO3CPUParams &params);
+ 
+     /** Returns the name of the LSQ. */
+--- a/src/cpu/o3/lsq_unit.cc
++++ b/src/cpu/o3/lsq_unit.cc
+@@ -69,6 +69,21 @@
+     _inst->savedRequest->writebackScheduled();
+ }
+ 
++std::map<std::string, std::string>
++LSQUnit::WritebackEvent::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.string("load_store_unit", lsqPtr ? lsqPtr->name() : "");
++    crucibleInstructionReference(writer, "instruction", inst);
++    if (inst)
++        inst->crucibleState(writer, "instruction_state");
++    writer.reference("packet", pkt, "packet");
++    if (pkt)
++        pkt->crucibleFields(writer, "packet_state");
++    writer.string("coverage.unsupported", "instruction-static-fault-and-result-payloads;request-and-sender-polymorphism");
++    return std::move(writer.fields);
++}
++
+ void
+ LSQUnit::WritebackEvent::process()
+ {
+@@ -186,6 +201,64 @@
+             completeStore(request->instruction()->sqIt);
+         }
+     }
++}
++
++void
++LSQUnit::LSQEntry::crucibleState(CrucibleStateWriter &writer,
++                               const std::string &prefix) const
++{
++    writer.set(prefix + ".valid", _valid);
++    writer.set(prefix + ".size", _size);
++    crucibleInstructionReference(writer, prefix + ".instruction", _inst);
++    writer.set(prefix + ".request_present", _request != nullptr);
++    if (_request)
++        _request->crucibleState(writer, prefix + ".request");
++}
++
++void
++LSQUnit::SQEntry::crucibleState(CrucibleStateWriter &writer,
++                              const std::string &prefix) const
++{
++    LSQEntry::crucibleState(writer, prefix);
++    writer.set(prefix + ".can_writeback", _canWB);
++    writer.set(prefix + ".committed", _committed);
++    writer.set(prefix + ".completed", _completed);
++    writer.set(prefix + ".all_zeros", _isAllZeros);
++    // The constructor initializes the entire byte array, including inactive slots.
++    writer.bytes(prefix + ".store_data", reinterpret_cast<const uint8_t *>(_data), DataSize);
++}
++
++void
++LSQUnit::crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const
++{
++    writer.set(prefix + ".lsqID", lsqID);
++    writer.set(prefix + ".depCheckShift", depCheckShift);
++    writer.set(prefix + ".checkLoads", checkLoads);
++    writer.set(prefix + ".storesToWB", storesToWB);
++    writer.set(prefix + ".htmStarts", htmStarts);
++    writer.set(prefix + ".htmStops", htmStops);
++    writer.set(prefix + ".lastRetiredHtmUid", lastRetiredHtmUid);
++    writer.set(prefix + ".cacheBlockMask", cacheBlockMask);
++    writer.set(prefix + ".stalled", stalled);
++    writer.set(prefix + ".isStoreBlocked", isStoreBlocked);
++    writer.set(prefix + ".storeInFlight", storeInFlight);
++    writer.set(prefix + ".needsTSO", needsTSO);
++    if (stalled) {
++        writer.set(prefix + ".stalling_store_sequence", stallingStoreIsn);
++        writer.set(prefix + ".stalling_load_index", stallingLoadIdx);
++    }
++    writer.set(prefix + ".writeback_cursor", storeWBIt._idx);
++    writer.set(prefix + ".writeback_queue_matches", storeWBIt._cq == &storeQueue);
++    crucibleInstructionReference(writer, prefix + ".memory_violation", memDepViolator);
++    writer.reference(prefix + ".retry_packet", retryPkt, "packet");
++    if (retryPkt)
++        retryPkt->crucibleFields(writer, prefix + ".retry_packet_state");
++    const auto entry = [](auto &output, const auto &key, const auto &slot) {
++        slot.crucibleState(output, key);
++    };
++    loadQueue.crucibleState(writer, prefix + ".load_queue", entry);
++    storeQueue.crucibleState(writer, prefix + ".store_queue", entry);
++    writer.string(prefix + ".coverage.unsupported", "self-owned-translation-request-discovery;htm-architectural-checkpoint;probes");
+ }
+ 
+ LSQUnit::LSQUnit(uint32_t lqEntries, uint32_t sqEntries)
+--- a/src/cpu/o3/lsq_unit.hh
++++ b/src/cpu/o3/lsq_unit.hh
+@@ -42,6 +42,7 @@
+ #ifndef __CPU_O3_LSQ_UNIT_HH__
+ #define __CPU_O3_LSQ_UNIT_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <algorithm>
+ #include <cstring>
+ #include <map>
+@@ -134,6 +135,8 @@
+             _size = 0;
+         }
+ 
++        void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+         LSQRequest* request() { return _request; }
+         void setRequest(LSQRequest* r) { _request = r; }
+         bool hasRequest() { return _request != nullptr; }
+@@ -164,6 +167,8 @@
+         bool _isAllZeros = false;
+ 
+       public:
++        void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+         static constexpr size_t DataSize = sizeof(_data);
+         /** Constructs an empty store queue entry. */
+         SQEntry()
+@@ -210,6 +215,8 @@
+ 
+   public:
+     /** Constructs an LSQ unit. init() must be called prior to use. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     LSQUnit(uint32_t lqEntries, uint32_t sqEntries);
+ 
+     /** We cannot copy LSQUnit because it has stats for which copy
+@@ -426,6 +433,8 @@
+     {
+       public:
+         /** Constructs a writeback event. */
++        std::map<std::string, std::string> crucibleModeledFields() const override;
++
+         WritebackEvent(const DynInstPtr &_inst, PacketPtr pkt,
+                 LSQUnit *lsq_ptr);
+ 
+--- a/src/cpu/o3/mem_dep_unit.cc
++++ b/src/cpu/o3/mem_dep_unit.cc
+@@ -36,6 +36,7 @@
+ #include "cpu/o3/inst_queue.hh"
+ #include "cpu/o3/limits.hh"
+ #include "cpu/o3/mem_dep_unit.hh"
++#include "cpu/o3/comm.hh"
+ #include "debug/MemDepUnit.hh"
+ #include "params/BaseO3CPU.hh"
+ 
+@@ -62,6 +63,76 @@
+       stats(nullptr)
+ {
+     DPRINTF(MemDepUnit, "Creating MemDepUnit object.\n");
++}
++
++void
++MemDepUnit::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + ".thread", id);
++    writer.string(prefix + ".instruction_queue", iqPtr ? iqPtr->name() : "");
++    depPred.crucibleState(writer, prefix + ".store_sets");
++    const auto list = [&](const std::string &name, const auto &instructions) {
++        writer.set(prefix + name + ".count", instructions.size());
++        size_t ordinal = 0;
++        for (const auto &inst : instructions)
++            crucibleInstructionReference(writer,
++                prefix + name + "[" + std::to_string(ordinal++) + "]", inst);
++    };
++    for (ThreadID tid = 0; tid < MaxThreads; ++tid)
++        list(".thread[" + std::to_string(tid) + "].instructions", instList[tid]);
++    list(".replay", instsToReplay);
++
++    // Integer-keyed hash iteration is retained because native insertion can
++    // copy barrier iteration into its future dependency traversal order.
++    const auto barriers = [&](const std::string &name, const auto &sequences) {
++        writer.set(prefix + name + ".count", sequences.size());
++        writer.set(prefix + name + ".buckets", sequences.bucket_count());
++        size_t ordinal = 0;
++        for (const auto sequence : sequences)
++            writer.set(prefix + name + "[" + std::to_string(ordinal++) + "]", sequence);
++    };
++    barriers(".load_barriers", loadBarrierSNs);
++    barriers(".store_barriers", storeBarrierSNs);
++    writer.set(prefix + ".hash.count", memDepHash.size());
++    writer.set(prefix + ".hash.buckets", memDepHash.bucket_count());
++    fatal_if(memDepHash.size() > 65536, "Memory dependency roster exceeds diagnostic ceiling");
++    std::vector<MemDepEntryPtr> pending;
++    std::unordered_set<const MemDepEntry *> seen;
++    pending.reserve(memDepHash.size());
++    size_t ordinal = 0;
++    for (const auto &[sequence, entry] : memDepHash) {
++        const auto key = prefix + ".hash[" + std::to_string(ordinal++) + "]";
++        writer.set(key + ".sequence", sequence);
++        writer.reference(key + ".entry", entry.get(), "memory-dependency-entry");
++        if (entry && seen.emplace(entry.get()).second)
++            pending.push_back(entry);
++    }
++
++    // Dependents may outlive their hash membership. A bounded breadth-first
++    // walk preserves every retained shared entry without recursive cycles.
++    for (size_t index = 0; index < pending.size(); ++index) {
++        const auto entry = pending[index];
++        const auto key = prefix + ".entry[" + std::to_string(index) + "]";
++        writer.reference(key + ".identity", entry.get(), "memory-dependency-entry");
++        crucibleInstructionReference(writer, key + ".instruction", entry->inst);
++        writer.set(key + ".registers_ready", entry->regsReady);
++        writer.set(key + ".dependencies_remaining", entry->memDeps);
++        writer.set(key + ".completed", entry->completed);
++        writer.set(key + ".squashed", entry->squashed);
++        writer.set(key + ".dependent_count", entry->dependInsts.size());
++        size_t dependent_index = 0;
++        for (const auto &dependent : entry->dependInsts) {
++            writer.reference(key + ".dependent[" + std::to_string(dependent_index++) + "]",
++                             dependent.get(), "memory-dependency-entry");
++            if (dependent && seen.emplace(dependent.get()).second) {
++                fatal_if(pending.size() >= 65536, "Memory dependency closure exceeds diagnostic ceiling");
++                pending.push_back(dependent);
++            }
++        }
++    }
++    writer.set(prefix + ".entry.count", pending.size());
++    writer.string(prefix + ".coverage.unsupported", "unordered-container-load-policy-and-iterator-lineage;probes");
+ }
+ 
+ MemDepUnit::~MemDepUnit()
+--- a/src/cpu/o3/mem_dep_unit.hh
++++ b/src/cpu/o3/mem_dep_unit.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_MEM_DEP_UNIT_HH__
+ #define __CPU_O3_MEM_DEP_UNIT_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ #include <memory>
+ #include <set>
+@@ -93,6 +94,9 @@
+     std::string _name;
+ 
+   public:
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     /** Empty constructor. Must call init() prior to using in this case. */
+     MemDepUnit();
+ 
+--- a/src/cpu/o3/rename.cc
++++ b/src/cpu/o3/rename.cc
+@@ -78,6 +78,66 @@
+     "Number of cycles rename stalled for serializing inst",
+ };
+ // clang-format on
++
++void
++Rename::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + "._status", _status);
++    writer.set(prefix + ".resumeSerialize", resumeSerialize);
++    writer.set(prefix + ".resumeUnblocking", resumeUnblocking);
++    writer.set(prefix + ".renameWidth", renameWidth);
++    writer.set(prefix + ".skidBufferMax", skidBufferMax);
++    fromIEW.crucibleState(writer, prefix + ".wire.from_iew", timeBuffer);
++    fromCommit.crucibleState(writer, prefix + ".wire.from_commit", timeBuffer);
++    toDecode.crucibleState(writer, prefix + ".wire.to_decode", timeBuffer);
++    toIEW.crucibleState(writer, prefix + ".wire.to_iew", renameQueue);
++    fromDecode.crucibleState(writer, prefix + ".wire.from_decode", decodeQueue);
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".renameStatus", renameStatus[tid]);
++        writer.set(key + ".instsInProgress", instsInProgress[tid]);
++        writer.set(key + ".loadsInProgress", loadsInProgress[tid]);
++        writer.set(key + ".storesInProgress", storesInProgress[tid]);
++        writer.set(key + ".emptyROB", emptyROB[tid]);
++        writer.set(key + ".serializeOnNextInst", serializeOnNextInst[tid]);
++        writer.set(key + ".stall.iew", stalls[tid].iew);
++        writer.set(key + ".stall.commit", stalls[tid].commit);
++        writer.set(key + ".free.iq", freeEntries[tid].iqEntries);
++        writer.set(key + ".free.rob", freeEntries[tid].robEntries);
++        writer.set(key + ".free.load", freeEntries[tid].lqEntries);
++        writer.set(key + ".free.store", freeEntries[tid].sqEntries);
++        crucibleInstructionReference(writer, key + ".serializing_instruction", serializeInst[tid]);
++        writer.set(key + ".input.count", insts[tid].size());
++        {
++            size_t ordinal = 0;
++            for (const auto &inst : insts[tid])
++                crucibleInstructionReference(writer, key + ".input[" + std::to_string(ordinal++) + "]", inst);
++        }
++        writer.set(key + ".skid.count", skidBuffer[tid].size());
++        {
++            size_t ordinal = 0;
++            for (const auto &inst : skidBuffer[tid])
++                crucibleInstructionReference(writer, key + ".skid[" + std::to_string(ordinal++) + "]", inst);
++        }
++
++        size_t ordinal = 0;
++        for (const auto &history : historyBuffer[tid]) {
++            const auto item = key + ".history[" + std::to_string(ordinal++) + "]";
++            writer.set(item + ".sequence", history.instSeqNum);
++            writer.set(item + ".architectural_class", history.archReg.classValue());
++            writer.set(item + ".architectural_index", history.archReg.index());
++            writer.set(item + ".architectural_pinned_writes", history.archReg.getNumPinnedWrites());
++            writer.set(item + ".new_physical", history.newPhysReg->flatIndex());
++            writer.set(item + ".previous_physical", history.prevPhysReg->flatIndex());
++        }
++        writer.set(key + ".history.count", ordinal);
++        ordinal = 0;
++        for (const auto *id : freeingInProgress[tid])
++            writer.set(key + ".freeing[" + std::to_string(ordinal++) + "]", id->flatIndex());
++        writer.set(key + ".freeing.count", ordinal);
++    }
++}
+ 
+ Rename::Rename(CPU *_cpu, const BaseO3CPUParams &params)
+     : cpu(_cpu),
+--- a/src/cpu/o3/rename.hh
++++ b/src/cpu/o3/rename.hh
+@@ -42,6 +42,7 @@
+ #ifndef __CPU_O3_RENAME_HH__
+ #define __CPU_O3_RENAME_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ #include <utility>
+ 
+@@ -126,6 +127,9 @@
+ 
+   public:
+     /** Rename constructor. */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     Rename(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     /** Returns the name of rename. */
+--- a/src/cpu/o3/rob.cc
++++ b/src/cpu/o3/rob.cc
+@@ -55,6 +55,38 @@
+ namespace o3
+ {
+ 
++void
++ROB::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + ".policy", robPolicy);
++    writer.set(prefix + ".capacity", numEntries);
++    writer.set(prefix + ".instruction_count", numInstsInROB);
++    writer.set(prefix + ".squash_width_present", squashWidth.has_value());
++    if (squashWidth)
++        writer.set(prefix + ".squash_width", *squashWidth);
++    writer.set(prefix + ".head_tail_present", numInstsInROB != 0);
++    if (numInstsInROB) {
++        crucibleInstructionReference(writer, prefix + ".head", *head);
++        crucibleInstructionReference(writer, prefix + ".tail", *tail);
++    }
++    for (ThreadID tid = 0; tid < numThreads; ++tid) {
++        const auto key = prefix + ".thread[" + std::to_string(tid) + "]";
++        writer.set(key + ".threadEntries", threadEntries[tid]);
++        writer.set(key + ".maxEntries", maxEntries[tid]);
++        writer.set(key + ".squashedSeqNum", squashedSeqNum[tid]);
++        writer.set(key + ".doneSquashing", doneSquashing[tid]);
++        size_t ordinal = 0;
++        for (const auto &inst : instList[tid])
++            crucibleInstructionReference(writer, key + ".instruction[" + std::to_string(ordinal++) + "]", inst);
++        writer.set(key + ".count", ordinal);
++        const bool squashPresent = squashIt[tid] != instList[tid].end();
++        writer.set(key + ".squash_cursor_present", squashPresent);
++        if (squashPresent)
++            crucibleInstructionReference(writer, key + ".squash_cursor", *squashIt[tid]);
++    }
++}
++
+ ROB::ROB(CPU *_cpu, const BaseO3CPUParams &params)
+     : robPolicy(params.smtROBPolicy),
+       cpu(_cpu),
+--- a/src/cpu/o3/rob.hh
++++ b/src/cpu/o3/rob.hh
+@@ -41,6 +41,7 @@
+ #ifndef __CPU_O3_ROB_HH__
+ #define __CPU_O3_ROB_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -94,6 +95,9 @@
+      *  @param _cpu   The cpu object pointer.
+      *  @param params The cpu params including several ROB-specific parameters.
+      */
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
++
+     ROB(CPU *_cpu, const BaseO3CPUParams &params);
+ 
+     std::string name() const;
+--- a/src/cpu/o3/store_set.cc
++++ b/src/cpu/o3/store_set.cc
+@@ -75,6 +75,41 @@
+     memOpsPred = 0;
+ }
+ 
++void
++StoreSet::crucibleState(CrucibleStateWriter &writer,
++                   const std::string &prefix) const
++{
++    writer.set(prefix + ".clearPeriod", clearPeriod);
++    writer.set(prefix + ".SSITSize", SSITSize);
++    writer.set(prefix + ".LFSTSize", LFSTSize);
++    writer.set(prefix + ".memOpsPred", memOpsPred);
++    size_t ordinal = 0;
++    for (const auto &entry : SSIT) {
++        const auto key = prefix + ".ssit[" + std::to_string(ordinal++) + "]";
++        writer.set(key + ".valid", entry.isValid());
++        writer.set(key + ".tag", entry.getTag());
++        writer.set(key + ".store_set", entry.getSSID());
++        writer.set(key + ".set", entry.getSet());
++        writer.set(key + ".way", entry.getWay());
++        writer.reference(key + ".replacement", entry.replacementData.get(), "replacement-data");
++    }
++    writer.set(prefix + ".ssit.count", ordinal);
++    writer.set(prefix + ".lfst.count", LFST.size());
++    for (size_t index = 0; index < LFST.size(); ++index) {
++        const auto key = prefix + ".lfst[" + std::to_string(index) + "]";
++        writer.set(key + ".sequence", LFST[index]);
++        writer.set(key + ".valid", static_cast<bool>(validLFST[index]));
++    }
++    ordinal = 0;
++    for (const auto &[sequence, set] : storeList) {
++        const auto key = prefix + ".store_order[" + std::to_string(ordinal++) + "]";
++        writer.set(key + ".sequence", sequence);
++        writer.set(key + ".store_set", set);
++    }
++    writer.set(prefix + ".store_order.count", ordinal);
++    writer.string(prefix + ".coverage.unsupported", "ssit-replacement-data-and-indexing-policy");
++}
++
+ StoreSet::~StoreSet()
+ {
+ }
+--- a/src/cpu/o3/store_set.hh
++++ b/src/cpu/o3/store_set.hh
+@@ -29,6 +29,7 @@
+ #ifndef __CPU_O3_STORE_SET_HH__
+ #define __CPU_O3_STORE_SET_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <list>
+ #include <map>
+ #include <string_view>
+@@ -87,6 +88,9 @@
+         void setSSID(SSID id) { _ssid = id; }
+         SSID getSSID(void) const { return _ssid; }
+     };
++
++    /** Visits ordered native queues, control state and immutable handoff references. */
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix) const;
+ 
+     /** Default constructor.  init() must be called prior to use. */
+     StoreSet() : Named("StoreSets"), SSIT("SSIT") {};
+--- a/src/cpu/pred/bpred_unit.hh
++++ b/src/cpu/pred/bpred_unit.hh
+@@ -115,6 +115,7 @@
+                 if (history->target) {
+                     writer.set(key + ".target", history->target->instAddr());
+                     writer.set(key + ".target_micro_pc", history->target->microPC());
++                    history->target->crucibleFields(writer, key + ".target_semantic_state");
+                 }
+                 writer.set(key + ".conditional_history_present", history->bpHistory != nullptr);
+                 writer.set(key + ".indirect_history_present", history->indirectHistory != nullptr);
+--- a/src/cpu/pred/ras.hh
++++ b/src/cpu/pred/ras.hh
+@@ -163,6 +163,7 @@
+                 if (pc) {
+                     writer.set(key + ".pc", pc->instAddr());
+                     writer.set(key + ".micro_pc", pc->microPC());
++                    pc->crucibleFields(writer, key + ".pc_semantic_state");
+                 }
+             }
+         }
+@@ -187,6 +188,7 @@
+         if (history.ras_entry) {
+             writer.set(prefix + ".entry_pc", history.ras_entry->instAddr());
+             writer.set(prefix + ".entry_micro_pc", history.ras_entry->microPC());
++            history.ras_entry->crucibleFields(writer, prefix + ".entry_semantic_state");
+         }
+     }
+ 
+--- a/src/cpu/timebuf.hh
++++ b/src/cpu/timebuf.hh
+@@ -29,6 +29,7 @@
+ #ifndef __BASE_TIMEBUF_HH__
+ #define __BASE_TIMEBUF_HH__
+ 
++#include "sim/crucible_state.hh"
+ #include <cassert>
+ #include <cstring>
+ #include <vector>
+@@ -131,6 +132,16 @@
+             set(index - 1);
+             return wire(this, i);
+         }
++        /** Emits a symbolic buffer binding and its unchanged relative index. */
++        void crucibleState(CrucibleStateWriter &writer, const std::string &prefix,
++                           const TimeBuffer<T> *expected) const
++        {
++            writer.set(prefix + ".binding_matches", buffer == expected);
++            writer.set(prefix + ".relative_index", index);
++            if (buffer != expected)
++                writer.string(prefix + ".coverage.unsupported", "unexpected-time-buffer-alias");
++        }
++
+         T &operator*() const { return *buffer->access(index); }
+         T *operator->() const { return buffer->access(index); }
+     };
+@@ -246,6 +257,23 @@
+         return size;
+     }
+ 
++    /** Observes every retained relative lane without advancing the ring. */
++    template<class Visitor>
++    void crucibleState(CrucibleStateWriter &writer, const std::string &prefix,
++                       Visitor visitor) const
++    {
++        writer.set(prefix + ".past", past);
++        writer.set(prefix + ".future", future);
++        writer.set(prefix + ".size", size);
++        writer.set(prefix + ".base", base);
++        writer.set(prefix + ".identity", _id);
++        for (int relative = -past; relative <= future; ++relative) {
++            const auto slot = calculateVectorIndex(relative);
++            visitor(writer, prefix + ".lane[" + std::to_string(relative) + "]",
++                    *reinterpret_cast<const T *>(index[slot]));
++        }
++    }
++
+     int
+     getPast() const
+     {

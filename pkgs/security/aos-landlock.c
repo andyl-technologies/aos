@@ -387,6 +387,8 @@ static int apply_landlock(unsigned int require_abi, int restrict_network,
     return 0;
 }
 
+#include "aos-landlock-worker.h"
+
 int main(int argc, char **argv)
 {
     struct port_list bind_ports = {0};
@@ -397,6 +399,10 @@ int main(int argc, char **argv)
     int network_unrestricted_seen = 0;
     int command_index = -1;
     int i;
+
+    if (argc > 1 && strcmp(argv[1], "--pure-worker-v1") == 0) {
+        return run_pure_worker(argc, argv);
+    }
 
     if (argc == 2 && strcmp(argv[1], "--print-abi") == 0) {
         long abi = probe_landlock_abi();

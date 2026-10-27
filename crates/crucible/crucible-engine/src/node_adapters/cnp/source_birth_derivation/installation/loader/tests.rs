@@ -1,0 +1,345 @@
+//! Exercises actual ELF decoding and exact-name loader decisions as DATA.
+
+use super::*;
+use std::io::Write;
+
+fn executable(dynamic: bool) -> File {
+    let mut bytes = vec![0; 768];
+    bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+    let machine: u16 = if cfg!(target_arch = "aarch64") {
+        183
+    } else {
+        62
+    };
+    bytes[18..20].copy_from_slice(&machine.to_le_bytes());
+    bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+    bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+    bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+    bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+    bytes[56..58].copy_from_slice(&(if dynamic { 2u16 } else { 1u16 }).to_le_bytes());
+    bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
+    bytes[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
+    bytes[96..104].copy_from_slice(&768u64.to_le_bytes());
+    if dynamic {
+        bytes[120..124].copy_from_slice(&2u32.to_le_bytes());
+        bytes[128..136].copy_from_slice(&512u64.to_le_bytes());
+        bytes[152..160].copy_from_slice(&96u64.to_le_bytes());
+        let strings = b"\0libborrow.so\0$ORIGIN/../lib\0child.so\0";
+        bytes[384..384 + strings.len()].copy_from_slice(strings);
+        for (index, (tag, value)) in [
+            (5u64, 0x400180u64),
+            (10, strings.len() as u64),
+            (1, 1),
+            (29, 14),
+            (14, 29),
+            (0, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let offset = 512 + index * 16;
+            bytes[offset..offset + 8].copy_from_slice(&tag.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut file = super::super::tests::temporary_file();
+    file.write_all(&bytes).unwrap();
+    file
+}
+
+#[test]
+fn actual_original_elf_decodes_needed_soname_and_origin_paths() {
+    let file = executable(true);
+    let decoded = parse(
+        &file,
+        Path::new("/nix/store/00000000000000000000000000000000-worker/bin/worker"),
+    )
+    .unwrap();
+    assert_eq!(decoded.needed, ["libborrow.so"]);
+    assert_eq!(decoded.soname.as_deref(), Some("child.so"));
+    assert_eq!(
+        decoded.runpath,
+        [PathBuf::from(
+            "/nix/store/00000000000000000000000000000000-worker/bin/../lib"
+        )]
+    );
+    assert!(decoded.interpreter.is_none());
+}
+
+#[test]
+fn actual_static_elf_has_no_dynamic_lookup_and_partial_header_refuses() {
+    let file = executable(false);
+    let decoded = parse(
+        &file,
+        Path::new("/nix/store/00000000000000000000000000000000-worker/bin/worker"),
+    )
+    .unwrap();
+    assert!(decoded.needed.is_empty() && decoded.soname.is_none());
+    let mut partial = super::super::tests::temporary_file();
+    partial.write_all(b"\x7fELF").unwrap();
+    assert!(parse(&partial, Path::new("/unused")).is_err());
+    assert_eq!(partial.metadata().unwrap().len(), 4);
+}
+
+#[test]
+fn an_arbitrary_matching_basename_never_authenticates_a_loaded_object() {
+    let mut loaded = BTreeMap::new();
+    let dynamic = Dynamic {
+        interpreter: None,
+        soname: None,
+        needed: Vec::new(),
+        rpath: Vec::new(),
+        runpath: Vec::new(),
+    };
+    remember(&mut loaded, Path::new("/foreign/libborrow.so"), &dynamic);
+    assert!(!loaded.contains_key("libborrow.so"));
+    assert!(expand("$ORIGIN_SUFFIX/lib", Path::new("/store/bin/main")).is_err());
+    assert!(expand("$UNKNOWN/lib", Path::new("/store/bin/main")).is_err());
+    assert!(expand("relative/lib", Path::new("/store/bin/main")).is_err());
+}
+
+#[test]
+fn needed_tokens_refuse_before_cached_aliases_for_every_owner_origin() {
+    let first = Path::new("/nix/store/00000000000000000000000000000000-first/bin/main");
+    let second = Path::new("/nix/store/11111111111111111111111111111111-second/bin/main");
+    let loaded = BTreeMap::from([
+        (
+            "$ORIGIN/libx.so".to_owned(),
+            first.with_file_name("libx.so"),
+        ),
+        ("$LIB".to_owned(), first.with_file_name("lib64")),
+        ("libx.so".to_owned(), first.with_file_name("libx.so")),
+    ]);
+    let entries = BTreeMap::new();
+
+    for owner in [first, second] {
+        for needed in ["$ORIGIN/libx.so", "$LIB"] {
+            assert_eq!(
+                select_needed(needed, owner, &loaded, &[], &entries, &[]),
+                Err(RuntimeError::UnsupportedFacet)
+            );
+        }
+        assert_eq!(
+            select_needed("libx.so", owner, &loaded, &[], &entries, &[]),
+            Ok(None)
+        );
+    }
+    // The refusal is confined to DT_NEEDED; selected search-path ORIGIN
+    // substitution remains available to the actual ELF parser.
+    assert_eq!(
+        expand("$ORIGIN/lib", first).unwrap(),
+        first.parent().unwrap().join("lib")
+    );
+}
+
+#[test]
+fn search_refuses_cross_root_hardware_capability_directory_aliases() {
+    let root = PathBuf::from("/nix/store/00000000000000000000000000000000-base");
+    let other = PathBuf::from("/nix/store/11111111111111111111111111111111-other");
+    let base = root.join("lib");
+    let alternate = other.join("alternate");
+    let alias = base.join("glibc-hwcaps/x86-64-v3");
+    let library = alternate.join("libx.so");
+    let content =
+        crucible_node_format::canonical::content_ref(b"library", "application/octet-stream")
+            .unwrap();
+    let mut entries = vec![
+        TreeEntry::Directory {
+            path: root.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: other.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: base.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: base.join("glibc-hwcaps"),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: alternate.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::File {
+            path: base.join("libx.so"),
+            mode: 0o444,
+            content: content.clone(),
+        },
+        TreeEntry::File {
+            path: library.clone(),
+            mode: 0o444,
+            content: content.clone(),
+        },
+        TreeEntry::Symlink {
+            path: alias.clone(),
+            target: alternate,
+        },
+    ];
+    let roots = [root.clone(), other];
+    let loaded = BTreeMap::new();
+    let owner = root.join("bin/main");
+    {
+        let roster = entries
+            .iter()
+            .map(|entry| (entry.path().to_path_buf(), entry))
+            .collect();
+        assert_eq!(
+            select_needed("libx.so", &owner, &loaded, &[base.clone()], &roster, &roots),
+            Err(RuntimeError::UnsupportedFacet)
+        );
+    }
+    // The hardware-capability root can itself be a directory alias; the
+    // no-follow roster then contains no lexical ISA child beneath `base`.
+    let capability_root = base.join("glibc-hwcaps");
+    entries.retain(|entry| entry.path() != alias && entry.path() != capability_root);
+    entries.push(TreeEntry::Symlink {
+        path: capability_root.clone(),
+        target: roots[1].clone(),
+    });
+    entries.push(TreeEntry::Directory {
+        path: roots[1].join("x86-64-v3"),
+        mode: 0o555,
+    });
+    entries.push(TreeEntry::File {
+        path: roots[1].join("x86-64-v3/libx.so"),
+        mode: 0o444,
+        content,
+    });
+    {
+        let roster = entries
+            .iter()
+            .map(|entry| (entry.path().to_path_buf(), entry))
+            .collect();
+        assert_eq!(
+            select_needed("libx.so", &owner, &loaded, &[base.clone()], &roster, &roots),
+            Err(RuntimeError::UnsupportedFacet)
+        );
+    }
+
+    // An ordinary file alias is not a directory search alternative. Removing
+    // the hidden hwcap route leaves a genuine measured base-name selection.
+    entries.retain(|entry| entry.path() != capability_root && entry.path() != base.join("libx.so"));
+    entries.push(TreeEntry::Symlink {
+        path: base.join("libx.so"),
+        target: library.clone(),
+    });
+    let roster = entries
+        .iter()
+        .map(|entry| (entry.path().to_path_buf(), entry))
+        .collect();
+    assert_eq!(
+        select_needed("libx.so", &owner, &loaded, &[base], &roster, &roots),
+        Ok(Some(library))
+    );
+}
+
+/// Adds a real PT_INTERP segment to the already written synthetic ELF.
+fn with_interpreter(file: &File, interpreter: &Path) {
+    let count = 3u16;
+    let mut header = [0; 56];
+    let mut bytes = interpreter.as_os_str().as_encoded_bytes().to_vec();
+    bytes.push(0);
+    assert!(bytes.len() <= 128);
+    header[..4].copy_from_slice(&3u32.to_le_bytes());
+    header[8..16].copy_from_slice(&256u64.to_le_bytes());
+    header[32..40].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+
+    file.write_all_at(&count.to_le_bytes(), 56).unwrap();
+    file.write_all_at(&header, 176).unwrap();
+    file.write_all_at(&bytes, 256).unwrap();
+}
+
+#[test]
+fn dependency_interpreter_is_inert_but_the_exec_interpreter_must_resolve() {
+    let root = PathBuf::from("/nix/store/00000000000000000000000000000000-runtime");
+    let main_path = root.join("bin/main");
+    let loader_path = root.join("lib/ld.so");
+    let library_path = root.join("lib/libborrow.so");
+    let main = executable(true);
+    let loader = executable(false);
+    let library = executable(true);
+    with_interpreter(&main, &loader_path);
+    // This unselected path must neither become a loader edge nor be opened.
+    with_interpreter(&library, Path::new("/outside/unused-interpreter"));
+
+    let content =
+        crucible_node_format::canonical::content_ref(b"fixture", "application/octet-stream")
+            .unwrap();
+    let mut entries = vec![
+        TreeEntry::Directory {
+            path: root.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: root.join("bin"),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: root.join("lib"),
+            mode: 0o555,
+        },
+    ];
+    for path in [&main_path, &loader_path, &library_path] {
+        entries.push(TreeEntry::File {
+            path: path.clone(),
+            mode: 0o555,
+            content: content.clone(),
+        });
+    }
+    let roster = entries
+        .iter()
+        .map(|entry| (entry.path().to_path_buf(), entry))
+        .collect();
+    let roots = [root];
+    let opened = std::cell::RefCell::new(Vec::new());
+    let open_dependency = |path: &Path| {
+        opened.borrow_mut().push(path.to_path_buf());
+        let file = if path == loader_path {
+            &loader
+        } else if path == library_path {
+            &library
+        } else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        file.try_clone().map_err(|_| RuntimeError::OwnerUnavailable)
+    };
+
+    check_image(&main_path, &main, &roster, &roots, &open_dependency).unwrap();
+    assert_eq!(
+        *opened.borrow(),
+        [loader_path.clone(), library_path.clone()]
+    );
+
+    // The same header on the exec image remains an authenticated real edge.
+    with_interpreter(&main, Path::new("/outside/unused-interpreter"));
+    assert!(check_image(&main_path, &main, &roster, &roots, &open_dependency).is_err());
+    assert_eq!(opened.borrow().len(), 2);
+}
+
+/// Exercises the actual installed ELF graph as DATA, without making a program guard.
+#[test]
+#[ignore = "requires an explicit installed worker manifest on readonly store mounts"]
+fn actual_installed_elf_closure_data() {
+    let path = std::env::var_os("CRUCIBLE_SOURCE_BIRTH_WORKER_DATA_MANIFEST")
+        .expect("set CRUCIBLE_SOURCE_BIRTH_WORKER_DATA_MANIFEST to the installed manifest");
+    let installed: Installation = decode(&read_metadata(Path::new(&path)).unwrap()).unwrap();
+    let closure: RuntimeClosure =
+        decode(&artifact_metadata(&installed.runtime_closure, &mut 0).unwrap()).unwrap();
+    let entries = closure
+        .entries
+        .iter()
+        .map(|entry| (entry.path().to_path_buf(), entry))
+        .collect();
+
+    for path in [&installed.launcher.path, &installed.worker.path] {
+        let file = open_regular(path).unwrap();
+        check_image(path, &file, &entries, &closure.store_paths, open_regular).unwrap_or_else(
+            |error| panic!("actual installed ELF graph refused at {path:?}: {error}"),
+        );
+    }
+}

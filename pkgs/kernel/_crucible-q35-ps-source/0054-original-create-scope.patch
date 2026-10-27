@@ -1,0 +1,272 @@
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -6083,16 +6083,12 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(file_is_kvm);
+ 
+-static int kvm_dev_ioctl_create_vm(struct file *original_system_file, unsigned long type)
++static int kvm_dev_ioctl_create_vm_native(struct file *original_system_file, unsigned long type)
+ {
+ 	char fdname[ITOA_MAX_LEN + 1];
+ 	int r, fd;
+ 	struct kvm *kvm;
+ 	struct file *file;
+-
+-	r = kvm_crucible_resource_before_create(original_system_file, type);
+-	if (r)
+-		return r;
+ 
+ 	fd = get_unused_fd_flags(O_CLOEXEC);
+ 	if (fd < 0)
+@@ -6128,6 +6124,20 @@
+ put_fd:
+ 	put_unused_fd(fd);
+ 	return r;
++}
++
++/* The original constructor scope is born before even FD-table expansion and
++ * observes the actual native return after every original unwind branch.
++ */
++static int kvm_dev_ioctl_create_vm(struct file *original_system_file, unsigned long type)
++{
++	struct kvm_crucible_create_token token = {};
++	int result;
++
++	result = kvm_crucible_resource_before_create(original_system_file, type, &token);
++	if (!result)
++		result = kvm_dev_ioctl_create_vm_native(original_system_file, type);
++	return kvm_crucible_resource_after_create(original_system_file, &token, result);
+ }
+ 
+ static long kvm_dev_ioctl(struct file *filp,
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -3,6 +3,7 @@
+  * quote is useful readback, but never permission for uncovered constructors. */
+ 
+ #include <linux/overflow.h>
++#include <linux/fdtable.h>
+ #include <linux/crucible_allocator.h>
+ 
+ #define CRUCIBLE_RESOURCE_CONTEXTS 8U
+@@ -103,7 +104,19 @@
+ 	u64 prepare_delivered_prefix;
+ 	s64 query_delivery_result;
+ 	u64 query_delivered_prefix;
++	struct crucible_allocator_scope create_scope;
+ 	struct task_struct *create_actor;
++	struct files_struct *create_files;
++	u64 create_generation;
++	s64 create_raw_result;
++	bool create_scope_active;
++	bool create_scope_entered;
++	bool create_raw_returned;
++	bool create_scope_left;
++	bool create_scope_known;
++	bool create_files_reference;
++	bool create_files_put_attempted;
++	bool create_files_put_returned;
+ 	u64 create_operand;
+ 	s64 create_result;
+ 	bool prepared;
+@@ -134,7 +147,8 @@
+ 
+ 	lockdep_assert_held(&crucible_resource_lock);
+ 	for (index = 0; index < CRUCIBLE_RESOURCE_CONTEXTS; index++)
+-		if (crucible_resource_contexts[index].original_file == file)
++		if (!crucible_resource_contexts[index].closed &&
++		    crucible_resource_contexts[index].original_file == file)
+ 			return &crucible_resource_contexts[index];
+ 	return NULL;
+ }
+@@ -236,6 +250,14 @@
+ /* These callbacks run in the allocator, including its atomic paths. They use
+  * only the precharged original bank and never allocate or take the registry
+  * mutex. The module/Task/mm references were retained by original PREPARE. */
++/* A stack token names one source-issued constructor attempt. It never lets a
++ * candidate pointer select a registry owner or renew a completed generation.
++ */
++struct kvm_crucible_create_token {
++	struct kvm_crucible_kernel_resource_context *original_context;
++	u64 generation;
++};
++
+ static bool crucible_resource_allocator_current(void *owner)
+ {
+ 	struct kvm_crucible_kernel_resource_context *context = owner;
+@@ -247,6 +269,13 @@
+ 		READ_ONCE(context->root_scope_active) &&
+ 		context->root_actor == current &&
+ 		context->root_generation == context->generation;
++
++	if (control == ARRAY_SIZE(context->delivery_scopes) + 1)
++		active = READ_ONCE(context->create_scope_active) &&
++			context->create_actor == current &&
++			context->create_files == current->files &&
++			context->create_generation == context->generation &&
++			ktime_get_ns() <= context->input.constructor_deadline_ns;
+ 
+ 	return READ_ONCE(context->prepared) && !READ_ONCE(context->closed) && active &&
+ 		context->original_task == current && context->original_mm == current->mm &&
+@@ -836,9 +865,12 @@
+ 	}
+ }
+ 
+-/* Same original reservation is required BEFORE descriptor-table expansion,
+- * VM allocation, SRCU/perCPU and all original architecture constructors. */
+-static int kvm_crucible_resource_before_create(struct file *file, unsigned long type)
++/* This scope encloses the literal CREATE caller, including its pre-FD refusal
++ * and all native error unwinds. No selected continuation is installed: the
++ * family conjunction below must still refuse before descriptor allocation.
++ */
++static int kvm_crucible_resource_before_create(struct file *file,
++	unsigned long type, struct kvm_crucible_create_token *token)
+ {
+ 	struct kvm_crucible_kernel_resource_context *context;
+ 	int result = 0;
+@@ -848,7 +880,8 @@
+ 	if (!context)
+ 		goto unlock;
+ 	if (!crucible_resource_actor(context, file) || context->uncertain ||
+-	    !context->prepared || context->create_attempted ||
++	    !context->prepared || context->create_attempted || !current->files ||
++	    current->crucible_allocator_scope ||
+ 	    type != context->input.expected_vm_type ||
+ 	    ktime_get_ns() > context->input.constructor_deadline_ns) {
+ 		context->uncertain = true;
+@@ -856,25 +889,112 @@
+ 		goto unlock;
+ 	}
+ 	context->create_actor = current;
++	context->create_files = current->files;
++	context->create_generation = context->generation;
+ 	context->create_operand = type;
+ 	context->create_attempted = true;
++	/* Current owns a live files reference. Retain a distinct one for this
++	 * native call only; keeping it beyond completion would form a cycle
++	 * through the system file contained in that very descriptor table.
++	 */
++	atomic_inc(&context->create_files->count);
++	context->create_files_reference = true;
++	context->create_scope.original_task = current;
++	context->create_scope.original_owner = context;
++	context->create_scope.original_ops = &crucible_resource_allocator_ops;
++	context->current_delivery = ARRAY_SIZE(context->delivery_scopes) + 1;
++	token->original_context = context;
++	token->generation = context->generation;
++	WRITE_ONCE(context->create_scope_active, true);
++	mutex_unlock(&crucible_resource_lock);
++
++	context->create_scope_entered = crucible_allocator_enter(&context->create_scope);
++	if (!context->create_scope_entered) {
++		WRITE_ONCE(context->uncertain, true);
++		return -EIO;
++	}
+ 	/* No caller flag, quote width or cap number completes native coverage.
+-	 * Missing constructor families refuse before any native allocation. */
++	 * Missing constructor families refuse before any native allocation.
++	 */
+ 	if (context->prepare_output.coverage != CRUCIBLE_RESOURCE_REQUIRED ||
+ 	    !(context->prepare_output.flags & KVM_CRUCIBLE_KERNEL_RESOURCE_COVERAGE_COMPLETE)) {
+ 		context->create_result = -EOPNOTSUPP;
+ 		context->create_no_effect_known = true;
+-		result = -EOPNOTSUPP;
+-		goto unlock;
+-	}
+-	/* The allocation-family continuation itself is not installed yet. Even
+-	 * a corrupted complete bit cannot enter ordinary unaccounted creation. */
+-	context->uncertain = true;
++		return -EOPNOTSUPP;
++	}
++	/* A fabricated complete bit cannot install a continuation. The existing
++	 * root's narrower scope also needs explicit same-owner delegation before
++	 * this whole-constructor scope could ever admit that native family.
++	 */
++	WRITE_ONCE(context->uncertain, true);
+ 	context->create_result = -EOPNOTSUPP;
+-	result = -EOPNOTSUPP;
++	return -EOPNOTSUPP;
+ unlock:
+ 	mutex_unlock(&crucible_resource_lock);
+ 	return result;
++}
++
++static int kvm_crucible_resource_after_create(struct file *file,
++	const struct kvm_crucible_create_token *token, int native_result)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	struct files_struct *files;
++	bool known;
++	u32 index;
++
++	if (!token->original_context)
++		return native_result;
++	mutex_lock(&crucible_resource_lock);
++	/* Closing removes a file from live lookup before its address can be
++	 * reused. Completion instead authenticates the token against retained
++	 * array membership, so closing cannot discard an original raw return.
++	 * No candidate context is followed before this source-owned lookup.
++	 */
++	context = NULL;
++	for (index = 0; index < CRUCIBLE_RESOURCE_CONTEXTS; index++)
++		if (&crucible_resource_contexts[index] == token->original_context) {
++			context = &crucible_resource_contexts[index];
++			break;
++		}
++	if (!context || context->original_file != file ||
++	    context->create_generation != token->generation ||
++	    !context->create_attempted || context->create_raw_returned) {
++		if (context)
++			WRITE_ONCE(context->uncertain, true);
++		mutex_unlock(&crucible_resource_lock);
++		return native_result < 0 ? native_result : -EIO;
++	}
++	/* Retain the literal return before deadline/Task/files/currentness/leave
++	 * reconciliation. No positive result is delivered on later uncertainty.
++	 */
++	context->create_raw_result = native_result;
++	context->create_raw_returned = true;
++	files = context->create_files;
++	mutex_unlock(&crucible_resource_lock);
++
++	known = context->create_scope_entered &&
++		crucible_allocator_leave(&context->create_scope);
++	WRITE_ONCE(context->create_scope_active, false);
++	context->create_scope_left = context->create_scope_entered;
++	context->create_scope_known = known;
++	if (!known || context->original_task != current ||
++	    context->original_mm != current->mm || files != current->files ||
++	    context->create_generation != context->generation ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns || context->closed)
++		WRITE_ONCE(context->uncertain, true);
++	/* Drop only this original call's reference, outside the registry and
++	 * allocator scope. A final put may perform native file cleanup; it is
++	 * observed, never counted as proof of physical retirement or a refund.
++	 */
++	if (context->create_files_reference) {
++		context->create_files_reference = false;
++		context->create_files_put_attempted = true;
++		put_files_struct(files);
++		context->create_files_put_returned = true;
++	}
++	if (context->uncertain && native_result >= 0)
++		return -EIO;
++	return native_result;
+ }
+ 
+ static int kvm_crucible_resource_system_control(struct file *file,
+@@ -1052,8 +1172,12 @@
+ 		WRITE_ONCE(context->closed, true);
+ 		WRITE_ONCE(context->delivery_scope_active[0], false);
+ 		WRITE_ONCE(context->delivery_scope_active[1], false);
+-		/* Unknown allocations never release or recycle this original bank. */
+-		if (!context->original_vm && !context->allocations_used && !context->uncertain) {
++		/* Constructor attempts retain their once-return journal as well as any
++		 * Unknown allocation. A final files put during completion cannot clear
++		 * or recycle the context while its native return is being observed.
++		 */
++		if (!context->original_vm && !context->allocations_used && !context->uncertain &&
++		    !context->create_attempted) {
+ 			task = context->original_task;
+ 			mm = context->original_mm;
+ 			memset(context, 0, sizeof(*context));

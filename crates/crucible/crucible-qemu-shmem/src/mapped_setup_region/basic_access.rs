@@ -119,6 +119,9 @@ impl MappedSetupRegion {
         second_src_slot: u32,
         second_dst_slot: u32,
     ) -> Result<MappedNodeRingPairMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -152,6 +155,12 @@ impl MappedSetupRegion {
                 index: second_descriptor.index,
             }
         })?;
+
+        selected_lifecycle::authorize_mutable_headers(
+            self,
+            &[first_header_offset, second_header_offset],
+        )
+        .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
 
         let base = self.base_ptr();
         let mapped_parts = {
@@ -219,6 +228,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedCoverageRingMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -236,6 +248,9 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[header_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the coverage offset helpers validate the complete typed ranges
         // and alignments inside this owned mapping. Each VM slot names a distinct
@@ -268,6 +283,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedWhiteboxMarkerRingMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -286,6 +304,9 @@ impl MappedSetupRegion {
                     index: vm_slot,
                 }
             })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[header_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the marker offset helpers validate the complete typed ranges
         // and alignments inside this owned mapping. Each VM names a distinct
@@ -317,6 +338,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedSelectableReplyRingMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -336,6 +360,9 @@ impl MappedSetupRegion {
                     index: vm_slot,
                 }
             })?;
+        selected_lifecycle::authorize_mutable_headers(self, &[header_offset])
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the selectable-reply offset helpers validate the complete
         // typed ranges and alignment inside this owned mapping. Each VM owns a

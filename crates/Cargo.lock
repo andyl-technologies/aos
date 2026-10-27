@@ -2846,6 +2846,8 @@ dependencies = [
  "crucible-device",
  "crucible-engine",
  "crucible-guest",
+ "crucible-node-format",
+ "crucible-node-transport",
  "crucible-qemu-host",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
@@ -2943,6 +2945,9 @@ dependencies = [
  "crucible-device",
  "crucible-engine",
  "crucible-guest",
+ "crucible-host-resources",
+ "crucible-node-format",
+ "crucible-node-transport",
  "crucible-qemu-host",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
@@ -2989,16 +2994,24 @@ dependencies = [
  "crucible-campaign",
  "crucible-determinism",
  "crucible-device",
+ "crucible-host-resources",
+ "crucible-node-format",
+ "crucible-node-transport",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-source-birth-data",
  "crucible-store",
  "crucible-test-support",
+ "hmac 0.12.1",
  "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -3008,6 +3021,47 @@ dependencies = [
  "crucible-campaign",
  "crucible-qemu-protocol",
  "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-host-resources"
+version = "0.1.0"
+dependencies = [
+ "aos-linux-project-quota",
+ "libc",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-node-format"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "hex",
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-node-transport"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "crucible-node-format",
+ "crucible-source-birth-data",
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
@@ -3030,6 +3084,8 @@ dependencies = [
  "ciborium",
  "crucible-device",
  "crucible-engine",
+ "crucible-host-resources",
+ "crucible-node-format",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
  "libc",
@@ -3048,6 +3104,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-engine",
+ "crucible-node-format",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
  "hex",
@@ -3062,6 +3119,7 @@ name = "crucible-qemu-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-node-format",
  "libc",
  "sha2 0.10.9",
  "thiserror 2.0.18",
@@ -3075,6 +3133,7 @@ dependencies = [
  "blake3",
  "crucible-qemu-protocol",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3089,6 +3148,28 @@ dependencies = [
  "crucible-qemu-protocol",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "crucible-source-birth-data"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "crucible-node-format",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-source-birth-worker"
+version = "0.1.0"
+dependencies = [
+ "crucible-node-format",
+ "crucible-source-birth-data",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6674,6 +6755,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
 
 [[package]]
 name = "same-file"

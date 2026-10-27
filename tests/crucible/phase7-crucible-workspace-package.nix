@@ -160,7 +160,7 @@
       }
       {
         label = "suite build info names the MIT boundary crates";
-        needle = "boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem";
+        needle = "boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem,crucible-node-format";
       }
       {
         label = "suite metadata inventories every project component license";

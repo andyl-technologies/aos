@@ -127,6 +127,8 @@
     "crucible-session"
     "crucible-control-api"
     "crucible-daemon"
+    "crucible-source-birth-data"
+    "crucible-source-birth-worker"
     "crucible-cli"
     "crucible-qemu-host"
     "crucible-qemu-plugin"
@@ -147,11 +149,11 @@
   in
     builtins.concatStringsSep "\n" (map readEntry names);
 
-  productionTestDoubleFailures =
+  productionTestDoubleFailuresFor = manifests: packages:
     lib.concatMap (
       package: let
-        manifest = realManifests.${package};
-        dependency = (manifest.dependencies or {}).crucible or null;
+        manifest = manifests.${package};
+        dependency = (manifest.dependencies or {}).crucible-engine or null;
         features =
           if builtins.isAttrs dependency
           then dependency.features or []
@@ -161,7 +163,23 @@
           "${package} enables crucible-engine/test-double in production dependencies"
         ]
     )
-    corePackages;
+    packages;
+
+  productionTestDoubleFailures = productionTestDoubleFailuresFor realManifests corePackages;
+  productionTestDoubleRegressionFailures = let
+    findings = productionTestDoubleFailuresFor {
+      crucible-cli.dependencies.crucible-engine.features = ["test-double"];
+    } ["crucible-cli"];
+    allowedFindings = productionTestDoubleFailuresFor {
+      crucible-cli.dependencies.crucible-engine.features = ["test-support"];
+    } ["crucible-cli"];
+  in
+    lib.optionals (findings == []) [
+      "production test-double regression failed to reject the renamed engine dependency"
+    ]
+    ++ lib.optionals (allowedFindings != []) [
+      "production test-double regression rejected an ordinary engine feature"
+    ];
 
   unconsumedFeatureFailures =
     lib.concatMap (
@@ -245,11 +263,24 @@
     }
     ++ assertFeatureSet "crucible-device" {
       default = [];
-    };
+    }
+    ++ assertFeatureSet "crucible-source-birth-data" {}
+    ++ assertFeatureSet "crucible-source-birth-worker" {};
+
+  workerDependencies = (readManifest "crucible-source-birth-worker").dependencies or {};
+  workerData = workerDependencies.crucible-source-birth-data or {};
+  workerDependencyFailures = lib.optionals (
+    builtins.attrNames workerDependencies
+    != ["crucible-source-birth-data"]
+    || (workerData."default-features" or null) != false
+    || (workerData.features or []) != []
+  ) ["source-birth worker must depend only on SourceBirth DATA without default or test features"];
 
   failures =
     featureFailures
+    ++ workerDependencyFailures
     ++ productionTestDoubleFailures
+    ++ productionTestDoubleRegressionFailures
     ++ unconsumedFeatureFailures
     ++ defaultGuestDependencyFailures
     ++ guestPolicyRegressionFailures

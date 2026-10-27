@@ -162,7 +162,8 @@ in
           grep -Fxq 'shmem_header_hash=${pkgs.qemu-crucible-source.passthru.shmemHeaderHash}' "$source_manifest"
           grep -Fxq 'plugin_cargo_deps_hash=${pkgs.qemu-crucible-source.passthru.cargoDepsHash}' "$source_manifest"
           grep -Fxq 'corresponding_source_scope=qemu-crucible,crucible-qemu-plugin' "$source_manifest"
-          grep -Fxq 'licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause' "$source_manifest"
+          grep -Fxq 'licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,BSD-2-Clause,BSD-3-Clause,BSL-1.0' "$source_manifest"
+          grep -Fxq 'jcs_number_formatter_license_option=BSL-1.0' "$source_manifest"
           grep -Fxq 'qemu_combined_work_license=GPL-2.0-only' "$source_manifest"
           grep -Fxq 'qemu_created_source_license=GPL-2.0-or-later' "$source_manifest"
 
@@ -179,6 +180,8 @@ in
           test -s "$source_root/licenses/QEMU-LICENSE.txt"
           test -s "$source_root/licenses/Apache-2.0.txt"
           test -s "$source_root/licenses/MIT.txt"
+          test -s "$source_root/licenses/BSL-1.0.txt"
+          cmp ${../../LICENSES/BSL-1.0.txt} "$source_root/licenses/BSL-1.0.txt"
           test -s "$source_root/licenses/GPL-2.0-only.txt"
           test -s "$source_root/licenses/GPL-2.0-or-later.txt"
           test -s "$source_root/licenses/AOS-QEMU-PATCHES.md"
@@ -192,6 +195,7 @@ in
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
+          test -z "$(find "$source_root/build/aos" "$source_root/plugin/workspace" -name run-state -print -quit)"
           test -f "$source_root/build/aos/crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h"
           samba_smbd_version=$(sed -n 's/^qemu_samba_smbd_version=//p' "$source_manifest")
           samba_smbd_source_hash_algo=$(sed -n 's/^qemu_samba_smbd_source_hash_algo=//p' "$source_manifest")
@@ -209,6 +213,7 @@ in
                 gnumake = null;
                 bash = "/aos-bash";
                 perl = "/aos-perl";
+                patch = "/aos-patch";
                 pkg-config = null;
                 meson = null;
                 ninja = null;
@@ -305,7 +310,7 @@ in
             | tr '\n' ' ' \
             | sed 's/[[:space:]][[:space:]]*/ /g' \
             > "$TMPDIR/crucible-suite-runtime-deps"
-          if ! grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux bash]; propagatedDeps = [];' \
+          if ! grep -Fq 'runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux bash gem5-native-original-scope-check dmtcp-source-owners-check]; propagatedDeps = [];' \
             "$TMPDIR/crucible-suite-runtime-deps"; then
             echo "Crucible suite runtime dependencies must retain the matching QEMU source and Bash wrapper" >&2
             exit 1

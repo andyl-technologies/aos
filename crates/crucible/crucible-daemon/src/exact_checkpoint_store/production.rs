@@ -614,7 +614,7 @@ impl ExactCheckpointStore {
         &self,
         closure: ProductionExactCheckpointClosure,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+        let choices = crate::campaign_replay_closure::GuardedCampaignReplayClosure::empty()
             .to_canonical_bytes()
             .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
         self.prepare_production_closure_inner(closure, choices, None)
@@ -953,7 +953,7 @@ impl ExactCheckpointStore {
         let choice_closure = choice_handle
             .read_all(MAX_PRODUCTION_CHOICE_CLOSURE_BYTES)
             .map_err(map_checkpoint_store_error)?;
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(
+        crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_canonical_bytes(
             &choice_closure,
         )
         .map_err(|_| invalid_root("checkpoint choice closure is malformed"))?;
@@ -1587,7 +1587,7 @@ mod tests {
             native_retirement: None,
             promotion_source: None,
             promotion_evidence: None,
-            choice_closure: crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            choice_closure: crate::campaign_replay_closure::GuardedCampaignReplayClosure::empty()
                 .to_canonical_bytes()
                 .expect("encode empty checkpoint choices"),
             reuse: None,

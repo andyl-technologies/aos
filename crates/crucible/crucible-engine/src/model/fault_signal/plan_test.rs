@@ -1,18 +1,19 @@
 //! Tests signal-plan admission, world resolution, canonical codecs, and bounds.
 use super::*;
 use crate::model::{
-    Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES,
-    NetworkPolicyArbitration, NetworkPolicyArtifactKind, NetworkPolicyCollision,
-    NetworkPolicyContention, NetworkPolicyIntegerPoint, NetworkPolicyIntegerTable,
-    NetworkPolicyInterpolation, NetworkPolicyMediumAccess, NetworkPolicyOutsideRange, NodeId, Plan,
-    ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, StoragePolicyArtifactKind,
-    StoragePolicyPath, StoragePolicyPathSelection, StoragePolicyResult, VmArchitecture,
-    WhiteBoxPolicy, World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology,
-    WorldMobileEndpoint, WorldNetworkForwarder, WorldNetworkForwarderKind, WorldNetworkInterface,
-    WorldNetworkMedium, WorldNetworkMediumKind, WorldNetworkPath, WorldNetworkPathHop,
-    WorldNetworkPolicyArtifact, WorldNetworkQueue, WorldNetworkQueueDiscipline,
-    WorldNetworkQueueOverflow, WorldNetworkSegment, WorldNetworkSegmentKind,
-    WorldNetworkTechnology, WorldNode, WorldNodeArchitecture, WorldStoragePolicyArtifact,
+    ComputeNodeDef, Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
+    MAX_SCENARIO_BINARY_BLOB_BYTES, NetworkPolicyArbitration, NetworkPolicyArtifactKind,
+    NetworkPolicyCollision, NetworkPolicyContention, NetworkPolicyIntegerPoint,
+    NetworkPolicyIntegerTable, NetworkPolicyInterpolation, NetworkPolicyMediumAccess,
+    NetworkPolicyOutsideRange, NodeId, Plan, ReadyPoint, ScenarioBinaryReader,
+    ScenarioBinaryWriter, StoragePolicyArtifactKind, StoragePolicyPath, StoragePolicyPathSelection,
+    StoragePolicyResult, VmArchitecture, WhiteBoxPolicy, World, WorldFaultDomain,
+    WorldFaultTargetRef, WorldFaultTopology, WorldMobileEndpoint, WorldNetworkForwarder,
+    WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkMedium, WorldNetworkMediumKind,
+    WorldNetworkPath, WorldNetworkPathHop, WorldNetworkPolicyArtifact, WorldNetworkQueue,
+    WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
+    WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNodeArchitecture,
+    WorldStoragePolicyArtifact,
 };
 #[path = "plan_test/resource_limits.rs"]
 mod resource_admission;
@@ -385,7 +386,7 @@ fn test_segment_id() -> FaultObjectId {
 fn test_world() -> World {
     let nodes = ["left", "right"]
         .into_iter()
-        .map(|name| WorldNode {
+        .map(|name| ComputeNodeDef {
             id: NodeId {
                 name: name.to_owned(),
             },

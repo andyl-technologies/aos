@@ -134,7 +134,7 @@ impl PreparedSemanticAttemptResult {
     /// # Errors
     ///
     /// Returns [`PreparedSemanticResultCodecError`] when the samples exceed the
-    /// QEMU world bound, contain duplicate or out-of-order nodes, or terminal
+    /// terminal fingerprint sample bound, contain duplicate or out-of-order nodes, or terminal
     /// evidence was already attached.
     pub fn with_terminal_fingerprints(
         mut self,
@@ -717,7 +717,7 @@ fn validate_measurement_evidence_order(
 fn validate_terminal_fingerprints(
     terminal_fingerprints: &[FingerprintSample],
 ) -> Result<(), PreparedSemanticResultCodecError> {
-    if terminal_fingerprints.len() > crate::MAX_QEMU_ATTEMPT_GENERATION_NODES {
+    if terminal_fingerprints.len() > crate::attempt_evidence::MAX_TERMINAL_FINGERPRINT_SAMPLES {
         return Err(PreparedSemanticResultCodecError::LimitExceeded);
     }
 
@@ -1186,7 +1186,7 @@ fn encode_terminal_fingerprints(
 fn decode_terminal_fingerprints(
     decoder: &mut Decoder<'_>,
 ) -> Result<Vec<FingerprintSample>, PreparedSemanticResultCodecError> {
-    let count = decoder.count_bounded(crate::MAX_QEMU_ATTEMPT_GENERATION_NODES)?;
+    let count = decoder.count_bounded(crate::attempt_evidence::MAX_TERMINAL_FINGERPRINT_SAMPLES)?;
     decoder.preflight_collection(count, size_of::<u32>() + size_of::<u64>() + 32)?;
 
     let mut terminal_fingerprints = Vec::with_capacity(count);

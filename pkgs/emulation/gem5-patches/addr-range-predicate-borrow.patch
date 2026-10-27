@@ -1,0 +1,68 @@
+--- a/src/base/addr_range_map.hh
++++ b/src/base/addr_range_map.hh
+@@ -42,7 +42,6 @@
+ #define __BASE_ADDR_RANGE_MAP_HH__
+ 
+ #include <cstddef>
+-#include <functional>
+ #include <list>
+ #include <map>
+ #include <utility>
+@@ -89,12 +88,12 @@
+     const_iterator
+     contains(const AddrRange &r) const
+     {
+-        return find(r, [r](const AddrRange r1) { return r.isSubset(r1); });
++        return find(r, [&r](const AddrRange &r1) { return r.isSubset(r1); });
+     }
+     iterator
+     contains(const AddrRange &r)
+     {
+-        return find(r, [r](const AddrRange r1) { return r.isSubset(r1); });
++        return find(r, [&r](const AddrRange &r1) { return r.isSubset(r1); });
+     }
+     /** @} */ // end of api_addr_range
+ 
+@@ -139,12 +138,12 @@
+     const_iterator
+     intersects(const AddrRange &r) const
+     {
+-        return find(r, [r](const AddrRange r1) { return r.intersects(r1); });
++        return find(r, [&r](const AddrRange &r1) { return r.intersects(r1); });
+     }
+     iterator
+     intersects(const AddrRange &r)
+     {
+-        return find(r, [r](const AddrRange r1) { return r.intersects(r1); });
++        return find(r, [&r](const AddrRange &r1) { return r.intersects(r1); });
+     }
+     /** @} */ // end of api_addr_range
+ 
+@@ -283,9 +282,12 @@
+      * @param f A condition on an address range
+      * @return An iterator that contains the input address range
+      */
+-    iterator
+-    find(const AddrRange &r, std::function<bool(const AddrRange)> cond)
+-    {
++    template <typename Predicate>
++    iterator
++    find(const AddrRange &r, const Predicate &cond)
++    {
++        // Predicates are invoked synchronously and never retained. Borrowing
++        // ranges avoids copying mask vectors or allocating a type-erased call.
+         // Check the cache first
+         for (auto c = cache.begin(); c != cache.end(); c++) {
+             auto it = *c;
+@@ -320,8 +322,9 @@
+         return end();
+     }
+ 
+-    const_iterator
+-    find(const AddrRange &r, std::function<bool(const AddrRange)> cond) const
++    template <typename Predicate>
++    const_iterator
++    find(const AddrRange &r, const Predicate &cond) const
+     {
+         return const_cast<AddrRangeMap *>(this)->find(r, cond);
+     }

@@ -1,219 +1,78 @@
 //! Descriptor-relative filesystem operations for attempt storage.
 
 use super::*;
-
-#[derive(Debug)]
-struct CleanupDirectory {
-    name_in_parent: Option<CString>,
-    device: u64,
-    inode: u64,
-    children: Vec<CString>,
-}
+use crucible_host_resources::{
+    LinuxDirectoryCleanup, LinuxDirectoryCleanupError, LinuxDirectoryCleanupOperation,
+};
 
 pub(super) fn cleanup_directory_contents(
-    mut directory: OwnedFd,
+    directory: OwnedFd,
     path: &Path,
     maximum_inodes: u64,
 ) -> Result<(), LinuxQemuAttemptStorageError> {
-    let root_metadata =
-        fstat(&directory).map_err(|source| io_error("identify QEMU cleanup root", path, source))?;
-    let root_device = root_metadata.st_dev;
-    let mut observed_entries = 1_u64;
-    let mut stack = vec![scan_cleanup_directory(
-        &directory,
-        None,
-        path,
-        root_device,
-        maximum_inodes,
-        &mut observed_entries,
-    )?];
+    LinuxDirectoryCleanup::new(directory, path)
+        .clear_contents(maximum_inodes)
+        .map_err(map_directory_cleanup_error)
+}
 
-    loop {
-        let Some(frame) = stack.last_mut() else {
-            return Err(LinuxQemuAttemptStorageError::CleanupBound {
-                path: path.to_owned(),
-                message: "artifact-cleanup traversal lost its root frame",
-            });
-        };
-        if let Some(child_name) = frame.children.pop() {
-            let child = openat(
-                &directory,
-                child_name.as_c_str(),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|source| io_error("open nested QEMU artifact directory", path, source))?;
-            let child_frame = scan_cleanup_directory(
-                &child,
-                Some(child_name),
+fn map_directory_cleanup_error(error: LinuxDirectoryCleanupError) -> LinuxQemuAttemptStorageError {
+    match error {
+        LinuxDirectoryCleanupError::DirectoryIdentity { path } => {
+            LinuxQemuAttemptStorageError::DirectoryIdentity { path }
+        }
+        LinuxDirectoryCleanupError::Bound { path, reason } => {
+            LinuxQemuAttemptStorageError::CleanupBound {
                 path,
-                root_device,
-                maximum_inodes,
-                &mut observed_entries,
-            )?;
-            directory = child;
-            stack.push(child_frame);
-            continue;
-        }
-
-        fsync(&directory).map_err(|source| {
-            io_error("synchronize cleaned QEMU artifact directory", path, source)
-        })?;
-        if stack.len() == 1 {
-            return Ok(());
-        }
-        let child = stack
-            .pop()
-            .ok_or_else(|| LinuxQemuAttemptStorageError::CleanupBound {
-                path: path.to_owned(),
-                message: "artifact-cleanup traversal lost a child frame",
-            })?;
-        let child_name = child.name_in_parent.as_ref().ok_or_else(|| {
-            LinuxQemuAttemptStorageError::CleanupBound {
-                path: path.to_owned(),
-                message: "nested artifact directory omitted its parent name",
+                message: reason.as_str(),
             }
-        })?;
-        let parent = openat(
-            &directory,
-            "..",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|source| io_error("reopen QEMU artifact parent directory", path, source))?;
-        let parent_frame =
-            stack
-                .last()
-                .ok_or_else(|| LinuxQemuAttemptStorageError::CleanupBound {
-                    path: path.to_owned(),
-                    message: "nested artifact directory omitted its parent frame",
-                })?;
-        verify_cleanup_directory_identity(&parent, parent_frame.device, parent_frame.inode, path)?;
-        verify_cleanup_child_identity(&parent, child_name, &directory, path)?;
-        unlinkat(&parent, child_name.as_c_str(), AtFlags::REMOVEDIR)
-            .map_err(|source| io_error("remove nested QEMU artifact directory", path, source))?;
-        directory = parent;
-    }
-}
-
-fn scan_cleanup_directory(
-    directory: &OwnedFd,
-    name_in_parent: Option<CString>,
-    path: &Path,
-    root_device: u64,
-    maximum_inodes: u64,
-    observed_entries: &mut u64,
-) -> Result<CleanupDirectory, LinuxQemuAttemptStorageError> {
-    let directory_metadata = fstat(directory)
-        .map_err(|source| io_error("identify QEMU artifact directory", path, source))?;
-    if directory_metadata.st_dev != root_device {
-        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
-            path: path.to_owned(),
-        });
-    }
-    let scan = openat(
-        directory,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(|source| io_error("open QEMU artifact directory for cleanup", path, source))?;
-    let mut buffer = [MaybeUninit::uninit(); ROOT_SCAN_BUFFER_BYTES];
-    let mut entries = RawDir::new(scan, &mut buffer);
-    let mut children = Vec::new();
-    while let Some(entry) = entries.next() {
-        let entry =
-            entry.map_err(|source| io_error("scan QEMU artifact directory", path, source))?;
-        let name = entry.file_name();
-        if name.to_bytes() == b"." || name.to_bytes() == b".." {
-            continue;
         }
-        *observed_entries = observed_entries.checked_add(1).ok_or_else(|| {
-            LinuxQemuAttemptStorageError::CleanupBound {
-                path: path.to_owned(),
-                message: "attempt artifact entry count overflowed",
-            }
-        })?;
-        if *observed_entries > maximum_inodes {
-            return Err(LinuxQemuAttemptStorageError::CleanupBound {
-                path: path.to_owned(),
-                message: "attempt artifacts exceed the cleanup-entry ceiling",
-            });
-        }
-        let metadata = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(|source| io_error("inspect QEMU attempt artifact", path, source))?;
-        if metadata.st_dev != root_device {
-            return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
-                path: path.to_owned(),
-            });
-        }
-        if FileType::from_raw_mode(metadata.st_mode) == FileType::Directory {
-            children
-                .try_reserve(1)
-                .map_err(|_| LinuxQemuAttemptStorageError::CleanupBound {
-                    path: path.to_owned(),
-                    message: "attempt artifact cleanup cannot retain bounded child names",
-                })?;
-            children.push(name.to_owned());
-        } else {
-            unlinkat(directory, name, AtFlags::empty())
-                .map_err(|source| io_error("remove QEMU attempt artifact", path, source))?;
-        }
-    }
-    children.sort();
-    Ok(CleanupDirectory {
-        name_in_parent,
-        device: directory_metadata.st_dev,
-        inode: directory_metadata.st_ino,
-        children,
-    })
-}
-
-fn verify_cleanup_directory_identity(
-    directory: &OwnedFd,
-    expected_device: u64,
-    expected_inode: u64,
-    path: &Path,
-) -> Result<(), LinuxQemuAttemptStorageError> {
-    let actual = fstat(directory)
-        .map_err(|source| io_error("reauthenticate QEMU artifact directory", path, source))?;
-    if actual.st_dev != expected_device || actual.st_ino != expected_inode {
-        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
-            path: path.to_owned(),
-        });
-    }
-    Ok(())
-}
-
-fn verify_cleanup_child_identity(
-    parent: &OwnedFd,
-    name: &CString,
-    child: &OwnedFd,
-    path: &Path,
-) -> Result<(), LinuxQemuAttemptStorageError> {
-    let named = openat(
-        parent,
-        name.as_c_str(),
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(|source| {
-        io_error(
-            "reauthenticate nested QEMU artifact directory",
+        LinuxDirectoryCleanupError::Io {
+            operation,
             path,
             source,
-        )
-    })?;
-    let expected = fstat(child)
-        .map_err(|source| io_error("identify retained QEMU artifact directory", path, source))?;
-    let actual = fstat(&named)
-        .map_err(|source| io_error("identify named QEMU artifact directory", path, source))?;
-    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
-        return Err(LinuxQemuAttemptStorageError::DirectoryIdentity {
-            path: path.to_owned(),
-        });
+        } => LinuxQemuAttemptStorageError::Io {
+            operation: qemu_cleanup_operation(operation),
+            path,
+            source,
+        },
     }
-    Ok(())
+}
+
+fn qemu_cleanup_operation(operation: LinuxDirectoryCleanupOperation) -> &'static str {
+    match operation {
+        LinuxDirectoryCleanupOperation::IdentifyRoot => "identify QEMU cleanup root",
+        LinuxDirectoryCleanupOperation::OpenNestedDirectory => {
+            "open nested QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::SynchronizeDirectory => {
+            "synchronize cleaned QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::ReopenParentDirectory => {
+            "reopen QEMU artifact parent directory"
+        }
+        LinuxDirectoryCleanupOperation::RemoveNestedDirectory => {
+            "remove nested QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::IdentifyDirectory => "identify QEMU artifact directory",
+        LinuxDirectoryCleanupOperation::OpenDirectoryScan => {
+            "open QEMU artifact directory for cleanup"
+        }
+        LinuxDirectoryCleanupOperation::ReadDirectoryEntry => "scan QEMU artifact directory",
+        LinuxDirectoryCleanupOperation::InspectEntry => "inspect QEMU attempt artifact",
+        LinuxDirectoryCleanupOperation::RemoveEntry => "remove QEMU attempt artifact",
+        LinuxDirectoryCleanupOperation::ReauthenticateDirectory => {
+            "reauthenticate QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::ReauthenticateChildDirectory => {
+            "reauthenticate nested QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::IdentifyRetainedDirectory => {
+            "identify retained QEMU artifact directory"
+        }
+        LinuxDirectoryCleanupOperation::IdentifyNamedDirectory => {
+            "identify named QEMU artifact directory"
+        }
+    }
 }
 
 pub(super) fn valid_attempt_namespace(namespace: &str) -> bool {
@@ -444,5 +303,143 @@ pub(super) fn io_error(
         operation,
         path: path.to_owned(),
         source: source.into(),
+    }
+}
+
+#[cfg(test)]
+mod cleanup_error_tests {
+    //! Checks exact historical QEMU error mapping from neutral cleanup failures.
+
+    use super::*;
+    use crucible_host_resources::LinuxDirectoryCleanupBoundReason;
+
+    #[test]
+    fn neutral_errors_preserve_qemu_operation_labels_paths_and_os_errors() {
+        let path = PathBuf::from("/diagnostic-only");
+        let operations = [
+            (
+                LinuxDirectoryCleanupOperation::IdentifyRoot,
+                "identify QEMU cleanup root",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::OpenNestedDirectory,
+                "open nested QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::SynchronizeDirectory,
+                "synchronize cleaned QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::ReopenParentDirectory,
+                "reopen QEMU artifact parent directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::RemoveNestedDirectory,
+                "remove nested QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::IdentifyDirectory,
+                "identify QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::OpenDirectoryScan,
+                "open QEMU artifact directory for cleanup",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::ReadDirectoryEntry,
+                "scan QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::InspectEntry,
+                "inspect QEMU attempt artifact",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::RemoveEntry,
+                "remove QEMU attempt artifact",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::ReauthenticateDirectory,
+                "reauthenticate QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::ReauthenticateChildDirectory,
+                "reauthenticate nested QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::IdentifyRetainedDirectory,
+                "identify retained QEMU artifact directory",
+            ),
+            (
+                LinuxDirectoryCleanupOperation::IdentifyNamedDirectory,
+                "identify named QEMU artifact directory",
+            ),
+        ];
+        for (operation, expected) in operations {
+            let error = map_directory_cleanup_error(LinuxDirectoryCleanupError::Io {
+                operation,
+                path: path.clone(),
+                source: io::Error::from_raw_os_error(libc::ENOENT),
+            });
+            match error {
+                LinuxQemuAttemptStorageError::Io {
+                    operation,
+                    path: actual,
+                    source,
+                } => {
+                    assert_eq!(operation, expected);
+                    assert_eq!(actual, path);
+                    assert_eq!(source.raw_os_error(), Some(libc::ENOENT));
+                }
+                other => panic!("unexpected mapped error: {other:?}"),
+            }
+        }
+
+        let reasons = [
+            (
+                LinuxDirectoryCleanupBoundReason::RootFrameMissing,
+                "artifact-cleanup traversal lost its root frame",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::ChildFrameMissing,
+                "artifact-cleanup traversal lost a child frame",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::ParentNameMissing,
+                "nested artifact directory omitted its parent name",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::ParentFrameMissing,
+                "nested artifact directory omitted its parent frame",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::EntryCountOverflow,
+                "attempt artifact entry count overflowed",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::EntryLimitExceeded,
+                "attempt artifacts exceed the cleanup-entry ceiling",
+            ),
+            (
+                LinuxDirectoryCleanupBoundReason::ChildNameReservationFailed,
+                "attempt artifact cleanup cannot retain bounded child names",
+            ),
+        ];
+        for (reason, expected) in reasons {
+            let error = map_directory_cleanup_error(LinuxDirectoryCleanupError::Bound {
+                path: path.clone(),
+                reason,
+            });
+            assert!(matches!(error,
+                LinuxQemuAttemptStorageError::CleanupBound { path: actual, message }
+                if actual == path && message == expected));
+        }
+
+        let error = map_directory_cleanup_error(LinuxDirectoryCleanupError::DirectoryIdentity {
+            path: path.clone(),
+        });
+        assert!(
+            matches!(error, LinuxQemuAttemptStorageError::DirectoryIdentity { path: actual }
+            if actual == path)
+        );
     }
 }

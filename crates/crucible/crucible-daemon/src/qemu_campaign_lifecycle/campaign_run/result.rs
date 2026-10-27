@@ -40,7 +40,7 @@ pub(super) fn campaign_watch_frame<E>(
     repository: &CampaignRepository,
     campaign: &CampaignName,
     snapshot: CampaignSnapshotId,
-    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    evidence: &AttemptExecutionEvidenceSnapshot,
     observation: Option<ObservationId>,
 ) -> Result<GuardedDefaultCampaignWatchFrame, GuardedDefaultCampaignRunError<E>>
 where
@@ -286,7 +286,7 @@ pub(super) fn authenticated_timeout_evidence<E>(
     repository: &CampaignRepository,
     observation_id: ObservationId,
     observation: &Observation,
-    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    evidence: &AttemptExecutionEvidenceSnapshot,
 ) -> Result<Option<GuardedCampaignTimeoutEvidence>, GuardedDefaultCampaignRunError<E>>
 where
     E: Error + 'static,
@@ -323,7 +323,7 @@ where
 }
 
 pub(super) fn capture_evidence_reaches_stop(
-    evidence: &QemuAttemptExecutionEvidenceSnapshot,
+    evidence: &AttemptExecutionEvidenceSnapshot,
     stop: &StopCondition,
 ) -> bool {
     match stop {

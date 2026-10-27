@@ -1,0 +1,38 @@
+--- a/include/dmtcp.h
++++ b/include/dmtcp.h
+@@ -512,6 +512,12 @@
+ void dmtcp_get_new_file_path(const char *abspath,
+                              const char *cwd,
+                              char *newpath) __attribute((weak));
++/* Rebinds a checkpointed file's saved copy after authenticated image import.
++ * This is distinct from the live file path and the next checkpoint directory.
++ * An absent hook preserves stock restart behavior. */
++void dmtcp_get_new_checkpoint_file_path(const char *original_saved_path,
++                                      char *resolved_path, size_t capacity)
++  __attribute((weak));
+ int dmtcp_must_overwrite_file(const char *path) __attribute((weak));
+ 
+ void dmtcp_initialize(void) __attribute((weak));
+--- a/src/plugin/ipc/file/fileconnection.cpp
++++ b/src/plugin/ipc/file/fileconnection.cpp
+@@ -473,6 +473,20 @@
+   }
+   _fileAlreadyExists = false;
+ 
++  // Saved copies belong to the imported historical image. Their operational
++  // path can differ from both the live file and the next checkpoint directory.
++  // Resolve before probing or opening the original namespace.
++  if (dmtcp_get_new_checkpoint_file_path) {
++    char resolvedSavedPath[PATH_MAX] = {0};
++    dmtcp_get_new_checkpoint_file_path(_savedFilePath.c_str(), resolvedSavedPath,
++                                     sizeof(resolvedSavedPath));
++    JASSERT(memchr(resolvedSavedPath, '\0', sizeof(resolvedSavedPath)) != NULL)
++      .Text("Saved checkpoint path exceeds relocation credit");
++    if (resolvedSavedPath[0] != '\0') {
++      _savedFilePath = resolvedSavedPath;
++    }
++  }
++
+   JTRACE("Restoring File Connection") (id()) (_path);
+   JASSERT(jalib::Filesystem::FileExists(_savedFilePath))
+     (_savedFilePath) (_path).Text("Unable to find checkpointed copy of file");

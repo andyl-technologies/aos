@@ -1,0 +1,25 @@
+--- a/src/subprocess-posix.cc
++++ b/src/subprocess-posix.cc
+@@ -34,6 +34,10 @@
+ extern char** environ;
+ 
+ #include "util.h"
++
++#ifndef AOS_NINJA_COMMAND_SHELL
++#error "AOS Ninja requires its source-built command shell"
++#endif
+ 
+ using namespace std;
+ 
+@@ -129,8 +133,9 @@
+   if (err != 0)
+     Fatal("posix_spawnattr_setflags: %s", strerror(err));
+ 
+-  const char* spawned_args[] = { "/bin/sh", "-c", command.c_str(), NULL };
+-  err = posix_spawn(&pid_, "/bin/sh", &action, &attr,
++  // Keep sh semantics while resolving the executable from the AOS closure.
++  const char* spawned_args[] = { "sh", "-c", command.c_str(), NULL };
++  err = posix_spawn(&pid_, AOS_NINJA_COMMAND_SHELL, &action, &attr,
+         const_cast<char**>(spawned_args), environ);
+   if (err != 0)
+     Fatal("posix_spawn: %s", strerror(err));

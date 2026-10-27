@@ -1,0 +1,293 @@
+--- a/src/util_exec.cpp
++++ b/src/util_exec.cpp
+@@ -20,6 +20,8 @@
+  ****************************************************************************/
+ 
+ #include "util.h"
++#include "dmtcp_source_command.h"
++#include "dmtcp_source_command_paths.h"
+ #include <fcntl.h>
+ #include <string.h>
+ #include <sys/resource.h>
+@@ -135,7 +137,7 @@
+     dmtcphjk = str;
+   }
+   unsetenv("LD_PRELOAD");
+-  int rc = _real_system(command);
++  int rc = dmtcp_source_command::run(DMTCP_SOURCE_COMMAND_SHELL, command);
+   if (str != NULL) {
+     setenv("LD_PRELOAD", dmtcphjk.c_str(), 1);
+   }
+@@ -342,7 +344,7 @@
+ static string
+ getScreenDir()
+ {
+-  string tmpdir = string(dmtcp_get_tmpdir()) + "/" + "uscreens";
++  string tmpdir = string(SharedData::getTmpDir()) + "/" + "uscreens";
+ 
+   Util::safeMkdir(tmpdir.c_str(), 0700);
+   return tmpdir;
+@@ -438,20 +440,19 @@
+ #ifdef COPY_BINARY
+ 
+   // cp /usr/bin/screen /tmp/dmtcp-USER@HOST/screen
+-  char cpCmdBuf[PATH_MAX * 2 + 8];
+ 
+   snprintf(newFilename, PATH_MAX, "%s/%s",
+-           dmtcp_get_tmpdir(),
++           SharedData::getTmpDir(),
+            jalib::Filesystem::BaseName(realFilename).c_str());
+ 
+-  snprintf(cpCmdBuf, sizeof(cpCmdBuf),
+-           "/bin/cp %s %s", realFilename, newFilename);
++  const std::string cpCommand = dmtcp_source_command::copyCommand(
++    DMTCP_SOURCE_COMMAND_COPY, realFilename, newFilename);
+ 
+   // Remove any stale copy, just in case it's not right.
+   JASSERT(unlink(newFilename) == 0 || errno == ENOENT) (newFilename);
+ 
+-  JASSERT(safeSystem(cpCmdBuf) == 0)(cpCmdBuf)
+-  .Text("call to system(cpCmdBuf) failed");
++  JASSERT(safeSystem(cpCommand.c_str()) == 0) (cpCommand)
++  .Text("call to executable copy command failed");
+ 
+   JASSERT(access(newFilename, X_OK) == 0) (newFilename) (JASSERT_ERRNO);
+ 
+--- /dev/null
++++ b/src/dmtcp_source_command.h
+@@ -0,0 +1,235 @@
++// SPDX-License-Identifier: LGPL-3.0-or-later
++// Copyright (c) 2026 Andyl, Inc.
++#ifndef DMTCP_SOURCE_COMMAND_H
++#define DMTCP_SOURCE_COMMAND_H
++
++#include <cerrno>
++#include <csignal>
++#include <dlfcn.h>
++#include <pthread.h>
++#include <spawn.h>
++#include <string>
++#include <sys/wait.h>
++#include <unistd.h>
++
++namespace dmtcp_source_command
++{
++
++/** Dispatches helper commands through the source-selected shell.
++ *
++ * The helper bypasses checkpoint wrappers, as libc system() did, but never
++ * asks libc to select its compiled-in /bin/sh. These functions and locks are
++ * process-private implementation state, not a native capture or restore permit.
++ */
++struct LibcFunctions
++{
++  using Spawn = decltype(&posix_spawn);
++  using Wait = decltype(&waitpid);
++  using SignalAction = decltype(&sigaction);
++  using SignalMask = decltype(&pthread_sigmask);
++  using Kill = decltype(&kill);
++
++  // Keep the already-loaded libc reference for the lifetime of these pointers.
++  // RTLD_NEXT could select another checkpoint plugin's PID wrapper instead.
++  void *module = dlopen("libc.so.6", RTLD_NOW | RTLD_NOLOAD);
++  Spawn spawn = resolve<Spawn>("posix_spawn");
++  Wait wait = resolve<Wait>("waitpid");
++  SignalAction action = resolve<SignalAction>("sigaction");
++  SignalMask mask = resolve<SignalMask>("pthread_sigmask");
++  Kill terminate = resolve<Kill>("kill");
++
++  template<class Function>
++  Function resolve(const char *name)
++  {
++    return module ? reinterpret_cast<Function>(dlsym(module, name)) : nullptr;
++  }
++
++  bool complete() const
++  {
++    return spawn && wait && action && mask && terminate;
++  }
++};
++
++struct SignalOwners
++{
++  pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++  unsigned users = 0;
++  struct sigaction interrupt{};
++  struct sigaction quit{};
++};
++
++inline SignalOwners &signalOwners()
++{
++  static SignalOwners owners;
++  return owners;
++}
++
++/** Restores caller signal state and retires a canceled helper child. */
++struct CommandScope
++{
++  const LibcFunctions &functions;
++  SignalOwners &owners;
++  sigset_t oldMask{};
++  bool signalsOwned = false;
++  bool maskOwned = false;
++  pid_t child = -1;
++
++  bool acquire()
++  {
++    pthread_mutex_lock(&owners.lock);
++    if (owners.users == 0) {
++      struct sigaction ignore{};
++      ignore.sa_handler = SIG_IGN;
++      sigemptyset(&ignore.sa_mask);
++      if (functions.action(SIGINT, &ignore, &owners.interrupt) < 0) {
++        pthread_mutex_unlock(&owners.lock);
++        return false;
++      }
++      if (functions.action(SIGQUIT, &ignore, &owners.quit) < 0) {
++        const int failure = errno;
++        functions.action(SIGINT, &owners.interrupt, nullptr);
++        pthread_mutex_unlock(&owners.lock);
++        errno = failure;
++        return false;
++      }
++    }
++    ++owners.users;
++    signalsOwned = true;
++    pthread_mutex_unlock(&owners.lock);
++
++    sigset_t blocked;
++    sigemptyset(&blocked);
++    sigaddset(&blocked, SIGCHLD);
++    const int error = functions.mask(SIG_BLOCK, &blocked, &oldMask);
++    if (error != 0) {
++      errno = error;
++      return false;
++    }
++    maskOwned = true;
++    return true;
++  }
++
++  void release()
++  {
++    const int saved = errno;
++    if (signalsOwned) {
++      pthread_mutex_lock(&owners.lock);
++      if (--owners.users == 0) {
++        functions.action(SIGINT, &owners.interrupt, nullptr);
++        functions.action(SIGQUIT, &owners.quit, nullptr);
++      }
++      signalsOwned = false;
++      pthread_mutex_unlock(&owners.lock);
++    }
++    if (maskOwned) {
++      functions.mask(SIG_SETMASK, &oldMask, nullptr);
++      maskOwned = false;
++    }
++    errno = saved;
++  }
++};
++
++// Runs only while pthread cancellation exits the waiting caller. This thread
++// must not re-enable cancellation while it retires its original command.
++inline void cancelCommand(void *argument)
++{
++  auto &scope = *static_cast<CommandScope *>(argument);
++  pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, nullptr);
++  if (scope.child > 0) {
++    scope.functions.terminate(scope.child, SIGKILL);
++    int status;
++    while (scope.functions.wait(scope.child, &status, 0) < 0 && errno == EINTR) {}
++    scope.child = -1;
++  }
++  scope.release();
++}
++
++/** Encodes one literal shell operand, including embedded quotes or newlines. */
++inline std::string quoteArgument(const char *argument)
++{
++  std::string quoted = "'";
++  for (const char *cursor = argument; *cursor; ++cursor) {
++    if (*cursor == '\'') {
++      quoted += "'\\''";
++    } else {
++      quoted += *cursor;
++    }
++  }
++  quoted += "'";
++  return quoted;
++}
++
++/** Preserves literal executable paths and prevents copy-option interpretation. */
++inline std::string copyCommand(const char *copy, const char *source,
++                               const char *destination)
++{
++  return quoteArgument(copy) + " -- " + quoteArgument(source) + " " +
++      quoteArgument(destination);
++}
++
++/** Returns the encoded helper wait status, or -1 for a parent-side error. */
++inline int run(const char *shell, const char *command)
++{
++  if (!shell || !*shell) {
++    errno = EINVAL;
++    return -1;
++  }
++  if (!command) return run(shell, "exit 0") == 0;
++
++  static const LibcFunctions functions;
++  if (!functions.complete()) {
++    errno = ENOSYS;
++    return -1;
++  }
++  CommandScope scope{functions, signalOwners()};
++  if (!scope.acquire()) {
++    scope.release();
++    return -1;
++  }
++
++  sigset_t defaults;
++  sigemptyset(&defaults);
++  if (scope.owners.interrupt.sa_handler != SIG_IGN) sigaddset(&defaults, SIGINT);
++  if (scope.owners.quit.sa_handler != SIG_IGN) sigaddset(&defaults, SIGQUIT);
++
++  posix_spawnattr_t attributes;
++  int error = posix_spawnattr_init(&attributes);
++  if (error != 0) {
++    errno = error;
++    scope.release();
++    return -1;
++  }
++  error = posix_spawnattr_setsigmask(&attributes, &scope.oldMask);
++  if (!error) error = posix_spawnattr_setsigdefault(&attributes, &defaults);
++  if (!error) error = posix_spawnattr_setflags(
++      &attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
++
++  char *arguments[] = {const_cast<char *>("sh"), const_cast<char *>("-c"),
++      const_cast<char *>("--"), const_cast<char *>(command), nullptr};
++  if (!error) error = functions.spawn(&scope.child, shell, nullptr,
++                                      &attributes, arguments, ::environ);
++  posix_spawnattr_destroy(&attributes);
++  if (error != 0) {
++    scope.child = -1;
++    errno = error;
++    scope.release();
++    return W_EXITCODE(127, 0);
++  }
++
++  int status = -1;
++  pid_t waited;
++  pthread_cleanup_push(cancelCommand, &scope);
++  do {
++    waited = functions.wait(scope.child, &status, 0);
++  } while (waited < 0 && errno == EINTR);
++  pthread_cleanup_pop(0);
++  // A completed wait consumes this child identity. Do not let cleanup signal
++  // a numeric PID after reap or after another waiter made the outcome unknown.
++  scope.child = -1;
++  scope.release();
++  return waited > 0 ? status : -1;
++}
++
++} // namespace dmtcp_source_command
++
++#endif

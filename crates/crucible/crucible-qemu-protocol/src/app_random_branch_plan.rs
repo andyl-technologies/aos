@@ -134,6 +134,14 @@ impl AppRandomBranchPlan {
         &self.entries
     }
 
+    /// Counts the complete canonical body without allocating encoding buffers.
+    ///
+    /// # Errors
+    /// Rejects encoded-size overflow or a plan beyond its original byte profile.
+    pub fn encoded_len(&self) -> Result<usize, AppRandomBranchPlanError> {
+        encoded_len(&self.entries)
+    }
+
     /// Encodes this plan in the canonical descriptor-body format.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {

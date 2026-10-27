@@ -1,0 +1,101 @@
+/* The previous consumed injection tail is a modeled retained fact. Its actual
+ * producer/injection proof is a separate prerequisite, never replayed here. */
+static void setup_consumed(bool low_known)
+{
+    if (initialized) {
+        assert(!pthread_mutex_destroy(&vm.crucible_gate_lock));
+        assert(!pthread_mutex_destroy(&vm.target.mutex));
+        assert(!pthread_mutex_destroy(&pic.lock));
+    }
+    memset(&vm, 0, sizeof(vm));
+    memset(&pic, 0, sizeof(pic));
+    memset(&pit, 0, sizeof(pit));
+    assert(!pthread_mutex_init(&vm.crucible_gate_lock, NULL));
+    assert(!pthread_mutex_init(&vm.target.mutex, NULL));
+    assert(!pthread_mutex_init(&pic.lock, NULL));
+    initialized = true;
+
+    current_owner = &guest_task;
+    host_now = 200;
+    vm.arch.vpic = &pic;
+    vm.arch.vpit = &pit;
+    vm.arch.crucible_clock.active = true;
+    vm.arch.crucible_clock.window_generation = 7;
+    vm.crucible_host_ceiling_ns = 1000;
+    vm.crucible_irq_input.enabled = true;
+    vm.crucible_continuation_roster_frozen = true;
+    vm.target.kvm = &vm;
+    vm.target.vcpu_id = 0;
+    vm.target.crucible_timer_run_owner = current;
+    vm.target.crucible_timer_run_invocation = 99;
+    vm.target.crucible_run_return.outstanding = true;
+    vm.target.crucible_run_return.original.invocation = 99;
+    vm.target.crucible_run_return.original.generation_begin = 7;
+    pic.kvm = &vm;
+    pic.pics[0].pics_state = &pic;
+    pic.pics[1].pics_state = &pic;
+    pic.pics[0].irq_base = 32;
+    pic.pics[0].isr = 1;
+    pic.pics[0].last_irr = low_known ? 0 : 1;
+    pic.irq_states[0] = low_known ? 0 : BIT(KVM_PIT_IRQ_SOURCE_ID);
+    pic.crucible_pit_issued = 1;
+    pic.crucible_pit[0] = (struct kvm_crucible_pic_pit_line) {
+        .original = { .sequence = 11, .generation = 7, .invocation = 5,
+            .native_vcpu_id = 0, .host_ns = 100, .logical_ns = 50 },
+        .geometry = pic_pit_geometry(&pic.pics[0]),
+        .vector = 32, .target_id = 0, .consume_invocation = 88,
+        .phase = CRUCIBLE_PIC_PIT_CONSUMED, .high_known = true,
+        .low_known = low_known, .low_tail_known = low_known,
+    };
+    pit.kvm = &vm;
+    pit.worker = &worker;
+    worker.task = &worker_task;
+    pit.pit_state.reinject = 1;
+    pit.pit_state.crucible.issued = 11;
+    pit.pit_state.crucible.awaiting_ack = true;
+    pit.pit_state.crucible.ack_sequence = 11;
+    pit.pit_state.crucible.ack_generation = 7;
+    pit.pit_state.crucible.ack_invocation = 5;
+    route = (struct kvm_kernel_irq_routing_entry) {
+        .type = KVM_IRQ_ROUTING_IRQCHIP, .gsi = 0,
+        .irqchip = { .irqchip = KVM_IRQCHIP_PIC_MASTER, .pin = 0 },
+        .set = kvm_pic_set_irq,
+    };
+    native_eoi_tails = native_wakes = native_requests = queued_work = 0;
+    dead_calls = generic_notifiers = controller_field_writes = 0;
+    accept_pic = true;
+    hold_guest_eoi_tail = guest_eoi_tail_waiting = release_guest_eoi_tail = false;
+    guest_tail_seen = false;
+    close_at_ack_queue = close_at_final_finish = final_credit_observed = false;
+    hold_final_tail = final_tail_waiting = release_final_tail = false;
+    change_geometry_at_final_finish = false;
+}
+
+static void enter_original_low_worker(struct kvm_crucible_pit_irq_birth *low)
+{
+    struct kvm_crucible_pit_journal *journal = &pit.pit_state.crucible;
+
+    current_owner = &worker_task;
+    *low = pic.crucible_pit[0].original;
+    low->phase = 1;
+    journal->count = 1;
+    journal->worker_active = true;
+    journal->worker_owner = current;
+    journal->irq_claimed = true;
+    journal->pending[0] = (struct kvm_crucible_pit_expiry) {
+        .sequence = low->sequence, .generation = low->generation,
+        .invocation = low->invocation, .native_vcpu_id = low->native_vcpu_id,
+        .host = low->host_ns, .logical = low->logical_ns, .phase = 1,
+        .irq_route_bits = low->route_bits,
+    };
+    vm.arch.crucible_clock.timer_owners = 1;
+    vm.crucible_irq_input.owners = 1;
+}
+
+static void leave_original_low_worker(void)
+{
+    pit.pit_state.crucible.worker_active = false;
+    vm.arch.crucible_clock.timer_owners = 0;
+    vm.crucible_irq_input.owners = 0;
+    current_owner = &guest_task;
+}

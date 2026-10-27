@@ -1162,13 +1162,13 @@
         anyhow::bail!("erased error");
       }
     '';
-    cliBoundaryFindings = scanErrorLoggingContent "crucible-cli/src/main.rs" true ''
+    cliBoundaryFindings = scanErrorLoggingContent "crucible/crucible-cli/src/main.rs" true ''
       fn main() -> anyhow::Result<()> {
         println!("cli output is allowed");
         Ok(())
       }
     '';
-    cliModuleFindings = scanErrorLoggingContent "crucible-cli/src/command.rs" true ''
+    cliModuleFindings = scanErrorLoggingContent "crucible/crucible-cli/src/command.rs" true ''
       pub fn command() -> anyhow::Result<()> {
         println!("command module output crosses the binary boundary");
         Ok(())
@@ -1186,16 +1186,16 @@
     ];
 
   manifestRegressionFailures = let
-    erasedFindings = scanManifestErrorPolicyContent "crucible-sim/Cargo.toml" ''
+    erasedFindings = scanManifestErrorPolicyContent "crucible/crucible-determinism/Cargo.toml" ''
       [dependencies]
       thiserror = { workspace = true }
       anyhow = { workspace = true }
     '' [];
-    missingTypedFindings = scanManifestErrorPolicyContent "crucible-sim/Cargo.toml" ''
+    missingTypedFindings = scanManifestErrorPolicyContent "crucible/crucible-determinism/Cargo.toml" ''
       [dependencies]
     '' [];
     handRolledFindings =
-      scanManifestErrorPolicyContent "crucible-harness/Cargo.toml" ''
+      scanManifestErrorPolicyContent "crucible/crucible-test-support/Cargo.toml" ''
         [dependencies]
       '' [
         ''

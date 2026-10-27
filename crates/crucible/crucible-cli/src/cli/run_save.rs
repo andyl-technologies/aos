@@ -219,7 +219,7 @@ pub(super) struct ResumeHandleEvidence {
     pub(super) configuration: crucible_engine::Configuration,
     pub(super) checkpoint: Checkpoint,
     pub(super) replay_closure:
-        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        crucible_daemon::campaign_replay_closure::GuardedCampaignReplayClosure,
     /// Retains a v6 source claim until campaign-owned replay reproduces it.
     pub(super) source_observation_proof: Option<Box<crucible_campaign::ObservationStopProof>>,
     /// Retains the original raw boundary for exact comparison with source replay.
@@ -494,7 +494,7 @@ where
         &evidence.scenario_form,
         &evidence.schedule,
         &evidence.checkpoint,
-        crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::SCHEMA_VERSION,
+        crucible_daemon::campaign_replay_closure::GuardedCampaignReplayClosure::SCHEMA_VERSION,
         replay_closure_payload,
     )
     .map_err(|error| artifact_error(error.to_string()))?;

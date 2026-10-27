@@ -1,0 +1,225 @@
+--- a/src/sim/crucible_output.hh
++++ b/src/sim/crucible_output.hh
+@@ -21,6 +21,14 @@
+ };
+ 
+ CrucibleNativeEventPosition crucibleNativeEventPosition();
++
++/** Enables source-owned device stops exactly once before the first callback. */
++bool crucibleConfigureDeviceBoundaries();
++/** Reads the immutable enabled mode and monotonic actual publication epoch. */
++bool crucibleDeviceBoundariesEnabled();
++uint64_t crucibleDevicePublicationEpoch();
++/** Notes a genuine request/completion birth; disabled profiles remain inert. */
++void crucibleNoteDevicePublication();
+ 
+ struct CrucibleConsolePublication
+ {
+--- a/src/sim/crucible_output.cc
++++ b/src/sim/crucible_output.cc
+@@ -18,6 +18,8 @@
+ constexpr size_t MaximumRetainedBytes = 16 * 1024 * 1024;
+ 
+ bool configured = false;
++bool deviceBoundariesEnabled = false;
++uint64_t devicePublicationEpoch = 0;
+ uint64_t configuredPid = 0;
+ int configuredFd = -1;
+ uint64_t nextOutputId = 1;
+@@ -25,6 +27,39 @@
+ uint64_t causalParent = 0;
+ size_t retainedBytes = 0;
+ std::deque<CrucibleConsolePublication> retained;
++}
++
++bool
++crucibleConfigureDeviceBoundaries()
++{
++    if (deviceBoundariesEnabled || crucibleModelIsExecuting() ||
++        crucibleNativeEventPosition().ordinal != 0)
++        return false;
++    deviceBoundariesEnabled = true;
++    return true;
++}
++
++bool
++crucibleDeviceBoundariesEnabled()
++{
++    return deviceBoundariesEnabled;
++}
++
++uint64_t
++crucibleDevicePublicationEpoch()
++{
++    return devicePublicationEpoch;
++}
++
++void
++crucibleNoteDevicePublication()
++{
++    if (!deviceBoundariesEnabled)
++        return;
++    fatal_if(!crucibleNativeEventPosition().active ||
++             devicePublicationEpoch == std::numeric_limits<uint64_t>::max(),
++             "Device publication has no finite actual callback birth");
++    ++devicePublicationEpoch;
+ }
+ 
+ void
+--- a/src/sim/simulate.cc
++++ b/src/sim/simulate.cc
+@@ -303,6 +303,7 @@
+     }
+ 
+     EventBoundaryResult result;
++    const uint64_t publicationEpoch = crucibleDevicePublicationEpoch();
+     while (!eventq->empty() && result.processedEvents < max_events &&
+            eventq->nextTick() < exclusive_tick) {
+         fatal_if(async_event,
+@@ -337,6 +338,10 @@
+             result.exitEvent = global_exit_event;
+             break;
+         }
++        // The entire genuine callback finishes. Its original output and every
++        // future backend event remain queued/owned before another callback.
++        if (crucibleDevicePublicationEpoch() != publicationEpoch)
++            break;
+     }
+ 
+     result.currentTick = curTick();
+--- a/src/dev/virtio/host_request.hh
++++ b/src/dev/virtio/host_request.hh
+@@ -48,6 +48,12 @@
+     void unserialize(CheckpointIn &cp) override;
+ 
+     bool setExecutionParent(uint64_t parent);
++    /** Binds one retained source-owned synchronous birth handler pre-callback.
++     * The caller keeps this unscheduled private Event alive for device lifetime.
++     * Its process() runs inside the original native birth callback. */
++    bool bindRequestHandler(Event *handler);
++    /** Reads genuine status and descriptor head in distinct typed row slots. */
++    std::vector<std::vector<uint64_t>> crucibleCompletionInventory() const;
+     std::vector<uint64_t> pendingRequestMetadata() const;
+     std::vector<uint8_t> pendingRequestBytes() const;
+     /** Reads every original unpublished FIFO body without consuming an entry. */
+@@ -138,6 +144,7 @@
+     uint64_t nextRequest = 1;
+     uint64_t retiredThrough = 0;
+     uint64_t executionParent = 0;
++    Event *requestHandler = nullptr;
+ };
+ 
+ } // namespace gem5
+--- a/src/dev/virtio/host_request.cc
++++ b/src/dev/virtio/host_request.cc
+@@ -34,6 +34,7 @@
+ #include "sim/system.hh"
+ #include "sim/crucible_state.hh"
+ #include "sim/crucible_output.hh"
++#include "sim/simulate.hh"
+ 
+ namespace gem5
+ {
+@@ -245,7 +246,37 @@
+         request.birthTickOrdinal = birth.tickOrdinal;
+         request.parent = executionParent;
+         requests.push_back(std::move(request));
+-    }
++        // The retained Python/native handler owns its state inside this process;
++        // it schedules future work without host polling or external workers.
++        if (requestHandler)
++            requestHandler->process();
++        crucibleNoteDevicePublication();
++    }
++}
++
++bool
++VirtIOHostRequest::bindRequestHandler(Event *handler)
++{
++    if (!handler || requestHandler || !requests.empty() || handler->scheduled() ||
++        crucibleNativeEventPosition().ordinal != 0 || crucibleModelIsExecuting())
++        return false;
++    requestHandler = handler;
++    return true;
++}
++
++std::vector<std::vector<uint64_t>>
++VirtIOHostRequest::crucibleCompletionInventory() const
++{
++    std::vector<std::vector<uint64_t>> result;
++    for (const Request &request : requests) {
++        if (request.completed) {
++            result.push_back({request.id, request.completionTick,
++                request.completionOrdinal, request.completionTickOrdinal,
++                request.status, request.writtenBytes, request.completionParent,
++                request.replyParent, request.queueIncarnation, request.head});
++        }
++    }
++    return result;
+ }
+ 
+ std::vector<uint64_t>
+@@ -423,6 +454,7 @@
+         selected->completionTickOrdinal = completion.tickOrdinal;
+         selected->completionParent = executionParent;
+         selected->writtenBytes = written;
++        crucibleNoteDevicePublication();
+         kick();
+     }
+     scheduleReplies();
+@@ -481,6 +513,9 @@
+     if (creditEvent.scheduled())
+         writer.set("request.credit_tick", creditEvent.when());
+     writer.set("request.retained_count", requests.size());
++    writer.reference("request.source_handler_event", requestHandler, "event");
++    writer.set("request.source_handler_present", requestHandler != nullptr);
++    writer.string("coverage.source_handler_payload", "source-owned-opaque-process-only");
+     size_t index = 0;
+     for (const Request &request : requests) {
+         const auto key = "request.retained[" + std::to_string(index++) + "]";
+--- a/src/dev/virtio/VirtIOHostRequest.py
++++ b/src/dev/virtio/VirtIOHostRequest.py
+@@ -32,6 +32,8 @@
+     cxx_exports = [
+         PyBindMethod("setExecutionParent"),
+         PyBindMethod("pendingRequestMetadata"),
++        PyBindMethod("bindRequestHandler"),
++        PyBindMethod("crucibleCompletionInventory"),
+         PyBindMethod("pendingRequestBytes"),
+         PyBindMethod("crucibleRequestPublicationInventory"),
+         PyBindMethod("crucibleRequestPublicationBytes"),
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -125,6 +125,13 @@
+                       py::return_value_policy::reference);
+     m.def("simulateUntilBoundary", &simulateUntilBoundary,
+           py::arg("exclusive_tick"), py::arg("max_events"));
++    m.def("crucibleConfigureDeviceBoundaries", &crucibleConfigureDeviceBoundaries);
++    m.def("crucibleDeviceBoundaryState", []() {
++        py::dict state;
++        state["enabled"] = crucibleDeviceBoundariesEnabled();
++        state["publication_epoch"] = std::to_string(crucibleDevicePublicationEpoch());
++        return state;
++    });
+     m.def("crucibleEventPosition", []() {
+         const auto position = crucibleNativeEventPosition();
+         py::dict result;
+--- a/src/python/m5/simulate.py
++++ b/src/python/m5/simulate.py
+@@ -614,6 +614,16 @@
+ )
+ 
+ 
++def crucibleConfigureDeviceBoundaries():
++    """Enables actual request/completion stops before the first native event."""
++    return _m5_event.crucibleConfigureDeviceBoundaries()
++
++
++def crucibleDeviceBoundaryState():
++    """Reads the original source mode and monotonic native publication epoch."""
++    return _m5_event.crucibleDeviceBoundaryState()
++
++
+ def crucibleEventPosition():
+     """Reads original native callback identity without executing an event."""
+     return _m5_event.crucibleEventPosition()

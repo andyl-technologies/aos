@@ -105,6 +105,27 @@ impl NinePInboundHead {
 }
 
 impl PluginNinePIo {
+    /// Observes the same submitted token's current owner and freeze obligation.
+    ///
+    /// This check neither consumes the token nor changes pending bookkeeping.
+    pub(crate) fn original_completion_token_current(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        token: &NinePRequestToken,
+    ) -> bool {
+        token.ninep_owner_id == self.owner_id
+            && self.pending_request_ids.contains(token.request_id)
+            && token.request_id < self.next_request_id()
+            && freeze.burst_active()
+            && token.device_token.burst_member()
+            && freeze
+                .completion_current(
+                    &token.device_token,
+                    crate::DeviceIoRequestOutcome::Completed,
+                )
+                .is_ok()
+    }
+
     /// Observes the registered physical head for an original pending request.
     ///
     /// The caller retains the original request token in the live callback map.
@@ -2449,5 +2470,43 @@ mod tests {
         assert_eq!(frame.src_node, src_node);
         assert_eq!(frame.seq, seq);
         assert!(usize::from(frame.len) <= MAX_FRAME_DATA);
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "Positive token controls intentionally panic if original successful setup or submission fails."
+)]
+mod whole_original_token_tests {
+    use super::*;
+    use crucible_qemu_shmem::KIND_VM;
+
+    #[test]
+    fn whole_original_ninep_token_rejects_foreign_owner_and_freeze() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        handle_9p_burst_start_callback(&ninep, &mut freeze, &slot).unwrap();
+        let header = RingHeader::new();
+        let mut entries: Vec<_> = (0..4).map(|_| FrameEntry::default()).collect();
+        let mut ring = NinePOutboundRing::new(10, 2, NINEP_IO_SLOT_U32, &header, &mut entries);
+        let token = ninep
+            .submit_request(
+                &mut freeze,
+                &slot,
+                &mut ring,
+                100,
+                &NinePRequest::new(b"Tread".to_vec()),
+            )
+            .unwrap()
+            .into_token();
+
+        assert!(ninep.original_completion_token_current(&freeze, &token));
+        assert!(!PluginNinePIo::new(2, 10, 11).original_completion_token_current(&freeze, &token));
+        assert!(!ninep.original_completion_token_current(&PluginDeviceIoFreeze::new(), &token));
+        assert_eq!(freeze.pending_requests(), 1);
+        assert!(freeze.burst_active());
+        assert_eq!(header.write_index(), 1);
     }
 }

@@ -1,0 +1,979 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Actual source helpers and native FD bodies with explicitly modeled peers.
+ * This is not a kernel, KVM_RUN, allocator-layout or memory-model witness.
+ * Every case is UNRUN. No authority follows the modeled original owner.
+ */
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <limits.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef int64_t s64;
+typedef int32_t s32;
+typedef uint64_t __u64;
+typedef uint32_t __u32;
+typedef int64_t __s64;
+typedef unsigned gfp_t;
+typedef struct { unsigned long bits[1]; } nodemask_t;
+typedef unsigned raw_spinlock_t;
+typedef unsigned spinlock_t;
+typedef struct { int value; } atomic_t;
+typedef unsigned wait_queue_head_t;
+
+#define __rcu
+#define __percpu
+#define __aligned(value) __attribute__((aligned(value)))
+#define ____cacheline_aligned_in_smp
+#define __fastpath_inline inline
+#define noinline
+#define __releases(value)
+#define __acquires(value)
+#define __RAW_SPIN_LOCK_UNLOCKED(name) 0
+#define EXPORT_SYMBOL_GPL(name)
+#define EXPORT_SYMBOL(name)
+#define PAGE_SIZE 4096UL
+#define U64_MAX UINT64_MAX
+#define ARRAY_SIZE(value) (sizeof(value) / sizeof((value)[0]))
+#define READ_ONCE(value) (value)
+#define WRITE_ONCE(value, input) ((value) = (input))
+#define raw_spin_lock_irqsave(lock, flags) do { (flags) = 0; assert(!*(lock)); *(lock) = 1; } while (0)
+#define raw_spin_unlock_irqrestore(lock, flags) do { (void)(flags); assert(*(lock)); *(lock) = 0; } while (0)
+#define lockdep_assert_held(lock) assert(*(lock))
+#define spin_lock(lock) do { assert(!*(lock)); *(lock) = 1; } while (0)
+#define spin_unlock(lock) do { assert(*(lock)); *(lock) = 0; } while (0)
+#define check_add_overflow(left, right, output) __builtin_add_overflow((left), (right), (output))
+#define likely(value) (value)
+#define unlikely(value) (value)
+#define IS_ENABLED(value) (value)
+#define CONFIG_32BIT 0
+#define BITS_PER_LONG (sizeof(unsigned long) * CHAR_BIT)
+#define BITS_PER_BYTE CHAR_BIT
+#define BITS_TO_LONGS(value) (((value) + BITS_PER_LONG - 1) / BITS_PER_LONG)
+#define BITBIT_NR(value) BITS_TO_LONGS(BITS_TO_LONGS(value))
+#define BITBIT_SIZE(value) (BITBIT_NR(value) * sizeof(long))
+#define L1_CACHE_BYTES 64
+#define NR_OPEN_DEFAULT BITS_PER_LONG
+#define max_t(type, left, right) ((type)(left) > (type)(right) ? (type)(left) : (type)(right))
+#define max(left, right) ((left) > (right) ? (left) : (right))
+#define round_down(value, alignment) ((value) & ~((alignment) - 1))
+#define GFP_KERNEL_ACCOUNT 0
+#define ERR_PTR(error) ((void *)(intptr_t)(error))
+#define PTR_ERR(pointer) ((long)(intptr_t)(pointer))
+#define IS_ERR(pointer) ((uintptr_t)(pointer) >= (uintptr_t)-4095)
+#define BUG_ON(condition) assert(!(condition))
+#define container_of(pointer, type, field) ((type *)((char *)(pointer) - offsetof(type, field)))
+static void publication_interleave(void *slot, void *value);
+#define rcu_assign_pointer(target, value) do { \
+	(target) = (value); \
+	publication_interleave((void *)&(target), (void *)(value)); \
+} while (0)
+#define files_fdtable(files) ((files)->fdt)
+#define smp_wmb() ((void)0)
+#define smp_rmb() ((void)0)
+#define rcu_dereference_sched(value) (value)
+#define rcu_access_pointer(value) (value)
+#define rcu_dereference_raw(value) (value)
+#define array_index_nospec(value, bound) (value)
+#define VFS_BUG_ON(value) assert(!(value))
+#define WARN_ON_ONCE(value) (value)
+#define FMODE_BACKING 1U
+#define wait_event(queue, condition) assert(condition)
+#define wake_up_all(queue) ((void)(queue))
+#define atomic_read(object) ((object)->value)
+#define atomic_dec_and_test(object) (--(object)->value == 0)
+#define fdt_words(table) ((table)->max_fds / BITS_PER_LONG)
+#define CRUCIBLE_RESOURCE_ALLOCATION_ROWS 4096U
+
+struct task_struct;
+struct mm_struct { int identity; };
+struct kmem_cache { int identity; };
+struct slab { int identity; };
+struct file_operations { int identity; };
+struct file { const struct file_operations *f_op; unsigned f_mode; };
+struct rcu_head { void (*callback)(struct rcu_head *); };
+
+@ALLOCATOR_HEADER@
+@FD_HEADER@
+@FD_TYPES@
+
+struct task_struct {
+	struct files_struct *files;
+	struct mm_struct *mm;
+	struct crucible_allocator_scope *crucible_allocator_scope;
+};
+
+static struct task_struct tasks[2];
+static struct task_struct *current = &tasks[0];
+static struct mm_struct address_space;
+static const struct file_operations kvm_chardev_ops;
+static struct file original_system_file = { .f_op = &kvm_chardev_ops };
+static bool in_task(void) { return true; }
+static u64 ktime_get_ns(void) { return 1; }
+
+@RESOURCE_TYPES@
+@ALLOCATOR_CORE@
+@RETIREMENT@
+@ALLOCATOR_DISPATCH@
+@FD_ENGINE@
+@RESOURCE_SINKS@
+
+static unsigned native_free_calls;
+static void slab_free_native(struct kmem_cache *cache, struct slab *slab,
+	void *object, unsigned long address)
+{
+	(void)cache;
+	(void)slab;
+	(void)object;
+	(void)address;
+	native_free_calls++;
+}
+
+@SLUB_WRAPPER@
+
+static unsigned native_allocations;
+static unsigned fail_allocation;
+static unsigned native_frees;
+static unsigned synchronized_readers;
+static struct rcu_head *pending_rcu;
+static bool immediate_rcu;
+static unsigned int sysctl_nr_open = 1048576;
+
+static unsigned int roundup_pow_of_two(unsigned int value)
+{
+	unsigned int result = 1;
+
+	while (result < value)
+		result <<= 1;
+	return result;
+}
+
+/* Deterministic source-control peer for native fdtable address reuse.
+ * Only the table header is reused; array/bitmap peers retain real malloc/free.
+ */
+static bool reuse_table_address;
+static struct fdtable reusable_table;
+
+static void *native_allocate(size_t bytes)
+{
+	native_allocations++;
+	if (native_allocations == fail_allocation)
+		return NULL;
+	return calloc(1, bytes);
+}
+
+static struct fdtable *native_allocate_fdtable(void)
+{
+	if (!reuse_table_address)
+		return native_allocate(sizeof(struct fdtable));
+
+	native_allocations++;
+	if (native_allocations == fail_allocation)
+		return NULL;
+	memset(&reusable_table, 0, sizeof(reusable_table));
+	return &reusable_table;
+}
+
+static void native_free(void *value)
+{
+	if (value)
+		native_frees++;
+	if (value != &reusable_table)
+		free(value);
+}
+
+static void synchronize_rcu(void) { synchronized_readers++; }
+static void call_rcu(struct rcu_head *head, void (*callback)(struct rcu_head *))
+{
+	assert(!pending_rcu);
+	head->callback = callback;
+	if (immediate_rcu)
+		callback(head);
+	else
+		pending_rcu = head;
+}
+
+static void bitmap_copy_and_extend(unsigned long *to, const unsigned long *from,
+	unsigned int old_bits, unsigned int new_bits)
+{
+	unsigned int bit;
+
+	for (bit = 0; bit < new_bits; bit++) {
+		unsigned long mask = 1UL << (bit % BITS_PER_LONG);
+
+		if (bit < old_bits && (from[bit / BITS_PER_LONG] & mask))
+			to[bit / BITS_PER_LONG] |= mask;
+		else
+			to[bit / BITS_PER_LONG] &= ~mask;
+	}
+}
+
+/* The selected native kmalloc_obj site allocates exactly a fdtable header. */
+#define kmalloc_obj(type, flags) \
+	_Generic((type *)NULL, struct fdtable *: native_allocate_fdtable)()
+#define kvmalloc_objs(type, count, flags) native_allocate(sizeof(type) * (count))
+#define kvmalloc(bytes, flags) native_allocate(bytes)
+#define kvfree(value) native_free(value)
+#define kfree(value) native_free(value)
+
+static unsigned int modeled_nofile = 512;
+static unsigned int modeled_rcu_depth;
+static unsigned long rlimit(int resource) { (void)resource; return modeled_nofile; }
+static void rcu_read_lock_sched(void) { modeled_rcu_depth++; }
+static void rcu_read_unlock_sched(void) { assert(modeled_rcu_depth); modeled_rcu_depth--; }
+static bool test_bit(unsigned int bit, const unsigned long *data)
+{
+	return !!(data[bit / BITS_PER_LONG] & (1UL << (bit % BITS_PER_LONG)));
+}
+static void __set_bit(unsigned int bit, unsigned long *data)
+{
+	data[bit / BITS_PER_LONG] |= 1UL << (bit % BITS_PER_LONG);
+}
+static void __clear_bit(unsigned int bit, unsigned long *data)
+{
+	data[bit / BITS_PER_LONG] &= ~(1UL << (bit % BITS_PER_LONG));
+}
+static unsigned int find_next_zero_bit(const unsigned long *data, unsigned int bits,
+	unsigned int start)
+{
+	while (start < bits && test_bit(start, data))
+		start++;
+	return start;
+}
+
+/* Modeled File refcounts/destructor, independently of native fdtable logic.
+ * The publication-window original is genuinely freed by this model peer;
+ * the returned native hook may retain its address but cannot follow it.
+ */
+static struct file *publication_original_to_free;
+static unsigned publication_original_frees;
+static unsigned replacement_gets;
+static struct file replacement_file;
+
+static struct file *get_file(struct file *file)
+{
+	assert(file);
+	if (file == &replacement_file)
+		replacement_gets++;
+	return file;
+}
+
+static int filp_close(struct file *file, struct files_struct *files)
+{
+	assert(file && files);
+	if (file == publication_original_to_free) {
+		publication_original_to_free = NULL;
+		publication_original_frees++;
+		free(file);
+	}
+	return 0;
+}
+
+static bool fd_is_open(unsigned int fd, struct fdtable *table)
+{
+	return test_bit(fd, table->open_fds);
+}
+
+@NATIVE_FD@
+
+static struct kmem_cache files_cache;
+static struct kmem_cache *files_cachep = &files_cache;
+static unsigned files_freed;
+static struct fdtable *close_files(struct files_struct *files) { return files->fdt; }
+static void kmem_cache_free(struct kmem_cache *cache, void *object)
+{
+	assert(cache == files_cachep && object);
+	files_freed++;
+}
+
+@NATIVE_FILES_PUT@
+
+static struct files_struct source_files[2];
+static struct kvm_crucible_kernel_resource_context contexts[2];
+
+static const struct crucible_fdtable_ops fd_ops = {
+	.owner_is_current = crucible_resource_allocator_current,
+	.admit_growth = crucible_resource_fdtable_growth,
+	.observe = crucible_resource_fdtable_retirement,
+	.observe_files = crucible_resource_fdtable_files_retirement,
+	.observe_slot = crucible_resource_fdtable_slot_retirement,
+};
+
+static u64 modeled_existing_baseline(unsigned int index)
+{
+	return sizeof(contexts[index]) + crucible_allocator_retirement_metadata_bytes() +
+		crucible_fdtable_registry_bytes();
+}
+
+static void initialize_owner(unsigned int index, u64 ceiling)
+{
+	struct files_struct *files = &source_files[index];
+	struct kvm_crucible_kernel_resource_context *context = &contexts[index];
+
+	files->count.value = 2;
+	files->fdt = &files->fdtab;
+	files->fdtab.max_fds = NR_OPEN_DEFAULT;
+	files->fdtab.fd = files->fd_array;
+	files->fdtab.open_fds = files->open_fds_init;
+	files->fdtab.close_on_exec = files->close_on_exec_init;
+	files->fdtab.full_fds_bits = files->full_fds_bits_init;
+	current->files = files;
+	current->mm = &address_space;
+	context->original_task = current;
+	context->original_mm = current->mm;
+	context->original_file = &original_system_file;
+	context->prepared = true;
+	context->create_scope_active = true;
+	context->create_actor = current;
+	context->create_files = files;
+	context->create_generation = context->generation = index + 1;
+	context->current_delivery = ARRAY_SIZE(context->delivery_scopes) + 1;
+	context->input.constructor_deadline_ns = 10;
+	context->reserved_bytes = modeled_existing_baseline(index);
+	context->input.reserved_ceiling = ceiling == UINT64_MAX ? ceiling : ceiling + context->reserved_bytes;
+	context->input.peak_ceiling = context->input.reserved_ceiling;
+	context->input.transient_ceiling = ceiling;
+	context->fdtable_scope.owner = context;
+	context->fdtable_scope.ops = &fd_ops;
+	context->fdtable_scope.task = current;
+	context->fdtable_scope.mm = current->mm;
+	context->fdtable_scope.files = files;
+	assert(crucible_fdtable_enter(&context->fdtable_scope));
+}
+
+/* The source-consuming rcu_assign_pointer peer injects a deterministic
+ * shared-files actor after the actual native store and before its return hook.
+ * Locks/RCU scheduling/refcounts remain modeled, not a kernel race witness.
+ */
+static bool publication_armed;
+static bool publication_replace;
+static struct files_struct *publication_files;
+static unsigned int publication_fd;
+static struct file *publication_original;
+static struct crucible_fdtable_slot_output publication_receipt;
+
+static void publication_interleave(void *slot, void *value)
+{
+	struct task_struct *original_actor;
+	struct crucible_fdtable_scope *scope = &contexts[0].fdtable_scope;
+	struct file *closed;
+
+	if (!publication_armed || value != publication_original ||
+	    slot != (void *)&publication_files->fdt->fd[publication_fd])
+		return;
+	publication_armed = false;
+	assert(scope->install_entered && !scope->installed);
+	assert(scope->install_generation == scope->generation);
+	assert(modeled_rcu_depth == 1 && !publication_files->file_lock);
+
+	original_actor = current;
+	current = &tasks[1];
+	current->files = publication_files;
+	current->mm = &address_space;
+	spin_lock(&publication_files->file_lock);
+	if (publication_replace) {
+		assert(do_dup2(publication_files, &replacement_file, publication_fd, O_CLOEXEC)
+		       == (int)publication_fd);
+		assert(publication_files->fdt->fd[publication_fd] == &replacement_file);
+		assert(replacement_gets == 1);
+	} else {
+		closed = file_close_fd_locked(publication_files, publication_fd);
+		spin_unlock(&publication_files->file_lock);
+		assert(closed == publication_original);
+		assert(!publication_files->fdt->fd[publication_fd]);
+		assert(!filp_close(closed, publication_files));
+	}
+	assert(scope->slot_lifetime.entered && scope->slot_lifetime.returned);
+	assert(scope->slot_lifetime.original == publication_original);
+	assert(scope->slot_lifetime.replacement == (publication_replace ? &replacement_file : NULL));
+	assert(scope->slot_lifetime.generation == scope->install_generation);
+	assert(scope->slot_lifetime.actor == current && !scope->slot_lifetime.files_retired);
+	assert(!scope->installed && scope->uncertain);
+	assert(publication_original_frees == 1 && !publication_original_to_free);
+	assert(!current->crucible_allocator_scope);
+	publication_receipt = contexts[0].fdtable_slot_lifetime;
+	current = original_actor;
+}
+
+static void actual_publication_window(bool replace)
+{
+	struct files_struct *files;
+	struct crucible_fdtable_scope *scope;
+	struct crucible_fdtable_slot_output original_receipt;
+	struct file *closed;
+	int descriptor;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	scope = &contexts[0].fdtable_scope;
+	descriptor = get_unused_fd_flags(O_CLOEXEC);
+	assert(descriptor >= 0);
+	publication_original = calloc(1, sizeof(*publication_original));
+	assert(publication_original);
+	publication_original_to_free = publication_original;
+	publication_files = files;
+	publication_fd = descriptor;
+	publication_replace = replace;
+	publication_armed = true;
+
+	fd_install(descriptor, publication_original);
+	assert(!publication_armed && !modeled_rcu_depth);
+	assert(scope->install_entered && scope->installed);
+	assert(scope->installed_file == publication_original && scope->installed_fd == (unsigned)descriptor);
+	assert(scope->slot_lifetime.returned && scope->uncertain);
+	assert(!memcmp(&publication_receipt, &contexts[0].fdtable_slot_lifetime,
+		       sizeof(publication_receipt)));
+	original_receipt = scope->slot_lifetime;
+
+	/* A new native slot lifetime must not overwrite the original clear.
+	 * Returned-install history neither resurrects nor owns that replacement.
+	 */
+	crucible_fdtable_leave(scope);
+	current = &tasks[1];
+	if (!replace) {
+		assert(get_unused_fd_flags(O_CLOEXEC) == descriptor);
+		fd_install(descriptor, &replacement_file);
+	}
+	spin_lock(&files->file_lock);
+	closed = file_close_fd_locked(files, descriptor);
+	spin_unlock(&files->file_lock);
+	assert(closed == &replacement_file);
+	assert(!memcmp(&original_receipt, &scope->slot_lifetime, sizeof(original_receipt)));
+	assert(!memcmp(&publication_receipt, &contexts[0].fdtable_slot_lifetime,
+		       sizeof(publication_receipt)));
+
+	/* The final files receipt preserves the earlier clear rather than
+	 * falsely attributing the already retired original to files teardown.
+	 */
+	put_files_struct(files);
+	put_files_struct(files);
+	assert(contexts[0].fdtable_files_lifetime.returned);
+	assert(!contexts[0].fdtable_files_lifetime.slot.files_retired);
+	assert(!memcmp(&original_receipt, &contexts[0].fdtable_files_lifetime.slot,
+		       sizeof(original_receipt)));
+	assert(publication_original_frees == 1);
+}
+
+static void actual_publication_peer_close(void) { actual_publication_window(false); }
+static void actual_publication_peer_replace(void) { actual_publication_window(true); }
+
+/* Direct controls of the actual private token producer/consumer. These do not
+ * assert that ordinary userspace can replace the selected Task's source scope.
+ */
+static void late_install_return_cannot_target_a_new_scope(void)
+{
+	struct crucible_fdtable_install_token original, duplicate, newer, forged;
+	struct crucible_fdtable_scope *old;
+	struct files_struct *old_files;
+	u64 sequence;
+	int old_fd, new_fd;
+
+	initialize_owner(0, UINT64_MAX);
+	old = &contexts[0].fdtable_scope;
+	old_files = current->files;
+	old_fd = get_unused_fd_flags(O_CLOEXEC);
+	crucible_fdtable_install(old_files, old_fd, &original_system_file, false, &original);
+	assert(original.original_scope == old && original.generation == old->generation);
+	duplicate = original;
+	crucible_fdtable_leave(old);
+
+	initialize_owner(1, UINT64_MAX);
+	new_fd = get_unused_fd_flags(O_CLOEXEC);
+	crucible_fdtable_install(current->files, new_fd, &replacement_file, false, &newer);
+	assert(newer.generation != original.generation);
+	forged = original;
+	forged.generation = newer.generation;
+	crucible_fdtable_install(old_files, old_fd, &original_system_file, true, &forged);
+	assert(!old->installed && !contexts[1].fdtable_scope.installed);
+
+	crucible_fdtable_install(old_files, old_fd, &original_system_file, true, &original);
+	assert(old->installed && !original.original_scope);
+	assert(!contexts[1].fdtable_scope.installed);
+	assert(contexts[1].fdtable_scope.installed_file == &replacement_file);
+	sequence = old->sequence;
+	crucible_fdtable_install(old_files, old_fd, &original_system_file, true, &duplicate);
+	assert(old->uncertain && old->sequence == sequence);
+	assert(!contexts[1].fdtable_scope.installed);
+	crucible_fdtable_install(current->files, new_fd, &replacement_file, true, &newer);
+	assert(contexts[1].fdtable_scope.installed && !contexts[1].fdtable_scope.uncertain);
+}
+
+static void clear_requires_actual_slot_and_original_generation(void)
+{
+	struct files_struct *files;
+	struct crucible_fdtable_scope *scope;
+	struct crucible_fdtable_install_token install;
+	struct crucible_fdtable_slot_token clear;
+	u64 generation;
+	int descriptor;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	scope = &contexts[0].fdtable_scope;
+	descriptor = get_unused_fd_flags(O_CLOEXEC);
+	crucible_fdtable_install(files, descriptor, &original_system_file, false, &install);
+	spin_lock(&files->file_lock);
+	crucible_fdtable_slot_clear_begin(files, descriptor, &original_system_file, NULL, &clear);
+	assert(!clear.scopes && !scope->slot_lifetime.entered);
+	crucible_fdtable_slot_clear_begin(files, descriptor, NULL, NULL, &clear);
+	assert(!clear.scopes && !scope->slot_lifetime.entered);
+
+	rcu_assign_pointer(files->fdt->fd[descriptor], &original_system_file);
+	crucible_fdtable_slot_clear_begin(files, descriptor, &replacement_file, NULL, &clear);
+	assert(!clear.scopes && !scope->slot_lifetime.entered);
+	generation = scope->install_generation;
+	scope->install_generation++;
+	crucible_fdtable_slot_clear_begin(files, descriptor, &original_system_file, NULL, &clear);
+	assert(!clear.scopes && !scope->slot_lifetime.entered);
+	scope->install_generation = generation;
+	assert(file_close_fd_locked(files, descriptor) == &original_system_file);
+	spin_unlock(&files->file_lock);
+	assert(scope->slot_lifetime.returned && !scope->installed);
+	crucible_fdtable_install(files, descriptor, &original_system_file, true, &install);
+	assert(scope->installed && scope->slot_lifetime.returned);
+}
+
+static void actual_slot_reservation_unwind(void)
+{
+	struct files_struct *files;
+	int descriptor;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	files->next_fd = 63;
+	files->open_fds_init[0] = ~0UL >> 1;
+	descriptor = get_unused_fd_flags(O_CLOEXEC);
+	assert(descriptor == 63 && files->next_fd == 64);
+	assert(test_bit(63, files->fdt->open_fds));
+	assert(test_bit(63, files->fdt->close_on_exec));
+	assert(test_bit(0, files->fdt->full_fds_bits));
+	assert(!native_allocations);
+	put_unused_fd(descriptor);
+	assert(files->next_fd == 63 && !test_bit(63, files->fdt->open_fds));
+	assert(!test_bit(0, files->fdt->full_fds_bits));
+	assert(contexts[0].fdtable_scope.slot_result == 63);
+	assert(contexts[0].fdtable_scope.slot_released);
+	assert(!contexts[0].fdtable_scope.uncertain);
+}
+
+static void actual_slot_growth_and_install(bool slow)
+{
+	struct files_struct *files;
+	int descriptor;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	files->next_fd = 64;
+	files->open_fds_init[0] = ~0UL;
+	files->full_fds_bits_init[0] = 1;
+	descriptor = get_unused_fd_flags(O_CLOEXEC);
+	assert(descriptor == 64 && files->next_fd == 65);
+	assert(files->fdt->max_fds == 128 && native_allocations == 3);
+	files->resize_in_progress = slow;
+	fd_install(descriptor, &original_system_file);
+	assert(files->fdt->fd[descriptor] == &original_system_file);
+	assert(contexts[0].fdtable_scope.install_entered && contexts[0].fdtable_scope.installed);
+	assert(contexts[0].fdtable_scope.installed_file == &original_system_file);
+	assert(!contexts[0].fdtable_scope.slot_released && !contexts[0].fdtable_scope.uncertain);
+	assert(!modeled_rcu_depth);
+	__free_fdtable(files->fdt);
+}
+
+static void actual_fast_install(void) { actual_slot_growth_and_install(false); }
+static void actual_slow_install(void) { actual_slot_growth_and_install(true); }
+
+static void installed_slot_clears_after_source_leave(void)
+{
+	struct files_struct *files;
+	int descriptor;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	descriptor = get_unused_fd_flags(O_CLOEXEC);
+	assert(descriptor >= 0);
+	fd_install(descriptor, &original_system_file);
+	crucible_fdtable_leave(&contexts[0].fdtable_scope);
+	contexts[0].closed = true;
+	current = &tasks[1];
+	spin_lock(&files->file_lock);
+	assert(file_close_fd_locked(files, descriptor) == &original_system_file);
+	spin_unlock(&files->file_lock);
+	assert(!files->fdt->fd[descriptor] && !test_bit(descriptor, files->fdt->open_fds));
+	assert(contexts[0].fdtable_slot_lifetime.entered);
+	assert(contexts[0].fdtable_slot_lifetime.returned);
+	assert(contexts[0].fdtable_slot_lifetime.original == &original_system_file);
+	assert(contexts[0].fdtable_slot_lifetime.actor == current);
+	assert(!current->crucible_allocator_scope);
+}
+
+static void actual_emfile_before_growth(void)
+{
+	struct files_struct *files;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	modeled_nofile = 64;
+	files->next_fd = 64;
+	files->open_fds_init[0] = ~0UL;
+	files->full_fds_bits_init[0] = 1;
+	assert(get_unused_fd_flags(O_CLOEXEC) == -EMFILE);
+	assert(!native_allocations && files->next_fd == 64);
+	assert(!contexts[0].fdtable_scope.records_used);
+	assert(contexts[0].fdtable_scope.slot_result == -EMFILE);
+	assert(contexts[0].fdtable_scope.slot_returned);
+}
+
+static void failed_allocation_prefix(void)
+{
+	struct fdtable *result;
+	unsigned int failure;
+
+	initialize_owner(0, UINT64_MAX);
+	for (failure = 1; failure <= 3; failure++) {
+		struct crucible_fdtable_record *record;
+		unsigned int index = contexts[0].fdtable_scope.records_used;
+
+		native_allocations = native_frees = 0;
+		fail_allocation = failure;
+		result = alloc_fdtable(128);
+		assert(IS_ERR(result) && PTR_ERR(result) == -ENOMEM);
+		record = &contexts[0].fdtable_scope.records[index];
+		assert(record->allocation_returned && record->native_result == -ENOMEM);
+		assert(native_allocations == failure && native_frees == failure - 1);
+		assert((record->table != NULL) == (failure > 1));
+		assert((record->array != NULL) == (failure > 2));
+		assert(!record->bitmaps);
+		assert(record->part_free_returned[0] == (failure > 1));
+		assert(record->part_free_returned[1] == (failure > 2));
+		assert(!record->part_free_entered[2]);
+	}
+}
+
+static void delayed_original_rcu_after_source_leave(void)
+{
+	struct files_struct *files;
+	struct crucible_fdtable_record *original;
+	struct rcu_head *deferred;
+	unsigned int record;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	files->open_fds_init[0] = ~0UL;
+	files->close_on_exec_init[0] = 3;
+	files->full_fds_bits_init[0] = 1;
+	files->fd_array[3] = &original_system_file;
+	spin_lock(&files->file_lock);
+	assert(!expand_fdtable(files, 127));
+	assert(files->fdt->open_fds[0] == ~0UL);
+	assert(files->fdt->close_on_exec[0] == 3);
+	assert(files->fdt->full_fds_bits[0] & 1);
+	assert(files->fdt->fd[3] == &original_system_file);
+	assert(!files->fdt->fd[64] && !files->fdt->open_fds[1]);
+	assert(!pending_rcu);
+	record = 1;
+	assert(files->fdt->crucible_origin.record == &contexts[0].fdtable_scope.records[record]);
+	original = &contexts[0].fdtable_scope.records[record];
+	assert(original->allocation_returned && original->publication_returned);
+	assert(!expand_fdtable(files, 128));
+	spin_unlock(&files->file_lock);
+	assert(pending_rcu && original->rcu_queue_entered && original->rcu_queue_returned && !original->free_returned);
+	assert(synchronized_readers == 2);
+
+	crucible_fdtable_leave(&contexts[0].fdtable_scope);
+	contexts[0].closed = true;
+	current = &tasks[1];
+	deferred = pending_rcu;
+	pending_rcu = NULL;
+	deferred->callback(deferred);
+	assert(original->rcu_entered && original->free_returned);
+	assert(original->rcu_actor == current);
+	assert(contexts[0].fdtable_retirements[record].generation == original->generation);
+	assert(contexts[0].fdtable_retirements[record].free_returned);
+	assert(!current->crucible_allocator_scope);
+	__free_fdtable(files->fdt);
+}
+
+static void immediate_rcu_before_queue_return(void)
+{
+	struct files_struct *files;
+	struct crucible_fdtable_record *original;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	spin_lock(&files->file_lock);
+	assert(!expand_fdtable(files, 127));
+	original = &contexts[0].fdtable_scope.records[1];
+	immediate_rcu = true;
+	assert(!expand_fdtable(files, 128));
+	spin_unlock(&files->file_lock);
+	assert(!pending_rcu && original->rcu_entered && original->free_returned);
+	assert(original->rcu_queue_returned);
+	assert(contexts[0].fdtable_retirements[1].rcu_queue_returned);
+	assert(contexts[0].fdtable_retirements[1].free_returned);
+	__free_fdtable(files->fdt);
+}
+
+static void actual_last_files_put_after_owner_exit(void)
+{
+	struct files_struct *files;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	put_files_struct(files);
+	assert(!files_freed && !contexts[0].fdtable_scope.files_lifetime.entered);
+	crucible_fdtable_leave(&contexts[0].fdtable_scope);
+	contexts[0].closed = true;
+	current->files = NULL;
+	current = &tasks[1];
+	put_files_struct(files);
+	assert(files_freed == 1);
+	assert(contexts[0].fdtable_files_lifetime.entered);
+	assert(contexts[0].fdtable_files_lifetime.returned);
+	assert(contexts[0].fdtable_files_lifetime.files == files);
+	assert(!current->crucible_allocator_scope);
+}
+
+static void corrupt_table_origin_keeps_actual_failed_custody(void)
+{
+	struct fdtable *table;
+	struct crucible_fdtable_record *record;
+
+	initialize_owner(0, UINT64_MAX);
+	table = alloc_fdtable(128);
+	assert(!IS_ERR(table));
+	record = &contexts[0].fdtable_scope.records[0];
+	table->crucible_origin.generation++;
+	__free_fdtable(table);
+	assert(contexts[0].fdtable_scope.uncertain);
+	assert(record->origin_mismatch && record->free_returned);
+	assert(record->refused_origin.generation != record->generation);
+	assert(record->part_free_returned[0] && record->part_free_returned[1]);
+	assert(record->part_free_returned[2] && native_frees == 3);
+	assert(contexts[0].fdtable_retirements[0].free_returned);
+}
+
+static void reused_table_address_gets_a_new_birth(void)
+{
+	struct fdtable *first, *second;
+	struct crucible_fdtable_record *old, *next;
+	u64 original_sequence;
+
+	initialize_owner(0, UINT64_MAX);
+	reuse_table_address = true;
+	first = alloc_fdtable(128);
+	assert(!IS_ERR(first));
+	assert(first == &reusable_table && native_allocations == 3);
+	assert(first->fd && (void *)first->fd != (void *)first);
+	assert(first->open_fds && (void *)first->open_fds != (void *)first);
+	old = &contexts[0].fdtable_scope.records[0];
+	__free_fdtable(first);
+	assert(old->free_returned);
+	original_sequence = old->sequence;
+
+	second = alloc_fdtable(128);
+	assert(second == first);
+	assert(native_allocations == 6);
+	assert(second->fd && (void *)second->fd != (void *)second);
+	assert(second->open_fds && (void *)second->open_fds != (void *)second);
+	next = &contexts[0].fdtable_scope.records[1];
+	assert(second->crucible_origin.record == next);
+	assert(next->generation != old->generation);
+	assert(!next->free_entered && !next->origin_mismatch);
+	__free_fdtable(second);
+	assert(next->free_returned && !next->origin_mismatch);
+	assert(old->sequence == original_sequence);
+	assert(contexts[0].fdtable_retirements[0].generation == old->generation);
+	assert(contexts[0].fdtable_retirements[1].generation == next->generation);
+	assert(!contexts[0].fdtable_scope.uncertain && native_frees == 6);
+}
+
+static void growth_quote_test(unsigned int short_axis)
+{
+	struct fdtable *result;
+	struct crucible_fdtable_quote quote;
+	u64 bytes;
+
+	/* The failed prewalk retains the production constructor's actual tuple.
+	 * A fresh installed model owner rederives that tuple before any work.
+	 */
+	initialize_owner(0, 0);
+	result = alloc_fdtable(128);
+	assert(IS_ERR(result) && !native_allocations);
+	quote = contexts[0].fdtable_scope.records[0].quote;
+	bytes = quote.table_bytes + quote.array_bytes + quote.bitmap_bytes + quote.counter_bytes;
+	assert(bytes);
+	crucible_fdtable_leave(&contexts[0].fdtable_scope);
+
+	initialize_owner(1, bytes);
+	if (short_axis == 1)
+		contexts[1].input.reserved_ceiling--;
+	if (short_axis == 2)
+		contexts[1].input.peak_ceiling--;
+	if (short_axis == 3)
+		contexts[1].input.transient_ceiling--;
+	result = alloc_fdtable(128);
+	if (!short_axis) {
+		assert(!IS_ERR(result) && native_allocations == 3);
+		assert(contexts[1].reserved_bytes == bytes + modeled_existing_baseline(1));
+		assert(contexts[1].fdtable_requested_bytes == bytes);
+		assert(!memcmp(&quote, &contexts[1].fdtable_scope.records[0].quote, sizeof(quote)));
+		__free_fdtable(result);
+		assert(native_frees == 3);
+		return;
+	}
+	assert(IS_ERR(result) && !native_allocations);
+	assert(contexts[1].uncertain && contexts[1].fdtable_scope.uncertain);
+	assert(contexts[1].fdtable_scope.records[0].quote.native_slots == 128);
+	assert(!contexts[1].fdtable_scope.records[0].admitted);
+	assert(!contexts[1].fdtable_scope.records[0].allocation_entered);
+	contexts[1].input.reserved_ceiling = contexts[1].input.peak_ceiling = bytes + modeled_existing_baseline(1);
+	contexts[1].input.transient_ceiling = bytes;
+	result = alloc_fdtable(128);
+	assert(IS_ERR(result) && !native_allocations);
+}
+
+static void growth_exact(void) { growth_quote_test(0); }
+static void growth_reserved_short(void) { growth_quote_test(1); }
+static void growth_peak_short(void) { growth_quote_test(2); }
+static void growth_transient_short(void) { growth_quote_test(3); }
+
+static unsigned observed_retirements;
+static struct crucible_slab_retirement latest;
+static bool model_current(void *owner) { return owner != NULL; }
+static bool model_reserve(void *owner, const struct crucible_slab_request *request, void **lease)
+{
+	assert(owner && request->stride_bytes);
+	*lease = owner;
+	return true;
+}
+static void model_complete(void *owner, void *lease, const struct crucible_slab_output *output)
+{
+	assert(owner == lease && output);
+}
+static void model_retirement(void *owner, void *lease, const struct crucible_slab_retirement *output)
+{
+	assert(owner == lease);
+	assert(current->crucible_allocator_scope->cleanup_observer);
+	assert(crucible_allocator_cleanup_observer(current->crucible_allocator_scope));
+	{
+		struct crucible_slab_request recursive_request = { };
+		struct crucible_allocator_token recursive_token;
+
+		assert(!crucible_allocator_slab_reserve(&recursive_request, &recursive_token));
+	}
+	if (output->sequence > latest.sequence)
+		latest = *output;
+	observed_retirements++;
+}
+
+static const struct crucible_allocator_ops allocator_ops = {
+	.source_current = model_current,
+	.reserve_slab = model_reserve,
+	.complete_slab = model_complete,
+	.observe_slab_retirement = model_retirement,
+};
+
+static void retirement_after_actor_change(void)
+{
+	struct kmem_cache cache = { 1 };
+	struct slab slab = { 1 };
+	char object[32];
+	struct crucible_allocator_scope scope = {
+		.original_task = current,
+		.original_owner = object,
+		.original_ops = &allocator_ops,
+	};
+	struct crucible_allocator_token token;
+	struct crucible_slab_request request = {
+		.original_cache = &cache,
+		.requested_bytes = 32, .object_bytes = 32, .stride_bytes = 32,
+		.slab_objects = 1, .minimum_objects = 1, .slab_backing_bound = PAGE_SIZE,
+	};
+	struct crucible_slab_output output = {
+		.native_object = object, .native_slab = &slab, .native_cache = &cache,
+		.native_stride_bytes = 32, .native_attempted = true,
+	};
+	struct crucible_retirement_group group;
+
+	assert(crucible_allocator_enter(&scope));
+	assert(crucible_allocator_slab_reserve(&request, &token));
+	crucible_allocator_slab_complete(&token, &output);
+	assert(crucible_allocator_leave(&scope));
+	current = &tasks[1];
+	slab_free(&cache, &slab, object, 0);
+	assert(native_free_calls == 1 && observed_retirements == 2);
+	assert(latest.object_free_entered && latest.object_free_returned);
+	assert(!latest.slab_free_returned && !current->crucible_allocator_scope);
+	crucible_allocator_slab_free_begin(&cache, &slab, &group);
+	assert(!latest.slab_free_returned);
+	crucible_allocator_slab_free_complete(&group);
+	assert(latest.slab_free_entered && latest.slab_free_returned);
+	assert(!current->crucible_allocator_scope);
+}
+
+static void foreign_mutation_does_not_become_foreign_permission(void)
+{
+	struct fdtable *result;
+	struct files_struct *files;
+
+	initialize_owner(0, UINT64_MAX);
+	files = current->files;
+	current = &tasks[1];
+	current->files = files;
+	current->mm = &address_space;
+	result = alloc_fdtable(128);
+	assert(!IS_ERR(result) && native_allocations == 3);
+	assert(contexts[0].fdtable_scope.uncertain);
+	assert(!result->crucible_origin.record);
+	__free_fdtable(result);
+	assert(native_frees == 3);
+}
+
+static void run_case(void (*test)(void))
+{
+	pid_t child = fork();
+	int status;
+
+	assert(child >= 0);
+	if (!child) {
+		test();
+		_exit(0);
+	}
+	assert(waitpid(child, &status, 0) == child);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+int main(void)
+{
+	run_case(actual_publication_peer_close);
+	run_case(actual_publication_peer_replace);
+	run_case(late_install_return_cannot_target_a_new_scope);
+	run_case(clear_requires_actual_slot_and_original_generation);
+	run_case(actual_slot_reservation_unwind);
+	run_case(actual_fast_install);
+	run_case(actual_slow_install);
+	run_case(actual_emfile_before_growth);
+	run_case(installed_slot_clears_after_source_leave);
+	run_case(failed_allocation_prefix);
+	run_case(delayed_original_rcu_after_source_leave);
+	run_case(immediate_rcu_before_queue_return);
+	run_case(actual_last_files_put_after_owner_exit);
+	run_case(corrupt_table_origin_keeps_actual_failed_custody);
+	run_case(reused_table_address_gets_a_new_birth);
+	run_case(growth_exact);
+	run_case(growth_reserved_short);
+	run_case(growth_peak_short);
+	run_case(growth_transient_short);
+	run_case(retirement_after_actor_change);
+	run_case(foreign_mutation_does_not_become_foreign_permission);
+	return 0;
+}

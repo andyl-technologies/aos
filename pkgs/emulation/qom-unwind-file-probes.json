@@ -1,0 +1,179 @@
+{
+  "schema": "crucible.gnu.file-probe-paths.v1",
+  "records": [
+    {
+      "path": "gcc/configure",
+      "bytes": 1099772,
+      "sha256": "f8045db52a802b01b11afd7bb9995d5312108a87a4114074873a675f0456bd69",
+      "occurrences": 10
+    },
+    {
+      "path": "libatomic/configure",
+      "bytes": 556656,
+      "sha256": "2c3cdd2884c22274facaa3b1032d02cdde1347aaad710b7004ec81ad501470a1",
+      "occurrences": 10
+    },
+    {
+      "path": "libbacktrace/configure",
+      "bytes": 509430,
+      "sha256": "ea411cb7e25f627679e803f892b15f3b3f854c88504b8188a51733a9ea76ee0d",
+      "occurrences": 10
+    },
+    {
+      "path": "libcc1/configure",
+      "bytes": 563705,
+      "sha256": "57c86bad67299b6f77a81ed9c49d9bc86ac617bfa334c208d44b987eabd35d6b",
+      "occurrences": 10
+    },
+    {
+      "path": "libffi/configure",
+      "bytes": 616668,
+      "sha256": "334d9e0620ed5c893f8cc0daa9793ce35547ff31290923b64e69130d2370656f",
+      "occurrences": 10
+    },
+    {
+      "path": "libga68/configure",
+      "bytes": 476054,
+      "sha256": "e1b91cddabdf7806923e44e70eb4717b88b27af45ef6a3dabc61885f45f8479b",
+      "occurrences": 10
+    },
+    {
+      "path": "libgcobol/configure",
+      "bytes": 634534,
+      "sha256": "6ed5067c038ce5fd051ab508c33a252123865858ab36f9f293022ca0735ee90c",
+      "occurrences": 10
+    },
+    {
+      "path": "libgfortran/configure",
+      "bytes": 949959,
+      "sha256": "1ff0706c38730fb3f3b62fcefd3905f7b99011410f13e54595268e482f755bba",
+      "occurrences": 10
+    },
+    {
+      "path": "libgm2/configure",
+      "bytes": 760483,
+      "sha256": "64f5a81327f793cbcfba61a1205b9d644b67241b0ef5c96745f8b6b494454481",
+      "occurrences": 10
+    },
+    {
+      "path": "libgo/config/libtool.m4",
+      "bytes": 265496,
+      "sha256": "c86b615fe70a2bc88a4801c1c85775516c3c4d7c7422799d3ae2e49319ffbdcf",
+      "occurrences": 10
+    },
+    {
+      "path": "libgo/configure",
+      "bytes": 567347,
+      "sha256": "722780c42518aedbcf07bc8589f88df4b09acf7ab2dd131af95c4bea3c36ad2b",
+      "occurrences": 10
+    },
+    {
+      "path": "libgomp/configure",
+      "bytes": 613361,
+      "sha256": "3cb994def6cf9230486768068e18cea0c416f1052b9e0f41e7acd7f5a8a8e988",
+      "occurrences": 10
+    },
+    {
+      "path": "libgrust/configure",
+      "bytes": 586359,
+      "sha256": "f7d33730a247e8de234bf4d93e0abf26212dee4e28b6c1abf3ff324a8f69a2ef",
+      "occurrences": 10
+    },
+    {
+      "path": "libitm/configure",
+      "bytes": 655352,
+      "sha256": "7a0766b437a38b3cd42e5895aff0cc94e0ae45e9e1aa26bc25dc8dbabd26b739",
+      "occurrences": 10
+    },
+    {
+      "path": "libobjc/configure",
+      "bytes": 426367,
+      "sha256": "f4fe6134deb4b1a40332511475b5d72f8f2d6c880f72df37a010d711c8df87d0",
+      "occurrences": 10
+    },
+    {
+      "path": "libphobos/configure",
+      "bytes": 573034,
+      "sha256": "73cb3ebf7430e384911529797172d39dba9e8786d61d15f0e69c4a600899d4a0",
+      "occurrences": 10
+    },
+    {
+      "path": "libquadmath/configure",
+      "bytes": 476398,
+      "sha256": "4ce1bf2abebe851b60d83eb4ca9df9fd4062e152d6ccd9dbfff5fa282993003b",
+      "occurrences": 10
+    },
+    {
+      "path": "libsanitizer/configure",
+      "bytes": 628388,
+      "sha256": "12f998d945d5a33834005eac687571f9a273f20295a84f9d8af6971e08621199",
+      "occurrences": 10
+    },
+    {
+      "path": "libssp/configure",
+      "bytes": 425199,
+      "sha256": "47e84d839d5837517d7f97cce87108fe4519c09efb4e60269067d061a53ff43b",
+      "occurrences": 10
+    },
+    {
+      "path": "libstdc++-v3/configure",
+      "bytes": 1616843,
+      "sha256": "39f0398ad6ae3c78a893b3e8e7f74a0307addbd773778fb16371f3e4d0c38e9c",
+      "occurrences": 10
+    },
+    {
+      "path": "libtool.m4",
+      "bytes": 268568,
+      "sha256": "5c94dae0d98868911eb37b6734005d43482d324c9f786428a0434a6b3eff13eb",
+      "occurrences": 10
+    },
+    {
+      "path": "libvtv/configure",
+      "bytes": 576368,
+      "sha256": "08ed644b2967f79c2120e2eaf9bd6e40042112b83f0a6972e02d5b18b967d024",
+      "occurrences": 10
+    },
+    {
+      "path": "lto-plugin/configure",
+      "bytes": 454582,
+      "sha256": "4d1b6833bceb858ad9dac31d17e3cc6140408ccd211e393f5005ce9bdba337fc",
+      "occurrences": 10
+    },
+    {
+      "path": "zlib/configure",
+      "bytes": 422209,
+      "sha256": "4354c684cd3275c639fb02665ae6f0243c9ec15103fb3200b3d76e8ec916b21e",
+      "occurrences": 10
+    },
+    {
+      "path": "gmp/aclocal.m4",
+      "bytes": 363087,
+      "sha256": "139e96db3e6fae93a05c108bc1f0a5b8163ffe37b75e805ad3226fc04fe4ea1e",
+      "occurrences": 13
+    },
+    {
+      "path": "gmp/configure",
+      "bytes": 942195,
+      "sha256": "a7f4836f9d77f63d0bffc70d27c6c303b6bb83edcdb7b13615c9cc96b761e092",
+      "occurrences": 13
+    },
+    {
+      "path": "isl/configure",
+      "bytes": 846239,
+      "sha256": "ae78e11d13be1dbcd44e4412b318eeaef8b4f8c61490f16aa4abda9d980ffea1",
+      "occurrences": 13
+    },
+    {
+      "path": "isl/interface/configure",
+      "bytes": 708689,
+      "sha256": "cfe47083112f8e98efc27218de207d6952f03fba6144c3c1103242b82155e676",
+      "occurrences": 13
+    },
+    {
+      "path": "isl/m4/libtool.m4",
+      "bytes": 306681,
+      "sha256": "c1a4cfb2c1dab76d4229b7c3ab04cdaf8dae0967fae71abb93d25e337745d64b",
+      "occurrences": 13
+    }
+  ]
+}

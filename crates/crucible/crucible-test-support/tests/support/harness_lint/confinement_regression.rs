@@ -20,9 +20,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let same_file_findings = package_source_confinement_findings(
         "crucible-cli",
-        Path::new("crucible-cli"),
+        Path::new("crucible/crucible-cli"),
         &source_pairs(&[(
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             r#"
                 use crucible_engine::State;
 
@@ -43,9 +43,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let same_file_route_findings = package_source_confinement_findings(
         "crucible-cli",
-        Path::new("crucible-cli"),
+        Path::new("crucible/crucible-cli"),
         &source_pairs(&[(
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             r#"
                 use crucible_session::SessionDriver;
                 use crucible_control_client::ControlClient;
@@ -69,14 +69,14 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let split_findings = package_source_confinement_findings(
         "crucible-cli",
-        Path::new("crucible-cli"),
+        Path::new("crucible/crucible-cli"),
         &source_pairs(&[
             (
-                "crucible-cli/src/host_boundary.rs",
+                "crucible/crucible-cli/src/host_boundary.rs",
                 "fn host_stamp() { consume(std::time::SystemTime::now()); }",
             ),
             (
-                "crucible-cli/src/session.rs",
+                "crucible/crucible-cli/src/session.rs",
                 "fn route(driver: crucible_session::SessionDriver<()>) { consume(driver); }",
             ),
         ]),
@@ -93,9 +93,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let api_findings = package_source_confinement_findings(
         "crucible-control-api",
-        Path::new("crucible-control-api"),
+        Path::new("crucible/crucible-control-api"),
         &source_pairs(&[(
-            "crucible-control-api/src/lib.rs",
+            "crucible/crucible-control-api/src/lib.rs",
             r#"
                 fn bad() {
                     let stamp = std::time::SystemTime::now();
@@ -113,9 +113,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let qemu_backend_findings = package_source_confinement_findings(
         "crucible-qemu-host",
-        Path::new("crucible-qemu-host"),
+        Path::new("crucible/crucible-qemu-host"),
         &source_pairs(&[(
-            "crucible-qemu-host/src/backend.rs",
+            "crucible/crucible-qemu-host/src/backend.rs",
             r#"
                 fn bad() {
                     let stamp = std::time::SystemTime::now();
@@ -136,9 +136,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let qemu_supervision_findings = package_source_confinement_findings(
         "crucible-qemu-host",
-        Path::new("crucible-qemu-host"),
+        Path::new("crucible/crucible-qemu-host"),
         &source_pairs(&[(
-            "crucible-qemu-host/src/supervision/process.rs",
+            "crucible/crucible-qemu-host/src/supervision/process.rs",
             r#"
                 fn diagnostic_timestamp() {
                     let stamp = std::time::SystemTime::now();
@@ -156,9 +156,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let public_export_findings = package_source_confinement_findings(
         "crucible-daemon",
-        Path::new("crucible-daemon"),
+        Path::new("crucible/crucible-daemon"),
         &source_pairs(&[(
-            "crucible-daemon/src/supervision.rs",
+            "crucible/crucible-daemon/src/supervision.rs",
             r#"
                 pub(crate) fn host_timestamp() {
                     let stamp = std::time::SystemTime::now();
@@ -180,9 +180,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
 
     let parent_only_export_findings = package_source_confinement_findings(
         "crucible-cli",
-        Path::new("crucible-cli"),
+        Path::new("crucible/crucible-cli"),
         &source_pairs(&[(
-            "crucible-cli/src/cli/worker.rs",
+            "crucible/crucible-cli/src/cli/worker.rs",
             r#"
                 pub(super) fn wait_for_worker() {
                     let started = std::time::Instant::now();
@@ -269,9 +269,9 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
     // `step` route-ingress identifier even in a nondeterministic boundary source.
     let session_command_step_findings = package_source_confinement_findings(
         "crucible-cli",
-        Path::new("crucible-cli"),
+        Path::new("crucible/crucible-cli"),
         &source_pairs(&[(
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             "fn drive() { let s = std::time::SystemTime::now(); \
              submit(SessionCommand::step(StepMode::Quantum)); consume(s); }",
         )]),
@@ -281,6 +281,119 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
             "harness-lint confinement regression incorrectly rejected the SessionCommand::step constructor"
                 .to_string(),
         );
+    }
+
+    let provider_dir = Path::new("crucible/crucible-node-transport");
+    let provider_negative_controls = [
+        (
+            "src/operational_time.rs",
+            "fn bad() { let n = std::time::Instant::now(); Position::new(n); }",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "fn bad() { let n = std::time::Instant::now(); State::new(n); }",
+            "reaching State",
+        ),
+        (
+            "src/operational_time.rs",
+            "#[derive(Serialize)] struct Bad(std::time::Instant);",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "impl serde::Serialize for Bad { fn serialize() { std::time::Instant::now(); } }",
+            "portable time/state/codec",
+        ),
+        (
+            "src/operational_time.rs",
+            "pub fn raw() -> std::time::Instant { std::time::Instant::now() }",
+            "public export",
+        ),
+        (
+            "src/client/deadline.rs",
+            "fn bad() { std::time::Instant::now(); }",
+            "outside supervision/diagnostics",
+        ),
+        (
+            "src/bodies.rs",
+            "use crate::operational_time::OperationalDeadline as Alias; fn encode() { Alias::after(budget); }",
+            "outside audited",
+        ),
+        (
+            "src/client/deadline.rs",
+            "use crate::operational_time::PhysicalMeasurement;",
+            "outside audited",
+        ),
+        (
+            "src/lib.rs",
+            "pub use operational_time::OperationalDeadline;",
+            "outside audited",
+        ),
+    ];
+    for (relative, content, expected) in provider_negative_controls {
+        let path = format!("crucible/crucible-node-transport/{relative}");
+        let findings = package_source_confinement_findings(
+            "crucible-node-transport",
+            provider_dir,
+            &source_pairs(&[(&path, content)]),
+        );
+        if !finding_contains(&findings, expected) {
+            failures.push(format!(
+                "provider confinement missed {relative}: {expected}"
+            ));
+        }
+    }
+    let private_registration = package_source_confinement_findings(
+        "crucible-node-transport",
+        provider_dir,
+        &source_pairs(&[(
+            "crucible/crucible-node-transport/src/lib.rs",
+            "pub(crate) mod operational_time;",
+        )]),
+    );
+    if !finding_contains(&private_registration, "outside audited") {
+        failures.push("provider confinement admitted a widened operational helper module".into());
+    }
+
+    let provider_allowed = source_pairs(&[
+        (
+            "crucible/crucible-node-transport/src/lib.rs",
+            "mod operational_time;",
+        ),
+        (
+            "crucible/crucible-node-transport/src/operational_time.rs",
+            "pub(super) struct OperationalDeadline(std::time::Instant); fn clock() -> std::time::Instant { std::time::Instant::now() }",
+        ),
+        (
+            "crucible/crucible-node-transport/src/client/deadline.rs",
+            "use crate::operational_time::OperationalDeadline; pub struct DeadlineStream { deadline: OperationalDeadline }",
+        ),
+        (
+            "crucible/crucible-node-transport/src/reference_device/process.rs",
+            "use crate::operational_time::PhysicalMeasurement; fn observe() { PhysicalMeasurement::begin().elapsed(); }",
+        ),
+    ]);
+    let findings = package_source_confinement_findings(
+        "crucible-node-transport",
+        provider_dir,
+        &provider_allowed,
+    );
+    if !findings.is_empty() {
+        failures.push(format!(
+            "provider confinement rejected private operational budgets: {findings:?}"
+        ));
+    }
+    let provider_engine: Value =
+        "[dependencies]\nengine = { package = \"crucible-engine\", path = \"../../engine/crucible-engine\" }".parse()?;
+    if boundary_manifest_findings(
+        "crucible-node-transport",
+        &provider_engine,
+        &toml::map::Map::new(),
+    )
+    .is_empty()
+    {
+        failures.push("provider confinement admitted direct engine dependency".into());
     }
 
     Ok(failures)

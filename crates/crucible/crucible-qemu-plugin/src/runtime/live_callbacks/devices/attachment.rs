@@ -50,6 +50,8 @@ impl LiveDeviceCallbackState {
         .map_err(|source| LiveDeviceCallbackError::NineP { source })?;
         Ok(Self {
             freeze: PluginDeviceIoFreeze::new(),
+            whole_reservations: super::token_reservations::OriginalTokenReservations::uninitialized(
+            ),
             block,
             block_rings,
             block_tokens: BTreeMap::new(),

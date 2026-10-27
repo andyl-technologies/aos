@@ -6,6 +6,10 @@
   "crucible-determinism"
   "crucible-qemu-shmem"
   "crucible-qemu-protocol"
+  "crucible-node-format"
+  "crucible-source-birth-data"
+  "crucible-node-transport"
+  "crucible-host-resources"
   "crucible-device"
   "crucible-qemu-debug-gateway"
   "crucible-qemu-host"
@@ -17,6 +21,7 @@
   "crucible-control-client"
   "crucible-control-server"
   "crucible-daemon"
+  "crucible-source-birth-worker"
   "crucible-cli"
   "crucible-test-support"
 ]
