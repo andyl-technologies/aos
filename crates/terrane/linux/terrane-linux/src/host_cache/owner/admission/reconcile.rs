@@ -3,7 +3,8 @@
 use super::{super::retention::Custody, Input, backing::AdmissionJob, io as native, state};
 use crate::host_quota::synchronized_allocated_bytes;
 use rustix::fs::{Mode, OFlags, openat};
-use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
+use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt, sync::Arc};
+use terrane_format::codec::Codec;
 
 /// Reconciles actual synchronized member allocation and fresh quota before acknowledgment.
 ///
@@ -85,23 +86,31 @@ pub(super) fn finish(owner: &mut Custody, job: &mut AdmissionJob) -> io::Result<
 /// Refuses changed registration, incomplete pairs, dictionaries or native bytes.
 pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
     state::check_registration(owner, job)?;
-    for dependency in &job.dependencies {
-        let source = super::backing::lock(dependency)?;
-        if !source.complete || !source.dependencies.is_empty() {
+    let mut next = dependency(job)?;
+    let mut previous_order = job.order;
+    let mut remaining = owner.preparation.config.state.records;
+    while let Some(edge) = next {
+        let source = super::backing::lock(&edge.source)?;
+        // Dependencies are completed before their dependent is registered. This
+        // strict original order rejects cycles without recursive job locks or
+        // another retained copy of the entire dependency chain.
+        if remaining == 0
+            || source.order >= previous_order
+            || !Arc::ptr_eq(&source.custody, &job.custody)
+        {
             return Err(io::Error::other(
-                "admission dictionary is not a completed one-hop source",
+                "admission dictionary order, owner or member bound changed",
             ));
         }
-        state::check_registration(owner, &source)?;
-        let Input::Chunk { encoded, .. } = &source.input else {
+        let (identity, _, _) = super::chunk::checked_dictionary(owner, &source)?;
+        if identity.digest() != edge.digest {
             return Err(io::Error::other(
-                "admission dictionary is not an encoded chunk",
+                "admission dictionary differs from its original envelope dependency",
             ));
-        };
-        if source.files.len() != 1 {
-            return Err(io::Error::other("admission dictionary closure changed"));
         }
-        native::check_current(owner, &source.files[0], encoded)?;
+        next = dependency(&source)?;
+        previous_order = source.order;
+        remaining -= 1;
     }
     match &job.input {
         Input::Chunk { encoded, .. } if job.files.len() == 1 => {
@@ -113,4 +122,34 @@ pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
         }
         _ => Err(io::Error::other("admission pair closure is incomplete")),
     }
+}
+
+/// Checks each original envelope edge before following its genuine job custody.
+fn dependency(job: &AdmissionJob) -> io::Result<Option<Dependency>> {
+    let codec = match &job.input {
+        Input::Chunk { encoded, .. } => {
+            terrane_format::codec::parse_envelope(encoded)
+                .map_err(io::Error::other)?
+                .codec
+        }
+        Input::Metadata { .. } => Codec::Raw,
+    };
+    match (codec, job.dependencies.as_slice()) {
+        (Codec::ZstdDictionary(digest), [source]) => Ok(Some(Dependency {
+            digest,
+            source: Arc::clone(source),
+        })),
+        (Codec::ZstdDictionary(_), _) => Err(io::Error::other(
+            "admission lacks its original dictionary dependency",
+        )),
+        (_, []) => Ok(None),
+        _ => Err(io::Error::other(
+            "terminal admission retains unexpected dependencies",
+        )),
+    }
+}
+
+struct Dependency {
+    digest: [u8; 32],
+    source: Arc<std::sync::Mutex<AdmissionJob>>,
 }

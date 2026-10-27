@@ -248,7 +248,14 @@ pub(in crate::host_cache::owner) fn dictionary(
 }
 
 /// Rechecks actual completed custody, original funding and canonical bytes.
-fn checked_dictionary(owner: &Custody, job: &AdmissionJob) -> io::Result<(Identity, usize, Codec)> {
+///
+/// # Errors
+/// Refuses incomplete or changed native custody, lost protection, exceeded
+/// allocation bounds and malformed original envelopes.
+pub(super) fn checked_dictionary(
+    owner: &Custody,
+    job: &AdmissionJob,
+) -> io::Result<(Identity, usize, Codec)> {
     let Input::Chunk {
         descriptor,
         encoded,
