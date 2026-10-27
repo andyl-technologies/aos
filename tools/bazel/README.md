@@ -4317,6 +4317,18 @@ reader rejects missing inputs and inconsistent package/target records. Existing
 CLI allowlists, layer rules, cycle checks, and Cargo negative fixtures remain in
 place; Cargo-only execution remains an independent oracle during migration.
 
+The same query also exports a separate `dependency_targets` view covering every
+declared Rust compilation, libtest, build-script bridge, documentation target,
+doctest, and Clippy target. It preserves
+dependency labels, resolved package names, selector branches, and test-only
+ownership, including procedural macros and unit-test crate references. This
+prepares audits that must inspect development and build dependencies. Test
+dependencies do not enter the production package or native-library graph.
+The [dependency declaration receipt](tests/evidence/crucible-compilation-dependency-edges.json)
+records 1,921 targets and compares every existing production/artifact field with
+the previous exporter and the qualified graph. The remaining Cargo-dependent
+audits still need their consumers converted to this separate view.
+
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture-parity --no-out-link

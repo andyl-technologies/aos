@@ -3,7 +3,9 @@
 The structured query retains every selector branch. Only explicit Rust
 compilation dependency attributes contribute package edges; test-only rules,
 runfiles, generators' tool inputs, and implicit toolchains are excluded.
-Uncompiled source packages remain explicitly unmodeled.
+Uncompiled source packages remain explicitly unmodeled. A separate dependency
+view retains test and build-script compilation edges for repository audits;
+those edges never contribute to the production package graph.
 """
 
 import argparse
@@ -13,6 +15,7 @@ from pathlib import Path
 
 
 RUST_RULES = {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library"}
+DEPENDENCY_RULES = RUST_RULES | {"rust_test", "cargo_build_script", "rust_doc", "rust_doc_test", "rust_clippy"}
 PROFILE_RULES = {
     name + "_profile_required" for name in [
         "device", "store", "guest", "engine", "quota", "session", "control",
@@ -118,7 +121,7 @@ def export(records, repositories):
         label = rule["name"]
         if label in rules:
             raise ValueError("duplicate architecture query rule: " + label)
-        if rule["ruleClass"] not in RUST_RULES | PROFILE_RULES | {"_source_package", "alias", "cargo_build_script"}:
+        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias"}:
             raise ValueError("unexpected architecture query rule class")
         rules[label] = rule
     catalog = {}
@@ -148,20 +151,23 @@ def export(records, repositories):
     resolved = {}
     native = set()
 
-    def resolve(label, active=()):
+    def resolve(label, active=(), development=False):
         if label in active:
             raise ValueError("architecture dependency alias cycle")
-        if label in resolved:
-            return resolved[label]
+        key = (label, development)
+        if key in resolved:
+            return resolved[key]
         owner = catalog.get(label.partition(":")[0])
         if label in unavailable:
             result = set()
         elif label in rules and rules[label]["ruleClass"] == "alias":
             actual = attribute_values(attributes(rules[label])["actual"], "LABEL")
-            result = set().union(*(resolve(value, (*active, label)) for value in actual))
+            result = set().union(*(resolve(value, (*active, label), development) for value in actual))
             if not result:
                 raise ValueError("dependency alias has no modeled package: " + label)
-        elif owner and label in rules and rules[label]["ruleClass"] in RUST_RULES | {"cargo_build_script"}:
+        elif owner and label in rules and rules[label]["ruleClass"] in (
+            DEPENDENCY_RULES if development else RUST_RULES | {"cargo_build_script"}
+        ):
             result = {owner["name"]}
         elif label.startswith("@") and label[1:].partition("//")[0] in repositories:
             result = {repositories[label[1:].partition("//")[0]]}
@@ -171,7 +177,7 @@ def export(records, repositories):
             result = set()
         else:
             raise ValueError("unmodeled architecture dependency: " + label)
-        resolved[label] = result
+        resolved[key] = result
         return result
 
     production = {name: set() for name in names}
@@ -203,6 +209,35 @@ def export(records, repositories):
         target_edges[label] = edges
     if not any(targets.values()):
         raise ValueError("architecture query omitted production Rust targets")
+
+    # Preserve the production view's native membership before inspecting tests.
+    # Audits of standalone dependencies need every compilation branch, whereas
+    # release boundary audits must continue to exclude development-only edges.
+    production_native = sorted(native)
+    dependency_targets = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] not in DEPENDENCY_RULES:
+            continue
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("dependency target has no declared source package")
+        attrs = attributes(rule)
+        if attrs["testonly"]["type"] != "BOOLEAN":
+            raise ValueError("dependency test-only selection must not be configurable")
+        edges = []
+        for attribute, kind in [("deps", "LABEL_LIST"), ("proc_macro_deps", "LABEL_LIST"), ("crate", "LABEL")]:
+            if attribute not in attrs:
+                continue
+            for dependency in sorted(set(attribute_values(attrs[attribute], kind))):
+                edges.append({
+                    "attribute": attribute, "label": dependency,
+                    "packages": sorted(resolve(dependency, development=True) - {owner["name"]}),
+                })
+        dependency_targets[label] = {
+            "package": owner["name"], "kind": rule["ruleClass"],
+            "test_only": attrs["testonly"].get("booleanValue", False),
+            "dependencies": edges,
+        }
     return {
         "schema_version": 1,
         "selection": "union of all declared production platform/feature branches",
@@ -213,8 +248,10 @@ def export(records, repositories):
         ], key=lambda package: package["name"]),
         "target_dependencies": target_edges,
         "compilation_targets": compilations,
+        "dependency_target_selection": "union of all declared Rust production, test, build-script, documentation, and lint branches",
+        "dependency_targets": dependency_targets,
         "unavailable_profile_targets": dict(sorted(unavailable.items())),
-        "native_dependencies": sorted(native),
+        "native_dependencies": production_native,
     }
 
 

@@ -67,15 +67,111 @@ class ArchitectureExportTests(unittest.TestCase):
         self.assertEqual(self.packages(records)["a"]["production_dependencies"], ["b", "c", "d"])
 
     def test_only_production_rust_dependency_attributes_contribute_edges(self):
-        records = [source("app"), source("macro"), source("build")]
-        records += [compilation("macro"), compilation("build"), compilation("app", deps=["//crates/app:build_program"],
+        records = [source("app"), source("macro"), source("build"), source("dev")]
+        records += [compilation("macro"), compilation("build"), compilation("dev"), compilation("app", deps=["//crates/app:build_program"],
                     proc_macro_deps=["//crates/macro:lib"], data=["//missing:data"], tools=["//missing:tool"]),
-                    compilation("app", "test", ["//missing:dev"], testonly=True)]
+                    compilation("app", "test", ["//crates/dev:lib"], testonly=True)]
         build_program = compilation("app", "build_program", ["//crates/build:lib"])
         build_program["rule"]["ruleClass"] = "rust_binary"
         records.append(build_program)
 
         self.assertEqual(self.packages(records)["app"]["production_dependencies"], ["build", "macro"])
+
+    def test_dependency_view_retains_tests_build_scripts_and_unit_crate_edges(self):
+        records = [source(name) for name in ["app", "dev", "build", "macro"]]
+        records += [compilation(name) for name in ["app", "dev", "build", "macro"]]
+        records += [
+            record("//crates/app:integration", "rust_test", attribute("testonly", "BOOLEAN", True),
+                   attribute("deps", "LABEL_LIST", ["//crates/dev:lib"]),
+                   attribute("proc_macro_deps", "LABEL_LIST", ["//crates/macro:lib"])),
+            record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                   attribute("crate", "LABEL", "//crates/app:lib")),
+            record("//crates/app:build_script", "cargo_build_script", attribute("testonly", "BOOLEAN", False),
+                   attribute("deps", "LABEL_LIST", ["//crates/build:lib"])),
+        ]
+        result = export(records, {})
+        targets = result["dependency_targets"]
+        self.assertEqual(targets["//crates/app:integration"], {
+            "package": "app", "kind": "rust_test", "test_only": True,
+            "dependencies": [
+                {"attribute": "deps", "label": "//crates/dev:lib", "packages": ["dev"]},
+                {"attribute": "proc_macro_deps", "label": "//crates/macro:lib", "packages": ["macro"]},
+            ],
+        })
+        self.assertEqual(targets["//crates/app:unit"]["dependencies"], [
+            {"attribute": "crate", "label": "//crates/app:lib", "packages": []},
+        ])
+        self.assertEqual(targets["//crates/app:build_script"]["dependencies"][0]["packages"], ["build"])
+        app = next(package for package in result["packages"] if package["name"] == "app")
+        self.assertEqual(app["production_dependencies"], [])
+        self.assertEqual(app["production_targets"], ["//crates/app:lib"])
+        self.assertNotIn("//crates/app:integration", result["compilation_targets"])
+
+    def test_test_only_dependency_aliases_union_every_profile_and_use_sdk_names(self):
+        records = [source("app"), compilation("app"), record(
+            "//crates/app:test", "rust_test", attribute("testonly", "BOOLEAN", True),
+            selected("deps", "LABEL_LIST", {"//conditions:default": ["//third_party/rust:renamed"],
+                                            "//platform:other": ["@second//:lib"]}),
+            attribute("data", "LABEL_LIST", ["//missing:runfile"])),
+            record("//third_party/rust:renamed", "alias", selected("actual", "LABEL", {
+                "//conditions:default": "@first//:lib", "//profiles:other": "@second//:lib"})),
+        ]
+        result = export(records, {"first": "ratchet-original", "second": "aos-nix-original"})
+        dependencies = result["dependency_targets"]["//crates/app:test"]["dependencies"]
+        self.assertEqual({name for edge in dependencies for name in edge["packages"]},
+                         {"ratchet-original", "aos-nix-original"})
+        self.assertEqual(result["packages"][0]["production_dependencies"], [])
+
+    def test_native_test_edges_do_not_pollute_production_native_membership(self):
+        records = [source("app"), compilation("app", deps=["@aos_native//:production"]),
+                   record("//crates/app:test", "rust_test", attribute("testonly", "BOOLEAN", True),
+                          attribute("deps", "LABEL_LIST", ["@aos_native//:test", "//native/test:fixture"]))]
+        result = export(records, {})
+        self.assertEqual(result["native_dependencies"], ["@aos_native//:production"])
+        self.assertEqual([edge["label"] for edge in result["dependency_targets"]["//crates/app:test"]["dependencies"]],
+                         ["//native/test:fixture", "@aos_native//:test"])
+
+    def test_unresolved_test_and_build_script_dependencies_fail_closed(self):
+        for kind in ["rust_test", "cargo_build_script"]:
+            rule = record("//crates/app:helper", kind, attribute("testonly", "BOOLEAN", True),
+                          attribute("deps", "LABEL_LIST", ["//missing:dependency"]))
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "unmodeled architecture dependency"):
+                export([source("app"), compilation("app"), rule], {})
+
+    def test_test_binaries_do_not_become_linkable_production_dependencies(self):
+        records = [source("app"), source("helper"),
+                   compilation("app", deps=["//crates/helper:test"]), compilation("helper"),
+                   record("//crates/helper:test", "rust_test", attribute("testonly", "BOOLEAN", True))]
+        with self.assertRaisesRegex(ValueError, "unmodeled architecture dependency"):
+            export(records, {})
+
+    def test_documentation_and_lint_dependencies_include_test_artifacts_without_changing_linkability(self):
+        records = [source("app"), source("helper"), compilation("app"), compilation("helper"),
+                   record("//crates/helper:test", "rust_test", attribute("testonly", "BOOLEAN", True)),
+                   record("//crates/app:renamed_test", "alias", attribute("actual", "LABEL", "//crates/helper:test"))]
+        for kind in ["rust_doc", "rust_doc_test", "rust_clippy"]:
+            records.append(record("//crates/app:" + kind, kind, attribute("testonly", "BOOLEAN", True),
+                                  attribute("crate", "LABEL", "//crates/app:lib"),
+                                  attribute("deps", "LABEL_LIST", ["//crates/app:renamed_test"])))
+        result = export(records, {})
+        for kind in ["rust_doc", "rust_doc_test", "rust_clippy"]:
+            self.assertEqual(result["dependency_targets"]["//crates/app:" + kind]["dependencies"][0]["packages"], ["helper"])
+        app = next(package for package in result["packages"] if package["name"] == "app")
+        self.assertEqual(app["production_dependencies"], [])
+
+        # The permissive traversal for lint/test inputs must not change the
+        # production alias resolver or share its cached results.
+        records.append(compilation("app", "invalid", deps=["//crates/app:renamed_test"]))
+        with self.assertRaisesRegex(ValueError, "unmodeled architecture dependency"):
+            export(records, {})
+
+    def test_dependency_targets_require_ownership_and_nonconfigurable_test_selection(self):
+        for rule in [
+            record("//crates/orphan:test", "rust_test", attribute("testonly", "BOOLEAN", True)),
+            record("//crates/app:test", "rust_test", selected("testonly", "LABEL", {"//conditions:default": "yes"})),
+        ]:
+            with self.subTest(rule=rule), self.assertRaises(ValueError):
+                export([source("app"), compilation("app"), rule], {})
 
     def test_metadata_only_packages_remain_unmodeled_instead_of_independent(self):
         packages = self.packages([source("app"), source("pending"), compilation("app", deps=["//crates/pending:lib"]),
