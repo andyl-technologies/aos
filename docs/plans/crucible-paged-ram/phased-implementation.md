@@ -36,7 +36,7 @@ The current transport source contracts are:
 | Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
 | Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
 | Operational durations | One exact-nanosecond roster under RAM schema 11; Host operational frames use schema 4. Configured values are positive and checked; observed expiry may be zero. |
-| Archive transfer journal | Edition 2 binds the selected source as well as destination and publication intent into operation identities. Previous records are refused and preserved for explicit recovery. |
+| Archive transfer journal | Edition 3 preserves completed RAM-root progress as transitive retention before temporary storage leases close. Operation identities retain their source, destination and publication bindings. Previous records are refused and preserved for explicit recovery. |
 
 Source publication preserves the same cap, original monotonic origin and nominal
 Source subject across policy revisions. Publication commits through odd/even
@@ -69,7 +69,40 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 22 errors: two large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 695 bindings: 676 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 699 bindings: 680 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Archive transfer and receiving retention
+
+Transfer journals distinguish directly retained incomplete objects from complete
+RAM roots. The source records its authenticated complete roots before copying;
+the destination durably advances each root while the temporary `RamClosureStored`
+lease and publication fence remain live. GC traverses completed roots through the
+authenticated RAM graph. A failed publication or restart preserves that ownership,
+including an ambiguous directory-sync failure after the progress record is renamed.
+Retries preserve completed progress and reestablish its durability.
+
+Receiving execution possession now retains an independent `archive-readers/`
+claim instead of excluding namespace-wide GC for its lifetime. Separate readers
+survive public-name replacement and retire only their own expected bindings;
+unrelated garbage remains collectable. Failed retirement and process death retain
+conservatively. Automatic stale-claim reconciliation is not implemented. Other
+execution/capture retention paths still need separate ownership work; archive
+reader claims do not supply their missing retention or native execution authority.
+
+All 22 focused archive transfer tests and 100 ordinary GC tests pass, including
+real collection with live readers, restart after failed publication and ambiguous
+completed-root progress. The GC run uses serial execution, matching the registered
+gate, and excludes the separate 512-MiB volume case. Its initial parallel run
+failed six SQLite quota/refusal fixtures. Coverage inventory
+`hy6cvxf06dz9s0a1n2lh3x24phmidky9` verifies all thirteen normative source digests;
+its 655 model, 25 format and nineteen native bindings qualify no capability.
+All six Directory ref controls, ninety testing-standard controls and five
+engineering-hygiene controls also pass. The recovery classifier binds the
+expanded exact source and retains adversarial checks for extra attempts,
+changed originals, missing owner retirement and weakened progress assertions.
+Core evaluation and Nix formatting pass. The mandatory application-target
+compilation is still running for this checkpoint; no successful result is
+claimed yet.
 
 #### Source birth, collection and control returns
 

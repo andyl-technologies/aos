@@ -2,23 +2,23 @@
 //!
 //! This is one prerequisite for stopped receiving readiness, never Ready by
 //! itself. The private fields bind the concrete source/destination backends
-//! and destination GC exclusion to the real publication receipt.
+//! and an independent archive reader claim to the real publication receipt.
 
 use super::*;
-use crucible_campaign::{CampaignHash, CampaignRepositoryGcExclusionGuard};
+use crucible_campaign::{CampaignArchiveLease, CampaignHash};
 use crucible_store::content_store::ImmutableBlobBackend;
 
 /// Retains a real archive publication and its exact physical namespace owners.
 ///
 /// No constructor, clone, deserializer or raw backend accessor is exposed.
-/// The destination exclusion and original control credit close only after the
+/// The destination reader claim and original control credit close only after the
 /// physical backend references. This value supplies no executable authority.
 pub struct CampaignArchiveExecutionPossession {
     receipt: CampaignArchiveDurabilityReceipt,
     source: Arc<dyn ImmutableBlobBackend>,
     destination: Arc<dyn ImmutableBlobBackend>,
     namespace: CampaignHash,
-    _exclusion: CampaignRepositoryGcExclusionGuard,
+    _archive: CampaignArchiveLease,
     _credit: crucible_store::owned_decode::DecodeScratch,
 }
 
@@ -98,7 +98,6 @@ pub fn transfer_campaign_archive_for_execution_with_boundary(
                 original, source,
             ))
         })?;
-    let exclusion = destination.repository.acquire_gc_exclusion_guard()?;
     let source_backend = source.repository.blob_backend();
     let destination_backend = destination.repository.blob_backend();
     let namespace = CampaignHash::derive(
@@ -114,12 +113,15 @@ pub fn transfer_campaign_archive_for_execution_with_boundary(
         destination_durability,
         boundary,
     )?;
+    let archive = destination
+        .repository
+        .retain_campaign_archive_ref_with_boundary(archive_name, plan.manifest_id(), boundary)?;
     let possession = CampaignArchiveExecutionPossession {
         receipt,
         source: source_backend,
         destination: destination_backend,
         namespace,
-        _exclusion: exclusion,
+        _archive: archive,
         _credit: credit,
     };
     boundary().map_err(CampaignRepositoryError::Ram)?;

@@ -154,44 +154,36 @@ fn source_bound_journals_refuse_and_preserve_previous_edition_records() {
         TransferJournalRole::Source,
         plan.manifest_id(),
         plan.transfer_objects(),
+        plan.ram_roots().to_vec(),
     )
     .expect("current source record")
     .canonical_bytes()
     .expect("current record bytes");
 
-    assert_eq!(&current[..32], b"CRUCIBLE-CAMPAIGN-TRANSFER-V2!!!");
-    assert_eq!(&current[32..36], &2_u32.to_be_bytes());
+    assert_eq!(&current[..32], b"CRUCIBLE-CAMPAIGN-TRANSFER-V3!!!");
+    assert_eq!(&current[32..36], &3_u32.to_be_bytes());
     let decoded = TransferRecord::from_canonical_bytes(&current, operation)
         .expect("current record acceptance");
     assert_eq!(decoded.operation, operation);
     assert_eq!(decoded.role, TransferJournalRole::Source);
 
-    // Reconstruct the previous source-independent operation and its actual
-    // record format. Only the current edition can issue new ownership.
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"crucible.campaign.transfer-operation.v1");
-    hash_field(
-        &mut hash,
-        plan.manifest_id().content_id().encode().as_bytes(),
-    );
-    for field in [b"destination".as_slice(), b"metadata", b""] {
-        hash_field(&mut hash, field);
-    }
-    hash.update(&durability.minimum_durable_placements().to_be_bytes());
-    hash.update(&[u8::from(durability.allows_deferred_write())]);
-    let previous_operation = CampaignTransferOperationId(*hash.finalize().as_bytes());
-    assert_ne!(operation, previous_operation);
+    // Reconstruct the previous journal format without the complete-RAM-root
+    // inventory. Only the current edition can establish transitive ownership.
+    let previous_operation = operation;
     let mut previous = TransferRecord::new(
         previous_operation,
         TransferJournalRole::Source,
         plan.manifest_id(),
         plan.transfer_objects(),
+        Vec::new(),
     )
     .expect("previous record payload")
     .canonical_bytes()
     .expect("record payload bytes");
-    previous[..32].copy_from_slice(b"CRUCIBLE-CAMPAIGN-TRANSFER-V1!!!");
-    previous[32..36].copy_from_slice(&1_u32.to_be_bytes());
+    let checksum_offset = previous.len() - 32;
+    previous.drain(checksum_offset - 4..checksum_offset);
+    previous[..32].copy_from_slice(b"CRUCIBLE-CAMPAIGN-TRANSFER-V2!!!");
+    previous[32..36].copy_from_slice(&2_u32.to_be_bytes());
     let payload_length = previous.len() - 32;
     let checksum = blake3::hash(&previous[..payload_length]);
     previous[payload_length..].copy_from_slice(checksum.as_bytes());

@@ -34,6 +34,14 @@ enum PartialStage {
     MissingChild,
     CorruptChild,
     SurvivingCatalog,
+    CompletedRoot,
+    CompletedRootSyncFailure,
+}
+
+impl PartialStage {
+    const fn has_completed_root(self) -> bool {
+        matches!(self, Self::CompletedRoot | Self::CompletedRootSyncFailure)
+    }
 }
 
 /// Names authenticated source coordinates, rather than any newly visible tree.
@@ -122,11 +130,22 @@ impl Observation {
         if !self.armed.load(Ordering::Acquire) {
             return;
         }
+        if matches!(self.stage, PartialStage::CompletedRoot) {
+            return;
+        }
 
         let _paths = self
             .original
             .reserve_scratch_bytes(12 * (self.destination.as_os_str().len() as u64 + 256))
             .expect("original finite observation paths");
+        if matches!(self.stage, PartialStage::CompletedRootSyncFailure) {
+            if object_path(&self.destination, self.root).exists()
+                && !self.reached.swap(true, Ordering::AcqRel)
+            {
+                fail_next_directory_sync();
+            }
+            return;
+        }
         if !object_path(&self.destination, self.parent).exists() {
             return;
         }
@@ -172,25 +191,41 @@ fn envelope(namespace: &RepositoryNamespace, id: ContentId) -> ContentEnvelope {
     ContentEnvelope::from_canonical_bytes(&bytes).expect("canonical source envelope")
 }
 
-fn assert_direct_journal(journal: &DirectoryCampaignTransferJournal, plan: &CampaignArchivePlan) {
-    let expected = plan.transfer_objects().into_iter().collect::<BTreeSet<_>>();
+fn assert_journal(
+    journal: &DirectoryCampaignTransferJournal,
+    plan: &CampaignArchivePlan,
+    completed_ram_roots: &[ContentId],
+) -> CampaignTransferRetentionGeneration {
+    let expected = plan
+        .transfer_objects()
+        .into_iter()
+        .map(|(id, logical_length)| {
+            let disposition = if completed_ram_roots.binary_search(&id).is_ok() {
+                CampaignTransferRetentionDisposition::CompleteRamRoot
+            } else {
+                CampaignTransferRetentionDisposition::Direct
+            };
+            (id, logical_length, disposition)
+        })
+        .collect::<BTreeSet<_>>();
     let mut actual = BTreeSet::new();
-    journal
+    let summary = journal
         .acquire_campaign_transfer_retention_fence()
         .expect("real durable journal fence")
         .visit_roots(&mut |root| {
-            assert!(actual.insert((root.id(), root.logical_length())));
+            assert!(actual.insert((root.id(), root.logical_length(), root.disposition())));
             assert!(!matches!(
                 root.id().kind(),
                 ObjectKind::RamTree | ObjectKind::RamExtent
             ));
             Ok(())
         })
-        .expect("actual direct journal inventory");
+        .expect("actual journal inventory");
     assert_eq!(
         actual, expected,
         "no flattened RAM descendants or fabricated roots"
     );
+    summary.generation()
 }
 
 fn assert_no_destination_refs(namespace: &RepositoryNamespace) {
@@ -205,6 +240,23 @@ fn assert_no_destination_refs(namespace: &RepositoryNamespace) {
         })
         .expect("actual destination ref inventory");
     assert_eq!(count, 0, "no partial root claim or archive ref");
+}
+
+fn journal_has_complete_root(
+    journal: &DirectoryCampaignTransferJournal,
+    expected: ContentId,
+) -> bool {
+    let mut complete = false;
+    journal
+        .acquire_campaign_transfer_retention_fence()
+        .expect("durable completed-root inventory")
+        .visit_roots(&mut |root| {
+            complete |= root.id() == expected
+                && root.disposition() == CampaignTransferRetentionDisposition::CompleteRamRoot;
+            Ok(())
+        })
+        .expect("canonical completed-root inventory");
+    complete
 }
 
 fn has_cancellation(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -435,7 +487,11 @@ fn run_partial_transfer(stage: PartialStage) {
                 original
                     .wait_slice()
                     .expect("same original transfer deadline");
-                if observation.reached.load(Ordering::Acquire) {
+                let closure_stored = matches!(stage, PartialStage::CompletedRoot)
+                    && journal_has_complete_root(&destination_journal_observer, ram_root);
+                let partial_prefix = observation.reached.load(Ordering::Acquire)
+                    && !matches!(stage, PartialStage::CompletedRootSyncFailure);
+                if partial_prefix || closure_stored {
                     let _descriptor = destination
                         .graph
                         .metadata_resources()
@@ -459,22 +515,47 @@ fn run_partial_transfer(stage: PartialStage) {
                             .expect("destination ownership")
                     );
                     stopped = true;
+                    observation.reached.store(true, Ordering::Release);
                     return Err(RamStoreError::Canceled);
                 }
                 Ok(())
             },
         );
-        assert!(
-            stopped && observation.reached.load(Ordering::Acquire),
-            "exact physical batch prefix reached; transfer result: {result:?}"
-        );
-        assert!(has_cancellation(
-            &result.expect_err("no closure/durability receipt on cancellation")
-        ));
+        assert!(observation.reached.load(Ordering::Acquire));
+        if matches!(stage, PartialStage::CompletedRootSyncFailure) {
+            assert!(!stopped);
+            assert!(matches!(
+                result,
+                Err(CampaignArchiveTransferError::Journal(
+                    CampaignTransferJournalError::Io { .. }
+                ))
+            ));
+        } else {
+            assert!(stopped, "exact transfer boundary reached: {result:?}");
+            assert!(has_cancellation(
+                &result.expect_err("no closure/durability receipt on cancellation")
+            ));
+        }
         observation.armed.store(false, Ordering::Release);
         assert_no_destination_refs(&destination);
-        assert_direct_journal(&source_journal, &plan);
-        assert_direct_journal(&destination_journal, &plan);
+        assert_journal(&source_journal, &plan, plan.ram_roots());
+        let completed = if stage.has_completed_root() {
+            plan.ram_roots()
+        } else {
+            &[]
+        };
+        let destination_generation = assert_journal(&destination_journal, &plan, completed);
+        if stage.has_completed_root() {
+            let direct_journal = DirectoryCampaignTransferJournal::open(
+                temporary.path().join("direct-generation-comparison"),
+            )
+            .expect("direct comparison journal");
+            direct_journal
+                .begin(operation, TransferJournalRole::Destination, &plan)
+                .expect("direct comparison record");
+            let direct_generation = assert_journal(&direct_journal, &plan, &[]);
+            assert_ne!(destination_generation, direct_generation);
+        }
         let post_probe_descriptor = destination
             .graph
             .metadata_resources()
@@ -546,7 +627,10 @@ impl RestartCase<'_> {
             .expect("same original restart and fault paths");
         let target = match self.stage {
             PartialStage::CorruptChild => self.page,
-            PartialStage::MissingChild | PartialStage::SurvivingCatalog => self.parent,
+            PartialStage::MissingChild
+            | PartialStage::SurvivingCatalog
+            | PartialStage::CompletedRoot
+            | PartialStage::CompletedRootSyncFailure => self.parent,
         };
         let target_path = object_path(&destination_root, target);
         let _fault = saved_original
@@ -586,7 +670,12 @@ impl RestartCase<'_> {
             );
         }
 
-        if !matches!(self.stage, PartialStage::SurvivingCatalog) {
+        if !matches!(
+            self.stage,
+            PartialStage::SurvivingCatalog
+                | PartialStage::CompletedRoot
+                | PartialStage::CompletedRootSyncFailure
+        ) {
             let marks = self
                 .destination
                 .admin
@@ -658,9 +747,88 @@ impl RestartCase<'_> {
         let mut destination_journal =
             DirectoryCampaignTransferJournal::open(self.destination_journal_root)
                 .expect("actual reopened destination journal");
-        assert_direct_journal(&source_journal, self.plan);
-        assert_direct_journal(&destination_journal, self.plan);
+        assert_journal(&source_journal, self.plan, self.plan.ram_roots());
+        let completed = if self.stage.has_completed_root() {
+            self.plan.ram_roots()
+        } else {
+            &[]
+        };
+        assert_journal(&destination_journal, self.plan, completed);
+        if matches!(self.stage, PartialStage::CompletedRootSyncFailure) {
+            destination_journal
+                .begin(self.operation, TransferJournalRole::Destination, self.plan)
+                .expect("retry begin preserves visible completed progress");
+            fail_next_directory_sync();
+            assert!(matches!(
+                destination_journal
+                    .record_ram_closure_stored(self.operation, self.plan.ram_roots()[0]),
+                Err(CampaignTransferJournalError::Io { .. })
+            ));
+            destination_journal
+                .record_ram_closure_stored(self.operation, self.plan.ram_roots()[0])
+                .expect("idempotent completed-root retry resyncs the record");
+            assert_journal(&destination_journal, self.plan, self.plan.ram_roots());
+        }
         assert_no_destination_refs(&restarted);
+        if self.stage.has_completed_root() {
+            let marks = restarted
+                .admin
+                .gc_mark_backend("primary", "complete-root-restart-integration")
+                .expect("restarted real Directory mark namespace");
+            let mut check = || {
+                self.original
+                    .wait_slice()
+                    .map(|_| ())
+                    .map_err(|source| StoreError::Supervision {
+                        source: Box::new(source),
+                    })
+            };
+            let operation = CampaignGcOperationContext::new(marks, &saved_original, &mut check)
+                .expect("same original operation for real GC");
+            let maintenance = CampaignGcMaintenance::new(&restarted.admin, &operation);
+            let mut ledger = MemoryAssignmentLedger::default();
+            let prepared = plan_single_host_campaign_gc_with_transfers(
+                &restarted.repository,
+                restarted.refs_admin.as_ref(),
+                &mut ledger,
+                None,
+                &destination_journal,
+                None,
+                maintenance,
+            )
+            .expect("reopened completed RAM root is traversed after failed publication");
+            for retained in [self.plan.ram_roots()[0], self.parent, self.page] {
+                assert!(
+                    prepared
+                        .candidates()
+                        .iter()
+                        .all(|candidate| candidate.id() != retained),
+                    "completed RAM descendant remains transitively retained"
+                );
+            }
+            let (mut journal, _) = DirectoryCampaignGcJournal::create(
+                self.temporary
+                    .path()
+                    .join("actual-complete-root-gc-journal"),
+                &prepared,
+                &operation,
+            )
+            .expect("durable actual GC plan");
+            let report = apply_single_host_campaign_gc_with_transfers(
+                &mut journal,
+                &restarted.repository,
+                restarted.refs_admin.as_ref(),
+                &mut ledger,
+                None,
+                &destination_journal,
+                None,
+                maintenance,
+            )
+            .expect("apply preserves completed RAM closure after restart");
+            assert_eq!(report.status(), crate::CampaignGcApplyStatus::Applied);
+            assert!(object_path(&destination_root, self.parent).exists());
+            assert!(object_path(&destination_root, self.page).exists());
+        }
         let mut retry = || {
             transfer_campaign_archive_durably_with_boundary(
                 &mut CampaignArchiveTransferEndpoint::new(
@@ -700,6 +868,9 @@ impl RestartCase<'_> {
         let receipt =
             retry().expect("restart authenticates surviving or recopies collected Catalog");
         assert_eq!(receipt.operation(), self.operation);
+        if self.stage.has_completed_root() {
+            assert!(receipt.transfer().existing_objects > 0);
+        }
         assert!(object_path(&destination_root, self.parent).exists());
         let destination_bytes =
             fs::read(object_path(&destination_root, self.parent)).expect("actual Catalog bytes");
@@ -754,4 +925,14 @@ fn catalog_with_corrupt_child_is_collected_without_following_orphan_links() {
 #[test]
 fn surviving_catalog_is_authenticated_before_restart_completion() {
     run_partial_transfer(PartialStage::SurvivingCatalog);
+}
+
+#[test]
+fn completed_ram_root_survives_failed_publication_restart_and_real_gc() {
+    run_partial_transfer(PartialStage::CompletedRoot);
+}
+
+#[test]
+fn visible_completed_ram_progress_survives_directory_sync_failure_and_retry() {
+    run_partial_transfer(PartialStage::CompletedRootSyncFailure);
 }

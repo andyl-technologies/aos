@@ -268,7 +268,7 @@ impl MutableRefBackend for DirectoryRefBackend {
 // Reader claims already serialize through the namespace inventory lock. Their
 // unique names never need persistent per-name lock files after retirement.
 fn is_reader_claim(name: &RefName) -> bool {
-    name.as_str().starts_with("ram-readers/")
+    name.as_str().starts_with("ram-readers/") || name.as_str().starts_with("archive-readers/")
 }
 
 struct DirectoryRefPublicationGuard {

@@ -400,8 +400,10 @@ pub struct ResolvedSelection {
     domain: Arc<ChoiceDomain>,
 }
 
+mod archive_lease;
 mod executor;
 
+pub use archive_lease::CampaignArchiveLease;
 pub use executor::{CampaignExecutorPublicationGuard, CampaignExecutorStore};
 
 impl ResolvedSelection {

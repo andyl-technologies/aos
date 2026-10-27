@@ -454,6 +454,46 @@ impl CampaignRepository {
         destination_original: Option<&crucible_store::owned_decode::DecodeBudget>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
+        self.transfer_campaign_archive_objects_for_operation_with_ram_progress(
+            destination,
+            plan,
+            destination_durability,
+            operation,
+            destination_identity,
+            source_original,
+            destination_original,
+            &mut |_| Ok(()),
+            boundary,
+        )
+    }
+
+    /// Copies an archive and durably acknowledges each complete RAM closure.
+    ///
+    /// The progress callback runs while the destination's complete-closure
+    /// lease is live. After the callback succeeds, the operation observes one
+    /// more supervision boundary before releasing that lease. Callers can use
+    /// this handoff to replace the temporary lease with journaled transitive
+    /// retention without exposing the closure to concurrent collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bindings, corruption, unavailable contents,
+    /// cancellation, transfer limits, insufficient destination durability, or
+    /// a rejected RAM-closure progress transition.
+    // crucible-lint: allow rust-allow -- explicit transfer inputs bind source, destination, durable operation, retention, progress, and original supervision.
+    #[allow(clippy::too_many_arguments)]
+    pub fn transfer_campaign_archive_objects_for_operation_with_ram_progress(
+        &self,
+        destination: &CampaignRepository,
+        plan: &CampaignArchivePlan,
+        destination_durability: DurabilityRequirement,
+        operation: [u8; 32],
+        destination_identity: &str,
+        source_original: Option<&crucible_store::owned_decode::DecodeBudget>,
+        destination_original: Option<&crucible_store::owned_decode::DecodeBudget>,
+        ram_progress: &mut dyn FnMut(ContentId) -> Result<(), CampaignRepositoryError>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+    ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
         self.verify_ram_admission()?;
         destination.verify_ram_admission()?;
         let child = |original: &crucible_store::owned_decode::DecodeBudget| {
@@ -562,6 +602,8 @@ impl CampaignRepository {
                         boundary,
                     )
                     .map_err(map_ram_error)?;
+                ram_progress(*id)?;
+                boundary().map_err(map_ram_error)?;
                 let ram_report = stored.report();
                 report.copied_objects = report
                     .copied_objects

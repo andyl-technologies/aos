@@ -1,18 +1,22 @@
 //! Restart-safe campaign archive transfer ownership and orchestration.
 //!
-//! Source and destination journals retain the same direct object inventory
-//! before copying starts. The records are independent, so no operation holds
-//! both repositories' GC fences or journal mutations at once.
+//! Source and destination journals retain the same bounded object inventory
+//! before copying starts. Source records initially classify authenticated RAM
+//! roots as complete; destination records advance each root after storage. The
+//! records are independent, so no operation holds both repositories' GC fences
+//! or journal mutations at once.
 //!
 //! ```text
 //! <root>/writer.lock
 //! <root>/records/<operation-id>.transfer
-//!   TransferRecordV2(source-bound operation, source|destination, manifest, [(object, length)...])
+//!   TransferRecordV3(source-bound operation, source|destination, manifest,
+//!                    [(object, length)...], [complete RAM root...])
 //! <root>/staging/<operation-id>.staging
 //! ```
 //!
 //! A record becomes visible by file sync, rename, and directory sync. GC holds
-//! the journal fence while treating every recorded object as a direct root.
+//! the journal fence while treating incomplete objects as direct roots and
+//! completed RAM roots as authenticated transitive roots.
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -27,7 +31,7 @@ use crucible_campaign::{
     CampaignArchiveTransferReport, CampaignFactId, CampaignName, CampaignRepository,
     CampaignRepositoryError, ConfigurationId,
 };
-use crucible_store::content_store::{ContentId, DurabilityRequirement, StoreError};
+use crucible_store::content_store::{ContentId, DurabilityRequirement, ObjectKind, StoreError};
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
@@ -53,10 +57,10 @@ use journal_io::{
     hash_field, io_error, read_bounded_file, sync_directory, write_atomic,
 };
 
-// Edition two binds the selected source into operation identities. Previous
-// records remain in place but cannot establish current transfer ownership.
-const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V2!!!";
-const JOURNAL_VERSION: u32 = 2;
+// Edition three persists complete RAM-closure handoffs. Previous records remain
+// in place but fail closed because they cannot prove transitive ownership.
+const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V3!!!";
+const JOURNAL_VERSION: u32 = 3;
 const WRITER_LOCK: &str = "writer.lock";
 const RECORDS_DIRECTORY: &str = "records";
 const STAGING_DIRECTORY: &str = "staging";
@@ -166,18 +170,32 @@ impl CampaignArchiveDurabilityReceipt {
     }
 }
 
-/// Direct object root protected by an incomplete archive transfer.
+/// Retention behavior for one object protected by an incomplete transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CampaignTransferRetentionDisposition {
+    /// Retains only the recorded object while its closure may still be partial.
+    Direct,
+    /// Retains an authenticated, completely stored RAM closure transitively.
+    CompleteRamRoot,
+}
+
+/// Object root protected by an incomplete archive transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CampaignTransferRetentionRoot {
     id: ContentId,
     logical_length: u64,
+    disposition: CampaignTransferRetentionDisposition,
 }
 
 impl CampaignTransferRetentionRoot {
     #[cfg(test)]
     #[must_use]
     pub(crate) const fn new(id: ContentId, logical_length: u64) -> Self {
-        Self { id, logical_length }
+        Self {
+            id,
+            logical_length,
+            disposition: CampaignTransferRetentionDisposition::Direct,
+        }
     }
 
     /// Returns the protected logical object identity.
@@ -190,6 +208,12 @@ impl CampaignTransferRetentionRoot {
     #[must_use]
     pub const fn logical_length(self) -> u64 {
         self.logical_length
+    }
+
+    /// Returns whether GC retains this object directly or traverses its closure.
+    #[must_use]
+    pub const fn disposition(self) -> CampaignTransferRetentionDisposition {
+        self.disposition
     }
 }
 
@@ -238,7 +262,7 @@ impl CampaignTransferRetentionSummary {
         self.records
     }
 
-    /// Returns the number of direct root visits, including duplicates.
+    /// Returns the number of retained root visits, including duplicates.
     #[must_use]
     pub const fn roots(self) -> u64 {
         self.roots
@@ -247,7 +271,7 @@ impl CampaignTransferRetentionSummary {
 
 /// Exclusive stable view of incomplete transfer roots.
 pub trait CampaignTransferRetentionFence {
-    /// Visits every direct retained object and returns a terminal generation.
+    /// Visits every retained object and returns a terminal generation.
     ///
     /// # Errors
     ///
@@ -347,6 +371,12 @@ impl DirectoryCampaignTransferJournal {
         Ok(journal)
     }
 
+    /// Establishes one endpoint record without discarding durable RAM progress.
+    ///
+    /// Source plans already authenticate their complete RAM roots. Destination
+    /// records begin direct-only and acquire complete-root dispositions through
+    /// [`Self::record_ram_closure_stored`]. A retry compares immutable plan
+    /// fields while preserving any destination progress already on disk.
     fn begin(
         &self,
         operation: CampaignTransferOperationId,
@@ -362,14 +392,27 @@ impl DirectoryCampaignTransferJournal {
         if objects.is_empty() || objects.len() > MAX_TRANSFER_OBJECTS {
             return Err(CampaignTransferJournalError::ObjectLimit);
         }
-        let record = TransferRecord::new(operation, role, plan.manifest_id(), objects)?;
+        let completed_ram_roots = match role {
+            TransferJournalRole::Source => plan.ram_roots().to_vec(),
+            TransferJournalRole::Destination => Vec::new(),
+        };
+        let record = TransferRecord::new(
+            operation,
+            role,
+            plan.manifest_id(),
+            objects,
+            completed_ram_roots,
+        )?;
         let bytes = record.canonical_bytes()?;
         let path = self.record_path(operation);
         match read_bounded_file(&path) {
-            Ok(existing) if existing == bytes => {
+            Ok(existing) => {
+                let existing = TransferRecord::from_canonical_bytes(&existing, operation)?;
+                if !existing.matches_basis(&record) {
+                    return Err(CampaignTransferJournalError::RecordMismatch);
+                }
                 return sync_directory(&self.inner.root.join(RECORDS_DIRECTORY));
             }
-            Ok(_) => return Err(CampaignTransferJournalError::RecordMismatch),
             Err(CampaignTransferJournalError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound => {}
             Err(source) => return Err(source),
@@ -378,6 +421,38 @@ impl DirectoryCampaignTransferJournal {
             return Err(CampaignTransferJournalError::RecordLimit);
         }
         write_atomic(&path, &bytes)
+    }
+
+    fn record_ram_closure_stored(
+        &self,
+        operation: CampaignTransferOperationId,
+        root: ContentId,
+    ) -> Result<(), CampaignTransferJournalError> {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .write()
+            .map_err(|_| CampaignTransferJournalError::Poisoned)?;
+        let path = self.record_path(operation);
+        let bytes = read_bounded_file(&path)?;
+        let mut record = TransferRecord::from_canonical_bytes(&bytes, operation)?;
+        if record.role != TransferJournalRole::Destination
+            || root.kind() != ObjectKind::ExactManifest
+            || root.schema_version() != 1
+            || record
+                .objects
+                .binary_search_by_key(&root, |object| object.id)
+                .is_err()
+        {
+            return Err(CampaignTransferJournalError::RecordMismatch);
+        }
+        match record.completed_ram_roots.binary_search(&root) {
+            Ok(_) => sync_directory(&self.inner.root.join(RECORDS_DIRECTORY)),
+            Err(index) => {
+                record.completed_ram_roots.insert(index, root);
+                write_atomic(&path, &record.canonical_bytes()?)
+            }
+        }
     }
 
     /// Returns whether a manifest retains incomplete transfer ownership.
@@ -536,7 +611,16 @@ impl CampaignTransferRetentionFence for DirectoryTransferRetentionFence<'_> {
                 return Err(CampaignTransferJournalError::RecordMismatch);
             }
             for root in record.objects {
-                visitor(root).map_err(CampaignTransferJournalError::Visitor)?;
+                let disposition = if record.completed_ram_roots.binary_search(&root.id).is_ok() {
+                    CampaignTransferRetentionDisposition::CompleteRamRoot
+                } else {
+                    CampaignTransferRetentionDisposition::Direct
+                };
+                visitor(CampaignTransferRetentionRoot {
+                    disposition,
+                    ..root
+                })
+                .map_err(CampaignTransferJournalError::Visitor)?;
                 roots = roots
                     .checked_add(1)
                     .ok_or(CampaignTransferJournalError::ObjectLimit)?;
@@ -556,6 +640,7 @@ struct TransferRecord {
     role: TransferJournalRole,
     manifest: CampaignArchiveManifestId,
     objects: Vec<CampaignTransferRetentionRoot>,
+    completed_ram_roots: Vec<ContentId>,
 }
 
 /// Prepared-service capability for one GC-registered archive transfer endpoint.
@@ -615,14 +700,30 @@ impl TransferRecord {
         role: TransferJournalRole,
         manifest: CampaignArchiveManifestId,
         objects: Vec<(ContentId, u64)>,
+        completed_ram_roots: Vec<ContentId>,
     ) -> Result<Self, CampaignTransferJournalError> {
         let objects = objects
             .into_iter()
-            .map(|(id, logical_length)| CampaignTransferRetentionRoot { id, logical_length })
+            .map(|(id, logical_length)| CampaignTransferRetentionRoot {
+                id,
+                logical_length,
+                disposition: CampaignTransferRetentionDisposition::Direct,
+            })
             .collect::<Vec<_>>();
         if objects.is_empty()
             || objects.len() > MAX_TRANSFER_OBJECTS
             || objects.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || completed_ram_roots.len() > objects.len()
+            || completed_ram_roots
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || completed_ram_roots.iter().any(|root| {
+                root.kind() != ObjectKind::ExactManifest
+                    || root.schema_version() != 1
+                    || objects
+                        .binary_search_by_key(root, |object| object.id)
+                        .is_err()
+            })
         {
             return Err(CampaignTransferJournalError::ObjectLimit);
         }
@@ -631,7 +732,21 @@ impl TransferRecord {
             role,
             manifest,
             objects,
+            completed_ram_roots,
         })
+    }
+
+    fn matches_basis(&self, other: &Self) -> bool {
+        self.operation == other.operation
+            && self.role == other.role
+            && self.manifest == other.manifest
+            && self.objects == other.objects
+            && match self.role {
+                TransferJournalRole::Source => {
+                    self.completed_ram_roots == other.completed_ram_roots
+                }
+                TransferJournalRole::Destination => other.completed_ram_roots.is_empty(),
+            }
     }
 
     fn canonical_bytes(&self) -> Result<Vec<u8>, CampaignTransferJournalError> {
@@ -648,6 +763,10 @@ impl TransferRecord {
         for object in &self.objects {
             encode_content_id(object.id, &mut bytes)?;
             bytes.extend_from_slice(&object.logical_length.to_be_bytes());
+        }
+        bytes.extend_from_slice(&(self.completed_ram_roots.len() as u32).to_be_bytes());
+        for root in &self.completed_ram_roots {
+            encode_content_id(*root, &mut bytes)?;
         }
         let digest = blake3::hash(&bytes);
         bytes.extend_from_slice(digest.as_bytes());
@@ -669,7 +788,7 @@ impl TransferRecord {
     }
 
     fn from_canonical_bytes_unbound(bytes: &[u8]) -> Result<Self, CampaignTransferJournalError> {
-        if bytes.len() < JOURNAL_MAGIC.len() + 4 + 32 + 1 + 4 + 4 + 32
+        if bytes.len() < JOURNAL_MAGIC.len() + 4 + 32 + 1 + 4 + 4 + 4 + 32
             || bytes.len() as u64 > MAX_TRANSFER_RECORD_BYTES
         {
             return Err(CampaignTransferJournalError::Corrupt);
@@ -711,9 +830,30 @@ impl TransferRecord {
             objects.push(CampaignTransferRetentionRoot {
                 id: cursor.content_id()?,
                 logical_length: cursor.u64()?,
+                disposition: CampaignTransferRetentionDisposition::Direct,
             });
         }
-        if !cursor.is_eof() || objects.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+        let completed_count = cursor.u32()? as usize;
+        if completed_count > objects.len() {
+            return Err(CampaignTransferJournalError::ObjectLimit);
+        }
+        let mut completed_ram_roots = Vec::with_capacity(completed_count);
+        for _ in 0..completed_count {
+            completed_ram_roots.push(cursor.content_id()?);
+        }
+        if !cursor.is_eof()
+            || objects.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || completed_ram_roots
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || completed_ram_roots.iter().any(|root| {
+                root.kind() != ObjectKind::ExactManifest
+                    || root.schema_version() != 1
+                    || objects
+                        .binary_search_by_key(root, |object| object.id)
+                        .is_err()
+            })
+        {
             return Err(CampaignTransferJournalError::Corrupt);
         }
         let record = Self {
@@ -721,6 +861,7 @@ impl TransferRecord {
             role,
             manifest,
             objects,
+            completed_ram_roots,
         };
         if record.canonical_bytes()? != bytes {
             return Err(CampaignTransferJournalError::Corrupt);
@@ -795,8 +936,9 @@ impl CampaignArchiveCheckpointResolver for ExactPinCampaignArchiveCheckpointReso
 ///
 /// The source journal is durable before the destination journal. No repository
 /// or journal fence spans both sides. The destination archive ref is published
-/// only after every object and direct inventory authenticate there. An optional
-/// ordinary campaign ref is accepted only for an executable or mirror archive.
+/// only after every object and the bounded inventory authenticate there. An
+/// optional ordinary campaign ref is accepted only for an executable or mirror
+/// archive.
 ///
 /// # Errors
 ///
@@ -897,18 +1039,37 @@ pub fn transfer_campaign_archive_durably_with_boundary(
             .begin(operation, TransferJournalRole::Destination, plan)?;
     }
 
-    let report = source
-        .repository
-        .transfer_campaign_archive_objects_for_operation(
-            destination.repository,
-            plan,
-            destination_durability,
-            operation.0,
-            destination.identity,
-            source.repository.ram_admission().original(),
-            destination.repository.ram_admission().original(),
-            boundary,
-        )?;
+    let destination_repository = destination.repository;
+    let destination_journal = &*destination.journal;
+    let mut progress_failure = None;
+    let transfer = {
+        let mut ram_progress = |root| {
+            if let Err(source) = destination_journal.record_ram_closure_stored(operation, root) {
+                progress_failure = Some(source);
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "campaign-transfer-ram-progress-journal",
+                });
+            }
+            Ok(())
+        };
+        source
+            .repository
+            .transfer_campaign_archive_objects_for_operation_with_ram_progress(
+                destination_repository,
+                plan,
+                destination_durability,
+                operation.0,
+                destination.identity,
+                source.repository.ram_admission().original(),
+                destination_repository.ram_admission().original(),
+                &mut ram_progress,
+                boundary,
+            )
+    };
+    if let Some(source) = progress_failure {
+        return Err(CampaignArchiveTransferError::Journal(source));
+    }
+    let report = transfer?;
     if let Some(checkpoints) = destination.checkpoints {
         let destination_campaign = campaign_name
             .map(CampaignName::new)

@@ -52,7 +52,12 @@ pub(super) fn inventory_authoritative_refs(
                 reason: "campaign GC exact-pin inventory already failed",
             });
         }
-        if let Some(name) = record.name().as_str().strip_prefix("archives/") {
+        let archive_name = record
+            .name()
+            .as_str()
+            .strip_prefix("archives/")
+            .or_else(|| record.name().as_str().strip_prefix("archive-readers/"));
+        if let Some(name) = archive_name {
             if name.is_empty() {
                 semantic_error = Some(CampaignGcRootInventoryError::InvalidArchiveRef {
                     name: record.name().as_str().to_owned(),

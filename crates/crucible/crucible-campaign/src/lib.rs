@@ -257,6 +257,8 @@ pub use policy::{
     StatisticalSamplingDesign, WEIGHTED_CATEGORICAL_GENERATOR_IMPLEMENTATION_VERSION,
     WEIGHTED_CATEGORICAL_GENERATOR_MAX_ALTERNATIVES, WeightedGenerator,
 };
+pub use repository::CampaignArchiveLease;
+
 #[cfg(feature = "test-support")]
 pub use repository::CampaignValidationCheckpointMetrics;
 pub use repository::{

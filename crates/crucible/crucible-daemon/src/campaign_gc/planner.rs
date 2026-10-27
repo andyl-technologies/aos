@@ -293,8 +293,8 @@ where
 ///
 /// Transfer records are inventoried after write-back roots under the fixed
 /// ref, exact-pin, ledger, hot-fallback, write-back, transfer lock order. Their
-/// roots are direct archive-boundary objects and are not traversed as complete
-/// campaign closures.
+/// incomplete objects remain direct archive-boundary roots. RAM roots with a
+/// durable complete-closure transition are traversed transitively.
 ///
 /// # Errors
 ///
@@ -1234,9 +1234,14 @@ where
     fence
         .visit_roots(&mut |root| {
             operation.check()?;
-            roots
-                .insert_direct(root.id())
-                .map_err(RootInsertionError::into_store_error)
+            match root.disposition() {
+                crate::CampaignTransferRetentionDisposition::Direct => roots
+                    .insert_direct(root.id())
+                    .map_err(RootInsertionError::into_store_error),
+                crate::CampaignTransferRetentionDisposition::CompleteRamRoot => roots
+                    .insert(root.id())
+                    .map_err(RootInsertionError::into_store_error),
+            }
         })
         .map_err(CampaignGcPlanningError::Transfer)?;
     Ok(())
