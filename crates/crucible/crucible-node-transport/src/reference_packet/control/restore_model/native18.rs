@@ -19,8 +19,13 @@ use crate::reference_packet::{
     native_import18_policy::NativeImport18PolicyData,
 };
 
+mod owner_construction;
 mod storage;
 mod target_construction;
+pub use owner_construction::{
+    native_import18_installation_owner_construction_counter_scratch_data,
+    native_import18_installation_owner_construction_data,
+};
 pub use target_construction::{
     native_import18_target_construction_counter_scratch_data,
     native_import18_target_construction_data,

@@ -55,6 +55,55 @@ fn decode_model(actual: &PacketControl) -> Result<PacketSettledModel17Data, Prov
 }
 
 #[test]
+fn native18_installation_owner_quote_covers_actual_shared_hold_without_releasing_it()
+-> Result<(), ProviderError> {
+    let row = native_import18_installation_owner_construction_data(usize::MAX)?;
+    let peak = row
+        .into_iter()
+        .try_fold(0usize, |total, term| total.checked_add(term))
+        .ok_or_else(refused18)?;
+    assert_eq!(
+        native_import18_installation_owner_construction_data(peak)?,
+        row
+    );
+    assert!(native_import18_installation_owner_construction_data(peak - 1).is_err());
+    assert!(native_import18_installation_owner_construction_data(0).is_err());
+
+    for reactive in [false, true] {
+        let actual = super::super::super::native5::current_control17_fixture_data(reactive)?;
+        let boundary = decode_model(&actual)?.installation_boundary18_data()?;
+        let hold = Native18ModelInstallation::preparing_hold(&actual, boundary);
+        let expected_cursor = hold.cursor;
+        let expected_hash = hold.inventory_hash.clone();
+
+        // Count the actual shared allocation through the independent metadata
+        // visitor. Its hash backing and Control identity have separate owners
+        // in the boundary and target components of the complete admission.
+        let mut observer = MetadataObserver::new();
+        observer.shared_original(
+            crate::retained_metadata::aliases::MetadataSharedKind::NativeRestoredPhysicalHold,
+            hold.as_ref(),
+        )?;
+        let hold_backing =
+            crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?;
+        assert!(hold_backing >= std::mem::size_of::<PacketCompleteRestorePhysicalHold>());
+        assert!(row[0] >= std::mem::size_of::<Native18ModelInstallation>() + hold_backing);
+
+        assert_eq!(
+            native_import18_installation_owner_construction_data(peak)?,
+            row
+        );
+        assert!(hold.phase.get() == HoldPhase::Preparing);
+        assert!(hold.authenticate_held().is_err());
+        assert!(hold.physical_gate_data().is_err());
+        assert_eq!(hold.cursor, expected_cursor);
+        assert_eq!(hold.inventory_hash, expected_hash);
+        assert!(Rc::ptr_eq(&hold.control_identity, &actual.capture_identity));
+    }
+    Ok(())
+}
+
+#[test]
 fn native18_installation_preserves_current_model_and_blocks_legacy_hold_release()
 -> Result<(), ProviderError> {
     use crate::reference_packet::continuation_models::settled_reader::adoption18::CurrentModel18Adoption;
