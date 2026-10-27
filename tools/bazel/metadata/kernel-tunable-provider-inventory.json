@@ -9831,7 +9831,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
+    "MODULE.bazel": "bc6d9ce89fcf31d2849fbce69521a0e47d0e9ae14d0c6bff251c9f91c9f789d6",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/activation/aos-activation-sysctl/BUILD.bazel": "8088b8ddd7f548937daadd1a7f71c74b7f40f76ce025507ba3f58bc371880a87",
     "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",

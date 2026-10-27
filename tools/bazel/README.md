@@ -4308,6 +4308,30 @@ used by the transport regression test, without selecting first-party Cargo
 metadata. It does not launch nested Cargo builds. Other Cargo-dependent structural
 audits still require migration before the full combined test suite can pass.
 
+The controller's `control_plane_boundary` and `crate_layer_graph` audits consume
+the declared `aos_architecture` repository. Its source-built Bazel query unions
+production dependency edges across platform and feature branches, while retaining
+source ownership and explicitly unmodeled test-only packages. The shared Rust
+reader rejects missing inputs and inconsistent package/target records. Existing
+CLI allowlists, layer rules, cycle checks, and Cargo negative fixtures remain in
+place; Cargo-only execution remains an independent oracle during migration.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture-parity --no-out-link
+```
+
+The parity gate compares strict/broad sandbox execution with the Cargo oracle,
+checks identical selected Rust/protocol source bytes, and binds the executed
+audits to their actual graph input digest. It also runs adversarial graph inputs
+through the same Rust policy assertions. The union query does not establish
+cross-platform execution or replace the separate ABI and license gates.
+The [structural audit receipt](tests/evidence/crucible-controller-architecture.json)
+retains the executed cases, graph-input bindings, and adversarial controls.
+The [inventory receipt](tests/evidence/crucible-controller-architecture-inventories.json)
+binds all 80 source inventories to regenerated configured analyses and verifies
+the 79 unchanged dependency SDK source contracts.
+
 `checks.build.bazel.controller-native.check` qualifies the controller's pinned
 `ring` dependency using four uncached builds. Strict and broad source selections
 use deliberately different private output bases. The ordinary compiler must

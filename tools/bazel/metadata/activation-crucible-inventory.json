@@ -27070,7 +27070,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
+    "MODULE.bazel": "bc6d9ce89fcf31d2849fbce69521a0e47d0e9ae14d0c6bff251c9f91c9f789d6",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/activation/aos-activation-crucible/BUILD.bazel": "4ff72b43a2944613c625e9f0f2006f0a0a276d37eddffe1ebd432a69a6c85df8",
     "crates/activation/aos-activation/BUILD.bazel": "8b86fdfb0e438a67d19dd0c63fdd1feadaa47c98f8a13e5cea8d284b5b70ce33",

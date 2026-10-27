@@ -19,6 +19,40 @@ in
       sourceInventory = null;
     };
     test-feature-policy = test-graph.feature-policy;
+    test-architecture = test-graph.architecture;
+    test-architecture-cargo = import ../../../tests/build/_bazel-cargo-oracle.nix {
+      inherit pkgs;
+      pname = "aos-bazel-crucible-controller-architecture-cargo-oracle";
+      packages = ["crucible-test-support"];
+      cargoFlags = ["--test" "control_plane_boundary" "--test" "crate_layer_graph"];
+      captureCompilerArguments = true;
+    };
+    test-architecture-parity = let
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-architecture-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_architecture.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-architecture-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_architecture.py \
+          --strict ${test-graph.architecture} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.architecture} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-architecture-cargo} --cargo-root ${test-architecture-cargo.src} \
+          --graph ${pkgs.aosBazelArchitecture}/architecture.json --output "$out"
+      '';
     test-sources = pkgs.runCommand "aos-bazel-crucible-controller-test-sources" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
       ${pkgs.python3}/bin/python3 ${./verify_compiler_sources.py} \

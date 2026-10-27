@@ -10,6 +10,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -121,6 +124,45 @@ const HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS: &[(&str, &str)] =
 
 #[test]
 fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std::error::Error>> {
+    let failures = if let Some(architecture) = architecture::load()? {
+        let mut expected = RUNTIME_SPECS
+            .iter()
+            .map(|spec| spec.package)
+            .collect::<BTreeSet<_>>();
+        expected.insert(HARNESS_PACKAGE);
+        let found = architecture
+            .package_names()
+            .filter(|name| name.starts_with("crucible"))
+            .collect::<BTreeSet<_>>();
+        if found != expected {
+            return Err(io::Error::other(format!(
+                "crucible package set mismatch: expected {expected:?}, found {found:?}"
+            ))
+            .into());
+        }
+
+        let mut graph = BTreeMap::new();
+        for spec in RUNTIME_SPECS {
+            graph.insert(
+                spec.package.to_owned(),
+                architecture.production_dependencies(spec.package)?.clone(),
+            );
+        }
+        graph_rule_failures(&graph)
+    } else {
+        cargo_layer_graph_failures()?
+    };
+
+    assert!(
+        failures.is_empty(),
+        "Crucible crate layer graph lint failed:\n{}",
+        failures.join("\n")
+    );
+
+    Ok(())
+}
+
+fn cargo_layer_graph_failures() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let crates_dir = workspace_crates_dir()?;
     let layer_by_package = layer_by_package();
     let spec_by_package = spec_by_package();
@@ -178,13 +220,7 @@ fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std:
 
     failures.extend(cycle_failures(&graph, &spec_by_package));
 
-    assert!(
-        failures.is_empty(),
-        "Crucible crate layer graph lint failed:\n{}",
-        failures.join("\n")
-    );
-
-    Ok(())
+    Ok(failures)
 }
 
 #[test]

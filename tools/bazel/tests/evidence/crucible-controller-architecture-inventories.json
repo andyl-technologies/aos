@@ -1,0 +1,1358 @@
+{
+  "allowed_declaration_changes": [
+    "MODULE.bazel",
+    "crates/crucible/crucible-test-support/BUILD.bazel"
+  ],
+  "allowed_runtime_dependency_addition": "@@+aos_tools_repository+aos_architecture//:architecture.json",
+  "allowed_source_addition": "crates/crucible/crucible-test-support/tests/support/architecture.rs",
+  "comparison": "Distinct configured reports are unchanged after removing only the declared helper and two graph inputs. Identical duplicate reports are folded by the inventory merger.",
+  "core_evaluation_output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+  "current_sdk_source_profiles": 79,
+  "inventories": {
+    "accache": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/ym49yv4n0s4npn71w8p0wrp1z89cd0r8-aos-bazel-controller-declarations-accache-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 98,
+      "inventory": "tools/bazel/metadata/accache-inventory.json",
+      "previous_report_count": 98,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "fe3d66a9f8863bb20b9a1d87a0d6e2bfa9fc0a00f525e7256f30caabb68eaad2",
+      "status": "adopted"
+    },
+    "activation-core": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/da2gv175pff2v9xgxjlqs87zm9f17qri-aos-bazel-controller-declarations-activation-core-production-inventory-1",
+        "/nix/store/vddy3rgw2p4dsyjvrddq147jwl3mb8bm-aos-bazel-controller-declarations-activation-core-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 238,
+      "inventory": "tools/bazel/metadata/activation-core-inventory.json",
+      "previous_report_count": 238,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "c8aa7b6deddb484a89ea81d5610269bf4cb039139e6b7fc56dbe1692d1654af8",
+      "status": "adopted"
+    },
+    "activation-crucible": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/zh2kvn46wyan90kk1lac8i8qlwzslvs1-aos-bazel-controller-declarations-activation-crucible-production-inventory-1",
+        "/nix/store/mfrd6xagzkmz5bx629i2yddcpi6x2661-aos-bazel-controller-declarations-activation-crucible-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 255,
+      "inventory": "tools/bazel/metadata/activation-crucible-inventory.json",
+      "previous_report_count": 255,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "807c2085db4a44d5e7d2e611eb6bcb76e79f8e60c570844a7a3a0fde951d7ecc",
+      "status": "adopted"
+    },
+    "activation-storage": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/yp6sj4wgsr1x6nar0wjqfzvl3nb2zzap-aos-bazel-controller-declarations-activation-storage-tests-inventory-1",
+        "/nix/store/8l8hfbhvq97m815msdqqhjgccc96wj30-aos-bazel-controller-declarations-activation-storage-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 144,
+      "inventory": "tools/bazel/metadata/activation-storage-inventory.json",
+      "previous_report_count": 144,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "7b701c16c2a349f3fb6c649e9ed1d5457ea0a2d72ae2df0a1daf0349a7adfad9",
+      "status": "adopted"
+    },
+    "activation-systemd": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/l2rzsq5ixb804b01dkcsa4z64s77r65q-aos-bazel-controller-declarations-activation-systemd-production-inventory-1",
+        "/nix/store/lz3mqmf2rf14xva95dapxy14k7p3j3nc-aos-bazel-controller-declarations-activation-systemd-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 172,
+      "inventory": "tools/bazel/metadata/activation-systemd-inventory.json",
+      "previous_report_count": 172,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "e3cc306d847876306c412c6bcd83be8ca635dd380277e14540cc2b671ec702e7",
+      "status": "adopted"
+    },
+    "aos-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/fvczrmv749q04zlsi1zcbyx7w0vh4hw7-aos-bazel-aos-cli-source-inventory"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 1867,
+      "inventory": "tools/bazel/metadata/aos-cli-inventory.json",
+      "previous_report_count": 1867,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "5b0fe44bfe460d057fb94d1a3d9aee03a08a502996845cdcb5680e1175d41e25",
+      "status": "adopted"
+    },
+    "boot-configuration-driver": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/5dqsznbphdv2812gs2wdbizwlf9m4akn-aos-bazel-boot-configuration-driver-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 445,
+      "inventory": "tools/bazel/metadata/boot-configuration-driver-inventory.json",
+      "previous_report_count": 445,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "1414618661663e141e92fd103b44183291711ce4e477432ab12a5c7d3ddfdb30",
+      "status": "adopted"
+    },
+    "boot-pilot": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/122xf3wc9vnf9rhnr2qrzacww6l17qg3-aos-bazel-controller-declarations-pilot-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 41,
+      "inventory": "tools/bazel/metadata/boot-pilot-inventory.json",
+      "previous_report_count": 41,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "10d9b46cb6caef6fbd2d1e34e8c0a22b6c4ac7916de8788bfd06c9915c751170",
+      "status": "adopted"
+    },
+    "boot-preparation": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/npsgm6aw4nqva070grm9h7bz1vq68r9j-aos-bazel-controller-declarations-boot-preparation-tests-inventory-1",
+        "/nix/store/mbi7zc3ply0f79c0ckkwx4mb74wk1vw0-aos-bazel-controller-declarations-boot-preparation-production-inventory-1",
+        "/nix/store/m4ly3ah1wxmf19gv87cpbxrscnixkma8-aos-bazel-boot-preparation-minimal-inventory-1",
+        "/nix/store/7y2kxs48z429ypv57chdyrhsj5fmh8yv-aos-bazel-boot-preparation-minimal-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 721,
+      "inventory": "tools/bazel/metadata/boot-preparation-inventory.json",
+      "previous_report_count": 721,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "deb2239291e473fbef4e57b67230613cd24a02b338ae70c5d1b4b7fa82edd782",
+      "status": "adopted"
+    },
+    "boot-preparation-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/y4kvj5aa2062frkf7jv5pah0c0hxvwmx-aos-bazel-preparation-provider-production-inventory-1",
+        "/nix/store/gnkn27swnwv69gabyppbx625fasfg41q-aos-bazel-preparation-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 143,
+      "inventory": "tools/bazel/metadata/boot-preparation-provider-inventory.json",
+      "previous_report_count": 143,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "e276acf016af4dc1d22739b1ea31ff7659d4dee2d9b91d93daa74e8ebf9f8d5f",
+      "status": "adopted"
+    },
+    "boot-transaction-storage-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/dgvpjq54xcxkcvg47imwl341sk07421x-aos-bazel-transaction-storage-provider-production-inventory-1",
+        "/nix/store/zq40xsid4ldm34212kf61qmjgfy3mpvn-aos-bazel-transaction-storage-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 145,
+      "inventory": "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json",
+      "previous_report_count": 145,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "1f0ac9ea26b3e3de69c66a7346fb9f953b95909728d9e8aa5e9719ed4c62917a",
+      "status": "adopted"
+    },
+    "bpf-native": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/1bbgijnlimyd8qspfwxdzb5xmm663p5w-aos-bazel-controller-declarations-bpf-native-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 6,
+      "inventory": "tools/bazel/metadata/bpf-native-inventory.json",
+      "previous_report_count": 6,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "b4e5c46006899b6363ef9e841a88f59fa95efcaa29292a07d7696b1a0bda08a9",
+      "status": "adopted"
+    },
+    "bpf-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/c5kinpbk2cbvyj5ka1ff3pq04lk2rnzs-aos-bazel-bpf-provider-production-inventory-1",
+        "/nix/store/sx110z5wji343lpid1isark71vww4mfh-aos-bazel-bpf-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 162,
+      "inventory": "tools/bazel/metadata/bpf-provider-inventory.json",
+      "previous_report_count": 162,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "0264a96f6376f832354b054cb215b055b73e2c49a6c2f8a60c2753089c3b94d6",
+      "status": "adopted"
+    },
+    "build-services": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/8s1lai86q2qldrslg3ppwv6v3c0zlkkg-aos-bazel-controller-declarations-build-services-production-inventory-1",
+        "/nix/store/21gq7kwlmab8g72xcq7ag9scxdkf2721-aos-bazel-controller-declarations-build-services-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 312,
+      "inventory": "tools/bazel/metadata/build-services-inventory.json",
+      "previous_report_count": 312,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "e953c58066bc79f45f9edced74907ba243229a951d5ae305856ccee0745dcbe4",
+      "status": "adopted"
+    },
+    "cli-support": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/2s7z6lb0w3hksjrm221b0d3bjfyniqlk-aos-bazel-controller-declarations-cli-support-tests-inventory-1",
+        "/nix/store/r3i9bm3j554j0m5knyc9059492mdfiws-aos-bazel-controller-declarations-cli-support-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 199,
+      "inventory": "tools/bazel/metadata/cli-support-inventory.json",
+      "previous_report_count": 199,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "69fa7d531a6a4b9c763668ce6e40a4239134c0e3ce6b4089d64802bdfa226305",
+      "status": "adopted"
+    },
+    "configuration-image": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/f95q9z70nh0clqap71wn1bqv1w1iy970-aos-bazel-configuration-image-production-inventory-1",
+        "/nix/store/ldqq7kmg22m7zpl2mig9dbd606spjy79-aos-bazel-configuration-image-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 157,
+      "inventory": "tools/bazel/metadata/configuration-image-inventory.json",
+      "previous_report_count": 157,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "905226b012f466d030e183b37201214e16824f449071de89623bdd60096fbfb1",
+      "status": "adopted"
+    },
+    "configuration-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/50hmrrf36xnds7fmxpgnpby97mw3s763-aos-bazel-configuration-provider-production-inventory-1",
+        "/nix/store/akszycajr5vgxxqfpak7iblk5s922d51-aos-bazel-configuration-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 114,
+      "inventory": "tools/bazel/metadata/configuration-provider-inventory.json",
+      "previous_report_count": 114,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "c3ea2484b79f57de30eda12b3d62d6b1acc799fae2a35148dacecb252991f65e",
+      "status": "adopted"
+    },
+    "contracts": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/y1cz75i4pz7vb8hfm7yr12lxr1ir58yj-aos-bazel-controller-declarations-contracts-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 152,
+      "inventory": "tools/bazel/metadata/contracts-inventory.json",
+      "previous_report_count": 152,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "cf8e7f6974f78338183ba871c71559a4e1dd6ddeb98649e637ed0870a8cd6b30",
+      "status": "adopted"
+    },
+    "control": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/lp1y11pjdm4kldnwfzxyizhmkbq5v7dm-aos-bazel-controller-declarations-control-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 319,
+      "inventory": "tools/bazel/metadata/control-inventory.json",
+      "previous_report_count": 329,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "a951d39263689ef6bda96e877bef8c075893a7f9627e4d4e5ec278d10841520b",
+      "status": "adopted"
+    },
+    "crucible-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/g0sdhyhsh1l7ra8zwswhgb7a4kb9nxnf-aos-bazel-controller-declarations-crucible-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 584,
+      "inventory": "tools/bazel/metadata/crucible-cli-inventory.json",
+      "previous_report_count": 594,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "7942494deef9f31aa70dccb5e7541d9f1dffc898c1bc19ea4bec405342c5cb57",
+      "status": "adopted"
+    },
+    "crucible-controller-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/8irx00fhd98jima19jxxhj1by5vbvknc-aos-bazel-controller-declarations-crucible-controller-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 349,
+      "inventory": "tools/bazel/metadata/crucible-controller-cli-inventory.json",
+      "previous_report_count": 349,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "64953c74c24194c00d9f03e6f97a10d295398e330ed4121221e7d8a0535b7794",
+      "status": "adopted"
+    },
+    "crucible-controller-debugger": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/phwzvmfsff89cvkibr6bxijn12cmwmdh-aos-bazel-controller-declarations-crucible-controller-debugger-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 148,
+      "inventory": "tools/bazel/metadata/crucible-controller-debugger-inventory.json",
+      "previous_report_count": 148,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "44a659980ebecd067020bf63361eb0c90fbee5d768441277d4f4ff82bf94e6d7",
+      "status": "adopted"
+    },
+    "crucible-controller-scenario": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/lg4pyjcwcnc3afn0v7aq6p9hb4y8by71-aos-bazel-controller-declarations-crucible-controller-scenario-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 333,
+      "inventory": "tools/bazel/metadata/crucible-controller-scenario-inventory.json",
+      "previous_report_count": 333,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "f95effa84113fe2bb6ef1b40a8cfedd6b8760d2277a435bad71d9ae908830749",
+      "status": "adopted"
+    },
+    "crucible-controller-tests": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/sk529dmxdzmi730rssajwqjac3gb9ls8-aos-bazel-crucible-controller-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 1007,
+      "inventory": "tools/bazel/metadata/crucible-controller-tests-inventory.json",
+      "previous_report_count": 1007,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "5feb7582b467cd258cf574db952d134def849b82ca5ce789156ce480d2050fb1",
+      "status": "adopted"
+    },
+    "daemon": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/r4w9q5zj2pfic3m8s42mawhdri5024z4-aos-bazel-controller-declarations-daemon-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 453,
+      "inventory": "tools/bazel/metadata/daemon-inventory.json",
+      "previous_report_count": 463,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "9679f676614f1634a1b926e1e8e7d672835d322ca13e8318a7bfee80915a9702",
+      "status": "adopted"
+    },
+    "deployment": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/q2na4hm6i46z6s6kcsd94qq4ar8zn0vv-aos-bazel-controller-declarations-deployment-tests-inventory-1",
+        "/nix/store/k17w08d2n8wqx2608ms6c7ia5kp1hh7k-aos-bazel-controller-declarations-deployment-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 135,
+      "inventory": "tools/bazel/metadata/deployment-inventory.json",
+      "previous_report_count": 135,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "fb4e1575e04bfd5450b0d4da105b4477ebaa6547ff17913feeb4f323a4699b0e",
+      "status": "adopted"
+    },
+    "deployment-check": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/r8x9w0g1p8s0d266c4pk6nj7sn3hgk7a-aos-bazel-deployment-check-production-inventory-1",
+        "/nix/store/dmvfskbxhj66xy8km7vp9il4q9g6xv5z-aos-bazel-deployment-check-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 835,
+      "inventory": "tools/bazel/metadata/deployment-check-inventory.json",
+      "previous_report_count": 835,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "09e319652720f700ddfa48158cb34bba0556ec595871b437d27886788782bc9e",
+      "status": "adopted"
+    },
+    "device": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/r3sf6j4z4ba9p5070i1d4fl71kdcw5xs-aos-bazel-controller-declarations-device-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 166,
+      "inventory": "tools/bazel/metadata/device-inventory.json",
+      "previous_report_count": 175,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "2594da335ec123760a0548c25c31bfdb821e002cd269cd44909767c2563a1799",
+      "status": "adopted"
+    },
+    "engine": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/0wja323pfv126h4n21abj1x617ak9jkh-aos-bazel-controller-declarations-engine-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 1266,
+      "inventory": "tools/bazel/metadata/engine-inventory.json",
+      "previous_report_count": 1276,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "965115f416abd8b2013d2edd83efa496996fae58aea1e9e34f157f90661b1059",
+      "status": "adopted"
+    },
+    "feature-powerset": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/i7kblazs36lhd27z1z7g4bnbrs2wcbv4-aos-bazel-controller-declarations-feature-powerset-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 157,
+      "inventory": "tools/bazel/metadata/feature-powerset-inventory.json",
+      "previous_report_count": 157,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "161a5c1aad3807acfbe96f2907bfb782aa28b8fb0fcdc8880ec11aebe5046163",
+      "status": "adopted"
+    },
+    "filesystem-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/z96lc16jnvcjm02ickmdxq7klhldl6iz-aos-bazel-filesystem-provider-production-inventory-1",
+        "/nix/store/87g659bv9zdz7yxmhddm7jfvkgrpn7bs-aos-bazel-filesystem-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 143,
+      "inventory": "tools/bazel/metadata/filesystem-provider-inventory.json",
+      "previous_report_count": 143,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "33aabaf999ee0d729c623b87d4fdd774e2aba26859cd7394f9afb6d7c59cedfb",
+      "status": "adopted"
+    },
+    "fixture": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/6yxx2sa0liym68m54r8r7fxhz6d1ccp5-aos-bazel-controller-declarations-fixture-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 21,
+      "inventory": "tools/bazel/metadata/fixture-inventory.json",
+      "previous_report_count": 21,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "aa218e815249dd61721215d56b21c570821c9b8439b2bff279e4fe127e721399",
+      "status": "adopted"
+    },
+    "formats": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/a98h87b60mk8ck0gfwxi5xmj9p33ncz1-aos-bazel-controller-declarations-formats-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 162,
+      "inventory": "tools/bazel/metadata/formats-inventory.json",
+      "previous_report_count": 162,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "f539740f173c42da9b19c782bb4e482fe2101e84789d2314da307af4b42bf148",
+      "status": "adopted"
+    },
+    "guest": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/piqdh92b7hx7w82l1v62q0amn3kd0a5j-aos-bazel-controller-declarations-guest-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 138,
+      "inventory": "tools/bazel/metadata/guest-inventory.json",
+      "previous_report_count": 138,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "55e0b287d89a4d52f3495e59e0a59f20abc1426722d3515324f8811b82c49b33",
+      "status": "adopted"
+    },
+    "hub-client": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/6rcpif78c196bcs8sn7kdbqmqnkq4wr8-aos-bazel-controller-declarations-hub-client-tests-inventory-1",
+        "/nix/store/fw268lmz9cdqb1xzri3n7qm6scqv2sy9-aos-bazel-controller-declarations-hub-client-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 189,
+      "inventory": "tools/bazel/metadata/hub-client-inventory.json",
+      "previous_report_count": 189,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "7b0d15d4c0fd8e8e370706d0a9bca2b2da9691217779353fa6f888bf9916f090",
+      "status": "adopted"
+    },
+    "hub-console": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/9q870z5fn1pm87gny8g7b001kirshz3z-aos-bazel-controller-declarations-hub-console-production-inventory-1",
+        "/nix/store/5f2x38dzkhvvshfk70f9pm1ywp8zw36d-aos-bazel-controller-declarations-hub-console-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 171,
+      "inventory": "tools/bazel/metadata/hub-console-inventory.json",
+      "previous_report_count": 171,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "853b7cfb3c01421cc9fba44b54a907fe83f396a5173a30cb1349edf9d4a52c9f",
+      "status": "adopted"
+    },
+    "hub-console-wasm": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/fdyrm2abl9w4s7gx04mcj5jxzgpwpksv-aos-bazel-controller-declarations-hub-console-wasm-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 355,
+      "inventory": "tools/bazel/metadata/hub-console-wasm-inventory.json",
+      "previous_report_count": 355,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "7361af1470dcba3220c935759451825ee8ca474c55dbdf2b8e4b70f854e80842",
+      "status": "adopted"
+    },
+    "hub-db": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/k4a5hg71qmd64jybmpg0hpkdcg2vd32d-aos-bazel-controller-declarations-hub-db-production-inventory-1",
+        "/nix/store/87q8r1xji1pid2f6p90j9rlq3529qsag-aos-bazel-controller-declarations-hub-db-tests-inventory-1",
+        "/nix/store/5fxy131vvkynnri6qslk8hl7pfxgvaqb-aos-bazel-controller-declarations-hub-db-all-features-tests-inventory-1",
+        "/nix/store/mrvnn2ca0lmj729sxzsh22h4lshmbx63-aos-bazel-controller-declarations-hub-db-all-features-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 946,
+      "inventory": "tools/bazel/metadata/hub-db-inventory.json",
+      "previous_report_count": 946,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "a44fb9ae1b278a3cc1af93f809efeaa07461f45ef526e27cf962df2a64f1002b",
+      "status": "adopted"
+    },
+    "hub-dialect": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/26r1f9ikibwbrns52rpas5kaq0j13ha9-aos-bazel-hub-dialect-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 521,
+      "inventory": "tools/bazel/metadata/hub-dialect-inventory.json",
+      "previous_report_count": 521,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "16a1fbc845d30b72469b20d12812f340522329e922a54463dd095f16377956af",
+      "status": "adopted"
+    },
+    "hub-installed": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/q20j13jzlgrijljqzdiahl9alnixlaf7-aos-bazel-hub-installed-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 486,
+      "inventory": "tools/bazel/metadata/hub-installed-inventory.json",
+      "previous_report_count": 486,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "6f9c581be417f427269b52660427091690ac007a1c859a458179c91be6dc062e",
+      "status": "adopted"
+    },
+    "hub-model": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/9fl6l2cmhhh1bjj0s4har91sk367d003-aos-bazel-controller-declarations-hub-model-production-inventory-1",
+        "/nix/store/q7cg5yy7hg5makplw5r90ip0ig11dcjq-aos-bazel-controller-declarations-hub-model-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 351,
+      "inventory": "tools/bazel/metadata/hub-model-inventory.json",
+      "previous_report_count": 351,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "666e9c7adf81f45911628dece5033628c90f8713bc2fd1b3c85a45b3745c011d",
+      "status": "adopted"
+    },
+    "hub-native": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/j0xl6in3389zjm63ramv75nbdcjrv8q9-aos-bazel-controller-declarations-hub-native-production-inventory-1",
+        "/nix/store/cgg0rynippqcsjavsg248nvnxifkz1s9-aos-bazel-controller-declarations-hub-native-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 1079,
+      "inventory": "tools/bazel/metadata/hub-native-inventory.json",
+      "previous_report_count": 1079,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "c31ee8314898dc06bef4b9d757506a5737c0a7202fead6cac9b2d9ebead34bf0",
+      "status": "adopted"
+    },
+    "hub-portable": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/bg39l2cjcy6kbi1ajscnjskng62nz2ir-aos-bazel-controller-declarations-hub-portable-tests-inventory-1",
+        "/nix/store/5x7846cnd57djp1zz327ddawik9whcfv-aos-bazel-controller-declarations-hub-portable-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 114,
+      "inventory": "tools/bazel/metadata/hub-portable-inventory.json",
+      "previous_report_count": 114,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "e9599b2bc040124125e91ad2c96c27df9fbeec39df044edb4b1e8084af691943",
+      "status": "adopted"
+    },
+    "hub-service": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/v2r6c2f6awviwpq1mxpsvlzcwrxqsasm-aos-bazel-controller-declarations-hub-service-production-inventory-1",
+        "/nix/store/nx3nz27bk3g4x6mvazzs175n0frmylbl-aos-bazel-controller-declarations-hub-service-tests-inventory-1",
+        "/nix/store/3j85q0ww2izxw96prr13b9kahmx66flp-aos-bazel-controller-declarations-hub-service-all-features-production-inventory-1",
+        "/nix/store/4f11mivhl1yzv5l78aq4cik3p3bqjwgm-aos-bazel-controller-declarations-hub-service-all-features-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 1630,
+      "inventory": "tools/bazel/metadata/hub-service-inventory.json",
+      "previous_report_count": 1630,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "3d6e97d7379689e8ec2991de828b21b15d5c84e754687fdc2e68dba4e0084dba",
+      "status": "adopted"
+    },
+    "hub-worker": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/clrygw07a3n39p6wqakgsywygiqp9ai7-aos-bazel-hub-worker-tests-inventory-1",
+        "/nix/store/qlmq4i2lm5ibzg5b24mv9670l37lrqir-aos-bazel-hub-worker-all-features-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 1008,
+      "inventory": "tools/bazel/metadata/hub-worker-inventory.json",
+      "previous_report_count": 1008,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "50e55ba67b98727321278c23620e5781c8c46d5694fc476406150b33f61917c1",
+      "status": "adopted"
+    },
+    "hub-worker-wasm": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/b3a5z9dz1l2l198i5npaidki3pihhxc1-aos-bazel-hub-worker-wasm-inventory-1",
+        "/nix/store/yvngv7v8qvkaganbcpfdh2hzx6w71b9a-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+        "/nix/store/0ksrqb2gm4mxr4npv41398p96qjna6m1-aos-bazel-hub-worker-wasm-all-features-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 1001,
+      "inventory": "tools/bazel/metadata/hub-worker-wasm-inventory.json",
+      "previous_report_count": 1001,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "85a01ed01ad2b87c7bd4a95a062330c03ed4029040d41d0b28c67871593b0b6d",
+      "status": "adopted"
+    },
+    "initrd-preparation": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/vg3ipvl9047d4j4rjs11xkahydl3v3x2-aos-bazel-controller-declarations-initrd-preparation-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 17,
+      "inventory": "tools/bazel/metadata/initrd-preparation-inventory.json",
+      "previous_report_count": 17,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "4623ed06c68051596cae8dfad4e1e0c37b0d96ea9f02055c51f157b280e22487",
+      "status": "adopted"
+    },
+    "kernel-tunable-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/awa6bhga4xsahsc0fk72vzskrafyspfq-aos-bazel-kernel-tunable-provider-production-inventory-1",
+        "/nix/store/jf63kwbhxazvd56lm5p37zhnya7g23ng-aos-bazel-kernel-tunable-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 109,
+      "inventory": "tools/bazel/metadata/kernel-tunable-provider-inventory.json",
+      "previous_report_count": 109,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "31231acb2e48a07243815f9b63788cbc1af03ac72d9607b9d51f13b0f24b156f",
+      "status": "adopted"
+    },
+    "kubernetes-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/mwhb7x80hdmcvijanrbnypy84k44q9zx-aos-bazel-kubernetes-provider-production-inventory-1",
+        "/nix/store/bd3k4yimfm7fjpwx90zvw3jp5aj4jfvh-aos-bazel-kubernetes-provider-debug-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 143,
+      "inventory": "tools/bazel/metadata/kubernetes-provider-inventory.json",
+      "previous_report_count": 143,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "6c91e430f986e2643d8c75242040b3730218bd3249fb5284860530b023d7c3ec",
+      "status": "adopted"
+    },
+    "metadata-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/2lirx37ljb71dyhh89ywnrzjhyk7lsxz-aos-bazel-metadata-provider-production-inventory-1",
+        "/nix/store/2g3ngq6m7vvax073wj0qj8fha1js27pk-aos-bazel-metadata-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 326,
+      "inventory": "tools/bazel/metadata/metadata-provider-inventory.json",
+      "previous_report_count": 326,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "60815b5e9850ee33a662cf286f59ea601830567185dcf79ed624175e78e7b660",
+      "status": "adopted"
+    },
+    "native-foundation": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/p3rjzm153q960l4injmy0j02x9820w7y-aos-bazel-controller-declarations-native-foundation-production-inventory-1",
+        "/nix/store/qg23cfiizdwy0y29cnnn7870ha71f30z-aos-bazel-controller-declarations-native-foundation-minimal-corrected-inventory-1",
+        "/nix/store/4pfjmpxffb3bncxcjdmzy4nvvr545jjn-aos-bazel-controller-declarations-native-foundation-default-corrected-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 955,
+      "inventory": "tools/bazel/metadata/native-foundation-inventory.json",
+      "previous_report_count": 955,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "09642b139b6543bf759db16f291f9d9540d2e4b5bc7fe3e142a4bcc00f6c2e4c",
+      "status": "adopted"
+    },
+    "network-ruleset-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/gd4ibsr0y93aidcxpy4wn99nwyjqswch-aos-bazel-network-ruleset-provider-production-inventory-1",
+        "/nix/store/rk07c0d2zjdn0g3fi5nwihcp94q5p5q5-aos-bazel-network-ruleset-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 143,
+      "inventory": "tools/bazel/metadata/network-ruleset-provider-inventory.json",
+      "previous_report_count": 143,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "35a01cf7fa6a96f9468888ecda0dd439dd223e1aeba13797cb137bd1ad18fc66",
+      "status": "adopted"
+    },
+    "nix-store-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/f2a4i0v3bf4asw6faqwics9q7xkha829-aos-bazel-nix-store-provider-production-inventory-1",
+        "/nix/store/2ywfjg3am4bldqc5azn5d3rpwg3gvp51-aos-bazel-nix-store-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 90,
+      "inventory": "tools/bazel/metadata/nix-store-provider-inventory.json",
+      "previous_report_count": 90,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "bf28157ecf9dfa6995cb5ccb0567c3f85384eab63a1ccf56d87e9d2bcbff2555",
+      "status": "adopted"
+    },
+    "package-evaluation-driver": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/nam3xms52fz5c6hyh3nq38vcddhf50fh-aos-bazel-package-evaluation-driver-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 442,
+      "inventory": "tools/bazel/metadata/package-evaluation-driver-inventory.json",
+      "previous_report_count": 442,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "4f287fc4c5e8745e6358c6a48088c591544c207ce3650ae0e098c778e451a92c",
+      "status": "adopted"
+    },
+    "package-manager": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/7dxi9m60jc3nfhj8bsq0cwx3xizmghnr-aos-bazel-controller-declarations-package-manager-production-inventory-1",
+        "/nix/store/5wkj9a4cxbw3gx1d03qql4mw0yy3dv5i-aos-bazel-controller-declarations-package-manager-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 881,
+      "inventory": "tools/bazel/metadata/package-manager-inventory.json",
+      "previous_report_count": 881,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "387782c155baa5ed8e8f3c46fcafd0b4897f3cf460169e0a7737b51c9137a830",
+      "status": "adopted"
+    },
+    "protocol": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/agb905jz0jbhwkcw0nfxxsymraxdww7q-aos-bazel-controller-declarations-protocol-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 129,
+      "inventory": "tools/bazel/metadata/protocol-inventory.json",
+      "previous_report_count": 129,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "4f2ffe4a0ef34995cdf539776fa5888f10ca3beea2450172bcda970b5806d488",
+      "status": "adopted"
+    },
+    "qemu-gateway-installed": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/bs8rnjm0xjcjxcnvjmmyy0cb23r6h9z1-aos-bazel-controller-declarations-qemu-gateway-installed-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 53,
+      "inventory": "tools/bazel/metadata/qemu-gateway-installed-inventory.json",
+      "previous_report_count": 53,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "f076a81033b9a109af8810346e6025e0ba8e6bfc80101e154977726418bb8aeb",
+      "status": "adopted"
+    },
+    "qemu-gateway-process-test": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/hlz74hhj8m5gk2l3d4bh3bphxgfb3bl4-aos-bazel-controller-declarations-qemu-gateway-process-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 78,
+      "inventory": "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+      "previous_report_count": 78,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "b54f37501253252256bd394e8aa58b2cd4fa45b23b7bd85812b6344cb52107db",
+      "status": "adopted"
+    },
+    "qemu-gpl-production": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/jrz7adkjmj47yh5x3gp8152afiy27j18-aos-bazel-controller-declarations-qemu-gpl-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 81,
+      "inventory": "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+      "previous_report_count": 81,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "69663513f80fe3bed1dac679ad7d2c8b692fa316d3db96c35820554e1b6f1bfa",
+      "status": "adopted"
+    },
+    "qemu-host": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/sr48191mh1rqhxfrnmpj95wc79a97cvr-aos-bazel-controller-declarations-qemu-host-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 249,
+      "inventory": "tools/bazel/metadata/qemu-host-inventory.json",
+      "previous_report_count": 259,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "34ea9b4ef22552cab65c9178bfe53037868ff5dcf749fa90a63c17703cb24fd9",
+      "status": "adopted"
+    },
+    "qemu-plugin-installed": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/w6q5ivi8nb2z1d189hnpzz5jni7a7pz7-aos-bazel-controller-declarations-qemu-plugin-installed-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 65,
+      "inventory": "tools/bazel/metadata/qemu-plugin-installed-inventory.json",
+      "previous_report_count": 65,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "e9bd346c77aac6004777fad945c76589d14cd1643f060d2e5821d1b217d0f061",
+      "status": "adopted"
+    },
+    "qemu-plugin-process-test": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/0ywhr5cs4cz0z420z93gf2cf5z9arzn0-aos-bazel-controller-declarations-qemu-plugin-process-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 87,
+      "inventory": "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+      "previous_report_count": 87,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "ac33f4daf8056b1312ec4adafaa0b6b417b046e25ff5d8c87eb92ced8a8e3125",
+      "status": "adopted"
+    },
+    "qemu-test-oracle-host": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/202w0jym7n4s5qf0vwhda42zrfdhaph9-aos-bazel-controller-declarations-qemu-test-oracle-host-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 255,
+      "inventory": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "previous_report_count": 255,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "0ba6e62a8750d00c608b5beb6a9e5a1284825b4582c1c6f46d27dc9807abc51d",
+      "status": "adopted"
+    },
+    "quota": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/vnzi9pqzjsr3m64ascd2i5d1m9s26cb1-aos-bazel-controller-declarations-quota-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 49,
+      "inventory": "tools/bazel/metadata/quota-inventory.json",
+      "previous_report_count": 49,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "56fc446e63278a6d78c01de4f85676f1aaaed5abc4bbed9060775a1dd90ff478",
+      "status": "adopted"
+    },
+    "registry-native": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/dpjgad7qdbml3rbf7xnk04nyicydhih7-aos-bazel-controller-declarations-registry-native-tests-inventory-1",
+        "/nix/store/7rb1zhmslq8cdfy7fp8gn711r9yp8wny-aos-bazel-controller-declarations-registry-native-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 842,
+      "inventory": "tools/bazel/metadata/registry-native-inventory.json",
+      "previous_report_count": 842,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "1969988fb4b4f6e271a4bfbf5d6e7518f74f243995455fffdde829e125260374",
+      "status": "adopted"
+    },
+    "registry-web": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/l8r3ys9vpqzg0ynq1pn0hjknx7avcg00-aos-bazel-controller-declarations-registry-web-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 281,
+      "inventory": "tools/bazel/metadata/registry-web-inventory.json",
+      "previous_report_count": 281,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "0e538197aa30f80cd69d796a3f9b3fedadd39a7093a676ce270ca699b7dfed85",
+      "status": "adopted"
+    },
+    "registry-web-wasm": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/jdg0l19w00xrc2pr6yr4xkqrf8j11243-aos-bazel-controller-declarations-registry-web-wasm-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 305,
+      "inventory": "tools/bazel/metadata/registry-web-wasm-inventory.json",
+      "previous_report_count": 305,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "1d64fdcfbb7b00d85f1c45d3816df487ef85df0be26d0021efe27d988fa46392",
+      "status": "adopted"
+    },
+    "release-coordination": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/j8jzpaslgqfgdcd00dwfdrw63fwkx4v7-aos-bazel-controller-declarations-release-coordination-tests-inventory-1",
+        "/nix/store/6wsqpkxsgzbjs6hjffqi3phxsh00514b-aos-bazel-controller-declarations-release-coordination-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 404,
+      "inventory": "tools/bazel/metadata/release-coordination-inventory.json",
+      "previous_report_count": 404,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "a5343937ff112ad11da4fe0a7c106ca1f67e1e38e1233af3176110cec8620ed7",
+      "status": "adopted"
+    },
+    "release-preparation": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/yydj0jki3palqbywhd29c7vc467kdrqz-aos-bazel-controller-declarations-release-preparation-tests-inventory-1",
+        "/nix/store/605iimv8vkf0czfla236jiw2h9sch5sp-aos-bazel-controller-declarations-release-preparation-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 211,
+      "inventory": "tools/bazel/metadata/release-preparation-inventory.json",
+      "previous_report_count": 211,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "1edb6121cf175018fa26967af8f132be38c7dbdde28e7ebd30aaec52f9c918a0",
+      "status": "adopted"
+    },
+    "release-signer": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/a4mzcmmapz4bf67p82qawv11wc2wlrm5-aos-bazel-release-signer-production-inventory-1",
+        "/nix/store/q0nxaf101w9kn2rg0w7py1a445b36vsj-aos-bazel-release-signer-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 135,
+      "inventory": "tools/bazel/metadata/release-signer-inventory.json",
+      "previous_report_count": 135,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "257c6aba2ea3b3a253cc71f2dacee69d1f0cdc24cb292af59fb73213cdadce74",
+      "status": "adopted"
+    },
+    "session": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/d1dzy5zcb0fzc0kvyf969kly8n0hwhgi-aos-bazel-controller-declarations-session-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 262,
+      "inventory": "tools/bazel/metadata/session-inventory.json",
+      "previous_report_count": 272,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "30e47a2671626afe7161e49eb434e833795e0b3735f4ade5149321cb3b32bec2",
+      "status": "adopted"
+    },
+    "shared": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/bcmjy95w92rbz6hmlr5zlysv1cizwqn1-aos-bazel-controller-declarations-shared-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 85,
+      "inventory": "tools/bazel/metadata/shared-inventory.json",
+      "previous_report_count": 85,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "f347f073d208dbc777f4cd0af577a9daead1b0c3c0913a6a950070b213cd4f87",
+      "status": "adopted"
+    },
+    "static-storage-providers": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/qz0pcxs41ama8py3jbw3qi0dabalbjib-aos-bazel-static-storage-providers-production-inventory-1",
+        "/nix/store/5sgrgmq6cwf9cyssbn1bzqzv6kw84g2q-aos-bazel-static-storage-providers-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 150,
+      "inventory": "tools/bazel/metadata/static-storage-providers-inventory.json",
+      "previous_report_count": 150,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "4e77ebae4e0c8a16aa17da23a420cc879d475700575cf05a427f1327b4b4742c",
+      "status": "adopted"
+    },
+    "storage-provisioning-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/01s7vgqr4kvhwm0rprddgv1pw8yi238g-aos-bazel-storage-provisioning-provider-production-inventory-1",
+        "/nix/store/jiv7aq81lm2ab2hi6ah6ccjx3sxcgs57-aos-bazel-storage-provisioning-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 152,
+      "inventory": "tools/bazel/metadata/storage-provisioning-provider-inventory.json",
+      "previous_report_count": 152,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "90d779c914af48d41fe49b764bba28a5022286804056c4bf25f6887de58b428e",
+      "status": "adopted"
+    },
+    "store": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/hlwjp4br4giyy2i0va7d36mpzzhpxnvl-aos-bazel-controller-declarations-store-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 277,
+      "inventory": "tools/bazel/metadata/store-inventory.json",
+      "previous_report_count": 277,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "d75b9397e6d4d0136a15a3aeafe4a23ef119cf74c98a119e42bca8e55061259e",
+      "status": "adopted"
+    },
+    "store-s3": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/yzrgbnjml3pzri5w03ssj2azgd7ky73h-aos-bazel-controller-declarations-store-s3-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 283,
+      "inventory": "tools/bazel/metadata/store-s3-inventory.json",
+      "previous_report_count": 283,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "b49ca01f3a9ee0a3dcd02caeabc3ef93a2507420705f6a48e7bf9b6c329c9fa8",
+      "status": "adopted"
+    },
+    "systemd-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/jd5w7vl8bgf1b6laylvxjqd7yf1dq7zw-aos-bazel-systemd-provider-production-inventory-1",
+        "/nix/store/ndanvk64blcfsji0bcza28mvaq6scid0-aos-bazel-systemd-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 210,
+      "inventory": "tools/bazel/metadata/systemd-provider-inventory.json",
+      "previous_report_count": 210,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "39cf6c94fc532a7ec42746e26d28a9925cfa461512a95db4e83f1571adab7fa5",
+      "status": "adopted"
+    },
+    "test-support": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/zzyq7gxfmj7cf3ww8lavbhg66d68p3v7-aos-bazel-controller-declarations-test-support-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 37,
+      "inventory": "tools/bazel/metadata/test-support-inventory.json",
+      "previous_report_count": 46,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "83061e4b2d58c2476cefa434fd0e219ec37c7dd85ebd0a5ae6891c05b6b90252",
+      "status": "adopted"
+    },
+    "test-support-audit": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/v1hb30g13h91xpdg4kr167gsdx2cnnjx-aos-bazel-controller-declarations-test-support-audits-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "current_report_count": 137,
+      "inventory": "tools/bazel/metadata/test-support-audit-inventory.json",
+      "previous_report_count": 146,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "b432acb3ffc815137382ea5c648c611296d831ffb7b263a42be30b40c6e5dc7f",
+      "status": "adopted"
+    },
+    "zfs-provider": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/9k4a44dj1478dkma0nxsl3hl57nyxikv-aos-bazel-zfs-provider-production-inventory-1",
+        "/nix/store/ccx01j1ymmmzr2bwgix06ldbmdc19qxz-aos-bazel-zfs-provider-release-tests-inventory-1"
+      ],
+      "changed_contracts": [
+        "MODULE.bazel"
+      ],
+      "current_report_count": 157,
+      "inventory": "tools/bazel/metadata/zfs-provider-inventory.json",
+      "previous_report_count": 157,
+      "reports_unchanged_except_declared_audit_inputs": true,
+      "roots_unchanged": true,
+      "sha256": "0e29603e604934354efdbb0333113b8c39cc1362cf409ed59479251d437dcb09",
+      "status": "adopted"
+    }
+  },
+  "public_controller_cutover_qualified": false,
+  "schema_version": 1,
+  "scope": "Actual configured-analysis regeneration for the two controller dependency audits only.",
+  "source_inventory_count": 80,
+  "status": "PASS",
+  "upstream_bzlmod_pins_and_lock_unchanged": true
+}

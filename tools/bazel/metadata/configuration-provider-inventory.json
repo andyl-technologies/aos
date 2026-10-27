@@ -11156,7 +11156,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
+    "MODULE.bazel": "bc6d9ce89fcf31d2849fbce69521a0e47d0e9ae14d0c6bff251c9f91c9f789d6",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/activation/aos-activation-config-files/BUILD.bazel": "53b6a993471650f36e6d3d6757bd8021f7d49d384aca33c54eeb644caa2c1e14",
     "pkgs/system/_aos-configuration-provider/BUILD.bazel": "a20280f574255e6f5781cb009c329b48fc7bd1fc7c3fcb5d985d041e321b23cd",

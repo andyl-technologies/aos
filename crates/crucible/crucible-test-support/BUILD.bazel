@@ -111,7 +111,9 @@ aos_rust_test(
             "AOS_FEATURE_EVIDENCE": "@aos_controller_features//:features.json",
             "AOS_FEATURE_AUDIT_SCRIPT": "@aos_controller_features//:controller_feature_evidence.py",
             "AOS_FEATURE_AUDIT_PYTHON": "@aos_tools//:python",
-        } if source == "tests/feature_powerset.rs" else {},
+        } if source == "tests/feature_powerset.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+        } if source in ["tests/control_plane_boundary.rs", "tests/crate_layer_graph.rs"] else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",
             "//tests/crucible:testing-standards-baseline.txt",

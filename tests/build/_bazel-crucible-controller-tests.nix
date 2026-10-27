@@ -110,6 +110,7 @@
         aos_native = pkgs.aosBazelStoreLibraries;
         aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
         aos_controller_features = import ./_bazel-crucible-controller-feature-evidence.nix {inherit pkgs;};
+        aos_architecture = pkgs.aosBazelArchitecture;
       };
     analysisTargets = targets ++ testTargets;
   };
@@ -156,6 +157,16 @@ in {
     pname = "aos-bazel-crucible-controller-feature-policy-test";
     inherit workspace;
     targets = ["//crates/crucible/crucible-test-support:feature_powerset_controller"];
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
+  architecture = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-architecture-tests";
+    inherit workspace;
+    targets = [
+      "//crates/crucible/crucible-test-support:control_plane_boundary_controller"
+      "//crates/crucible/crucible-test-support:crate_layer_graph_controller"
+    ];
     retainActionGraph = true;
     sharedBuildCache = false;
   };
