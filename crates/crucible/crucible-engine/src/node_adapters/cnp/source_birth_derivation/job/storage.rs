@@ -6,7 +6,12 @@
 
 use super::*;
 use crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
-use crucible_host_resources::DeploymentResourceReadContext;
+use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+use crucible_host_resources::{DeploymentResourceReadContext, LinuxPureWorkerBufferCapacityData};
+use crucible_node_transport::retained_metadata::{
+    RetainedProtocolMetadataFacts,
+    records::{MetadataCapacityRecord, MetadataRecordKind, PacketRuntimeMetadataRecordBank},
+};
 use std::mem::size_of;
 
 impl SourceBirthDerivationJob {
@@ -35,50 +40,57 @@ impl SourceBirthDerivationJob {
         Ok(SourceDeploymentStorageRead::from_original(bytes, lease))
     }
 
-    pub(in crate::node_adapters::cnp) fn known_direct_backing_data(
+    /// Observes the original selected direct buffers with their defining geometry.
+    ///
+    /// This is the same partial userspace population as
+    /// [`Self::deployment_storage_read`]. It excludes opaque runtime and native
+    /// resources, which still require the original deployment lease. Shared
+    /// attempt/completion views repeat their rows without alias subtraction.
+    /// Physical rows append without clearing earlier components or failed prefixes.
+    ///
+    /// # Errors
+    /// Refuses foreign original launch custody, exhausted rows, unavailable
+    /// physical backing or checked geometry/work overflow.
+    pub fn direct_buffer_capacity_data(
         &self,
-    ) -> Result<usize, RuntimeError> {
-        let mut bytes = match &self.original_launch {
-            Some(original) => original.known_backing_data()?,
-            None => 0,
-        };
+        maximum_rows: usize,
+        bank: Option<&mut PacketRuntimeMetadataRecordBank>,
+    ) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
+        let mut census = OriginalOwnerCapacityMetadataData::new(maximum_rows, bank);
+        census.observe_inline_data(&self.original_launch.is_some())?;
+        if let Some(original) = &self.original_launch {
+            original.record_capacity_metadata_data(&mut census)?;
+        }
+        census.observe_inline_data(&self.attempt.is_some())?;
         if let Some(attempt) = &self.attempt {
-            bytes = bytes
-                .checked_add(
-                    attempt
-                        .direct_buffer_census()
-                        .map_err(|_| RuntimeError::OwnerUnavailable)?
-                        .checked_sum()
-                        .ok_or(RuntimeError::ResourceLimit)?,
-                )
-                .ok_or(RuntimeError::ResourceLimit)?;
+            attempt.observe_direct_buffers(&mut |buffer| record_buffer(buffer, &mut census))?;
         }
+        census.observe_inline_data(&self.completion.is_some())?;
         if let Some(completion) = &self.completion {
-            // Keep both original reports. No alias subtraction from equal paths.
-            bytes = bytes
-                .checked_add(
-                    completion
-                        .direct_buffer_census()
-                        .map_err(|_| RuntimeError::OwnerUnavailable)?
-                        .checked_sum()
-                        .ok_or(RuntimeError::ResourceLimit)?,
-                )
-                .ok_or(RuntimeError::ResourceLimit)?;
+            completion.observe_direct_buffers(&mut |buffer| record_buffer(buffer, &mut census))?;
         }
+        census.observe_inline_data(&self.failed_outcome.is_some())?;
         if let Some(outcome) = &self.failed_outcome {
-            bytes = bytes
-                .checked_add(outcome.stdout.capacity())
-                .and_then(|sum| sum.checked_add(outcome.stderr.capacity()))
-                .ok_or(RuntimeError::ResourceLimit)?;
+            census.observe(&outcome.stdout)?;
+            census.observe(&outcome.stderr)?;
         }
+        census.observe_inline_data(&self.failure.is_some())?;
         if let Some(SourceBirthJobFailure::Runtime(RuntimeError::SchedulerRefused(message))) =
             &self.failure
         {
-            bytes = bytes
-                .checked_add(message.capacity())
-                .ok_or(RuntimeError::ResourceLimit)?;
+            census.observe(message)?;
         }
-        Ok(bytes)
+        Ok(census.finish())
+    }
+
+    pub(in crate::node_adapters::cnp) fn known_direct_backing_data(
+        &self,
+    ) -> Result<usize, RuntimeError> {
+        let facts = self.direct_buffer_capacity_data(usize::MAX, None)?;
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+            &facts,
+            usize::MAX,
+        )
     }
 
     /// Names only this explicit-buffer visitor's new fixed wrapper headers.
@@ -98,5 +110,27 @@ impl SourceBirthDerivationJob {
             + size_of::<&DeploymentResourceReadContext<'static>>()
             + OriginalSourceBirthLaunches::counter_scratch_data()
             + OriginalLaunchMetadataObservation::counter_scratch_data()
+            + OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + LinuxPureWorkerBufferCapacityData::counter_scratch_data()
+            + size_of::<LinuxPureWorkerBufferCapacityData>()
+            + size_of::<&mut OriginalOwnerCapacityMetadataData<'static>>()
+            + size_of::<RetainedProtocolMetadataFacts>()
+            + size_of::<Result<RetainedProtocolMetadataFacts, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
+            + size_of::<Option<&mut PacketRuntimeMetadataRecordBank>>()
     }
+}
+
+/// Preserves one defining host allocation without inventing rows from byte sums.
+fn record_buffer(
+    buffer: LinuxPureWorkerBufferCapacityData,
+    census: &mut OriginalOwnerCapacityMetadataData<'_>,
+) -> Result<(), RuntimeError> {
+    census.observe_work_data(1)?;
+    census.record(MetadataCapacityRecord {
+        kind: MetadataRecordKind::Vector,
+        extent: buffer.capacity,
+        element_bytes: buffer.element_bytes,
+        alignment: buffer.alignment,
+    })
 }

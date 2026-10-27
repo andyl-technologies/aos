@@ -7,6 +7,66 @@
 
 use super::*;
 
+/// Describes one actual direct buffer allocation in a retained worker view.
+///
+/// Path buffers use their byte-vector geometry. Runtime-root rosters use the
+/// compiled private `(PathBuf, OwnedFd)` element layout, including spare slots.
+/// These are allocator-request DATA; opaque runtime and kernel custody remain
+/// separate obligations. No descriptor or process-private reference escapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinuxPureWorkerBufferCapacityData {
+    /// Reports the original allocation's element capacity, including spare slots.
+    pub capacity: usize,
+    /// Reports the compiled size of one element in this allocation.
+    pub element_bytes: usize,
+    /// Reports the compiled alignment of one element in this allocation.
+    pub alignment: usize,
+}
+
+impl LinuxPureWorkerBufferCapacityData {
+    /// Reports the concrete controls of the allocation-free direct-buffer walk.
+    ///
+    /// Caller-specific observer captures and error values are additional terms.
+    /// Opaque runtime backing remains under the original deployment reservation.
+    pub fn counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<Self>()
+            + size_of::<&LinuxPureWorkerFactory>()
+            + size_of::<&LinuxPureWorkerAttempt>()
+            + size_of::<&LinuxPureWorkerCompletion>()
+            + size_of::<&LinuxPureWorkerProgram>()
+            + size_of::<&Roots>()
+            + size_of::<&State>()
+            + size_of::<MutexGuard<'static, State>>()
+            + size_of::<&Workspace>()
+            + size_of::<&Cgroup>()
+            + size_of::<&aos_linux_project_quota::LinuxProjectQuotaReservation>()
+            + size_of::<&PathBuf>()
+            + size_of::<&Vec<u8>>()
+            + size_of::<&LinuxPureWorkerOutcome>()
+            + size_of::<&Vec<(PathBuf, OwnedFd)>>()
+            + size_of::<std::slice::Iter<'static, (PathBuf, OwnedFd)>>()
+            + size_of::<(&PathBuf, &OwnedFd)>()
+    }
+
+    pub(super) fn bytes(capacity: usize) -> Self {
+        Self {
+            capacity,
+            element_bytes: std::mem::size_of::<u8>(),
+            alignment: std::mem::align_of::<u8>(),
+        }
+    }
+
+    pub(super) fn vector<T>(owner: &Vec<T>) -> Self {
+        Self {
+            capacity: owner.capacity(),
+            element_bytes: std::mem::size_of::<T>(),
+            alignment: std::mem::align_of::<T>(),
+        }
+    }
+}
+
 /// Reports selected direct requested buffer backing through one owner view.
 ///
 /// Capacity bytes are logical allocator requests, not usable-size/RSS facts.
@@ -81,7 +141,52 @@ fn state_buffers(state: &State) -> Result<LinuxPureWorkerDirectBuffers, LinuxPur
     Ok(observation)
 }
 
+fn observe_base<E>(
+    program: &LinuxPureWorkerProgram,
+    roots: &Roots,
+    observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+) -> Result<(), E> {
+    program.observe_direct_buffers(observe)?;
+    observe(LinuxPureWorkerBufferCapacityData::bytes(
+        roots.configuration.cgroup_root.capacity(),
+    ))?;
+    observe(LinuxPureWorkerBufferCapacityData::bytes(
+        roots.configuration.run_root.capacity(),
+    ))
+}
+
+fn observe_state<E>(
+    state: &State,
+    observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+) -> Result<(), E> {
+    observe_base(&state.program, &state.roots, observe)?;
+    if let Some(group) = &state.group {
+        observe(LinuxPureWorkerBufferCapacityData::bytes(
+            group.path.capacity(),
+        ))?;
+    }
+    if let Some(workspace) = &state.workspace {
+        workspace.observe_path_buffer(observe)?;
+    }
+    observe(LinuxPureWorkerBufferCapacityData::vector(&state.stdout))?;
+    observe(LinuxPureWorkerBufferCapacityData::vector(&state.stderr))
+}
+
 impl LinuxPureWorkerFactory {
+    /// Observes each original direct buffer without aggregating its geometry.
+    ///
+    /// Shared views repeat their rows. Empty allocations retain zero capacity;
+    /// spare runtime-root slots keep their defining compiled element layout.
+    ///
+    /// # Errors
+    /// Returns the observer's first error without visiting subsequent buffers.
+    pub fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        observe_base(&self.program, &self.roots, observe)
+    }
+
     /// Observes its original immutable paths and runtime-root roster only.
     ///
     /// # Errors
@@ -94,6 +199,21 @@ impl LinuxPureWorkerFactory {
 }
 
 impl LinuxPureWorkerAttempt {
+    /// Observes original direct buffers while retaining the attempt state lock.
+    ///
+    /// Failed and cancelled prefixes remain observable. The synchronous observer
+    /// must not reenter this attempt; no native operation or allocation is made
+    /// by the walk. Private Command/error/thread backing is excluded.
+    ///
+    /// # Errors
+    /// Returns the observer's first error, preserving state and its emitted prefix.
+    pub fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        observe_state(&lock(&self.shared), observe)
+    }
+
     /// Observes direct buffers from this same retained attempt under its lock.
     ///
     /// This neither authenticates currentness nor changes failed/cancelled state.
@@ -109,6 +229,26 @@ impl LinuxPureWorkerAttempt {
 }
 
 impl LinuxPureWorkerCompletion {
+    /// Observes original state buffers and the actual moved outcome vectors.
+    ///
+    /// State observation holds the original attempt lock; the observer must not
+    /// reenter it. This supplies no result-acceptance or currentness authority.
+    ///
+    /// # Errors
+    /// Returns the observer's first error, retaining every original buffer.
+    pub fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        observe_state(&lock(&self.shared), observe)?;
+        observe(LinuxPureWorkerBufferCapacityData::vector(
+            &self.outcome.stdout,
+        ))?;
+        observe(LinuxPureWorkerBufferCapacityData::vector(
+            &self.outcome.stderr,
+        ))
+    }
+
     /// Observes retained direct buffers including its actual moved output Vecs.
     ///
     /// It does not perform [`Self::verify_original`] or grant result acceptance.
@@ -127,3 +267,7 @@ impl LinuxPureWorkerCompletion {
         Ok(observation)
     }
 }
+
+#[cfg(test)]
+#[path = "buffers/tests.rs"]
+mod tests;

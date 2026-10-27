@@ -181,6 +181,18 @@ pub(super) struct Workspace {
 }
 
 impl Workspace {
+    pub(super) fn observe_path_buffer<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(quota) = &self.quota {
+            observe(LinuxPureWorkerBufferCapacityData::bytes(
+                quota.retained_path_buffer_data().capacity(),
+            ))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn path_buffer_bytes(&self) -> usize {
         self.quota
             .as_ref()

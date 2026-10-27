@@ -195,6 +195,13 @@ impl LinuxPureWorkerProgram {
         Ok((paths, roster))
     }
 
+    pub(super) fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        observe_program_buffers(&self.original.worker_path, &self.original.roots, observe)
+    }
+
     pub(super) fn command(&self) -> Result<Command, LinuxPureWorkerError> {
         self.verify_current()?;
         // The retained private fd stays live through std spawn. Its /proc name
@@ -259,6 +266,20 @@ impl LinuxPureWorkerProgram {
         }
         result
     }
+}
+
+/// Visits the defining private roster before each initialized path child.
+pub(super) fn observe_program_buffers<E>(
+    worker: &PathBuf,
+    roots: &Vec<(PathBuf, OwnedFd)>,
+    observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+) -> Result<(), E> {
+    observe(LinuxPureWorkerBufferCapacityData::bytes(worker.capacity()))?;
+    observe(LinuxPureWorkerBufferCapacityData::vector(roots))?;
+    for (path, _) in roots {
+        observe(LinuxPureWorkerBufferCapacityData::bytes(path.capacity()))?;
+    }
+    Ok(())
 }
 
 fn normalized_absolute(path: &Path) -> bool {

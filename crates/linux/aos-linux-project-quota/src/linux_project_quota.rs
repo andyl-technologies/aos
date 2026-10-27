@@ -104,6 +104,14 @@ pub struct LinuxProjectQuotaReservation {
 }
 
 impl LinuxProjectQuotaReservation {
+    /// Borrows the original diagnostic path buffer without I/O or quota changes.
+    ///
+    /// Its length and capacity describe this userspace buffer only. The borrow
+    /// exposes no descriptor, kernel quota authority or construction permission.
+    pub fn retained_path_buffer_data(&self) -> &PathBuf {
+        &self.path
+    }
+
     /// Reports the requested backing of its retained diagnostic path only.
     ///
     /// This reads the original PathBuf capacity without I/O or permission

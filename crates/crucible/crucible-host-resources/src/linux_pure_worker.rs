@@ -35,7 +35,7 @@ use supervision::{launch_loop, supervise};
 
 #[path = "linux_pure_worker/buffers.rs"]
 mod buffers;
-pub use buffers::LinuxPureWorkerDirectBuffers;
+pub use buffers::{LinuxPureWorkerBufferCapacityData, LinuxPureWorkerDirectBuffers};
 
 /// Selects independently provisioned cgroup and disk-backed project-quota roots.
 #[derive(Clone, Debug)]

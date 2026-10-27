@@ -44,10 +44,10 @@ pub use linux_read_lease::{
 };
 
 pub use linux_pure_worker::{
-    LinuxPureWorkerAttempt, LinuxPureWorkerAttemptIdentity, LinuxPureWorkerCompletion,
-    LinuxPureWorkerConfiguration, LinuxPureWorkerDirectBuffers, LinuxPureWorkerError,
-    LinuxPureWorkerFactory, LinuxPureWorkerFailure, LinuxPureWorkerLimits, LinuxPureWorkerOutcome,
-    LinuxPureWorkerProgram, LinuxPureWorkerProgramIdentity,
+    LinuxPureWorkerAttempt, LinuxPureWorkerAttemptIdentity, LinuxPureWorkerBufferCapacityData,
+    LinuxPureWorkerCompletion, LinuxPureWorkerConfiguration, LinuxPureWorkerDirectBuffers,
+    LinuxPureWorkerError, LinuxPureWorkerFactory, LinuxPureWorkerFailure, LinuxPureWorkerLimits,
+    LinuxPureWorkerOutcome, LinuxPureWorkerProgram, LinuxPureWorkerProgramIdentity,
 };
 
 pub use linux_process_supervisor::{

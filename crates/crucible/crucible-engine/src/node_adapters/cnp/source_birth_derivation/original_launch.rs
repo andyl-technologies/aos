@@ -182,6 +182,17 @@ impl OriginalSourceBirthLaunch {
     pub(in crate::node_adapters::cnp) fn known_backing_data(&self) -> Result<usize, RuntimeError> {
         known_backing(&self.original)
     }
+
+    /// Appends the same complete tuple walk to its actual enclosing owner census.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody or the census's checked geometry limits.
+    pub(in crate::node_adapters::cnp) fn record_capacity_metadata_data(
+        &self,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        record_capacity_metadata(&self.original, census)
+    }
 }
 
 fn known_backing(original: &Rc<OriginalTuple>) -> Result<usize, RuntimeError> {
@@ -197,13 +208,21 @@ fn capacity_metadata(
     maximum_rows: usize,
     bank: Option<&mut PacketRuntimeMetadataRecordBank>,
 ) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
+    let mut census = OriginalOwnerCapacityMetadataData::new(maximum_rows, bank);
+    record_capacity_metadata(original, &mut census)?;
+    Ok(census.finish())
+}
+
+fn record_capacity_metadata(
+    original: &Rc<OriginalTuple>,
+    census: &mut OriginalOwnerCapacityMetadataData<'_>,
+) -> Result<(), RuntimeError> {
     authenticate(original)?;
     let OriginalTuple {
         launches,
         process,
         thread,
     } = original.as_ref();
-    let mut census = OriginalOwnerCapacityMetadataData::new(maximum_rows, bank);
     census.observe_shared_allocation_data(original)?;
     census.observe_inline_data(process)?;
     census.observe_inline_data(thread)?;
@@ -213,7 +232,7 @@ fn capacity_metadata(
     for launch in launches {
         census.observe_native_launch_data(launch)?;
     }
-    Ok(census.finish())
+    Ok(())
 }
 
 fn authenticate(original: &OriginalTuple) -> Result<(), RuntimeError> {
