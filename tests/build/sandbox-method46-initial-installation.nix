@@ -91,6 +91,9 @@ in
   assert validation;
     pkgs.runCommand "sandbox-method46-initial-installation-check" {
       projectionJson = builtins.toJSON projection;
+      # Expose the same selected native image as a separate build gate. The
+      # composition-only check must not acquire its production-policy closure.
+      passthru.parentImage = cfg.aos.sandbox.resourceBank._parentImage;
     } ''
       mkdir -p "$out"
       printf '%s\n' "$projectionJson" > "$out/units.json"

@@ -35,10 +35,14 @@ Recent committed startup fixes close narrower prerequisites:
   socket/service, clearing the approval blocker recorded in the checkpoints
   below. The focused regression requires both startup permissions and rejects
   PID 1 stop/reload or foreign-owner start/stop/reload grants. It passes on the
-  approved source. Linked production policy and the actual parent image with
-  both initializer profiles are now building through AOS Nix. This approval
-  and negative regression establish no installed startup, TPM provisioning or
-  lifecycle completion; admission remains closed.
+  approved source. `checks.build.sandbox-method46-initial-parent` now selects
+  the actual parent image with both initializer profiles and linked production
+  policy. Its registered derivation matches the audited 1,033-derivation
+  candidate. The separate composition check retains its exact passing output
+  and 494-derivation closure without production policy. Native parent compilation
+  and the enforcing lifecycle-funded startup VM are running through AOS Nix.
+  These selection and regression results establish no installed startup, TPM
+  provisioning or lifecycle completion; admission remains closed.
 
 - Production policy build/checker inputs now exclude local `__pycache__`
   directories. Evaluation reads retain their original repository paths, so
