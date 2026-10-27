@@ -108,6 +108,7 @@ in
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
         || pathString == "${repoRootString}/tests/sandbox/method46-tpm-transport-probe.c"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-tpm-prepare.c"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile";

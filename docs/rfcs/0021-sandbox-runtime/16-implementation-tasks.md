@@ -31,6 +31,19 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Host-only preparation of both fixed TPM purposes now passes QEMU/vTPM
+  qualification at
+  `/nix/store/w10079cfyq3cqnbmyxi53fm37q5jhli6-aos-fleet-test-sandbox-method46-external-preparation-0`
+  (NAR hash `sha256-TOPwmf6NGH0GdMFpW5lYuzOE0xvQpn6gzZNCygJUytU=`).
+  With QEMU stopped, an AOS-built setup utility uses the production salt-key
+  template and defines both indices without extending them. It refuses existing
+  output and occupied fixed handles. After restart with the same persistent TPM
+  state, the unchanged production reader authenticates both external records
+  and observes the exact unwritten public areas; ordinary reads still refuse.
+  The setup executable is absent from both guest closures. This non-enforcing
+  component check does not establish independent approval, genuine Source entry,
+  initial producer execution, installed journal hooks or lifecycle recovery.
+
 - The selected parent build reached packaged unit execution, then failed 52
   Method46 fixtures at protected opening before their test actions. These new
   cases require trusted root-to-fixture ancestry, like the existing native
@@ -72,9 +85,11 @@ Recent committed startup fixes close narrower prerequisites:
   kernel class-map checks. The output is
   `/nix/store/6sw7d4y64lcsk3h6cs05dd8jfiy0krz8-aos-selinux-production-policy-1`
   (NAR hash `sha256-sdPn3AtiCHpHgoJH4qSadhZrWYNbfdP1Lyg4Su+2NXM=`).
-  Its installed report retains both helper ioctl exclusions. The standalone
-  parent and enforcing VM select that exact policy and both initial profiles;
-  their builds remain pending. No installed producer entry, TPM provisioning
+  Its installed report retains both helper ioctl exclusions. The later fixture
+  profile change alters package paths and therefore selects a new policy output
+  for the standalone parent and enforcing VM; that output must pass its own
+  linked-policy gate. Their builds remain pending. No installed producer entry,
+  TPM provisioning
   or connected lifecycle result follows from policy qualification. Admission
   remains closed.
 
