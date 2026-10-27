@@ -6,10 +6,10 @@
 //!   terminal,prepared_reply,stage}
 //! ```
 //!
-//! The ordinary writer emits fifteen fields, including failed raw prefixes.
-//! The separately selected current-Capture reader requires seventeen fields.
-//! Framing completes before metadata is consumed, so the previous seventeen-
-//! field grammar can remain accepted without retrying a partially spent ledger.
+//! The previous writer emitted fifteen fields, including failed raw prefixes.
+//! The repaired writer includes the current grammar's seventeen owning slots.
+//! Framing completes before metadata is consumed, preserving the previous
+//! history grammar without retrying a partially spent ledger.
 
 use super::*;
 
@@ -139,7 +139,7 @@ pub(crate) fn historical_capture17_counter_scratch_data() -> usize {
         + size_of::<BorrowedCaptureOutputs17<'static>>()
 }
 
-/// Borrows the extra evidence emitted only by the seventeen-field active cut.
+/// Borrows the registration and receipt slots of the current seventeen-field grammar.
 pub(in crate::protocol_snapshot::restored_settled17) struct HistoricalCaptureCutFields17<'a> {
     /// Borrows the separately recorded registration and its original identity.
     pub(in crate::protocol_snapshot::restored_settled17) registration: &'a [u8],
@@ -147,7 +147,7 @@ pub(in crate::protocol_snapshot::restored_settled17) struct HistoricalCaptureCut
     pub(in crate::protocol_snapshot::restored_settled17) confirmation_receipt: &'a [u8],
 }
 
-/// Distinguishes ordinary history from the separately decorated active-cut wire.
+/// Distinguishes previous history from the current complete Capture roster.
 ///
 /// This framing-only walk consumes no metadata or constructor credit. The
 /// enclosing complete graph reader still validates every ordinary field. A

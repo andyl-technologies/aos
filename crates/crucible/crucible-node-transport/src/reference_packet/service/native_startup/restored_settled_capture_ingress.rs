@@ -285,10 +285,13 @@ pub(crate) struct NativeRestoredSettledCaptureAttempt {
     upload_context: Option<PacketRestoredSettledCaptureUploadContext>,
     continuation: Option<PacketRestoredSettledCaptureUploadContinuation>,
     confirmation: Option<PacketRestoredSettledAfterConfirmationRequest>,
+    #[serde(serialize_with = "current_view17::serialize_registration")]
+    registration: Option<crate::reference_packet::control::PacketOriginalCaptureReservation>,
     checkpoint: Option<crate::reference_packet::control::NativeRestoredSettledCheckpointAttempt>,
     outputs: Option<super::restored_settled_capture_output::NativeRestoredSettledCaptureOutputs>,
     terminal: Option<Envelope>,
     prepared_reply: Option<Map<String, Value>>,
+    confirmation_receipt: Option<Value>,
     stage: Stage,
 }
 
@@ -306,10 +309,12 @@ impl NativeRestoredSettledCaptureAttempt {
             upload_context: None,
             continuation: None,
             confirmation: None,
+            registration: None,
             checkpoint: None,
             outputs: None,
             terminal: None,
             prepared_reply: None,
+            confirmation_receipt: None,
             stage: Stage::Receiving,
         }
     }
@@ -761,10 +766,12 @@ pub fn original_restored_settled_capture_ingress_counter_scratch_data() -> usize
                 upload_context,
                 continuation,
                 confirmation,
+                registration,
                 checkpoint,
                 outputs,
                 terminal,
                 prepared_reply,
+                confirmation_receipt,
                 stage,
             } = value;
             (
@@ -778,10 +785,12 @@ pub fn original_restored_settled_capture_ingress_counter_scratch_data() -> usize
                 upload_context,
                 continuation,
                 confirmation,
+                registration,
                 checkpoint,
                 outputs,
                 terminal,
                 prepared_reply,
+                confirmation_receipt,
                 stage,
             )
         })

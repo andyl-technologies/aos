@@ -1,8 +1,9 @@
 //! Retains the distinct Blob-only CaptureUpload17 ingress and transaction.
 //!
-//! The unchanged fifteen-field Capture base owns raw and typed partials. This
-//! wrapper adds the real upload action as a sixteenth field; it never invents
-//! final-Capture registration/confirmation owners or enables their old reader.
+//! Fifteen shared Capture fields own the raw and typed upload partials. This
+//! wrapper adds the real upload action as a sixteenth field. The final-Capture
+//! registration and receipt slots must be absent; observation and serialization
+//! refuse populated slots rather than silently omitting their owners.
 
 use super::upload17::{
     NativeCapture17UploadActionAttempt, native_capture17_upload_action_counter_scratch_data,
@@ -16,7 +17,7 @@ use crate::envelope::RequestOrigin;
 use crate::reference_packet::service::ack_emitter::OriginalNativeCapture17Read;
 use std::cell::RefCell;
 
-/// Owns the actual unchanged Capture base and a separately retained upload action.
+/// Owns the common ingress fields and a separately retained upload action.
 pub(crate) struct NativeRestoredSettledCaptureUploadAttempt {
     base: NativeRestoredSettledCaptureAttempt,
     upload_action: Option<NativeCapture17UploadActionAttempt>,
@@ -369,12 +370,17 @@ impl NativeRestoredSettledCaptureUploadAttempt {
             upload_context,
             continuation,
             confirmation,
+            registration,
             checkpoint,
             outputs,
             terminal,
             prepared_reply,
+            confirmation_receipt,
             stage,
         } = base;
+        if registration.is_some() || confirmation_receipt.is_some() {
+            return Err(invalid());
+        }
         observer.observe(ordinal)?;
         observer.observe(original)?;
         if let Some(body) = body {
@@ -506,12 +512,19 @@ impl serde::Serialize for NativeRestoredSettledCaptureUploadAttempt {
             upload_context,
             continuation,
             confirmation,
+            registration,
             checkpoint,
             outputs,
             terminal,
             prepared_reply,
+            confirmation_receipt,
             stage,
         } = base;
+        if registration.is_some() || confirmation_receipt.is_some() {
+            return Err(serde::ser::Error::custom(
+                "Capture owners in upload ingress",
+            ));
+        }
         let mut fields = serializer.serialize_struct("NativeCaptureUploadIngress17", 16)?;
         fields.serialize_field("ordinal", ordinal)?;
         fields.serialize_field("original", original)?;
@@ -604,10 +617,12 @@ pub fn original_restored_settled_capture_upload_ingress_counter_scratch_data() -
                     upload_context,
                     continuation,
                     confirmation,
+                    registration,
                     checkpoint,
                     outputs,
                     terminal,
                     prepared_reply,
+                    confirmation_receipt,
                     stage,
                 } = base;
                 (
@@ -621,11 +636,13 @@ pub fn original_restored_settled_capture_upload_ingress_counter_scratch_data() -
                     upload_context,
                     continuation,
                     confirmation,
+                    registration,
                     upload_action,
                     checkpoint,
                     outputs,
                     terminal,
                     prepared_reply,
+                    confirmation_receipt,
                     stage,
                 )
             },

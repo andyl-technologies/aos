@@ -234,3 +234,21 @@ fn wrapper_row_keeps_base_dynamic_bound_and_adds_its_real_fixed_layout_and_count
     assert!(original_restored_settled_capture_upload_ingress_row_data(0).is_err());
     assert!(original_restored_settled_capture_upload_ingress_row_data(usize::MAX).is_err());
 }
+
+#[test]
+fn native17_current_capture_upload_refuses_unrepresented_final_capture_owners()
+-> Result<(), ProviderError> {
+    let mut attempt = NativeRestoredSettledCaptureUploadAttempt::new_data(1);
+    assert!(serde_json::to_vec(&attempt).is_ok());
+    attempt.base.confirmation_receipt = Some(Value::Null);
+
+    assert!(serde_json::to_vec(&attempt).is_err());
+    let mut observer = MetadataObserver::new();
+    assert!(
+        attempt
+            .observe_settled_history_metadata_data(&mut observer)
+            .is_err()
+    );
+    assert!(attempt.base.confirmation_receipt.is_some());
+    Ok(())
+}

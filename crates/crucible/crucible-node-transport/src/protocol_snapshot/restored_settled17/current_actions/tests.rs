@@ -166,7 +166,7 @@ fn selected_capture_data(input: &[u8]) -> Result<&[u8], ProviderError> {
 }
 
 #[test]
-fn actual_ordinary_capture_prefixes_validate_only_as_history()
+fn actual_capture_prefixes_borrow_without_registration_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut attempt = NativeRestoredSettledActionAttempt::new_data(11);
     attempt.retain_original_data(original_capture(Method::Begin)?)?;
@@ -192,16 +192,16 @@ fn actual_ordinary_capture_prefixes_validate_only_as_history()
                 .is_err()
         );
 
-        // Ordinary historical custody supplies neither the registration nor the
-        // confirmation evidence required by the independently selected cut.
+        // The actual writer now includes both absent slots. Reading that DATA
+        // does not supply the registration required by archive authentication.
         let mut current = Ledger::new(records.rows(), limits());
-        assert!(
+        let borrowed =
             super::super::current_capture17_borrowed::read_current_capture17_borrowed_data(
                 selected_capture_data(&input)?,
                 &mut current,
-            )
-            .is_err()
-        );
+            )?;
+        assert!(borrowed.registration.is_none());
+        assert!(current.rows.next().is_none());
     }
     Ok(())
 }
@@ -215,20 +215,23 @@ fn previous_full_capture_grammar_remains_independently_validated()
     let data = selected_capture_data(&input)?;
     let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
 
-    // These null fields are a syntax-only DATA mutation for compatibility. They
-    // contain no registration, confirmation receipt or live Capture permission.
-    let full = String::from_utf8(data.to_vec())?
-        .replacen(
-            ",\"checkpoint\":",
-            ",\"registration\":null,\"checkpoint\":",
-            1,
-        )
-        .replacen(
-            ",\"stage\":",
-            ",\"confirmation_receipt\":null,\"stage\":",
-            1,
-        );
-    assert_ne!(full.as_bytes(), data);
+    // The actual writer supplies the closed current roster. Removing its two
+    // absent slots reproduces the previous history grammar without inventing
+    // registration, a confirmation receipt or live Capture permission.
+    let full = String::from_utf8(data.to_vec())?;
+    let previous = full.replacen(",\"registration\":null", "", 1).replacen(
+        ",\"confirmation_receipt\":null",
+        "",
+        1,
+    );
+    assert_ne!(full, previous);
+    let mut previous_ledger = Ledger::new(records.rows(), limits());
+    assert!(
+        previous_ledger
+            .read::<CurrentCaptureAttempt17>(previous.as_bytes(), false)?
+            .is_none()
+    );
+    assert!(previous_ledger.rows.next().is_none());
     let mut historical = Ledger::new(records.rows(), limits());
     assert!(
         historical

@@ -112,6 +112,18 @@ fn capture_request(native: &PacketControl) -> Envelope {
 }
 
 #[test]
+fn native17_current_capture_writer_preserves_actual_registration_owner() {
+    let mut native = modeled_active_control();
+    let original = capture_request(&native);
+    let registration = native.reserve_original_capture(&original).unwrap();
+
+    // This is the actual noncloneable native5 reservation, used only to check
+    // owning serialization and metadata. It supplies no Capture17 Source proof.
+    crate::reference_packet::service::native_startup::NativeRestoredSettledCaptureAttempt::check_registration_writer_fixture_data(registration)
+        .unwrap();
+}
+
+#[test]
 fn capture_retains_pending_original_and_complete_coordinator_before_settlement() {
     let mut native = modeled_active_control();
     let original = capture_request(&native);

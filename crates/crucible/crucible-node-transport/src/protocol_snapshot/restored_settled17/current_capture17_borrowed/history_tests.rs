@@ -39,17 +39,32 @@ fn actual_history(failed: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(data.to_vec())
 }
 
+// The previous writer omitted these absent slots. Preserve that exact saved
+// grammar as compatibility DATA, independently of the repaired current writer.
+fn previous_history(input: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+    let input = String::from_utf8(input.to_vec())?;
+    let previous = input.replacen(",\"registration\":null", "", 1).replacen(
+        ",\"confirmation_receipt\":null",
+        "",
+        1,
+    );
+    assert_ne!(previous, input);
+    Ok(previous)
+}
+
 #[test]
 fn native17_output_history_recognizes_the_actual_ordinary_capture_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     for failed in [false, true] {
         let raw = actual_history(failed)?;
         let value: Value = serde_json::from_slice(&raw)?;
-        assert_eq!(value.as_object().unwrap().len(), 15);
-        assert!(value.get("registration").is_none());
-        assert!(value.get("confirmation_receipt").is_none());
+        assert_eq!(value.as_object().unwrap().len(), 17);
+        let fields = historical_capture17_cut_fields_data(&raw)?.unwrap();
+        assert_eq!(fields.registration, b"null");
+        assert_eq!(fields.confirmation_receipt, b"null");
 
-        assert!(historical_capture17_cut_fields_data(&raw)?.is_none());
+        let previous = previous_history(&raw)?;
+        assert!(historical_capture17_cut_fields_data(previous.as_bytes())?.is_none());
     }
     Ok(())
 }
@@ -57,7 +72,7 @@ fn native17_output_history_recognizes_the_actual_ordinary_capture_writer()
 #[test]
 fn native17_output_history_rejects_partial_or_unknown_cut_decorations()
 -> Result<(), Box<dyn std::error::Error>> {
-    let ordinary = String::from_utf8(actual_history(false)?)?;
+    let ordinary = previous_history(&actual_history(false)?)?;
     let with_registration = ordinary.replacen(
         ",\"checkpoint\":",
         ",\"registration\":null,\"checkpoint\":",
