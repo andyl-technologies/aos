@@ -7,7 +7,9 @@
 use super::{
     NativeRecoveryInspector,
     files::{CanonicalName, RetainedFile, invalid},
-    verification::{VerifiedDependency, bounded_pack, bounded_standalone_length},
+    verification::{
+        VerifiedDependency, bounded_pack, bounded_standalone_length, check_plaintext_budget,
+    },
 };
 use std::{borrow::Cow, io, ops::Range, os::unix::fs::MetadataExt};
 use terrane_format::{
@@ -255,7 +257,7 @@ fn retain(
 }
 
 /// Checks an indexed encoded body and its declared plaintext before decoding.
-fn pack_body(
+pub(super) fn pack_body(
     pack: &PackReader<'_>,
     bytes: &[u8],
     digest: &Digest,
@@ -269,11 +271,7 @@ fn pack_body(
         return Ok(None);
     };
     let length = entry.plaintext_len() as usize;
-    if length > plaintext_budget {
-        return Err(invalid(
-            "decoded dictionary exceeds recovery allocation budget",
-        ));
-    }
+    check_plaintext_budget(length, plaintext_budget)?;
     let start = usize::try_from(entry.offset()).map_err(invalid)?;
     let end = start
         .checked_add(entry.body_len() as usize)
@@ -326,7 +324,10 @@ mod tests {
 
         assert_eq!(&sealed.bytes()[range], encoded);
         assert_eq!(length, middle.len());
-        assert!(pack_body(&reader, sealed.bytes(), &middle_digest, middle.len() - 1).is_err());
+        let error = pack_body(&reader, sealed.bytes(), &middle_digest, middle.len() - 1)
+            .err()
+            .ok_or("packed dictionary exceeded its plaintext budget")?;
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
         assert!(pack_body(&reader, sealed.bytes(), &terminal_digest, middle.len())?.is_none());
         Ok(())
     }

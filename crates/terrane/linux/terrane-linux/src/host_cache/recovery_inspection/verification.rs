@@ -447,27 +447,6 @@ pub(super) fn pack(
     Ok(VerifiedEncodedBody::Pack(Arc::new(plan)))
 }
 
-#[cfg(test)]
-pub(super) fn dictionary_from_pack(
-    profile: &ChunkProfile,
-    pack: &PackReader<'_>,
-    digest: &terrane_format::identity::Digest,
-    plaintext_budget: usize,
-) -> io::Result<Option<Vec<u8>>> {
-    let Some(entry) = pack
-        .entries()
-        .iter()
-        .find(|entry| entry.kind() == EntryKind::Chunk && entry.hash() == digest)
-    else {
-        return Ok(None);
-    };
-    check_plaintext_budget(entry.plaintext_len() as usize, plaintext_budget)?;
-    let decoder = terrane_sdk::pack::NativeBodyDecoder::without_dictionaries(profile);
-    pack.read(EntryKind::Chunk, digest, &decoder)
-        .map(Some)
-        .map_err(invalid)
-}
-
 /// Checks frame-declared plaintext against policy before any decode allocation.
 pub(super) fn bounded_standalone_length(
     encoded: &[u8],
@@ -479,7 +458,7 @@ pub(super) fn bounded_standalone_length(
     Ok(length)
 }
 
-fn check_plaintext_budget(length: usize, plaintext_budget: usize) -> io::Result<()> {
+pub(super) fn check_plaintext_budget(length: usize, plaintext_budget: usize) -> io::Result<()> {
     if length > plaintext_budget {
         return Err(io::Error::new(
             io::ErrorKind::OutOfMemory,

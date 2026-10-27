@@ -6,11 +6,12 @@
 
 use super::{
     ContentCustody,
+    dictionaries::pack_body,
     files::{invalid, read_bounded, same_file, verify_read_hash},
     manifest::{
         check_key, manifest_from_pack, manifest_residences, verify_file_plaintext, verify_plaintext,
     },
-    verification::{bounded_pack, bounded_standalone_length, dictionary_from_pack},
+    verification::{bounded_pack, bounded_standalone_length},
 };
 use crate::publisher_local::wire::{BodyKey, BodyKind};
 use std::{
@@ -371,14 +372,22 @@ fn compressed_pack_dictionary_respects_remaining_plaintext_budget() -> TestResul
         },
     )?;
 
-    let error = dictionary_from_pack(&profile, &reader, &digest, budget)
+    let error = pack_body(&reader, pack.bytes(), &digest, budget)
         .err()
         .ok_or("oversized packed dictionary was decoded")?;
 
     assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    let (range, length) = pack_body(&reader, pack.bytes(), &digest, plaintext.len())?
+        .ok_or("packed dictionary body is absent")?;
+    assert_eq!(&pack.bytes()[range], encoded);
+    assert_eq!(length, plaintext.len());
     assert_eq!(
-        dictionary_from_pack(&profile, &reader, &digest, plaintext.len())?,
-        Some(plaintext)
+        reader.read(
+            EntryKind::Chunk,
+            &digest,
+            &NativeBodyDecoder::without_dictionaries(&profile)
+        )?,
+        plaintext
     );
     Ok(())
 }
