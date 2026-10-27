@@ -9,6 +9,25 @@
     },
     "source": "/nix/store/p9cfqiw3a49rs0mlqn5qvgcbl7aylxhi-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "binding_scope": "Historical dependency audit checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/qg4iahpml437lfsc3zn87jz9qn55bf6s-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/1gbqns4bl21x8sxy8bgbp71p59d5jx1s-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible dependency audit audits.",
+    "source_binding": {
+      "derivation": "/nix/store/qg4iahpml437lfsc3zn87jz9qn55bf6s-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/harness_components.rs": "e2ad016609992e6e3c8c211d0f306c0bdba2bb32097ccb6632f20d2da939539f",
+        "crates/crucible/crucible-test-support/tests/single_scheduler_boundary.rs": "5d2d7f0618e79ec59f8b3144cf3cdddeb2051d578f6de8c868a7fe815fce1394",
+        "crates/crucible/crucible-test-support/tests/standalone_dependencies.rs": "ad5752b25ec689bc5fc0438a4dd0f55e879147823d9eb423e28a468a9577bae5",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589"
+      },
+      "source": "/nix/store/p9cfqiw3a49rs0mlqn5qvgcbl7aylxhi-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
   "backend_controls": {
     "actual_graph_cases": {
       "harness_components": [
@@ -316,9 +335,7 @@
   ],
   "oracle": "/nix/store/rjaicsbkvidgjr4ny1s0n0bfnnvn49aw-aos-bazel-crucible-controller-dependency-cargo-oracle-1",
   "oracle_derivation": "/nix/store/9ik127khjx3fjs4018fq5p6kafvyfdmd-aos-bazel-crucible-controller-dependency-cargo-oracle-1.drv",
-  "pending_checkpoint_validation": [
-    "required checks.rust.aos-test-targets application compilation"
-  ],
+  "pending_checkpoint_validation": [],
   "public_controller_cutover_qualified": false,
   "qualification_derivation": "/nix/store/b2rfpgiwlzc068zsadyjsljk0dcbks2n-aos-bazel-crucible-controller-dependency-parity.drv",
   "qualification_helper_sha256": {

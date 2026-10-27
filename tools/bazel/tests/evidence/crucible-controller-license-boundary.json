@@ -10,6 +10,26 @@
     },
     "source": "/nix/store/9vjzwrsa3lwgahfnbfqn3zzny6a6jp32-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "binding_scope": "Historical license boundary checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/h6af6wkpan7ai2s207ibma919qxj623m-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/ldgflqk595fdv8xjf9dbwbdi8ki2fmxx-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible license boundary audits.",
+    "source_binding": {
+      "derivation": "/nix/store/h6af6wkpan7ai2s207ibma919qxj623m-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "6f8548b2bd77a805132a8922a2ee5839f41b2f0880ca3bc25f27316141ac6f63",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/bazel.rs": "8eb646c25f74e95beef08f6192c0adf68431ff28031c51347f72f7fa5b88ab28",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/dependencies.rs": "fb78d6abb41d290e69c6e2d0373ad009dc97af3976d35a4aa2eddd557135bec0",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/guest_assertions.rs": "c1a53f7db55d6b61fc82dabf2a6244442710988d6cf1e5efa7d5c96553367a1f",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "d5d066469ca9e44423b903caddc77b524cb626d55ca2951ec16ec4bcb3971311"
+      },
+      "source": "/nix/store/9vjzwrsa3lwgahfnbfqn3zzny6a6jp32-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
   "architecture_reader_regression": {
     "derivation": "/nix/store/zpg0brlcb67c4ldpbkcfc8c7805pc1xj-aos-bazel-crucible-controller-architecture-parity.drv",
     "evidence_sha256": "b75f4be2514a652e29f6b917192a26cc87174d024576b924ab9e96b6867991ed",
@@ -302,9 +322,7 @@
   },
   "oracle": "/nix/store/qnnpkm015w0746xjmlcfvdn7fyi5gi42-aos-bazel-crucible-controller-license-cargo-oracle-1",
   "oracle_derivation": "/nix/store/acrjjmvibxyr3z2nnjzg3adbwwp78jkl-aos-bazel-crucible-controller-license-cargo-oracle-1.drv",
-  "pending_checkpoint_validation": [
-    "required checks.rust.aos-test-targets application compilation"
-  ],
+  "pending_checkpoint_validation": [],
   "public_controller_cutover_qualified": false,
   "qualification_derivation": "/nix/store/cn4ks9zv72ghmgqg63ah41p0wzdsg6y9-aos-bazel-crucible-controller-license-parity.drv",
   "qualification_helper_sha256": {
