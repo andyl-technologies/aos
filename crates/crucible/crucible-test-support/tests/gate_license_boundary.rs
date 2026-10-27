@@ -21,6 +21,8 @@ const APACHE_LICENSE: &str = "Apache-2.0";
 const BOUNDARY_LICENSE: &str = "MIT OR Apache-2.0";
 const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
+const LIBSSH2_BINDING_PACKAGE: &str = "libssh2-sys";
+const LIBSSH2_BINDING_LICENSE: &str = "MIT OR Apache-2.0";
 const DEBUG_GATEWAY_PACKAGE: &str = "crucible-qemu-debug-gateway";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-qemu-protocol", "crucible-qemu-shmem"];
 
@@ -510,6 +512,9 @@ fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
         "crucible-qemu-protocol" | "crucible-qemu-shmem" => BOUNDARY_LICENSE,
+        // The native libssh2 binding keeps the dual license of the bindings it
+        // replaces; it is not part of the Crucible/QEMU boundary.
+        LIBSSH2_BINDING_PACKAGE => LIBSSH2_BINDING_LICENSE,
         _ => APACHE_LICENSE,
     }
 }
