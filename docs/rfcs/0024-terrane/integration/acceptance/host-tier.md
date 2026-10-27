@@ -6,8 +6,8 @@ boundaries and the evidence still needed for acceptance. **T-HOST-1 remains
 unaccepted.** Optional smart reassembly, discard and volatile storage are outside
 this task.
 
-Current source inspection uses
-`330e82243d9441a63e9fbbb7672b9e4fd6883041`. All four host owning gates pass
+All four host owning gates are qualified at
+`330e82243d9441a63e9fbbb7672b9e4fd6883041`. They pass
 in 80.730 seconds after independently reviewed prerequisite construction in
 401.661 seconds. Runtime review matches all 9,596 tracked source files, the
 original three new selector guests and their three aggregates, and the already
@@ -93,6 +93,31 @@ Those runtime assertions and the new source/order/pack-range regressions remain
 pending AOS guest qualification. Compilation is not proof of native recovery,
 producer release, pressure behavior or final consumer closure. T-HOST-1 and the
 separate metadata-only GC dictionary-index gap remain open.
+
+Qualification at `3f636a59d89f56dc52ac6760bfee947997f9f315` binds all
+9,602 tracked files and independently compares all 8,303 files in the actual
+immutable build source. The private AOS prerequisite builder completes in
+3,180.114 seconds under its original 32-GiB memory, 256-GiB disk and
+43,200-second deadline. Review checks all 27 prerequisite dispatches and the
+fresh confinement probe, all 32 resulting outputs and their actual derivers,
+and the original guest's capability-free ext4 confinement observations. Seven
+controller records are hash-preserved before removing its owned scratch.
+
+The required application test-target check compiles 190 targets across all
+59 application packages. Four image reviews bind thirteen retained Cargo ELF
+instances, complete crate inputs, native runtime libraries and the original
+enrollment verifier. The cache images retain 145 ordinary and five creator
+cases in the base profile, and 273 ordinary and five creator cases with FUSE.
+These are compilation and artifact observations; guest execution is checked
+separately against those exact inventories.
+
+The original all-features eviction guest passes at this source. Its retained
+serial output checks all five pack-pair, raw, dependent, unread and dictionary
+last-description charge-release witnesses. The other seven original guests and
+three aggregates remain pending. All eight guest recipes retain their original
+1-GiB memory limits, ext4 project-quota/verity setup and 870-second cache or
+300-second SDK deadlines. Full runtime review and nested-chain lifecycle
+qualification are still required; trunk acceptance remains 28/64.
 
 ## Clause coverage
 
