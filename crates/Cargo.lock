@@ -2965,6 +2965,7 @@ dependencies = [
 name = "crucible-determinism"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "thiserror 2.0.18",
 ]
 
@@ -2995,6 +2996,8 @@ dependencies = [
  "crucible-store",
  "crucible-test-support",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
