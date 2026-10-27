@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::download::resolve_mirror_chain;
 use aos_registry_client::config::ApmConfig;
-use aos_registry_client::registry::{git, parse::parse_registry_all_platforms};
+use aos_registry_client::registry::{git, parse::parse_registry_all_platforms, state};
 use aos_registry_format::consumer::{RegistryState, SysrootImageEntry, TrackingMode};
 
 /// Selects a signed image catalog without changing package registry tracking.
@@ -127,6 +127,12 @@ pub async fn list(
         configured_tracking.clone()
     };
     let selector = selector_key(&tracking);
+    let registry_state_path = config.registry_overlay_path(&registry.name);
+    let _registry_transaction = state::RegistryStateLock::acquire(&registry_state_path)
+        .await
+        .with_context(|| format!("locking state for registry '{}'", registry.name))?;
+    let configured_state =
+        state::load_state(&registry_state_path)?.or_else(|| configured_state.clone());
     let root = config
         .cache_path()
         .join("image-catalog-v1")
@@ -307,6 +313,7 @@ fn write_state(path: &Path, state: &CatalogState) -> Result<()> {
     output
         .persist(path)
         .context("persisting image trust state")?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 

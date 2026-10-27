@@ -108,7 +108,13 @@ async fn run_with_options(
             nudge_system = true;
         }
 
-        let mut current_state = existing_state.clone().unwrap_or_default();
+        let state_path = config.registry_overlay_path(&reg_config.name);
+        let _transaction_lock = state::RegistryStateLock::acquire(&state_path)
+            .await
+            .with_context(|| format!("locking state for registry '{}'", reg_config.name))?;
+        let mut current_state = state::load_state(&state_path)?
+            .or_else(|| existing_state.clone())
+            .unwrap_or_default();
 
         // Resolve tracking mode from config.
         let tracking_mode = match reg_config.tracking_mode() {
@@ -188,7 +194,6 @@ async fn run_with_options(
                 // never in the read-only `/etc/apm` seed. For a seeded registry
                 // this is a `[registry.state]`-only overlay; the registry's
                 // url/signing keep inheriting from the seed.
-                let state_path = config.registry_overlay_path(&reg_config.name);
                 state::save_state(&state_path, &current_state)
                     .with_context(|| format!("saving state for registry '{}'", reg_config.name))?;
 
