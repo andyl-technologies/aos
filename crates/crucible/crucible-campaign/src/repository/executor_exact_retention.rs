@@ -798,15 +798,12 @@ impl CampaignRepository {
                 return Err(integrity("executor-exact-retention-persisted-content"));
             }
             operation_budget.check().map_err(CampaignCodecError::from)?;
-            match self.refs.compare_exchange(&name, current, next) {
-                Err(source) => return Err(source.into()),
-                Ok(outcome) => match outcome {
-                    RefCasOutcome::Advanced { next: installed } if installed == next => {
-                        return Ok(());
-                    }
-                    RefCasOutcome::Conflict { .. } => continue,
-                    _ => return Err(integrity("executor-exact-retention-ref-receipt-mismatch")),
-                },
+            match self.refs.compare_exchange(&name, current, next)? {
+                RefCasOutcome::Advanced { next: installed } if installed == next => {
+                    return Ok(());
+                }
+                RefCasOutcome::Conflict { .. } => continue,
+                _ => return Err(integrity("executor-exact-retention-ref-receipt-mismatch")),
             }
         }
         Err(CampaignRepositoryError::RefConflict {
