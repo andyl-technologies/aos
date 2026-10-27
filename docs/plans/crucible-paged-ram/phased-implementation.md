@@ -169,10 +169,13 @@ that final failure drop returns all credit.
 
 Formatting and coverage inventory pass: 661 model, 25 format and nineteen native
 bindings, with no qualified or advertised capability. Mandatory application-target
-compilation is running; no passing current-source application result is recorded
-yet. Its immutable source matches all 7,942 frozen input files, including 5,478
-Rust, TOML and lockfile inputs; the final assertion formatting changes only
-whitespace in the separately passing store test.
+compilation passes at `5gamkvj43pyarvbp6b7kq4j85jckfcdz-aos-test-targets-0.1.0`:
+185 executable test artifacts from all 58 selected application packages. Its
+immutable source matches all 7,942 frozen input files, including 5,478 Rust,
+TOML and lockfile inputs; the final assertion formatting changes only whitespace
+in the separately passing store test. This build predates the later original
+account adapter, archive-inspection and checked-closure changes and does not
+validate them.
 
 At this staging checkpoint, archive inspection still used ordinary envelope reads
 between boundary polls; the later inspection component below changes that path.
