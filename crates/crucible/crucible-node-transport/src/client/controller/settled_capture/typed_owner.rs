@@ -32,6 +32,18 @@ impl RestoredSettledCaptureTypedOwnerData<'_> {
     /// Refuses checked traversal, depth or requested-layout arithmetic overflow.
     pub fn retained_metadata_data(&self) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
         let mut observer = MetadataObserver::new();
+        self.observe_capacity_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Observes actual closed Capture DTO backing without validating its proof.
+    ///
+    /// # Errors
+    /// Refuses bounded observer exhaustion or checked allocation geometry overflow.
+    pub(crate) fn observe_capacity_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         match self {
             Self::CaptureRequest(value) => observer.observe(*value)?,
             Self::CaptureContext(value) => observer.observe(*value)?,
@@ -42,7 +54,23 @@ impl RestoredSettledCaptureTypedOwnerData<'_> {
             Self::ConfirmationRequest(value) => observer.observe(*value)?,
             Self::ConfirmationReceipt(value) => observer.observe(*value)?,
         }
-        Ok(observer.finish())
+        Ok(())
+    }
+
+    /// Names the actual borrowed typed observer controls without constructor storage.
+    pub(crate) fn capacity_counter_scratch_data() -> usize {
+        size_of::<Self>()
+            + size_of::<&Self>()
+            + size_of::<&mut MetadataObserver<'_>>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<&&PacketRestoredSettledCaptureRequest>()
+            + size_of::<&&PacketRestoredSettledCaptureContext>()
+            + size_of::<&&PacketRestoredSettledCaptureArtifact>()
+            + size_of::<&&PacketRestoredSettledCaptureUploadRequest>()
+            + size_of::<&&PacketRestoredSettledCaptureUploadContext>()
+            + size_of::<&&PacketRestoredSettledCaptureUploadArtifact>()
+            + size_of::<&&PacketRestoredSettledAfterConfirmationRequest>()
+            + size_of::<&&PacketRestoredSettledAfterConfirmationReceipt>()
     }
 
     /// Bounds the actual largest Bytes base64 temporary independently of output.

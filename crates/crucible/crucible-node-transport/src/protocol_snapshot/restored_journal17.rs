@@ -11,6 +11,9 @@
 //! own full reference or claims a future completion. Decoding never creates a
 //! Source birth, Controller, Window, ledger, native adoption or Capture permit.
 
+#[path = "restored_journal17/capacities.rs"]
+mod capacities;
+
 use super::owned11::{OriginalOwned11Fields as Fields, original_owned11_plain_string as plain};
 use crate::reference_packet::service::{
     restored_settled_capture::*, restored_settled_confirmation::*,
@@ -593,3 +596,5 @@ fn invalid() -> ProviderError {
 #[cfg(test)]
 #[path = "restored_journal17/tests.rs"]
 mod tests;
+
+pub(crate) use capacities::capture_journal_capacity_counter_scratch_data;

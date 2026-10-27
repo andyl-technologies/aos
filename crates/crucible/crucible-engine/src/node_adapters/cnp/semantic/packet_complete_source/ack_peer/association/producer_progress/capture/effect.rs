@@ -4,6 +4,9 @@
 //! controller advances only through the existing selected uploads, Capture and
 //! confirmation; no model operation or synthetic checkpoint is introduced.
 
+#[path = "effect/capacities.rs"]
+mod capacities;
+
 use super::super::*;
 use super::{
     construction_data::OriginalSourceRestoredCaptureConstructionData as Row,

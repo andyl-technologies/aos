@@ -5,6 +5,9 @@
 //! terminal supply this request; neither a reference nor a completed DTO grants
 //! a Capture or renews the earlier Observe proof.
 
+#[path = "confirmation/capacities.rs"]
+mod capacities;
+
 use crate::node_adapters::cnp::PacketCompleteSemanticSource;
 use crate::node_contract::RuntimeError;
 use crucible_node_format::{ContentRef, Id, canonical};

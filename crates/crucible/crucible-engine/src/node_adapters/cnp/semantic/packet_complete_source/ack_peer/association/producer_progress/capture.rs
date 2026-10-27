@@ -5,6 +5,9 @@
 //! partials without enabling ordinary Capture or changing legacy15/16 readers.
 //! The parent owning quote/effect and whole Source reader are still required.
 
+#[path = "capture/capacities.rs"]
+mod capacities;
+
 #[path = "capture/bridge.rs"]
 mod bridge;
 #[path = "capture/confirmation.rs"]

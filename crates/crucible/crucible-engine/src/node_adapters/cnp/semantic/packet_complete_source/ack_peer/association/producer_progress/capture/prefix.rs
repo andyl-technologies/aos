@@ -4,6 +4,9 @@
 //! bytes and checkpoint decode work. This owner is installed before encoding;
 //! no upload is assigned here and Capture performs no journal retirement.
 
+#[path = "prefix/capacities.rs"]
+mod capacities;
+
 use crate::{
     node_adapters::cnp::PacketCompleteSemanticSource, node_admission::OriginalRestoredCaptureClaim,
     node_contract::RuntimeError,

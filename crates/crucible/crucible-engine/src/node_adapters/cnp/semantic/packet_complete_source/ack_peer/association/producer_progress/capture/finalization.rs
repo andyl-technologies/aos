@@ -5,6 +5,9 @@
 //! banks survive encoding, identity and final-census refusals. Neither a journal
 //! nor its cached JSON can issue Capture or fresh installation authority.
 
+#[path = "finalization/capacities.rs"]
+mod capacities;
+
 use super::{construction_quote::sum, encoding_extent};
 use crate::{
     node_adapters::cnp::semantic::packet_complete_source::retained_values::value_storage_with_error,

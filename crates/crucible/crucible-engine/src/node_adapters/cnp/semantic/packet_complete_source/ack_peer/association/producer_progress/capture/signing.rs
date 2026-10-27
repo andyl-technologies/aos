@@ -5,6 +5,9 @@
 //! actual SDK-assigned originals. They neither allocate a grant nor publish IO.
 //! Every Source context/artifact remains owned independently of the SDK copy.
 
+#[path = "signing/capacities.rs"]
+mod capacities;
+
 use crate::node_adapters::cnp::PacketCompleteSemanticSource;
 use crate::node_contract::RuntimeError;
 use crucible_node_format::Bytes;

@@ -4,6 +4,9 @@
 //! flag while the outer Completion remains immutably borrowed. No decoded DATA,
 //! callback limits or standalone constructor can produce this materialization.
 
+#[path = "materialization/capacities.rs"]
+mod capacities;
+
 use super::super::materialization_storage::{
     CaptureMaterializationStorage, EVIDENCE_COUNT, OUTPUT_COUNT, media_types, output_metadata_data,
 };

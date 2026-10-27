@@ -5,6 +5,9 @@
 //! validated confirmed fourth native output. It grants no new operation or Capture, and an
 //! advanced later SDK frontier makes this bridge historical as well.
 
+#[path = "bridge/capacities.rs"]
+mod capacities;
+
 use super::signing::CaptureSigningOwners;
 use crate::{
     node_adapters::cnp::PacketCompleteSemanticSource,

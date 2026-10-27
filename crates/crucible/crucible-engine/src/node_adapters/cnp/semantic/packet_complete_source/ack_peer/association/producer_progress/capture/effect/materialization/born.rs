@@ -4,6 +4,9 @@
 //! External edges come only from the defining cold consumers and the original
 //! signed Index3 inventory. No JSON key scan or unknown-object leaf is used.
 
+#[path = "born/capacities.rs"]
+mod capacities;
+
 use super::super::super::{
     ancestry::OriginalRestoredCaptureAncestry17Data, construction_quote::sum, encoding_extent,
     logical::OriginalSourceRestoredSettled17Read, materialization_storage::reference_backing,

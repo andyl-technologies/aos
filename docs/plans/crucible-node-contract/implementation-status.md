@@ -315,9 +315,21 @@ no legacy requested-byte sum substitutes for physical capacity rows. Existing
 native eligibility checks and legacy requested-byte queries keep their separate
 contracts. Controls use actual failed readers, additional inert spare DATA and
 repeated shared views; they issue no native claim or validated Capture output.
-The complete Source-side Capture construction, materialization, transport and
-post-confirmation census, whole-Source work and one-use handoff remain unfinished.
 All eight new native decoder controls pass in both codec configurations.
+
+The Source-side Capture capacity DATA walk now holds the original association,
+Capture and materialization loans across construction, prefix, finalization,
+transport, signing, confirmation, native decoder and administrative bridge
+owners. Every initialized failed partial keeps its independent backing; spare
+vectors, encoded bytes, JSON values and full references use their actual defining
+layouts. Bridge creator and containing-Source checks precede physical rows. The
+closed SDK walk also covers retained ancestry, final journal objects and history
+cuts without validating them. Ten controls cover the three declarations, busy
+and foreign custody, failed construction and materialization, independently
+calculated spare capacity, repeated journal views and refused prefixes. They
+issue no Capture construction row or validated native output. Whole-Source
+scalar work, the genuine completed Capture lifecycle and the one-use funded
+handoff remain unfinished.
 
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
@@ -328,16 +340,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 123 Engine census/installation/holder/startup
-controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,194 tests each with thirty-four ignored,
-using matching source-built installed packet fixtures. Current Transport suites
-pass 2,364 tests and 164 focused controls each, with twenty ignored; HostResources
-suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, eleven-file scoped Rust formatting,
+Both codec configurations pass complete Engine suites of 2,201 tests each with
+thirty-four ignored, using matching source-built installed packet fixtures.
+Transport suites pass 2,367 tests each with twenty ignored; HostResources suites
+pass all 37 tests each, including both descriptor capacity controls. All ten new
+Source Capture controls also pass separately in each codec configuration.
+Six-package all-feature/all-target checks, thirty-one-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,969 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 8,380 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
 strict lint or native lifecycle qualification is claimed. Native executable

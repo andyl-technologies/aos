@@ -78,6 +78,28 @@ pub enum RetainedCaptureProtocolData<'a> {
     RestoredNative17CaptureOutputs(
         &'a crate::protocol_snapshot::restored_settled17::ValidatedRestoredSettledNative17CaptureOutputs,
     ),
+    /// Borrows one independently retained Capture request, context or artifact.
+    ///
+    /// Failed proof DTOs retain backing without acquiring signing eligibility.
+    RestoredCaptureTyped(crate::client::RestoredSettledCaptureTypedOwnerData<'a>),
+    /// Borrows this Source's independently retained seven-role ancestry DATA.
+    RestoredCaptureAncestry(
+        &'a crate::protocol_snapshot::restored_journal17::PacketRestoredSettledAncestry17,
+    ),
+    /// Borrows all nine independently retained final journal references.
+    RestoredCaptureObjects(
+        &'a crate::protocol_snapshot::restored_journal17::PacketRestoredSettledJournal17Objects,
+    ),
+    /// Borrows the actual retained pre-Capture prefix cut without validating it.
+    RestoredCaptureHistoryCut(
+        &'a crate::protocol_snapshot::restored_journal17::PacketRestoredSettledHistoryCut17,
+    ),
+    /// Borrows an independently retained frozen restoration scope as DTO data.
+    ///
+    /// The enclosing original Source supplies its creator guard before rows.
+    RestorationActivationScope(
+        &'a crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope,
+    ),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -145,6 +167,9 @@ impl RetainedCaptureProtocolData<'_> {
             + size_of::<&InputResult>()
             + crate::protocol_snapshot::restored_settled17::RestoredSettledNative17DecodeAttempt::capacity_counter_scratch_data()
             + crate::protocol_snapshot::restored_settled17::ValidatedRestoredSettledNative17CaptureOutputs::capacity_counter_scratch_data()
+            + crate::client::RestoredSettledCaptureTypedOwnerData::capacity_counter_scratch_data()
+            + crate::protocol_snapshot::restored_journal17::capture_journal_capacity_counter_scratch_data()
+            + size_of::<&crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope>()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -175,7 +200,12 @@ impl RetainedCaptureProtocolData<'_> {
             | Self::RestoredSuffixBody(_)
             | Self::RestoredInputResult(_)
             | Self::RestoredNative17Decode(_)
-            | Self::RestoredNative17CaptureOutputs(_) => Ok(()),
+            | Self::RestoredNative17CaptureOutputs(_)
+            | Self::RestoredCaptureTyped(_)
+            | Self::RestoredCaptureAncestry(_)
+            | Self::RestoredCaptureObjects(_)
+            | Self::RestoredCaptureHistoryCut(_)
+            | Self::RestorationActivationScope(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -206,6 +236,11 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoredInputResult(value) => observer.observe(*value),
             Self::RestoredNative17Decode(value) => value.observe_capacity_data(observer),
             Self::RestoredNative17CaptureOutputs(value) => value.observe_capacity_data(observer),
+            Self::RestoredCaptureTyped(value) => value.observe_capacity_data(observer),
+            Self::RestoredCaptureAncestry(value) => observer.observe(*value),
+            Self::RestoredCaptureObjects(value) => observer.observe(*value),
+            Self::RestoredCaptureHistoryCut(value) => observer.observe(*value),
+            Self::RestorationActivationScope(value) => observer.observe(*value),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,
@@ -512,3 +547,7 @@ mod tests {
 #[cfg(test)]
 #[path = "capture_data/input_result_tests.rs"]
 mod input_result_tests;
+
+#[cfg(test)]
+#[path = "capture_data/source_capture_tests.rs"]
+mod source_capture_tests;

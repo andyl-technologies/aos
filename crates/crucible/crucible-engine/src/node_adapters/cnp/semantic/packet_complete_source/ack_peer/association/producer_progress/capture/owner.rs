@@ -4,6 +4,9 @@
 //! or decoded graph argument is allocated. The genuine Window quote funds all
 //! argument construction separately; this owner never creates a ticket or row.
 
+#[path = "owner/capacities.rs"]
+mod capacities;
+
 use super::{
     bridge::CaptureAdminBridge, post_confirmation::CapturePostConfirmationOwners,
     prefix::CapturePrefixOwners, sdk_effect::CaptureSdkOwners,

@@ -4,6 +4,9 @@
 //! A failed decode keeps its raw/current graph attempt in this same owner. The
 //! later Source Journal is intentionally absent from these native checks.
 
+#[path = "post_confirmation/capacities.rs"]
+mod capacities;
+
 use super::{
     bridge::CaptureAdminBridge, confirmation::CaptureConfirmationOwners,
     sdk_effect::CaptureSdkOwners,

@@ -5,6 +5,9 @@
 //! These helpers use only selected Capture/auxiliary SDK methods. They neither
 //! obtain an administrative ticket nor turn resource DATA into permission.
 
+#[path = "sdk_effect/capacities.rs"]
+mod capacities;
+
 use super::{signing::CaptureSigningOwners, upload};
 use crate::{
     node_adapters::cnp::PacketCompleteSemanticSource,
