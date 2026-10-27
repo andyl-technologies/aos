@@ -182,6 +182,27 @@ impl RamStoreError {
     }
 }
 
+/// Runs checked store work under an existing RAM operation boundary.
+///
+/// The adapter prepays the failure carriers before invoking the callback. A
+/// boundary refusal remains the first typed [`RamStoreError`] while any later
+/// storage or cleanup failure stays attached to the same original operation.
+/// The callback receives a store-shaped boundary for checked content-store
+/// APIs and must not retain it beyond the call.
+///
+/// # Errors
+///
+/// Returns original-account admission, the first boundary refusal, or the
+/// checked store operation's error with its retained cleanup outcome.
+pub fn with_store_operation_boundary<T>(
+    original: &crate::owned_decode::DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
+    operation: impl FnOnce(&mut dyn FnMut() -> Result<(), StoreError>) -> Result<T, StoreError>,
+) -> Result<T, RamStoreError> {
+    let mut account = store_boundary::WorkAccount::new(original)?;
+    account.checked(boundary, |_, checked_boundary| operation(checked_boundary))
+}
+
 /// Retention capability keeping one immutable root and its descendants readable.
 ///
 /// Implementations must register the root with the same authority used by GC.

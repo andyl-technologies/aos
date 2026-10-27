@@ -1,5 +1,6 @@
 //! Archive selection, partial-boundary, and transfer regressions.
 
+use std::path::Path;
 use std::sync::Arc;
 
 #[path = "transfer_resources.rs"]
@@ -32,6 +33,190 @@ impl CampaignArchiveCheckpointResolver for FixedCheckpoint {
     ) -> Result<ExactCheckpointId, CampaignRepositoryError> {
         Ok(self.0)
     }
+}
+
+fn staging_file_at_least(root: &Path, minimum: u64) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if staging_file_at_least(&path, minimum) {
+                return true;
+            }
+        } else if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".staging"))
+            && metadata.len() >= minimum
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn contains_staging_file(root: &Path) -> bool {
+    staging_file_at_least(root, 0)
+}
+
+#[test]
+fn checked_large_object_transfer_cancels_inside_private_staging_and_retries() {
+    let (_memory_source, lineage, policy, memory_blobs) = counted_fixture();
+    let source_directory = tempfile::tempdir().expect("durable source directory");
+    let source_resources: Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard> =
+        Arc::new(resources::TransferResources::new(128, 512 * 1024 * 1024));
+    let source_original =
+        crucible_store::owned_decode::DecodeBudget::for_store(source_resources.clone())
+            .expect("finite source operation authority");
+    let source_blobs = DirectoryBlobBackend::new_with_physical_quota(
+        "large-object-source",
+        source_directory.path().join("objects"),
+        source_resources,
+    )
+    .expect("quota-bound source objects");
+    let source_refs = Arc::new(DirectoryRefBackend::new(
+        source_directory.path().join("refs"),
+    ));
+    let mut seed_ids = Vec::new();
+    memory_blobs
+        .acquire_inventory_fence()
+        .expect("metadata source inventory")
+        .visit_inventory(&mut |record| {
+            seed_ids.push(record.id());
+            Ok(())
+        })
+        .expect("metadata source identities");
+    for id in seed_ids {
+        let bytes = memory_blobs.read(id, None).expect("metadata source bytes");
+        source_blobs
+            .put_if_absent(id, &bytes)
+            .expect("durable metadata source");
+    }
+    let source = CampaignRepository::new(
+        source_blobs,
+        source_refs,
+        crate::CampaignRamAdmission::Available(source_original.clone()),
+    );
+    let head = source
+        .create("large-object-source", &lineage, &policy, &BTreeMap::new())
+        .expect("source campaign");
+
+    const LARGE_BODY_BYTES: usize = 5 * 1024 * 1024;
+    let large = ContentEnvelope::new(
+        "crucible.test.large-transfer-root",
+        6,
+        BTreeSet::new(),
+        vec![0x5a; LARGE_BODY_BYTES],
+    )
+    .expect("bounded large exact root");
+    let large_bytes = large.canonical_bytes();
+    let large_id = large.content_id(ObjectKind::ExactManifest);
+    source
+        .blobs
+        .put_if_absent(large_id, &BlobHandle::from_bytes(large_bytes.clone()))
+        .expect("large source object");
+    let plan = source
+        .plan_campaign_archive(
+            head.snapshot_id(),
+            CampaignArchivePolicy::Mirror,
+            [large_id],
+            None,
+        )
+        .expect("large-object archive plan");
+    assert!(plan.selected().iter().any(|entry| entry.id() == large_id));
+    source
+        .stage_campaign_archive_metadata(&plan)
+        .expect("source archive metadata");
+
+    let destination_directory = tempfile::tempdir().expect("durable destination directory");
+    let destination_object_root = destination_directory.path().join("objects");
+    let destination_resources: Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard> =
+        Arc::new(resources::TransferResources::new(128, 512 * 1024 * 1024));
+    let destination_original =
+        crucible_store::owned_decode::DecodeBudget::for_store(destination_resources.clone())
+            .expect("finite destination operation authority");
+    let destination_blobs = DirectoryBlobBackend::new_with_physical_quota(
+        "large-object-destination",
+        &destination_object_root,
+        destination_resources,
+    )
+    .expect("quota-bound destination objects");
+    let destination_refs = Arc::new(DirectoryRefBackend::new(
+        destination_directory.path().join("refs"),
+    ));
+    let destination = CampaignRepository::new(
+        destination_blobs.clone(),
+        destination_refs,
+        crate::CampaignRamAdmission::Available(destination_original.clone()),
+    );
+    let durability = DurabilityRequirement::new(1, false).expect("one durable placement");
+
+    let mut observed_private_body = false;
+    let canceled = source.transfer_campaign_archive_objects_with_boundary(
+        &destination,
+        &plan,
+        durability,
+        Some(&source_original),
+        Some(&destination_original),
+        &mut || {
+            if staging_file_at_least(&destination_object_root, 256 * 1024) {
+                observed_private_body = true;
+                Err(crucible_store::ram::RamStoreError::Canceled)
+            } else {
+                Ok(())
+            }
+        },
+    );
+    let Err(CampaignRepositoryError::Ram(crucible_store::ram::RamStoreError::Boundary(cause))) =
+        &canceled
+    else {
+        panic!("mid-object cancellation must retain the typed boundary and storage outcome");
+    };
+    assert!(
+        observed_private_body,
+        "cancellation occurred after chunk staging"
+    );
+    assert!(matches!(
+        cause.first_boundary(),
+        Some(crucible_store::ram::RamStoreError::Canceled)
+    ));
+    let crucible_store::ram::RamStoreError::Store(
+        crucible_store::content_store::StoreError::DirectoryScope { source: scope },
+    ) = cause.storage_failure()
+    else {
+        panic!("directory cleanup outcome stays attached to cancellation");
+    };
+    assert_eq!(scope.outcome().published_objects, 0);
+    assert!(scope.cleanup_failure().is_none());
+    drop(canceled);
+    assert!(matches!(
+        destination_blobs.read(large_id, None),
+        Err(crucible_store::content_store::StoreError::NotFound { .. })
+    ));
+    assert!(!contains_staging_file(&destination_object_root));
+
+    source
+        .transfer_campaign_archive_objects_with_boundary(
+            &destination,
+            &plan,
+            durability,
+            Some(&source_original),
+            Some(&destination_original),
+            &mut || Ok(()),
+        )
+        .expect("large-object retry");
+    let stored = destination_blobs
+        .read(large_id, None)
+        .expect("published large object")
+        .read_all((LARGE_BODY_BYTES + 4096) as u64)
+        .expect("authenticate published large object");
+    assert_eq!(stored, large_bytes);
+    assert!(!contains_staging_file(&destination_object_root));
 }
 
 #[test]
@@ -507,8 +692,8 @@ fn archive_with_undeclared_snapshot_children_fails_closed() {
 }
 
 fn publish_paged_ram_fixture(repository: &CampaignRepository) -> (ContentId, Vec<ContentId>) {
-    use crucible_store::ram::{RamStore, RamStoreLimits};
     use crucible_ram::{Limits, RegionClass, RegionDescriptor, Scope, Topology};
+    use crucible_store::ram::{RamStore, RamStoreLimits};
 
     let store = RamStore::new(
         Arc::clone(&repository.blobs),

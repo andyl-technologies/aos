@@ -1,18 +1,25 @@
 //! Source authority is part of a durable metadata archive operation's identity.
 //!
-//! Independent directory repositories publish and transfer genuine metadata
-//! archives. These controls grant neither RAM nor machine execution admission.
+//! Independent quota-bound directory repositories publish and transfer genuine
+//! metadata archives. Their finite originals grant checked metadata transfer,
+//! without adding RAM roots or machine execution admission.
 
 use super::*;
 
 fn repository(root: &Path) -> CampaignRepository {
+    let resources = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite archive-binding metadata authority");
+    let original = crucible_engine::owned_decode::DecodeBudget::for_store(resources.clone())
+        .expect("archive-binding original account");
     CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
+        DirectoryBlobBackend::new_with_physical_quota(
             "archive-binding",
             root.join("objects"),
-        )),
+            resources,
+        )
+        .expect("quota-bound archive-binding objects"),
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
-        crucible_campaign::CampaignRamAdmission::Unavailable,
+        crucible_campaign::CampaignRamAdmission::Available(original),
     )
 }
 

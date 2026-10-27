@@ -754,6 +754,55 @@ impl BlobHandle {
         Ok(bytes)
     }
 
+    /// Authenticates this complete stream without retaining its full body.
+    ///
+    /// The source must provide an owning checked reader. The method polls the
+    /// same caller boundary around reads no wider than 64 KiB and accepts only
+    /// the declared length and the caller's expected terminal identity. An
+    /// unbound generic source is hashed against `expected`; a backend-authored
+    /// EOF identity is accepted only when it is exactly `expected`. The method
+    /// retains no object bytes after returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsupported checked access, original-account admission, a
+    /// boundary refusal, source I/O, length, or identity failure.
+    pub fn authenticate_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        expected: ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        checked_reader::check(original, boundary)?;
+        let mut expected_handle = self.clone();
+        expected_handle.integrity_id = Some(expected);
+        expected_handle.self_authenticating = false;
+        let mut reader = checked_reader::open_handle(&expected_handle, original, boundary)?;
+        let source_original = reader.original_account().clone();
+        let credit = source_original
+            .reserve_scratch_array::<u8>(64 * 1024)
+            .map_err(|error| batch::admission_under(&source_original, error))?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(64 * 1024)
+            .map_err(|error| batch::allocation_under(&source_original, error))?;
+        buffer.resize(64 * 1024, 0);
+
+        loop {
+            checked_reader::check_pair(original, &source_original, boundary)?;
+            let read = reader.read_with_boundary(&mut buffer, boundary)?;
+            checked_reader::check_pair(original, &source_original, boundary)?;
+            if read == 0 {
+                break;
+            }
+        }
+
+        drop(buffer);
+        drop(credit);
+        drop(reader);
+        checked_reader::check_pair(original, &source_original, boundary)
+    }
+
     pub(crate) fn verified_as(&self, id: ContentId) -> Result<Self, StoreError> {
         if self.authenticated_id == Some(id) {
             return Ok(self.clone());

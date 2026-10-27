@@ -3,9 +3,9 @@
 //! The inspection module owns compact inventories and transitive RAM checks.
 
 mod inspection;
+mod ordinary_objects;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
 
 use crucible_store::content_envelope::ContentEnvelope;
 use crucible_store::content_store::{
@@ -383,13 +383,22 @@ impl CampaignRepository {
         source_original: Option<&crucible_store::owned_decode::DecodeBudget>,
         destination_original: Option<&crucible_store::owned_decode::DecodeBudget>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
-        self.transfer_campaign_archive_objects_with_boundary(
+        let mut operation = blake3::Hasher::new();
+        operation.update(b"crucible.campaign.local-archive-copy.v1\0");
+        plan.manifest_id()
+            .content_id()
+            .with_encoded_text(|encoded| operation.update(encoded));
+        self.transfer_campaign_archive_objects_for_operation_with_ram_progress_mode(
             destination,
             plan,
             destination_durability,
+            *operation.finalize().as_bytes(),
+            "selected-campaign-store",
             source_original,
             destination_original,
+            &mut |_| Ok(()),
             &mut || Ok(()),
+            ordinary_objects::Mode::Compatibility,
         )
     }
 
@@ -494,6 +503,34 @@ impl CampaignRepository {
         ram_progress: &mut dyn FnMut(ContentId) -> Result<(), CampaignRepositoryError>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
+        self.transfer_campaign_archive_objects_for_operation_with_ram_progress_mode(
+            destination,
+            plan,
+            destination_durability,
+            operation,
+            destination_identity,
+            source_original,
+            destination_original,
+            ram_progress,
+            boundary,
+            ordinary_objects::Mode::Checked,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transfer_campaign_archive_objects_for_operation_with_ram_progress_mode(
+        &self,
+        destination: &CampaignRepository,
+        plan: &CampaignArchivePlan,
+        destination_durability: DurabilityRequirement,
+        operation: [u8; 32],
+        destination_identity: &str,
+        source_original: Option<&crucible_store::owned_decode::DecodeBudget>,
+        destination_original: Option<&crucible_store::owned_decode::DecodeBudget>,
+        ram_progress: &mut dyn FnMut(ContentId) -> Result<(), CampaignRepositoryError>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_store::ram::RamStoreError>,
+        ordinary_objects: ordinary_objects::Mode,
+    ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
         self.verify_ram_admission()?;
         destination.verify_ram_admission()?;
         let child = |original: &crucible_store::owned_decode::DecodeBudget| {
@@ -510,11 +547,11 @@ impl CampaignRepository {
         };
         let source_account = source_original.map(child).transpose()?;
         let destination_account = destination_original.map(child).transpose()?;
-        if !plan.ram_roots().is_empty()
+        if (!plan.ram_roots().is_empty() || ordinary_objects == ordinary_objects::Mode::Checked)
             && (source_account.is_none() || destination_account.is_none())
         {
             return Err(StoreError::Unsupported {
-                capability: "campaign-archive-ram-admission",
+                capability: "campaign-archive-checked-object-admission",
             }
             .into());
         }
@@ -621,35 +658,47 @@ impl CampaignRepository {
         }
         for entry in &plan.selected {
             boundary().map_err(map_ram_error)?;
-            transfer_one(
+            ordinary_objects::transfer(
                 self,
                 destination,
                 entry.id(),
                 entry.logical_length(),
                 destination_durability,
+                source_account.as_ref(),
+                destination_account.as_ref(),
+                boundary,
+                ordinary_objects,
                 &mut report,
             )?;
         }
         for envelope in &plan.page_envelopes {
             boundary().map_err(map_ram_error)?;
             let bytes = envelope.canonical_bytes();
-            transfer_one(
+            ordinary_objects::transfer(
                 self,
                 destination,
                 envelope.content_id(),
                 bytes.len() as u64,
                 destination_durability,
+                source_account.as_ref(),
+                destination_account.as_ref(),
+                boundary,
+                ordinary_objects,
                 &mut report,
             )?;
         }
         let manifest_bytes = plan.manifest_envelope.canonical_bytes();
         boundary().map_err(map_ram_error)?;
-        transfer_one(
+        ordinary_objects::transfer(
             self,
             destination,
             plan.manifest_id.content_id(),
             manifest_bytes.len() as u64,
             destination_durability,
+            source_account.as_ref(),
+            destination_account.as_ref(),
+            boundary,
+            ordinary_objects,
             &mut report,
         )?;
         // Both endpoints remain under actual retention above. The complete RAM
@@ -853,74 +902,6 @@ fn archive_pages(
         envelopes.push(envelope);
     }
     Ok((ids, envelopes))
-}
-
-fn transfer_one(
-    source: &CampaignRepository,
-    destination: &CampaignRepository,
-    id: ContentId,
-    logical_length: u64,
-    durability: DurabilityRequirement,
-    report: &mut CampaignArchiveTransferReport,
-) -> Result<(), CampaignRepositoryError> {
-    let existed = match destination.blobs.read(id, None) {
-        Ok(existing) => {
-            if existing.logical_length() != logical_length {
-                return Err(StoreError::Corrupt { id }.into());
-            }
-            existing.copy_to(&mut io::sink())?;
-            true
-        }
-        Err(StoreError::NotFound { .. }) => false,
-        Err(source) => return Err(source.into()),
-    };
-
-    let source_handle = source.blobs.read(id, None)?;
-    if source_handle.logical_length() != logical_length {
-        return Err(StoreError::Corrupt { id }.into());
-    }
-    let receipt = destination.blobs.put_if_absent(id, &source_handle)?;
-    let observed_durable_placements = receipt.durable_placements();
-    if receipt.id != id
-        || receipt
-            .placements
-            .iter()
-            .any(|placement| placement.logical_length != logical_length)
-    {
-        return Err(StoreError::Corrupt { id }.into());
-    }
-    if observed_durable_placements < usize::from(durability.minimum_durable_placements()) {
-        let observed_durable_placements = u16::try_from(observed_durable_placements)
-            .map_err(|_| integrity("campaign-archive-durable-placement-count-overflow"))?;
-        return Err(StoreError::DurabilityUnsatisfied {
-            id,
-            minimum_durable_placements: durability.minimum_durable_placements(),
-            observed_durable_placements,
-        }
-        .into());
-    }
-    report.observe_durable_placements(observed_durable_placements)?;
-    let persisted = destination.blobs.read(id, None)?;
-    if persisted.logical_length() != logical_length {
-        return Err(StoreError::Corrupt { id }.into());
-    }
-    persisted.copy_to(&mut io::sink())?;
-    if existed {
-        report.existing_objects = report
-            .existing_objects
-            .checked_add(1)
-            .ok_or_else(|| integrity("campaign-archive-transfer-count-overflow"))?;
-    } else {
-        report.copied_objects = report
-            .copied_objects
-            .checked_add(1)
-            .ok_or_else(|| integrity("campaign-archive-transfer-count-overflow"))?;
-        report.copied_bytes = report
-            .copied_bytes
-            .checked_add(logical_length)
-            .ok_or_else(|| integrity("campaign-archive-transfer-byte-overflow"))?;
-    }
-    Ok(())
 }
 
 fn archive_ref(name: &str) -> Result<RefName, CampaignRepositoryError> {

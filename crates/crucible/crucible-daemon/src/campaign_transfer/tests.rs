@@ -288,25 +288,41 @@ fn bounded_record_reader_rejects_an_oversized_file() {
 #[test]
 fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
     let temporary = tempfile::tempdir().expect("temporary transfer root");
+    let source_resources =
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite source metadata authority");
+    let source_original =
+        crucible_engine::owned_decode::DecodeBudget::for_store(source_resources.clone())
+            .expect("source original account");
     let source = CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
+        DirectoryBlobBackend::new_with_physical_quota(
             "source",
             temporary.path().join("source-objects"),
-        )),
+            source_resources,
+        )
+        .expect("quota-bound source objects"),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
-        crucible_campaign::CampaignRamAdmission::Unavailable,
+        crucible_campaign::CampaignRamAdmission::Available(source_original),
     );
+    let destination_resources =
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite destination metadata authority");
+    let destination_original =
+        crucible_engine::owned_decode::DecodeBudget::for_store(destination_resources.clone())
+            .expect("destination original account");
     let destination = CampaignRepository::new(
-        Arc::new(DirectoryBlobBackend::new(
+        DirectoryBlobBackend::new_with_physical_quota(
             "destination",
             temporary.path().join("destination-objects"),
-        )),
+            destination_resources,
+        )
+        .expect("quota-bound destination objects"),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
-        crucible_campaign::CampaignRamAdmission::Unavailable,
+        crucible_campaign::CampaignRamAdmission::Available(destination_original),
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -528,27 +544,44 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
 #[test]
 fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
     let temporary = tempfile::tempdir().expect("temporary transfer root");
-    let source_backend = Arc::new(DirectoryBlobBackend::new(
+    let source_resources =
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite source metadata authority");
+    let source_original =
+        crucible_engine::owned_decode::DecodeBudget::for_store(source_resources.clone())
+            .expect("source original account");
+    let source_backend = DirectoryBlobBackend::new_with_physical_quota(
         "source",
         temporary.path().join("source-objects"),
-    ));
+        source_resources,
+    )
+    .expect("quota-bound source objects");
     let source = CampaignRepository::new(
         source_backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
-        crucible_campaign::CampaignRamAdmission::Unavailable,
+        crucible_campaign::CampaignRamAdmission::Available(source_original),
     );
-    let destination_backend = Arc::new(DirectoryBlobBackend::new(
+    let destination_resources =
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite destination metadata authority");
+    let destination_original =
+        crucible_engine::owned_decode::DecodeBudget::for_store(destination_resources.clone())
+            .expect("destination original account");
+    let destination_object_root = temporary.path().join("destination-objects");
+    let destination_backend = DirectoryBlobBackend::new_with_physical_quota(
         "destination",
-        temporary.path().join("destination-objects"),
-    ));
+        &destination_object_root,
+        destination_resources,
+    )
+    .expect("quota-bound destination objects");
     let destination = CampaignRepository::new(
         destination_backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
-        crucible_campaign::CampaignRamAdmission::Unavailable,
+        crucible_campaign::CampaignRamAdmission::Available(destination_original),
     );
     let plan = plan_in_repository(&source);
     let damaged = plan.selected()[0];
@@ -558,7 +591,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
     destination_backend
         .put_if_absent(damaged.id(), &source_handle)
         .expect("seed destination object");
-    let damaged_path = directory_object_path(destination_backend.root(), damaged.id());
+    let damaged_path = directory_object_path(&destination_object_root, damaged.id());
     fs::write(&damaged_path, b"corrupt object frame").expect("corrupt destination object");
 
     let source_journal_root = temporary.path().join("source-transfer-journal");
@@ -588,21 +621,24 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
             true,
         );
 
-        assert!(matches!(
-            transfer_campaign_archive_durably(
-                &mut source_endpoint,
-                &mut destination_endpoint,
-                &plan,
-                "metadata",
-                None,
-                durability,
+        let error = transfer_campaign_archive_durably(
+            &mut source_endpoint,
+            &mut destination_endpoint,
+            &plan,
+            "metadata",
+            None,
+            durability,
+        )
+        .expect_err("corrupt destination contents must refuse transfer");
+        assert!(
+            matches!(
+                &error,
+                CampaignArchiveTransferError::Repository(CampaignRepositoryError::Store(
+                    crucible_store::content_store::StoreError::Corrupt { id }
+                )) if *id == damaged.id()
             ),
-            Err(CampaignArchiveTransferError::Repository(
-                CampaignRepositoryError::Store(
-                    crucible_store::content_store::StoreError::Corrupt { .. }
-                )
-            ))
-        ));
+            "unexpected corruption refusal: {error:?}"
+        );
     }
 
     fs::remove_file(&damaged_path).expect("remove corrupt object for repair");

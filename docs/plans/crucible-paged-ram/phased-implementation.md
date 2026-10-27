@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 701 bindings: 682 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 703 bindings: 684 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -117,6 +117,32 @@ Rust, TOML and lockfile inputs, 5,473 match; the sole differing policy-test file
 belongs to the excluded `crucible-test-support` package and passes separately.
 This build predates the later World admission, observation-builder and source
 fence changes, and the executor retention work below; it does not validate them.
+
+#### Bounded ordinary archive-object copying
+
+Journaled and explicitly bounded archive copies use checked source and destination
+readers, one-object checked publication and a checked persisted reread. Authentication
+requires the selected content ID and terminal EOF; a prepaid 64-KiB buffer bounds
+each read. The existing writer stack retains quota, private-staging, durability and
+cleanup ownership. Cancellation keeps its first typed cause together with the
+actual storage cleanup outcome. The local API without a boundary preserves its
+existing compatibility contract.
+
+All-target compilation, strict store/campaign library Clippy, six checked-reader
+controls and ten campaign transfer controls pass. The five-MiB regression cancels
+after observing more than 256 KiB in real quota-bound directory staging, verifies
+that neither a target nor staging residue survives, then authenticates a successful
+retry. All twenty-two daemon transfer controls, ninety policy controls and five
+hygiene controls pass after preserving ordinary store-error classification; the
+corruption control also requires the exact damaged object ID before repair/retry.
+Mandatory application compilation is running. The inventory contains 659 model,
+25 format and nineteen native bindings,
+with no qualified or advertised capability.
+
+Blocked-I/O deadlines remain unqualified. Source metadata staging still polls
+between envelopes, and private export and finding-midpoint callers retain paired
+outer GC guards. Those callers need a destination publication handoff before their
+overlapping guards can be removed. This component does not close those gaps.
 
 #### Executor exact-candidate handoff retention
 

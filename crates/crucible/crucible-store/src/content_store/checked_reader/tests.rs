@@ -71,6 +71,60 @@ struct ClaimedIdentityReader {
     queries: Arc<AtomicUsize>,
 }
 
+struct ObservedSource {
+    bytes: Arc<[u8]>,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+impl BlobSource for ObservedSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Owning
+    }
+
+    fn logical_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        Ok(Box::new(Cursor::new(self.bytes.clone())))
+    }
+
+    fn open_with_boundary(
+        &self,
+        caller: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        let reader = memory(self.bytes.clone(), caller, boundary)?;
+        Ok(CheckedReader::new(Box::new(ObservedReader {
+            reader,
+            bytes_read: self.bytes_read.clone(),
+        })))
+    }
+}
+
+struct ObservedReader {
+    reader: CheckedReader,
+    bytes_read: Arc<AtomicUsize>,
+}
+
+impl CheckedBlobReader for ObservedReader {
+    fn original_account(&self) -> &DecodeBudget {
+        self.reader.original_account()
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        let read = self.reader.read_with_boundary(output, boundary)?;
+        if read != 0 {
+            self.bytes_read.fetch_add(read, Ordering::SeqCst);
+        }
+        Ok(read)
+    }
+}
+
 impl CheckedBlobReader for ClaimedIdentityReader {
     fn original_account(&self) -> &DecodeBudget {
         self.reader.original_account()
@@ -119,6 +173,49 @@ fn custom_reader_identity_claim_never_suppresses_actual_eof_hashing() {
     drop(handle);
     drop(account);
     assert_eq!(quota.0.usage().expect("remaining original loans"), (0, 0));
+}
+
+#[test]
+fn streaming_authentication_requires_terminal_identity_and_preserves_boundary_refusal() {
+    let (quota, account) = account();
+    let bytes: Arc<[u8]> = Arc::from(vec![0x4d; 128 * 1024 + 17]);
+    let wrong = ContentId::for_bytes(ObjectKind::Trace, 1, b"another identity");
+    let corrupt = BlobHandle::new(ClaimedIdentitySource {
+        bytes: bytes.clone(),
+        claimed: wrong,
+        queries: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let error = corrupt
+        .authenticate_with_boundary(&account, wrong, &mut || Ok(()))
+        .expect_err("an unbound handle must authenticate the explicit identity");
+    assert!(matches!(error, StoreError::Corrupt { id } if id == wrong));
+    drop(corrupt);
+
+    let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+    let bytes_read = Arc::new(AtomicUsize::new(0));
+    let valid = BlobHandle::new(ObservedSource {
+        bytes,
+        bytes_read: bytes_read.clone(),
+    })
+    .verified_as(id)
+    .expect("fixture identity");
+    let error = valid
+        .authenticate_with_boundary(&account, id, &mut || {
+            if bytes_read.load(Ordering::SeqCst) != 0 {
+                Err(StoreError::Unavailable)
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("the original boundary interrupts a live stream");
+    assert!(matches!(error, StoreError::Unavailable));
+    let observed = bytes_read.load(Ordering::SeqCst);
+    assert!(observed > 0 && observed < 128 * 1024 + 17);
+
+    drop(valid);
+    drop(account);
+    assert_eq!(quota.0.usage().expect("all stream credits close"), (0, 0));
 }
 
 #[test]
