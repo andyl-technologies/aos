@@ -39,6 +39,283 @@ pub const MAX_PARETO_COMPONENT_VISITS: usize = 4_000_000;
 pub const MAX_LEXICOGRAPHIC_COMPONENT_VISITS: usize = 4_000_000;
 /// Maximum conservative reward-operand byte visits admitted by weighted ordering.
 pub const MAX_WEIGHTED_RANKING_BYTE_VISITS: usize = 512 * 1024 * 1024;
+// Keeps streamed cross-product work within the existing weighted-work scale.
+const MAX_WEIGHTED_RANKING_LIMB_PRODUCTS: usize = 512 * 1024 * 1024;
+const MAGNITUDE_COMPARISON_POLL_LIMBS: usize = 32;
+
+fn insert_paid_btree_map<K: Ord, V>(
+    values: &mut BTreeMap<K, V>,
+    key: K,
+    value: V,
+) -> Result<Option<V>, CampaignCodecError> {
+    if !values.contains_key(&key) {
+        crucible_store::owned_decode::charge_btree_entry::<K, V>()?;
+    }
+    Ok(values.insert(key, value))
+}
+
+fn insert_paid_btree_set<T: Ord>(
+    values: &mut BTreeSet<T>,
+    value: T,
+) -> Result<bool, CampaignCodecError> {
+    if values.contains(&value) {
+        return Ok(false);
+    }
+    crucible_store::owned_decode::charge_btree_set_entry::<T>()?;
+    Ok(values.insert(value))
+}
+
+fn reserve_paid_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), CampaignCodecError> {
+    crucible_store::owned_decode::reserve_vec(values, additional).map_err(CampaignCodecError::from)
+}
+
+fn copy_paid_slice<T: Copy>(values: &[T]) -> Result<Vec<T>, CampaignCodecError> {
+    let mut copy = Vec::new();
+    reserve_paid_vec(&mut copy, values.len())?;
+    copy.extend_from_slice(values);
+    Ok(copy)
+}
+
+fn verify_budget(
+    budget: Option<&crucible_store::owned_decode::DecodeBudget>,
+) -> Result<(), CampaignCodecError> {
+    budget
+        .map(crucible_store::owned_decode::DecodeBudget::verify_live)
+        .transpose()
+        .map(|_| ())
+        .map_err(CampaignCodecError::from)
+}
+
+fn try_sort_by<T, E>(
+    values: &mut [T],
+    mut compare: impl FnMut(&T, &T) -> Result<Ordering, E>,
+) -> Result<(), E> {
+    fn sift_down<T, E>(
+        values: &mut [T],
+        mut root: usize,
+        end: usize,
+        compare: &mut impl FnMut(&T, &T) -> Result<Ordering, E>,
+    ) -> Result<(), E> {
+        while let Some(left_child) = root.checked_mul(2).and_then(|index| index.checked_add(1)) {
+            if left_child >= end {
+                break;
+            }
+            let right_child = left_child + 1;
+            let child = if right_child < end
+                && compare(&values[left_child], &values[right_child])?.is_lt()
+            {
+                right_child
+            } else {
+                left_child
+            };
+            if !compare(&values[root], &values[child])?.is_lt() {
+                break;
+            }
+            values.swap(root, child);
+            root = child;
+        }
+        Ok(())
+    }
+
+    let length = values.len();
+    for root in (0..length / 2).rev() {
+        sift_down(values, root, length, &mut compare)?;
+    }
+    for end in (1..length).rev() {
+        values.swap(0, end);
+        sift_down(values, 0, end, &mut compare)?;
+    }
+    Ok(())
+}
+
+fn reserve_big_arithmetic_scratch(
+    maximum_bits: u64,
+    live_storage_extents: u64,
+) -> Result<Option<crucible_store::owned_decode::DecodeScratch>, CampaignCodecError> {
+    let digit_bits = u64::from(usize::BITS);
+    let digits = maximum_bits.max(1).div_ceil(digit_bits);
+    let bytes = digits
+        .checked_mul(std::mem::size_of::<usize>() as u64)
+        .and_then(|bytes| bytes.checked_mul(live_storage_extents))
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "objective-big-arithmetic-scratch-bytes",
+        })?;
+    crucible_store::owned_decode::current_budget()
+        .map(|budget| budget.reserve_scratch_bytes(bytes))
+        .transpose()
+        .map_err(CampaignCodecError::from)
+}
+
+fn magnitude_byte_length(value: &BigUint) -> usize {
+    usize::try_from(value.bits().div_ceil(8)).unwrap_or(usize::MAX)
+}
+
+fn scalar_bit_length(value: u128) -> u64 {
+    u64::from(u128::BITS - value.leading_zeros())
+}
+
+fn trim_magnitude(bytes: &[u8]) -> &[u8] {
+    let mut first = 0;
+    while first + 1 < bytes.len() && bytes[first] == 0 {
+        first += 1;
+    }
+    &bytes[first..]
+}
+
+fn magnitude_bits(bytes: &[u8]) -> usize {
+    let bytes = trim_magnitude(bytes);
+    if bytes == [0] {
+        0
+    } else {
+        (bytes.len() - 1) * 8 + (u8::BITS - bytes[0].leading_zeros()) as usize
+    }
+}
+
+fn magnitude_limb(bytes: &[u8], index: usize) -> u64 {
+    let Some(end) = bytes.len().checked_sub(index.saturating_mul(8)) else {
+        return 0;
+    };
+    if end == 0 {
+        return 0;
+    }
+    let start = end.saturating_sub(8);
+    bytes[start..end]
+        .iter()
+        .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte))
+}
+
+struct MagnitudeProduct<'a> {
+    left: &'a [u8],
+    right: &'a [u8],
+    left_limbs: usize,
+    right_limbs: usize,
+    next_limb: usize,
+    carry: [u64; 3],
+}
+
+impl<'a> MagnitudeProduct<'a> {
+    fn new(left: &'a [u8], right: &'a [u8]) -> Self {
+        Self {
+            left,
+            right,
+            left_limbs: left.len().div_ceil(8),
+            right_limbs: right.len().div_ceil(8),
+            next_limb: 0,
+            carry: [0; 3],
+        }
+    }
+
+    fn add_product(&mut self, left: u64, right: u64) {
+        // The canonical magnitude cap limits each diagonal to 1,024 terms;
+        // the third carry limb therefore cannot overflow.
+        let product = u128::from(left) * u128::from(right);
+        let low = product as u64;
+        let high = (product >> 64) as u64;
+        let low_sum = u128::from(self.carry[0]) + u128::from(low);
+        self.carry[0] = low_sum as u64;
+        let high_sum = u128::from(self.carry[1]) + u128::from(high) + (low_sum >> 64);
+        self.carry[1] = high_sum as u64;
+        self.carry[2] += (high_sum >> 64) as u64;
+    }
+
+    fn take_limb(&mut self) -> Option<u64> {
+        if self.next_limb >= self.left_limbs + self.right_limbs {
+            return None;
+        }
+        let first_left = self
+            .next_limb
+            .saturating_add(1)
+            .saturating_sub(self.right_limbs);
+        let last_left = self.next_limb.min(self.left_limbs.saturating_sub(1));
+        if first_left <= last_left {
+            for left_index in first_left..=last_left {
+                let right_index = self.next_limb - left_index;
+                self.add_product(
+                    magnitude_limb(self.left, left_index),
+                    magnitude_limb(self.right, right_index),
+                );
+            }
+        }
+        let result = self.carry[0];
+        self.carry[0] = self.carry[1];
+        self.carry[1] = self.carry[2];
+        self.carry[2] = 0;
+        self.next_limb += 1;
+        Some(result)
+    }
+}
+
+fn try_compare_magnitude_products<E>(
+    left: (&[u8], &[u8]),
+    right: (&[u8], &[u8]),
+    mut poll: impl FnMut() -> Result<(), E>,
+) -> Result<Ordering, E> {
+    poll()?;
+    let product_bits = |factors: (&[u8], &[u8])| {
+        let left_bits = magnitude_bits(factors.0);
+        let right_bits = magnitude_bits(factors.1);
+        if left_bits == 0 || right_bits == 0 {
+            0
+        } else {
+            left_bits.saturating_add(right_bits)
+        }
+    };
+    let left_bits = product_bits(left);
+    let right_bits = product_bits(right);
+    if left_bits + 1 < right_bits {
+        return Ok(Ordering::Less);
+    }
+    if right_bits + 1 < left_bits {
+        return Ok(Ordering::Greater);
+    }
+
+    let mut left_product = MagnitudeProduct::new(left.0, left.1);
+    let mut right_product = MagnitudeProduct::new(right.0, right.1);
+    let limbs = (left_product.left_limbs + left_product.right_limbs)
+        .max(right_product.left_limbs + right_product.right_limbs);
+    let mut ordering = Ordering::Equal;
+    for limb in 0..limbs {
+        if limb % MAGNITUDE_COMPARISON_POLL_LIMBS == 0 {
+            poll()?;
+        }
+        let left_limb = left_product.take_limb().unwrap_or(0);
+        let right_limb = right_product.take_limb().unwrap_or(0);
+        if left_limb != right_limb {
+            // Later limbs are more significant and supersede earlier differences.
+            ordering = left_limb.cmp(&right_limb);
+        }
+    }
+    Ok(ordering)
+}
+
+fn compare_magnitude_products(left: (&[u8], &[u8]), right: (&[u8], &[u8])) -> Ordering {
+    match try_compare_magnitude_products(left, right, || Ok::<(), std::convert::Infallible>(())) {
+        Ok(ordering) => ordering,
+        Err(error) => match error {},
+    }
+}
+
+fn compare_fraction_magnitudes(
+    left_numerator: u128,
+    left_denominator: u128,
+    right_numerator: u128,
+    right_denominator: u128,
+) -> Ordering {
+    let left_numerator = left_numerator.to_be_bytes();
+    let left_denominator = left_denominator.to_be_bytes();
+    let right_numerator = right_numerator.to_be_bytes();
+    let right_denominator = right_denominator.to_be_bytes();
+    compare_magnitude_products(
+        (
+            trim_magnitude(&left_numerator),
+            trim_magnitude(&right_denominator),
+        ),
+        (
+            trim_magnitude(&right_numerator),
+            trim_magnitude(&left_denominator),
+        ),
+    )
+}
 
 pub(crate) fn objective_contract_hash<'a>(
     components: impl ExactSizeIterator<Item = (&'a str, ObjectiveGoal, u64)>,
@@ -124,11 +401,38 @@ impl ObjectiveValue {
         }
     }
 
+    fn signed_magnitude_fraction(&self) -> (bool, u128, u128) {
+        match self {
+            Self::Signed(value) => (value.is_negative(), u128::from(value.unsigned_abs()), 1),
+            Self::Unsigned(value) => (false, u128::from(*value), 1),
+            Self::Rational {
+                negative,
+                numerator,
+                denominator,
+            } => (*negative && *numerator != 0, *numerator, *denominator),
+        }
+    }
+
     fn exact_cmp(&self, other: &Self) -> Ordering {
-        let (left_numerator, left_denominator) = self.fraction();
-        let (right_numerator, right_denominator) = other.fraction();
-        (left_numerator * BigInt::from_biguint(Sign::Plus, right_denominator))
-            .cmp(&(right_numerator * BigInt::from_biguint(Sign::Plus, left_denominator)))
+        let (left_negative, left_numerator, left_denominator) = self.signed_magnitude_fraction();
+        let (right_negative, right_numerator, right_denominator) =
+            other.signed_magnitude_fraction();
+        match (left_negative, right_negative) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => compare_fraction_magnitudes(
+                left_numerator,
+                left_denominator,
+                right_numerator,
+                right_denominator,
+            ),
+            (true, true) => compare_fraction_magnitudes(
+                right_numerator,
+                right_denominator,
+                left_numerator,
+                left_denominator,
+            ),
+        }
     }
 }
 
@@ -193,15 +497,19 @@ impl FixedReward {
         let divisor = magnitude.gcd(&denominator);
         let reduced_numerator = magnitude / &divisor;
         let reduced_denominator = denominator / divisor;
-        let numerator = canonical_magnitude_bytes(&reduced_numerator);
-        let denominator = canonical_magnitude_bytes(&reduced_denominator);
-        if numerator.len() > MAX_FIXED_REWARD_MAGNITUDE_BYTES
-            || denominator.len() > MAX_FIXED_REWARD_MAGNITUDE_BYTES
+        let numerator_bytes = magnitude_byte_length(&reduced_numerator).max(1);
+        let denominator_bytes = magnitude_byte_length(&reduced_denominator).max(1);
+        if numerator_bytes > MAX_FIXED_REWARD_MAGNITUDE_BYTES
+            || denominator_bytes > MAX_FIXED_REWARD_MAGNITUDE_BYTES
         {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "objective-fixed-reward-magnitude-bytes",
             });
         }
+        crucible_store::owned_decode::charge_array::<u8>(numerator_bytes)?;
+        let numerator = canonical_magnitude_bytes(&reduced_numerator);
+        crucible_store::owned_decode::charge_array::<u8>(denominator_bytes)?;
+        let denominator = canonical_magnitude_bytes(&reduced_denominator);
         Ok(Self {
             negative: negative && numerator != [0],
             numerator,
@@ -219,6 +527,15 @@ impl FixedReward {
             &denominator,
             "objective fixed-reward denominator is invalid",
         )?;
+        let scratch_bits = u64::try_from(numerator.len().saturating_add(denominator.len()))
+            .ok()
+            .and_then(|bytes| bytes.checked_mul(8))
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "objective-big-arithmetic-scratch-bytes",
+            })?;
+        // Two decoded values, their conversion buffers, and the two mutable
+        // operands used by Stein's GCD are simultaneously live here.
+        let _scratch = reserve_big_arithmetic_scratch(scratch_bits, 6)?;
         let numerator_value = BigUint::from_bytes_be(&numerator);
         let denominator_value = BigUint::from_bytes_be(&denominator);
         if denominator_value.is_zero() {
@@ -288,26 +605,35 @@ impl FixedReward {
         }
     }
 
-    fn fraction(&self) -> (BigInt, BigUint) {
-        let magnitude = BigUint::from_bytes_be(&self.numerator);
-        let sign = if self.negative {
-            Sign::Minus
-        } else {
-            Sign::Plus
-        };
-        (
-            BigInt::from_biguint(sign, magnitude),
-            BigUint::from_bytes_be(&self.denominator),
-        )
+    fn try_cmp<E>(
+        &self,
+        other: &Self,
+        mut poll: impl FnMut() -> Result<(), E>,
+    ) -> Result<Ordering, E> {
+        poll()?;
+        match (self.negative, other.negative) {
+            (true, false) => Ok(Ordering::Less),
+            (false, true) => Ok(Ordering::Greater),
+            (false, false) => try_compare_magnitude_products(
+                (&self.numerator, &other.denominator),
+                (&other.numerator, &self.denominator),
+                poll,
+            ),
+            (true, true) => try_compare_magnitude_products(
+                (&other.numerator, &self.denominator),
+                (&self.numerator, &other.denominator),
+                poll,
+            ),
+        }
     }
 }
 
 impl Ord for FixedReward {
     fn cmp(&self, other: &Self) -> Ordering {
-        let (left_numerator, left_denominator) = self.fraction();
-        let (right_numerator, right_denominator) = other.fraction();
-        (left_numerator * BigInt::from_biguint(Sign::Plus, right_denominator))
-            .cmp(&(right_numerator * BigInt::from_biguint(Sign::Plus, left_denominator)))
+        match self.try_cmp(other, || Ok::<(), std::convert::Infallible>(())) {
+            Ok(ordering) => ordering,
+            Err(error) => match error {},
+        }
     }
 }
 
@@ -1493,8 +1819,8 @@ impl SurvivorSelectionBundle {
 /// # Errors
 ///
 /// Returns an error for duplicate configurations, policy mismatch, excessive
-/// candidates or Pareto comparison work, missing scalar rewards, or oversized
-/// canonical records.
+/// candidates or comparison work, missing scalar rewards, oversized canonical
+/// records, or refusal by an active decode resource authority.
 pub fn rank_survivors(
     policy: &CampaignPolicy,
     rule: SurvivorRule,
@@ -1514,10 +1840,17 @@ pub fn rank_survivors(
             candidate.evaluation.canonical_bytes().len(),
         )?;
         candidate.evaluation.validate_policy(policy)?;
-        if candidate.evaluation.policy() != policy_id
-            || by_configuration
-                .insert(candidate.evaluation.configuration(), candidate)
-                .is_some()
+        if candidate.evaluation.policy() != policy_id {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "survivor candidates have duplicate configurations or policy mismatch",
+            });
+        }
+        if insert_paid_btree_map(
+            &mut by_configuration,
+            candidate.evaluation.configuration(),
+            candidate,
+        )?
+        .is_some()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "survivor candidates have duplicate configurations or policy mismatch",
@@ -1525,57 +1858,77 @@ pub fn rank_survivors(
         }
     }
 
-    let admissible = by_configuration
+    let admissible_count = by_configuration
         .iter()
         .filter(|(_, candidate)| candidate.evaluation.is_admissible())
-        .map(|(configuration, _)| *configuration)
-        .collect::<Vec<_>>();
+        .count();
+    let mut admissible = Vec::new();
+    reserve_paid_vec(&mut admissible, admissible_count)?;
+    admissible.extend(
+        by_configuration
+            .iter()
+            .filter(|(_, candidate)| candidate.evaluation.is_admissible())
+            .map(|(configuration, _)| *configuration),
+    );
     let (mut primary, dominated_by) =
         primary_order(policy, rule.method(), &by_configuration, &admissible)?;
-    let primary_rank = primary
-        .iter()
-        .enumerate()
-        .map(|(rank, configuration)| (*configuration, rank as u32))
-        .collect::<BTreeMap<_, _>>();
+    let mut primary_rank = BTreeMap::new();
+    for (rank, configuration) in primary.iter().enumerate() {
+        insert_paid_btree_map(&mut primary_rank, *configuration, rank as u32)?;
+    }
 
     let mut selected = BTreeSet::new();
     let mut selected_disposition = BTreeMap::new();
-    let mut breadth = admissible.clone();
-    breadth.sort_by_key(|configuration| {
-        let candidate = &by_configuration[configuration];
-        (candidate.breadth_ordinal, *configuration)
-    });
+    let mut reserve_order = copy_paid_slice(&admissible)?;
+    let budget = crucible_store::owned_decode::current_budget();
+    try_sort_by(
+        &mut reserve_order,
+        |left, right| -> Result<Ordering, CampaignCodecError> {
+            verify_budget(budget.as_ref())?;
+            let left_candidate = &by_configuration[left];
+            let right_candidate = &by_configuration[right];
+            Ok((left_candidate.breadth_ordinal, *left)
+                .cmp(&(right_candidate.breadth_ordinal, *right)))
+        },
+    )?;
     select_reserved(
-        &breadth,
+        &reserve_order,
         rule.breadth_first_reserve as usize,
-        RankingDisposition::SelectedBreadthFirst,
+        || RankingDisposition::SelectedBreadthFirst,
         &mut selected,
         &mut selected_disposition,
-    );
+    )?;
 
-    let mut novelty = admissible.clone();
-    novelty.sort_by(|left, right| {
-        let left_candidate = &by_configuration[left];
-        let right_candidate = &by_configuration[right];
-        right_candidate
-            .novelty_score
-            .cmp(&left_candidate.novelty_score)
-            .then_with(|| left.cmp(right))
-    });
+    try_sort_by(
+        &mut reserve_order,
+        |left, right| -> Result<Ordering, CampaignCodecError> {
+            verify_budget(budget.as_ref())?;
+            let left_candidate = &by_configuration[left];
+            let right_candidate = &by_configuration[right];
+            Ok(right_candidate
+                .novelty_score
+                .cmp(&left_candidate.novelty_score)
+                .then_with(|| left.cmp(right)))
+        },
+    )?;
     select_reserved(
-        &novelty,
+        &reserve_order,
         rule.novelty_reserve as usize,
-        RankingDisposition::SelectedNovelty,
+        || RankingDisposition::SelectedNovelty,
         &mut selected,
         &mut selected_disposition,
-    );
+    )?;
 
     for configuration in primary.drain(..) {
         if selected.len() >= rule.keep as usize {
             break;
         }
-        if selected.insert(configuration) {
-            selected_disposition.insert(configuration, RankingDisposition::SelectedObjective);
+        if insert_paid_btree_set(&mut selected, configuration)? {
+            insert_paid_btree_map(
+                &mut selected_disposition,
+                configuration,
+                RankingDisposition::SelectedObjective,
+            )?;
         }
     }
 
@@ -1586,7 +1939,7 @@ pub fn rank_survivors(
         let disposition = if let Some(disposition) = selected_disposition.remove(&configuration) {
             disposition
         } else if !candidate.evaluation.is_admissible() {
-            RankingDisposition::Filtered(candidate.evaluation.rejections().clone())
+            RankingDisposition::Filtered(codec::admitted_clone(candidate.evaluation.rejections())?)
         } else if let Some(dominator) = dominated_by.get(&configuration) {
             RankingDisposition::ParetoDominated(*dominator)
         } else {
@@ -1600,17 +1953,17 @@ pub fn rank_survivors(
             candidate.breadth_ordinal,
         )?;
         charge_survivor_evidence_bytes(&mut evidence_bytes, explanation.canonical_bytes().len())?;
-        explanations.insert(configuration, explanation);
-        evaluations.insert(configuration, candidate.evaluation);
+        insert_paid_btree_map(&mut explanations, configuration, explanation)?;
+        insert_paid_btree_map(&mut evaluations, configuration, candidate.evaluation)?;
     }
-    let considered = evaluations
-        .iter()
-        .map(|(configuration, evaluation)| Ok((*configuration, evaluation.id()?)))
-        .collect::<Result<BTreeMap<_, _>, CampaignCodecError>>()?;
-    let explanation_ids = explanations
-        .iter()
-        .map(|(configuration, explanation)| Ok((*configuration, explanation.id()?)))
-        .collect::<Result<BTreeMap<_, _>, CampaignCodecError>>()?;
+    let mut considered = BTreeMap::new();
+    for (configuration, evaluation) in &evaluations {
+        insert_paid_btree_map(&mut considered, *configuration, evaluation.id()?)?;
+    }
+    let mut explanation_ids = BTreeMap::new();
+    for (configuration, explanation) in &explanations {
+        insert_paid_btree_map(&mut explanation_ids, *configuration, explanation.id()?)?;
+    }
     let selection = SurvivorSelection::new(policy_id, rule, considered, selected, explanation_ids)?;
     Ok(SurvivorSelectionBundle {
         evaluations,
@@ -1648,8 +2001,10 @@ fn primary_order(
     ),
     CampaignCodecError,
 > {
+    let budget = crucible_store::owned_decode::current_budget();
+    verify_budget(budget.as_ref())?;
     let mut dominated_by = BTreeMap::new();
-    let mut primary = admissible.to_vec();
+    let mut primary = copy_paid_slice(admissible)?;
     match method {
         RankingMethod::ParetoTopK => {
             let visits = admissible
@@ -1666,25 +2021,36 @@ fn primary_order(
             }
             preflight_weighted_ranking_work(candidates, admissible)?;
             for candidate in admissible {
-                let mut dominators = admissible
-                    .iter()
-                    .filter(|other| *other != candidate)
-                    .filter(|other| {
-                        dominates(
-                            policy,
-                            &candidates[other].evaluation,
-                            &candidates[candidate].evaluation,
-                        )
-                    })
-                    .copied()
-                    .collect::<Vec<_>>();
-                dominators.sort();
-                if let Some(dominator) = dominators.first() {
-                    dominated_by.insert(*candidate, candidates[dominator].evaluation.id()?);
+                let mut dominator = None;
+                for other in admissible {
+                    if other == candidate {
+                        continue;
+                    }
+                    verify_budget(budget.as_ref())?;
+                    if dominates(
+                        policy,
+                        &candidates[other].evaluation,
+                        &candidates[candidate].evaluation,
+                    ) && dominator.is_none_or(|selected| other < &selected)
+                    {
+                        dominator = Some(*other);
+                    }
+                }
+                if let Some(dominator) = dominator {
+                    insert_paid_btree_map(
+                        &mut dominated_by,
+                        *candidate,
+                        candidates[&dominator].evaluation.id()?,
+                    )?;
                 }
             }
             primary.retain(|configuration| !dominated_by.contains_key(configuration));
-            primary.sort_by(|left, right| weighted_order(candidates, *left, *right));
+            try_sort_by(
+                &mut primary,
+                |left, right| -> Result<Ordering, CampaignCodecError> {
+                    weighted_order(candidates, *left, *right, budget.as_ref())
+                },
+            )?;
         }
         RankingMethod::Lexicographic => {
             let visits = admissible
@@ -1699,18 +2065,27 @@ fn primary_order(
                     limit: "lexicographic-component-visits",
                 });
             }
-            primary.sort_by(|left, right| {
-                lexicographic_order(
-                    policy,
-                    &candidates[left].evaluation,
-                    &candidates[right].evaluation,
-                )
-                .then_with(|| left.cmp(right))
-            });
+            try_sort_by(
+                &mut primary,
+                |left, right| -> Result<Ordering, CampaignCodecError> {
+                    verify_budget(budget.as_ref())?;
+                    Ok(lexicographic_order(
+                        policy,
+                        &candidates[left].evaluation,
+                        &candidates[right].evaluation,
+                    )
+                    .then_with(|| left.cmp(right)))
+                },
+            )?;
         }
         RankingMethod::WeightedTopK => {
             preflight_weighted_ranking_work(candidates, admissible)?;
-            primary.sort_by(|left, right| weighted_order(candidates, *left, *right));
+            try_sort_by(
+                &mut primary,
+                |left, right| -> Result<Ordering, CampaignCodecError> {
+                    weighted_order(candidates, *left, *right, budget.as_ref())
+                },
+            )?;
         }
     }
     Ok((primary, dominated_by))
@@ -1720,17 +2095,25 @@ fn preflight_weighted_ranking_work(
     candidates: &BTreeMap<ConfigurationId, RankingCandidate>,
     admissible: &[ConfigurationId],
 ) -> Result<(), CampaignCodecError> {
-    let maximum_reward_bytes = admissible
+    let budget = crucible_store::owned_decode::current_budget();
+    let mut maximum_reward_bytes = 0;
+    let mut maximum_numerator_limbs = 0;
+    let mut maximum_denominator_limbs = 0;
+    for reward in admissible
         .iter()
         .filter_map(|configuration| candidates[configuration].evaluation.scalar_reward())
-        .map(|reward| {
+    {
+        verify_budget(budget.as_ref())?;
+        maximum_reward_bytes = maximum_reward_bytes.max(
             reward
                 .numerator
                 .len()
-                .saturating_add(reward.denominator.len())
-        })
-        .max()
-        .unwrap_or(0);
+                .saturating_add(reward.denominator.len()),
+        );
+        maximum_numerator_limbs = maximum_numerator_limbs.max(reward.numerator.len().div_ceil(8));
+        maximum_denominator_limbs =
+            maximum_denominator_limbs.max(reward.denominator.len().div_ceil(8));
+    }
     let visits = admissible
         .len()
         .checked_mul(admissible.len())
@@ -1741,6 +2124,25 @@ fn preflight_weighted_ranking_work(
     if visits > MAX_WEIGHTED_RANKING_BYTE_VISITS {
         return Err(CampaignCodecError::LimitExceeded {
             limit: "weighted-ranking-byte-visits",
+        });
+    }
+
+    let limb_products_per_pair = maximum_numerator_limbs
+        .checked_mul(maximum_denominator_limbs)
+        .and_then(|products| products.checked_mul(2))
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "weighted-ranking-limb-products",
+        })?;
+    let limb_products = admissible
+        .len()
+        .checked_mul(admissible.len())
+        .and_then(|pairs| pairs.checked_mul(limb_products_per_pair))
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "weighted-ranking-limb-products",
+        })?;
+    if limb_products > MAX_WEIGHTED_RANKING_LIMB_PRODUCTS {
+        return Err(CampaignCodecError::LimitExceeded {
+            limit: "weighted-ranking-limb-products",
         });
     }
     Ok(())
@@ -1804,51 +2206,121 @@ fn weighted_order(
     candidates: &BTreeMap<ConfigurationId, RankingCandidate>,
     left: ConfigurationId,
     right: ConfigurationId,
-) -> Ordering {
+    budget: Option<&crucible_store::owned_decode::DecodeBudget>,
+) -> Result<Ordering, CampaignCodecError> {
+    verify_budget(budget)?;
     match (
         candidates[&left].evaluation.scalar_reward(),
         candidates[&right].evaluation.scalar_reward(),
     ) {
-        (Some(left_reward), Some(right_reward)) => {
-            right_reward.cmp(left_reward).then_with(|| left.cmp(&right))
-        }
-        (None, None) => left.cmp(&right),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
+        (Some(left_reward), Some(right_reward)) => Ok(right_reward
+            .try_cmp(left_reward, || verify_budget(budget))?
+            .then_with(|| left.cmp(&right))),
+        (None, None) => Ok(left.cmp(&right)),
+        (Some(_), None) => Ok(Ordering::Less),
+        (None, Some(_)) => Ok(Ordering::Greater),
     }
 }
 
 fn select_reserved(
     order: &[ConfigurationId],
     reserve: usize,
-    disposition: RankingDisposition,
+    disposition: impl Fn() -> RankingDisposition,
     selected: &mut BTreeSet<ConfigurationId>,
     selected_disposition: &mut BTreeMap<ConfigurationId, RankingDisposition>,
-) {
+) -> Result<(), CampaignCodecError> {
     let mut admitted = 0;
     for configuration in order {
         if admitted >= reserve {
             break;
         }
-        if selected.insert(*configuration) {
-            selected_disposition.insert(*configuration, disposition.clone());
+        if insert_paid_btree_set(selected, *configuration)? {
+            insert_paid_btree_map(selected_disposition, *configuration, disposition())?;
             admitted += 1;
         }
     }
+    Ok(())
 }
 
-fn compute_scalar_reward<'a>(
-    components: impl Iterator<Item = &'a ObjectiveComponent>,
-) -> Result<FixedReward, CampaignCodecError> {
+fn compute_scalar_reward<'a, I>(components: I) -> Result<FixedReward, CampaignCodecError>
+where
+    I: Iterator<Item = &'a ObjectiveComponent> + Clone,
+{
+    let budget = crucible_store::owned_decode::current_budget();
+    verify_budget(budget.as_ref())?;
+    let initial_scratch = reserve_big_arithmetic_scratch(usize::BITS.into(), 2)?;
     let mut numerator = BigInt::zero();
     let mut denominator = BigUint::from(1_u8);
-    let mut charged_work = 0usize;
-    for component in components {
+
+    // Preserve the missing-value error before admitting scratch for arithmetic
+    // on later components. The initial zero and one remain funded above.
+    for component in components.clone() {
+        verify_budget(budget.as_ref())?;
+        if component.value().is_none() {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "admissible objective vector contains a missing value",
+            });
+        }
+    }
+
+    let mut denominator_bits = 0_u64;
+    let mut largest_term_numerator_bits = 0_u64;
+    let mut component_count = 0_u64;
+    for component in components.clone() {
+        verify_budget(budget.as_ref())?;
         let Some(value) = component.value() else {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "admissible objective vector contains a missing value",
             });
         };
+        let (_, value_numerator, value_denominator) = value.signed_magnitude_fraction();
+        let term_numerator_bits = scalar_bit_length(value_numerator)
+            .checked_add(scalar_bit_length(u128::from(component.weight_micros)))
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "objective-big-arithmetic-scratch-bytes",
+            })?;
+        let term_denominator_bits = scalar_bit_length(value_denominator)
+            .checked_add(scalar_bit_length(1_000_000))
+            .ok_or(CampaignCodecError::LimitExceeded {
+                limit: "objective-big-arithmetic-scratch-bytes",
+            })?;
+        denominator_bits = denominator_bits.checked_add(term_denominator_bits).ok_or(
+            CampaignCodecError::LimitExceeded {
+                limit: "objective-big-arithmetic-scratch-bytes",
+            },
+        )?;
+        largest_term_numerator_bits = largest_term_numerator_bits.max(term_numerator_bits);
+        component_count =
+            component_count
+                .checked_add(1)
+                .ok_or(CampaignCodecError::LimitExceeded {
+                    limit: "objective-big-arithmetic-scratch-bytes",
+                })?;
+    }
+    let sum_bits = scalar_bit_length(u128::from(component_count))
+        .checked_add(largest_term_numerator_bits)
+        .and_then(|bits| bits.checked_add(denominator_bits))
+        .ok_or(CampaignCodecError::LimitExceeded {
+            limit: "objective-big-arithmetic-scratch-bytes",
+        })?;
+
+    // At the arithmetic expression's peak, twelve caller-visible magnitudes
+    // coexist. One num-bigint Toom-3 level retains ten operand-sized extents:
+    // two for the six thirds, three for four evaluation values, three for five
+    // products, and two for interpolation. Recursive levels shrink by thirds,
+    // so fifteen extents cover the geometric series; three cover conversions.
+    let arithmetic_scratch = reserve_big_arithmetic_scratch(sum_bits.max(denominator_bits), 30)?;
+    drop(initial_scratch);
+
+    let mut charged_work = 0usize;
+    for component in components {
+        verify_budget(budget.as_ref())?;
+        let Some(value) = component.value() else {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "admissible objective vector contains a missing value",
+            });
+        };
+
         let (mut term_numerator, mut term_denominator) = value.fraction();
         term_numerator *= component.weight_micros;
         term_denominator *= 1_000_000_u64;
@@ -1860,13 +2332,10 @@ fn compute_scalar_reward<'a>(
         let right_scale = &denominator / &common;
         charged_work = charged_work
             .checked_add(
-                numerator
-                    .magnitude()
-                    .to_bytes_be()
-                    .len()
-                    .saturating_add(denominator.to_bytes_be().len())
-                    .saturating_add(term_numerator.magnitude().to_bytes_be().len())
-                    .saturating_add(term_denominator.to_bytes_be().len()),
+                magnitude_byte_length(numerator.magnitude())
+                    .saturating_add(magnitude_byte_length(&denominator))
+                    .saturating_add(magnitude_byte_length(term_numerator.magnitude()))
+                    .saturating_add(magnitude_byte_length(&term_denominator)),
             )
             .ok_or(CampaignCodecError::LimitExceeded {
                 limit: "objective-fixed-reward-work-bytes",
@@ -1882,15 +2351,19 @@ fn compute_scalar_reward<'a>(
         let divisor = numerator.magnitude().gcd(&denominator);
         numerator /= BigInt::from_biguint(Sign::Plus, divisor.clone());
         denominator /= divisor;
-        if numerator.magnitude().to_bytes_be().len() > MAX_FIXED_REWARD_MAGNITUDE_BYTES
-            || denominator.to_bytes_be().len() > MAX_FIXED_REWARD_MAGNITUDE_BYTES
+        if magnitude_byte_length(numerator.magnitude()) > MAX_FIXED_REWARD_MAGNITUDE_BYTES
+            || magnitude_byte_length(&denominator) > MAX_FIXED_REWARD_MAGNITUDE_BYTES
         {
             return Err(CampaignCodecError::LimitExceeded {
                 limit: "objective-fixed-reward-magnitude-bytes",
             });
         }
+        verify_budget(budget.as_ref())?;
     }
-    FixedReward::from_fraction(numerator, denominator)
+    verify_budget(budget.as_ref())?;
+    let reward = FixedReward::from_fraction(numerator, denominator)?;
+    drop(arithmetic_scratch);
+    Ok(reward)
 }
 
 mod codec_helpers;
@@ -1898,3 +2371,162 @@ use codec_helpers::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod magnitude_product_tests {
+    use super::*;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use crucible_store::owned_decode::{
+        DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, ResourceLoan,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    struct RevokingAuthority {
+        calls: AtomicUsize,
+        fail_at: usize,
+    }
+
+    impl DecodeResourceAuthority for RevokingAuthority {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if call >= self.fail_at {
+                Err(DecodeAdmissionError::new(std::io::Error::other(
+                    "comparison cancelled",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn reserve(&self, _bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+            Ok(ResourceLoan::new(()))
+        }
+    }
+
+    fn oracle(left: (&[u8], &[u8]), right: (&[u8], &[u8])) -> Ordering {
+        (BigUint::from_bytes_be(left.0) * BigUint::from_bytes_be(left.1))
+            .cmp(&(BigUint::from_bytes_be(right.0) * BigUint::from_bytes_be(right.1)))
+    }
+
+    fn assert_product_order(left: (&[u8], &[u8]), right: (&[u8], &[u8])) {
+        let expected = oracle(left, right);
+        let (actual, allocations) =
+            TestAllocationObserver::count(|| compare_magnitude_products(left, right));
+
+        assert_eq!(actual, expected);
+        assert!(!allocations.overflow);
+        assert_eq!(allocations.allocations, 0);
+        assert_eq!(allocations.reallocations, 0);
+    }
+
+    #[test]
+    fn magnitude_products_match_biguint_without_allocating() {
+        let zero = [0];
+        let one = [1];
+        let large = [0xff; 257];
+        let carry_heavy_left = [0xff; 33];
+        let carry_heavy_right = [0xff; 25];
+        let unequal_left = [0x81; 41];
+        let unequal_right = [0x7f; 9];
+
+        assert_product_order((&zero, &large), (&one, &one));
+        assert_product_order((&one, &one), (&zero, &large));
+        assert_product_order((&zero, &large), (&large, &zero));
+        assert_product_order(
+            (&carry_heavy_left, &carry_heavy_right),
+            (&large[..17], &large[..41]),
+        );
+        assert_product_order(
+            (&unequal_left, &unequal_right),
+            (&large[..13], &large[..29]),
+        );
+
+        let maximum_magnitude = [0xff; MAX_FIXED_REWARD_MAGNITUDE_BYTES];
+        let near_maximum_magnitude = [0xfe; MAX_FIXED_REWARD_MAGNITUDE_BYTES];
+        assert_product_order(
+            (&maximum_magnitude, &maximum_magnitude),
+            (&near_maximum_magnitude, &maximum_magnitude),
+        );
+
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for case in 0..128_usize {
+            let mut next_byte = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            };
+            let left_length = 1 + case % 67;
+            let right_length = 1 + (case * 17) % 71;
+            let mut left_numerator = Vec::with_capacity(left_length);
+            let mut left_denominator = Vec::with_capacity(right_length);
+            let mut right_numerator = Vec::with_capacity(right_length);
+            let mut right_denominator = Vec::with_capacity(left_length);
+            left_numerator.extend((0..left_length).map(|_| next_byte()));
+            left_denominator.extend((0..right_length).map(|_| next_byte()));
+            right_numerator.extend((0..right_length).map(|_| next_byte()));
+            right_denominator.extend((0..left_length).map(|_| next_byte()));
+
+            assert_product_order(
+                (&left_numerator, &left_denominator),
+                (&right_numerator, &right_denominator),
+            );
+        }
+    }
+
+    #[test]
+    fn product_comparison_propagates_active_budget_revocation() {
+        let authority = Arc::new(RevokingAuthority {
+            calls: AtomicUsize::new(0),
+            fail_at: 3,
+        });
+        let budget = DecodeBudget::new(authority.clone(), 1024 * 1024)
+            .unwrap_or_else(|error| panic!("test budget: {error}"));
+        let _scope = budget.enter();
+        let active = crucible_store::owned_decode::current_budget();
+        let magnitude = [0xff; 1024];
+        let result = try_compare_magnitude_products(
+            (&magnitude, &magnitude),
+            (&magnitude, &magnitude),
+            || verify_budget(active.as_ref()),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CampaignCodecError::DecodeAdmission(_))
+        ));
+        assert_eq!(authority.calls.load(AtomicOrdering::SeqCst), 4);
+    }
+
+    #[test]
+    fn fallible_heap_sort_matches_total_standard_order() {
+        let mut expected = vec![17_i32, -4, 0, 91, 8, -100, 42, 5];
+        let mut actual = expected.clone();
+        expected.sort_unstable();
+
+        try_sort_by(&mut actual, |left, right| {
+            Ok::<_, std::convert::Infallible>(left.cmp(right))
+        })
+        .unwrap_or_else(|error| match error {});
+
+        assert_eq!(actual, expected);
+
+        let mut comparisons = 0;
+        let refused = try_sort_by(&mut actual, |left, right| {
+            comparisons += 1;
+            if comparisons == 3 {
+                Err(CampaignCodecError::from(DecodeAdmissionError::new(
+                    std::io::Error::other("sort cancelled"),
+                )))
+            } else {
+                Ok(left.cmp(right))
+            }
+        });
+        assert!(matches!(
+            refused,
+            Err(CampaignCodecError::DecodeAdmission(_))
+        ));
+        assert_eq!(comparisons, 3);
+    }
+}

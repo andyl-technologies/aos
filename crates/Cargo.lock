@@ -2819,6 +2819,7 @@ name = "crucible-campaign"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-host-resources",
  "crucible-ram",
  "crucible-store",
  "ed25519-dalek",
