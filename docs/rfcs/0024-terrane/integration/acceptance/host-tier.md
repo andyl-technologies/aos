@@ -341,6 +341,40 @@ and fresh-owner recovery assertions remain required. This addresses the observed
 source-level precondition conflict; corrected native execution is still needed
 to determine whether it resolves the failure.
 
+## Standalone consumers of packed dictionaries
+
+Standalone admission can now verify an external dictionary from an actual
+completed data-pack job. It retains the original source job, records the exact
+digest-to-source-order edge and funds both the dictionary identity and its whole
+pack container. Reconciliation and cache handoff follow those same original
+edges for chunks and data packs; no standalone dictionary copy is extracted.
+
+Standalone consumers use the flat original-source reader already used by packed
+dictionary reads. It retains the original chunk plus every required pack/index
+or standalone member, native stamps and publisher observations. Positioned
+reads verify the exact returned envelope and its complete dictionary chain;
+object-root first-boundary and nonfinal-chunk checks remain distinct from
+standalone dictionary validation. Consumer pins and synchronized allocation
+measurement cover all original source inodes and pack containers. Backing checks
+after handoff do not depend on the original producer's funding.
+
+The new `admission-packed-dictionary` scenario requires genuine empty recovery
+and Resume, then admits a two-record dictionary pair and one canonical dependent
+chunk. The same consumer reads original encoded and plaintext bytes before and
+after dictionary cache handoff, followed by a new consumer. An independent
+observer retains the three actual inodes and checks exact envelope edges, pair
+binding, project ownership, producer holds, cache dependency pins, unchanged
+names and absence of extracted dictionary files. The scenario is appended after
+all previous project assignments; the 110 domains occupy bounded administrative
+partitions of 1,020 and 80 scaffold directories.
+
+Required application compilation and native qualification remain pending for
+this increment. Combined cold ordering across standalone chunks and data pairs,
+cyclic allocation-unit lifetime, inline publication using packed dictionaries,
+metadata-only GC tracing and complete trunk qualification remain open. Existing
+standalone-only inline publication uses its original verifier until that custody
+path is completed. No task is newly accepted.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |

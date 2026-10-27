@@ -41,6 +41,7 @@ pub(super) struct DictionaryRead {
     project: u32,
     uid: u32,
     gid: u32,
+    object_root: bool,
 }
 
 struct Source {
@@ -57,6 +58,7 @@ struct Node {
     range: Range<usize>,
     length: usize,
     codec: Codec,
+    final_chunk: bool,
 }
 
 impl DictionaryRead {
@@ -92,17 +94,17 @@ impl DictionaryRead {
         &self.identity
     }
 
+    /// Requires the selected root to end at its first object chunk boundary.
+    pub(super) fn require_object_boundary(&mut self) {
+        self.object_root = true;
+    }
+
     /// Checks actual protection separately from read-only native custody.
     ///
     /// # Errors
     /// Refuses another root, changed original observations or durable promises.
     pub(super) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
-        check_snapshot(owner)?;
-        if !Arc::ptr_eq(&self.layout, owner.preparation.layout())
-            || self.project != owner.preparation.config.project_id
-        {
-            return Err(invalid("dictionary read belongs to another native owner"));
-        }
+        self.check_consumer_backing(owner)?;
         for source in &self.sources {
             let job = super::backing::lock(&source.job)?;
             if !job.complete
@@ -113,6 +115,20 @@ impl DictionaryRead {
             }
             state::check_registration(owner, &job)?;
         }
+        Ok(())
+    }
+
+    /// Checks consumer-held original backing independently of producer funding.
+    ///
+    /// # Errors
+    /// Refuses another owner, stale snapshot or changed native members.
+    pub(super) fn check_consumer_backing(&self, owner: &Custody) -> io::Result<()> {
+        check_snapshot(owner)?;
+        if !Arc::ptr_eq(&self.layout, owner.preparation.layout())
+            || self.project != owner.preparation.config.project_id
+        {
+            return Err(invalid("dictionary read belongs to another native owner"));
+        }
         self.check_native()
     }
 
@@ -121,12 +137,25 @@ impl DictionaryRead {
     /// # Errors
     /// Refuses changed bytes or codec edges, invalid content and exceeded bounds.
     pub(super) fn read_verified(&self) -> io::Result<Vec<u8>> {
+        self.read(false)
+    }
+
+    /// Returns the original root envelope after verifying its complete chain.
+    ///
+    /// # Errors
+    /// Refuses changed original bytes, invalid chunk boundaries or read bounds.
+    pub(super) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        self.read(true)
+    }
+
+    fn read(&self, encoded_output: bool) -> io::Result<Vec<u8>> {
         self.check_native()?;
         let result = (|| {
             self.check_bytes()?;
             let mut plaintext: Option<Vec<u8>> = None;
             let mut previous = None;
-            for node in self.nodes.iter().rev() {
+            let mut original_encoded = None;
+            for (position, node) in self.nodes.iter().enumerate().rev() {
                 let source = &self.sources[node.source];
                 let member = source
                     .members
@@ -160,23 +189,37 @@ impl DictionaryRead {
                     &encoded,
                     node.length,
                     &self.profile,
-                    true,
+                    node.final_chunk,
                     &node.identity,
                     plaintext.as_deref(),
                 )
                 .map_err(io::Error::other)?;
-                let mut decoded = Vec::new();
-                decoded
-                    .try_reserve_exact(verified.plaintext().len())
-                    .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
-                if decoded.capacity() > self.limit {
-                    return Err(io::Error::new(
-                        io::ErrorKind::OutOfMemory,
-                        "dictionary plaintext allocation exceeds its configured window",
+                if self.object_root
+                    && position == 0
+                    && self.profile.first_boundary(verified.plaintext()) != node.length
+                {
+                    return Err(invalid(
+                        "admitted root differs from its ordered chunk boundary",
                     ));
                 }
-                decoded.extend_from_slice(verified.plaintext());
-                plaintext = Some(decoded);
+                if encoded_output && position == 0 {
+                    // Return the exact bytes just verified, rather than a
+                    // second read that could race another writer.
+                    original_encoded = Some(encoded);
+                } else {
+                    let mut decoded = Vec::new();
+                    decoded
+                        .try_reserve_exact(verified.plaintext().len())
+                        .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+                    if decoded.capacity() > self.limit {
+                        return Err(io::Error::new(
+                            io::ErrorKind::OutOfMemory,
+                            "dictionary plaintext allocation exceeds its configured window",
+                        ));
+                    }
+                    decoded.extend_from_slice(verified.plaintext());
+                    plaintext = Some(decoded);
+                }
                 previous = Some(
                     node.identity
                         .terrane_v1_digest()
@@ -184,7 +227,9 @@ impl DictionaryRead {
                 );
             }
             self.check_bytes()?;
-            plaintext.ok_or_else(|| invalid("dictionary read chain is empty"))
+            original_encoded
+                .or(plaintext)
+                .ok_or_else(|| invalid("dictionary read chain is empty"))
         })();
         if let Err(error) = &result
             && !matches!(
@@ -312,6 +357,52 @@ pub(super) fn verify(
     Ok((read.read_verified()?, source))
 }
 
+/// Records one verified original edge and protects its actual pack container.
+///
+/// # Errors
+/// Refuses another owner, changed source identity/order, repeated edges or
+/// exhausted allocation capacity before changing the dependent job.
+pub(super) fn retain(
+    job: &mut AdmissionJob,
+    digest: Digest,
+    source: Arc<Mutex<AdmissionJob>>,
+    hashes: &mut Vec<String>,
+) -> io::Result<()> {
+    let dependency = super::backing::lock(&source)?;
+    if !dependency.complete
+        || dependency.order >= job.order
+        || !Arc::ptr_eq(&dependency.custody, &job.custody)
+        || !selection::contains(&dependency, &digest)?
+        || job.dictionary_edges.iter().any(|(edge, _)| edge == &digest)
+    {
+        return Err(invalid("dictionary changed its original selected edge"));
+    }
+    let container = match &dependency.input {
+        super::Input::DataPack { pack, .. } => Some(
+            TERRANE_V1
+                .calculate(IdentityKind::Pack, pack)
+                .map_err(io::Error::other)?,
+        ),
+        _ => None,
+    };
+    let order = dependency.order;
+    drop(dependency);
+    job.dictionary_edges
+        .try_reserve_exact(1)
+        .map_err(io::Error::other)?;
+    job.dependencies
+        .try_reserve_exact(1)
+        .map_err(io::Error::other)?;
+    hashes.try_reserve_exact(2).map_err(io::Error::other)?;
+    job.dictionary_edges.push((digest, order));
+    job.dependencies.push(source);
+    hashes.push(state::hex(&digest));
+    if let Some(container) = container {
+        hashes.push(state::hex(container.digest()));
+    }
+    Ok(())
+}
+
 /// Rechecks the original dependency graph without recursively locking jobs.
 ///
 /// # Errors
@@ -338,18 +429,22 @@ pub(super) fn roots(
     owner: &Custody,
     job: &AdmissionJob,
 ) -> io::Result<Vec<(Digest, Arc<Mutex<AdmissionJob>>)>> {
-    let super::Input::DataPack { pack, .. } = &job.input else {
-        if job.dependencies.is_empty() && job.dictionary_edges.is_empty() {
-            return Ok(Vec::new());
-        }
-        return Err(invalid("non-data pair retains external dictionary sources"));
-    };
     let config = &owner.preparation.config;
-    let digests = super::packed_body::external_dictionaries(
-        pack,
-        config.reads,
-        config.inventory_entries.min(config.state.records),
-    )?;
+    let digests = match &job.input {
+        super::Input::DataPack { pack, .. } => super::packed_body::external_dictionaries(
+            pack,
+            config.reads,
+            config.inventory_entries.min(config.state.records),
+        )?,
+        super::Input::Chunk { encoded, .. } => match terrane_format::codec::parse_envelope(encoded)
+            .map_err(io::Error::other)?
+            .codec
+        {
+            Codec::ZstdDictionary(digest) => vec![digest],
+            _ => Vec::new(),
+        },
+        super::Input::Metadata { .. } => Vec::new(),
+    };
     if digests.len() != job.dictionary_edges.len() {
         return Err(invalid("data dictionary edge closure changed"));
     }

@@ -1,19 +1,17 @@
-//! Binds consumer reads to original completed canonical admission jobs.
+//! Binds standalone consumers to original chunk and packed dictionary custody.
 //!
-//! A policy row or opened pathname never creates custody. Construction retains
-//! the actual body and dictionary jobs, then binds independently opened read
-//! handles to their original inodes. Reads use only immutable handles and native
-//! root checks, without admission-job or embedded-state locks.
+//! Construction selects one actual cached standalone admission and retains its
+//! complete inode-bound source closure. Reads verify positioned original bytes
+//! without policy locks; each dependency and containing pack remains protected
+//! until the independent consumer releases it.
 
-use super::{AdmissionJob, Input, io as native, state};
+use super::{AdmissionJob, Input, dictionary_read::DictionaryRead};
 use crate::{
-    host_cache::owner::{
-        publication::residence::check_snapshot,
-        retention::{Custody, NativeOwnerExecutor},
+    host_cache::{
+        NativeHostLayout,
+        owner::retention::{Custody, NativeOwnerExecutor},
     },
-    host_cache::{NativeChunkSource, NativeHostLayout},
-    host_quota::{NativeProject, synchronized_allocated_bytes},
-    publisher_local::client::EncodedReadObservation,
+    host_quota::synchronized_allocated_bytes,
 };
 use rustix::fs::{self, Mode, OFlags};
 use std::{
@@ -23,34 +21,20 @@ use std::{
     sync::{Arc, Mutex},
 };
 use terrane_format::identity::{Identity, IdentityKind, TERRANE_V1};
-use terrane_sdk::{host::cache::HostDomainLocation, store::ChunkPosition};
+use terrane_sdk::host::cache::HostDomainLocation;
 
-/// Retains genuine body and complete dictionary custody for independent consumers.
+/// Retains a standalone root and its complete original dictionary source closure.
 pub(in crate::host_cache::owner) struct AdmittedRead {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
-    source: NativeChunkSource,
-    members: Vec<Member>,
-    project: u32,
-}
-
-struct Member {
-    job: Arc<Mutex<AdmissionJob>>,
-    observation: Arc<EncodedReadObservation>,
-    order: u64,
-    identity: Identity,
-    length: usize,
-    inode: (u64, u64, u64),
-    stamp: native::FileStamp,
-    uid: u32,
-    gid: u32,
+    source: DictionaryRead,
 }
 
 impl AdmittedRead {
-    /// Opens only actual completed cache admissions on this physical executor.
+    /// Selects only an actual completed cached standalone admission.
     ///
     /// # Errors
-    /// Refuses absent custody, changed registration, unavailable native handles,
-    /// invalid source bytes or bindings to any other body or dictionary inode.
+    /// Refuses another worker, absent custody, unavailable cache handoff,
+    /// changed original inodes, invalid content or exceeded finite bounds.
     pub(in crate::host_cache::owner) fn prepare(
         executor: &NativeOwnerExecutor,
         identity: Identity,
@@ -63,21 +47,16 @@ impl AdmittedRead {
                 "consumer admission requires a registered chunk identity",
             ));
         }
-        let (layout, project, length, final_chunk, limit, max_members, members) = {
+        let digest = identity.digest().try_into().map_err(io::Error::other)?;
+        let read = {
             let owner = executor
                 .custody()
                 .lock()
                 .map_err(|_| invalid("admitted read custody poisoned"))?;
-            check_snapshot(&owner)?;
             let mut selected = None;
             for resource in executor.admission_jobs() {
                 let job = super::backing::lock(resource)?;
-                let Input::Chunk {
-                    descriptor,
-                    position,
-                    ..
-                } = &job.input
-                else {
+                let Input::Chunk { descriptor, .. } = &job.input else {
                     continue;
                 };
                 if !job.complete || descriptor.digest() != identity.digest() {
@@ -89,42 +68,21 @@ impl AdmittedRead {
                         "consumer source has not entered cache custody",
                     ));
                 }
-                let length = usize::try_from(descriptor.size()).map_err(io::Error::other)?;
-                let final_chunk = matches!(position, ChunkPosition::Final);
                 drop(job);
-                let members = collect_members(executor, &owner, resource)?;
-                selected = Some((length, final_chunk, members));
+                let mut source = DictionaryRead::prepare(executor, &owner, resource, &digest)?;
+                source.require_object_boundary();
+                selected = Some(source);
                 break;
             }
-            let (length, final_chunk, members) = selected
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, MissingCachedChunk))?;
-            (
-                Arc::clone(owner.preparation.layout()),
-                owner.preparation.config.project_id,
-                length,
-                final_chunk,
-                owner.preparation.config.reads.max_allocation_bytes,
-                owner.preparation.config.state.records,
-                members,
-            )
+            Self {
+                layout: Arc::clone(owner.preparation.layout()),
+                source: selected
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, MissingCachedChunk))?,
+            }
         };
-        // Canonical open and decompression happen without embedded custody held.
-        let source = NativeChunkSource::open_bounded(
-            &layout,
-            identity,
-            length,
-            final_chunk,
-            limit,
-            max_members,
-        )
-        .inspect_err(|error| reject_read(&members, error))?;
-        let read = Self {
-            layout,
-            source,
-            members,
-            project,
-        };
-        read.check_native()?;
+        // Decode outside embedded policy custody, retaining only original
+        // source descriptors and immutable input allocations.
+        drop(read.read_verified()?);
         context.check_current().map_err(io::Error::other)?;
         let owner = executor
             .custody()
@@ -134,95 +92,67 @@ impl AdmittedRead {
         Ok(read)
     }
 
-    /// Borrows the original body identity checked against actual admission custody.
+    /// Borrows the original admitted root identity.
     pub(in crate::host_cache::owner) fn identity(&self) -> &Identity {
         self.source.identity()
     }
 
-    /// Rechecks producer promises before synchronizing independent consumer pins.
+    /// Checks original registration and protection before independent handoff.
     ///
     /// # Errors
-    /// Refuses changed original root, admission registration or cache protection.
+    /// Refuses changed custody, native backing or durable producer promises.
     pub(in crate::host_cache::owner) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
-        self.check_consumer_backing(owner)?;
-        for member in &self.members {
-            let job = super::backing::lock(&member.job)?;
-            state::check_registration(owner, &job)?;
-        }
-        Ok(())
+        self.source.check_protected(owner)
     }
 
-    /// Checks actual backing independently of producer funding after handoff.
+    /// Checks consumer-held original backing after producer funding changes.
     ///
     /// # Errors
-    /// Refuses another root/project, changed descriptors or native inode metadata.
+    /// Refuses another root, stale snapshot or changed original native members.
     pub(in crate::host_cache::owner) fn check_consumer_backing(
         &self,
         owner: &Custody,
     ) -> io::Result<()> {
-        check_snapshot(owner)?;
-        if !Arc::ptr_eq(&self.layout, owner.preparation.layout())
-            || self.project != owner.preparation.config.project_id
-        {
-            return Err(invalid("admitted consumer belongs to another native root"));
-        }
-        self.check_native()
+        self.source.check_consumer_backing(owner)
     }
 
-    /// Reads actual verified body and dictionary bytes without policy or job locks.
+    /// Reads and verifies the original body through all actual dictionary sources.
     ///
     /// # Errors
-    /// Refuses changed native backing, identity or boundary and bounded decode failures.
+    /// Refuses changed bytes or custody, invalid content and exceeded read bounds.
     pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
-        self.check_native()?;
-        let bytes = self
-            .source
-            .read_verified_at()
-            .inspect_err(|error| reject_read(&self.members, error))?;
-        self.check_native()?;
-        Ok(bytes)
+        self.source.read_verified()
     }
 
-    /// Returns the original envelope after full native and content verification.
+    /// Returns the exact original root encoding after complete verification.
     ///
     /// # Errors
-    /// Refuses changed backing or dictionary custody, corrupt bytes, invalid
-    /// boundaries and reads exceeding the configured allocation window.
+    /// Refuses changed bytes or custody, invalid boundaries or exceeded bounds.
     pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
-        self.check_native()?;
-        let bytes = self
-            .source
-            .read_encoded_at()
-            .inspect_err(|error| reject_read(&self.members, error))?;
-        self.check_native()?;
-        Ok(bytes)
+        self.source.read_encoded()
     }
 
-    /// Recognizes the actual original job while consumer custody still exists.
+    /// Recognizes every actual retained source job until the consumer closes.
     pub(in crate::host_cache::owner) fn retains(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
-        self.members
-            .iter()
-            .any(|member| Arc::ptr_eq(&member.job, job))
+        self.source.retains(job)
     }
 
-    /// Iterates exact body and dictionary digests for independent durable protection.
+    /// Iterates body, dictionary and original pack-container protection digests.
     pub(in crate::host_cache::owner) fn digests(&self) -> impl Iterator<Item = &[u8]> {
-        self.members.iter().map(|member| member.identity.digest())
+        self.source.digests()
     }
 
-    /// Iterates original body/dictionary inodes and their physical admission order.
+    /// Iterates distinct original members and their actual admission order.
     pub(in crate::host_cache::owner) fn original_allocations(
         &self,
     ) -> impl Iterator<Item = ((u64, u64), u64)> {
-        self.members
-            .iter()
-            .map(|member| ((member.inode.0, member.inode.1), member.order))
+        self.source.original_allocations()
     }
 
-    /// Synchronizes and measures distinct original body and dictionary allocations.
+    /// Synchronizes and measures every original body, dictionary and index inode.
     ///
     /// # Errors
-    /// Refuses changed native root/backing, filesystem sync failure or overflow.
+    /// Refuses changed native custody, synchronization failure or size overflow.
     pub(in crate::host_cache::owner) fn synchronize_pin_backing(&self) -> io::Result<u64> {
         self.check_native()?;
         let root = File::from(fs::openat(
@@ -238,8 +168,9 @@ impl AdmittedRead {
         fs::syncfs(&root)?;
         let mut allocated = 0_u64;
         let mut seen = Vec::new();
-        seen.try_reserve_exact(2).map_err(io::Error::other)?;
-        for (_, _, file) in self.source.handles() {
+        seen.try_reserve_exact(self.source.original_files().count())
+            .map_err(io::Error::other)?;
+        for file in self.source.original_files() {
             let metadata = file.metadata()?;
             let inode = (metadata.dev(), metadata.ino());
             if !seen.contains(&inode) {
@@ -253,197 +184,26 @@ impl AdmittedRead {
         Ok(allocated)
     }
 
-    /// Bounds all original member headers and the source's flat descriptor chain.
+    /// Bounds the retained original source closure without copying its payloads.
     ///
     /// # Errors
-    /// Refuses zero members or overflow in configured chain and label storage.
+    /// Refuses overflow in configured source and domain storage.
     pub(in crate::host_cache::owner) fn storage_bytes(
         domain: usize,
         max_members: usize,
     ) -> io::Result<usize> {
-        let identity = TERRANE_V1.name().len() + TERRANE_V1.digest_len();
-        let sources = NativeChunkSource::dictionary_storage_bytes(max_members)?;
         std::mem::size_of::<Self>()
-            .checked_add(sources)
-            .and_then(|bytes| {
-                bytes
-                    .checked_add(max_members.checked_mul(std::mem::size_of::<Member>() + identity)?)
-            })
-            .and_then(|bytes| bytes.checked_add(domain))
-            .and_then(|bytes| bytes.checked_add(identity))
-            .and_then(|bytes| bytes.checked_add(8 * std::mem::size_of::<usize>()))
+            .checked_add(DictionaryRead::storage_bytes(domain, max_members)?)
             .ok_or_else(|| invalid("admitted read header storage overflow"))
     }
 
+    /// Checks all original native members without acquiring policy or job locks.
+    ///
+    /// # Errors
+    /// Refuses changed original observations, roots, metadata or file access.
     pub(super) fn check_native(&self) -> io::Result<()> {
-        for member in &self.members {
-            member.observation.check_readable()?;
-        }
-        self.layout
-            .recheck()
-            .inspect_err(|_| reject_custody(&self.members))?;
-        if self.source.handles().count() != self.members.len() {
-            reject_custody(&self.members);
-            return Err(invalid("admitted read changed actual member count"));
-        }
-        for (identity, length, file) in self.source.handles() {
-            let member = self
-                .members
-                .iter()
-                .find(|member| member.identity == *identity && member.length == length)
-                .ok_or_else(|| invalid("admitted read lost original member binding"))?;
-            let checked = (|| {
-                member.stamp.check(file)?;
-                let metadata = file.metadata()?;
-                if member.inode.0 != self.layout.directory_binding("layout-root")?.0
-                    || (metadata.dev(), metadata.ino(), metadata.len()) != member.inode
-                    || metadata.uid() != member.uid
-                    || metadata.gid() != member.gid
-                    || !metadata.is_file()
-                    || metadata.nlink() != 1
-                    || metadata.mode() & 0o7777 != 0o640
-                    || fs::fcntl_getfl(file)?
-                        .intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
-                    || NativeProject::inspect(file)?.project_id != self.project
-                {
-                    return Err(invalid(
-                        "admitted consumer changed its original native backing",
-                    ));
-                }
-                Ok(())
-            })();
-            checked.inspect_err(|_| member.observation.reject(1))?;
-        }
-        self.layout
-            .recheck()
-            .inspect_err(|_| reject_custody(&self.members))?;
-        for member in &self.members {
-            member.observation.check_readable()?;
-        }
-        Ok(())
+        self.source.check_native()
     }
-}
-
-/// Retains ambiguous body/dictionary failures as one rejected verification set.
-fn reject_read(members: &[Member], error: &io::Error) {
-    if matches!(
-        error.kind(),
-        io::ErrorKind::OutOfMemory | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-    ) {
-        return;
-    }
-    // A complete decode depends on every original member. If the decoder cannot
-    // attribute a failure, withhold the set; no allocation or pin is released.
-    for member in members {
-        member.observation.reject(2);
-    }
-}
-
-fn reject_custody(members: &[Member]) {
-    for member in members {
-        member.observation.reject(1);
-    }
-}
-
-/// Closes consumer custody over actual registered direct dependency links.
-fn collect_members(
-    executor: &NativeOwnerExecutor,
-    owner: &Custody,
-    root: &Arc<Mutex<AdmissionJob>>,
-) -> io::Result<Vec<Member>> {
-    let limit = owner.preparation.config.state.records;
-    let mut members: Vec<Member> = Vec::new();
-    let mut next = Some(Arc::clone(root));
-    let mut expected = None;
-    while let Some(resource) = next {
-        if members.len() >= limit
-            || members
-                .iter()
-                .any(|member| Arc::ptr_eq(&member.job, &resource))
-        {
-            return Err(invalid(
-                "consumer dependency cycle or member limit exceeded",
-            ));
-        }
-        let job = super::backing::lock(&resource)?;
-        let actual = member(executor, owner, &resource, &job)?;
-        if expected.is_some_and(|digest: [u8; 32]| actual.identity.digest() != digest) {
-            return Err(invalid(
-                "consumer dependency differs from original envelope",
-            ));
-        }
-        let Input::Chunk { encoded, .. } = &job.input else {
-            return Err(invalid("consumer dependency is not a chunk"));
-        };
-        match (
-            terrane_format::codec::parse_envelope(encoded)
-                .map_err(io::Error::other)?
-                .codec,
-            job.dependencies.as_slice(),
-        ) {
-            (terrane_format::codec::Codec::ZstdDictionary(digest), [dependency]) => {
-                expected = Some(digest);
-                next = Some(Arc::clone(dependency));
-            }
-            (terrane_format::codec::Codec::ZstdDictionary(_), _) => {
-                return Err(invalid("consumer dictionary lacks its original dependency"));
-            }
-            (_, []) => next = None,
-            _ => return Err(invalid("terminal consumer has unexpected dependencies")),
-        }
-        members.try_reserve_exact(1).map_err(io::Error::other)?;
-        members.push(actual);
-    }
-    Ok(members)
-}
-
-fn member(
-    executor: &NativeOwnerExecutor,
-    owner: &Custody,
-    resource: &Arc<Mutex<AdmissionJob>>,
-    job: &AdmissionJob,
-) -> io::Result<Member> {
-    if !job.complete
-        || job.files.len() != 1
-        || !Arc::ptr_eq(&job.custody, executor.custody())
-        || !executor
-            .admission_jobs()
-            .iter()
-            .any(|registered| Arc::ptr_eq(registered, resource))
-    {
-        return Err(invalid("admitted read lost actual completed job custody"));
-    }
-    state::check_registration(owner, job)?;
-    let Input::Chunk { descriptor, .. } = &job.input else {
-        return Err(invalid("admitted read member is not a chunk"));
-    };
-    let observation = Arc::clone(
-        job.read_observation
-            .as_ref()
-            .ok_or_else(|| invalid("admitted read lacks original publisher observation"))?,
-    );
-    observation.check_readable()?;
-    let stamp = job.files[0]
-        .read_stamp(owner)
-        .inspect_err(|_| observation.reject(1))?;
-    let file = job.files[0]
-        .readonly
-        .as_ref()
-        .ok_or_else(|| invalid("admitted read original descriptor absent"))?;
-    let metadata = file.metadata()?;
-    Ok(Member {
-        job: Arc::clone(resource),
-        observation,
-        order: job.order,
-        identity: TERRANE_V1
-            .from_digest(IdentityKind::Chunk, descriptor.digest())
-            .map_err(io::Error::other)?,
-        length: usize::try_from(descriptor.size()).map_err(io::Error::other)?,
-        inode: (metadata.dev(), metadata.ino(), metadata.len()),
-        stamp,
-        uid: owner.preparation.config.content_uid,
-        gid: owner.preparation.config.content_gid,
-    })
 }
 
 /// Finds the original owned admission behind a verified metadata source.

@@ -3,6 +3,9 @@
 #[path = "data_pack/cross_pack.rs"]
 mod cross_pack;
 
+#[path = "data_pack/standalone.rs"]
+mod standalone;
+
 use super::*;
 use std::time::UNIX_EPOCH;
 use terrane_linux::host_cache::NativeDataPackAdmissionError;
@@ -26,6 +29,18 @@ pub(super) fn run_cross_pack(
     inputs: &Inputs,
 ) -> io::Result<()> {
     cross_pack::run(owner, runtime, inputs)
+}
+
+/// Exercises standalone consumers whose dictionaries retain their original pack.
+///
+/// # Errors
+/// Refuses failed native admission, funding, handoff or original consumer reads.
+pub(super) fn run_standalone(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    standalone::run(owner, runtime, inputs)
 }
 
 fn fixture() -> io::Result<(SealedPack, Vec<Chunk>)> {

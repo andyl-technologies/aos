@@ -333,7 +333,7 @@ impl NativeChunkSource {
     /// # Errors
     /// Refuses changed native bytes, invalid identities/boundaries, missing
     /// dictionaries, revoked sealed backing and exceeded allocation bounds.
-    #[cfg(feature = "tokio")]
+    #[cfg(all(test, feature = "tokio"))]
     pub(in crate::host_cache) fn read_encoded_at(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Encoded { file, dictionary } => {

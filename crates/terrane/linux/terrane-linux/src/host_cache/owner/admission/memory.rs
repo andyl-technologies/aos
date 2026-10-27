@@ -130,11 +130,13 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         })
         .ok_or_else(overflow)?;
     // Both original and fresh cold inventories can retain external edge
-    // bindings. Count each pack's maximum record window plus the pair-order
-    // graph, whose nodes are bounded by the original inventory policy.
+    // bindings. Count each pack's maximum record window or one standalone
+    // edge, plus the pair-order graph bounded by the inventory policy.
     let recovery_edges = config
         .inventory_entries
-        .checked_mul(config.reads.max_allocation_bytes / terrane_format::pack_format::RECORD_SIZE)
+        .checked_mul(
+            (config.reads.max_allocation_bytes / terrane_format::pack_format::RECORD_SIZE).max(1),
+        )
         .and_then(|count| count.checked_mul(2))
         .and_then(|count| count.checked_mul(size_of::<(terrane_format::identity::Digest, usize)>()))
         .and_then(|bytes| {

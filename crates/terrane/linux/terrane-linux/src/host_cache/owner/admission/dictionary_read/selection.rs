@@ -93,6 +93,7 @@ pub(super) fn capture(
         project: config.project_id,
         uid: config.content_uid,
         gid: config.content_gid,
+        object_root: false,
     };
     let mut next = Some((Arc::clone(source), *digest));
     while let Some((resource, digest)) = next {
@@ -270,17 +271,17 @@ fn node(job: &AdmissionJob, source: usize, digest: &Digest) -> io::Result<Node> 
         range,
         length,
         codec,
+        final_chunk: !matches!(&job.input, Input::Chunk { position, .. }
+            if *position != terrane_sdk::store::ChunkPosition::Final),
     })
 }
 
 fn external(job: &AdmissionJob, digest: &Digest) -> io::Result<Arc<Mutex<AdmissionJob>>> {
-    let order = matches!(&job.input, Input::DataPack { .. })
-        .then(|| edge_order(job, digest))
-        .transpose()?;
+    let order = edge_order(job, digest)?;
     let mut selected = None;
     for resource in &job.dependencies {
         let source = backing::lock(resource)?;
-        if order.is_none_or(|order| source.order == order) && contains(&source, digest)? {
+        if source.order == order && contains(&source, digest)? {
             if selected.is_some()
                 || !source.complete
                 || source.order >= job.order

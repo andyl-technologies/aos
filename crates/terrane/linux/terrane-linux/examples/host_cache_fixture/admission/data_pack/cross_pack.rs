@@ -12,32 +12,8 @@ pub(super) fn run(
     inputs: &Inputs,
 ) -> io::Result<()> {
     let (_, chunks) = fixture()?;
-    let profile = ChunkProfile::cdc_1m([0; 32]);
-    let dictionaries: BTreeMap<terrane_format::identity::Digest, Vec<u8>> = BTreeMap::from([(
-        descriptor(&chunks[0].plaintext)?
-            .digest()
-            .try_into()
-            .map_err(io::Error::other)?,
-        chunks[0].plaintext.clone(),
-    )]);
-    let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
     let source_id = PackId::from_random_bytes([122; 16]);
-    let mut writer = PackWriter::new(source_id, PackClass::Data, false);
-    for chunk in &chunks[..2] {
-        writer
-            .append_chunk(
-                descriptor(&chunk.plaintext)?
-                    .digest()
-                    .try_into()
-                    .map_err(io::Error::other)?,
-                &chunk.encoded,
-                u32::try_from(chunk.plaintext.len()).map_err(io::Error::other)?,
-                0,
-                &decoder,
-            )
-            .map_err(io::Error::other)?;
-    }
-    let source_pair = writer.seal().map_err(io::Error::other)?;
+    let source_pair = dictionary_pair(&chunks)?;
     let dependent_pair = external_dictionary(&chunks)?;
     let dependent_id = PackId::from_random_bytes([121; 16]);
     let source_hash = TERRANE_V1
@@ -156,4 +132,40 @@ pub(super) fn run(
     emit(
         "PASS actual cross-pack dictionary reads retain both original pairs through producer and cache handoff without extraction; no Ready",
     )
+}
+
+/// Builds the same original two-record dictionary pair for both admission controls.
+///
+/// # Errors
+/// Refuses malformed source chunks, incorrect dictionary decoding or pack sealing.
+pub(super) fn dictionary_pair(chunks: &[Chunk]) -> io::Result<SealedPack> {
+    let chunks = chunks
+        .get(..2)
+        .ok_or_else(|| invalid("dictionary fixture lacks its two original records"))?;
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let dictionaries: BTreeMap<terrane_format::identity::Digest, Vec<u8>> = BTreeMap::from([(
+        descriptor(&chunks[0].plaintext)?
+            .digest()
+            .try_into()
+            .map_err(io::Error::other)?,
+        chunks[0].plaintext.clone(),
+    )]);
+    let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
+    let source_id = PackId::from_random_bytes([122; 16]);
+    let mut writer = PackWriter::new(source_id, PackClass::Data, false);
+    for chunk in chunks {
+        writer
+            .append_chunk(
+                descriptor(&chunk.plaintext)?
+                    .digest()
+                    .try_into()
+                    .map_err(io::Error::other)?,
+                &chunk.encoded,
+                u32::try_from(chunk.plaintext.len()).map_err(io::Error::other)?,
+                0,
+                &decoder,
+            )
+            .map_err(io::Error::other)?;
+    }
+    writer.seal().map_err(io::Error::other)
 }

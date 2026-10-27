@@ -137,3 +137,102 @@ def run(driver, uuid):
             process.wait(timeout=5)
         for original in originals:
             original.close()
+
+
+def run_standalone(driver, uuid):
+    """Checks a real standalone root retaining its original packed dictionaries."""
+    case = "admission-packed-dictionary"
+    root = driver.root(case)
+    snapshot = root / "state/cache/records.toml"
+    process = driver.controlled_actor(case, "admit-packed-dictionary", uuid)
+    lines = driver.Lines(process)
+    originals = []
+
+    def control(value):
+        process.stdin.write((value + "\n").encode())
+        process.stdin.flush()
+
+    try:
+        lines.until("READY standalone root retains one funded chunk and original dictionary pair", timeout=30)
+        driver.require(lines.bytes.decode().splitlines().count(
+            "ACK actual empty recovery Resume; no Ready") == 1,
+            "standalone packed-dictionary actor lacks genuine recovery and Resume")
+        print(driver.process_status(process, 840), flush=True)
+        pair_paths = sorted((root / "objects/pack").glob("*/*"))
+        chunk_paths = sorted((root / "chunks").glob("*/*"))
+        driver.require(len(pair_paths) == 2 and len(chunk_paths) == 1,
+                       "standalone admission lost original pair or extracted dictionaries")
+        for path in pair_paths + chunk_paths:
+            originals.append(Original(driver, case, path, 840))
+        driver.require(len({original.key[:2] for original in originals}) == 3,
+                       "standalone packed-dictionary members alias an original inode")
+        pair, index, dictionary_records = records(driver, root, 122, 2)
+        terminal = b"producer packed terminal vocabulary " * 16
+        middle = b"producer packed terminal vocabulary intermediate " * 64
+        by_length = {length: (digest, codec, body)
+                     for digest, (length, codec, body) in dictionary_records.items()}
+        driver.require(set(by_length) == {len(terminal), len(middle)},
+                       "standalone dictionary pair contains unexpected records")
+        terminal_id, terminal_codec, terminal_body = by_length[len(terminal)]
+        middle_id, middle_codec, middle_body = by_length[len(middle)]
+        body = chunk_paths[0].read_bytes()
+        root_id = chunk_paths[0].name.removesuffix(".2")
+        driver.require(chunk_paths[0].name.endswith(".2") and len(root_id) == 64
+                       and body[0] == middle_codec == 2 and terminal_codec == 0
+                       and terminal_body == b"\0" + terminal
+                       and middle_body[1:33].hex() == terminal_id
+                       and body[1:33].hex() == middle_id and root_id not in dictionary_records,
+                       "standalone original envelope has different dictionary edges")
+        namespace = {name: files(root / name) for name in ["chunks", "objects/pack", "pending-delete"]}
+        policy = tomllib.loads(snapshot.read_text())
+        groups = {}
+        for row in policy["pins"]:
+            driver.require(row["owner"].startswith("admission:"), "standalone producer lost native funding")
+            groups.setdefault(row["owner"], set()).add(row["hash"])
+        driver.require(len(groups) == 2 and all(len(group) == 3 for group in groups.values()),
+                       "standalone producer pin closure differs from actual source units")
+        source_pins = next((group for group in groups.values() if set(dictionary_records) <= group), set())
+        containers = source_pins - set(dictionary_records)
+        driver.require(len(containers) == 1
+                       and {root_id, middle_id} | containers in groups.values(),
+                       "standalone funding omits its actual dictionary container")
+        holds = [262144, 262144 + len(pair) + len(index), 262144 + len(body)]
+        driver.require(sorted(row["bytes"] for row in policy["reservations"]) == sorted(holds)
+                       and len(policy["leases"]) == 2
+                       and quota(driver, case) + sum(holds) <= 6 * 1024 * 1024
+                       and not namespace["pending-delete"],
+                       "standalone original quota and funding differ")
+        control("handoff-packed-dictionary")
+        lines.until("READY standalone reads preserve original packed dictionaries across cache handoff", timeout=30)
+        policy = tomllib.loads(snapshot.read_text())
+        dependencies = [row for row in policy["pins"] if row["owner"].startswith("cache-dependency:")]
+        driver.require(len(dependencies) == 2
+                       and {row["hash"] for row in dependencies} == {middle_id} | containers
+                       and len(policy["reservations"]) == 1
+                       and policy["reservations"][0]["bytes"] == 262144
+                       and not any(row["owner"].startswith("admission:") for row in policy["pins"])
+                       and {name: files(root / name) for name in namespace} == namespace,
+                       "standalone handoff changed original custody, protection or names")
+        for original in originals:
+            original.check(1)
+        control("packed-dictionary-observed")
+        remaining, error = process.communicate(timeout=10)
+        driver.require(process.returncode == 0 and not error and remaining.decode().splitlines() == [
+            "PASS actual standalone consumers retain original nested packed dictionaries through producer and cache handoff without extraction; no Ready"
+        ], "standalone packed-dictionary actor did not complete original reads")
+        print("PASS independent observer verifies original standalone chunk, dictionary pair, funding and container protection", flush=True)
+    except BaseException:
+        print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+        if process.poll() is None:
+            process.kill()
+        remaining, error = process.communicate(timeout=5)
+        print(remaining.decode(), end="", flush=True)
+        if error:
+            print(error.decode(), end="", flush=True)
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for original in originals:
+            original.close()

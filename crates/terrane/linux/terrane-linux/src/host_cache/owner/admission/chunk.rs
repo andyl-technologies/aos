@@ -67,9 +67,9 @@ pub(super) async fn run(
         let envelope = terrane_format::codec::parse_envelope(&encoded).map_err(io::Error::other)?;
         let mut hashes = vec![state::hex(identity.digest())];
         let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
-            hashes.push(state::hex(&digest));
-            let (plaintext, actual) = dictionary(executor, Some(resource), &owner, &digest)?;
-            job.dependencies.push(actual);
+            let (plaintext, actual) =
+                super::dictionary_read::verify(executor, Some(resource), &owner, &digest, None)?;
+            super::dictionary_read::retain(&mut job, digest, actual, &mut hashes)?;
             Some(plaintext)
         } else {
             None

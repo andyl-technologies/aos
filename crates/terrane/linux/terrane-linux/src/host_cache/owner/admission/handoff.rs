@@ -82,27 +82,17 @@ impl CachedAdmission {
         dependencies
             .try_reserve_exact(job.dependencies.len())
             .map_err(io::Error::other)?;
-        if matches!(&job.input, Input::DataPack { .. }) {
-            for (digest, resource) in super::dictionary_read::roots(owner, job)? {
-                dependencies
-                    .try_reserve_exact(2)
+        for (digest, resource) in super::dictionary_read::roots(owner, job)? {
+            dependencies
+                .try_reserve_exact(2)
+                .map_err(io::Error::other)?;
+            dependencies.push(state::hex(&digest));
+            let dependency = super::backing::lock(&resource)?;
+            if let Input::DataPack { pack, .. } = &dependency.input {
+                let identity = terrane_format::identity::TERRANE_V1
+                    .calculate(terrane_format::identity::IdentityKind::Pack, pack)
                     .map_err(io::Error::other)?;
-                dependencies.push(state::hex(&digest));
-                let dependency = super::backing::lock(&resource)?;
-                if let Input::DataPack { pack, .. } = &dependency.input {
-                    let identity = terrane_format::identity::TERRANE_V1
-                        .calculate(terrane_format::identity::IdentityKind::Pack, pack)
-                        .map_err(io::Error::other)?;
-                    dependencies.push(state::hex(identity.digest()));
-                }
-            }
-        } else {
-            for resource in &job.dependencies {
-                let dependency = super::backing::lock(resource)?;
-                let Input::Chunk { descriptor, .. } = &dependency.input else {
-                    return Err(invalid("cache dictionary changed its actual input class"));
-                };
-                dependencies.push(state::hex(descriptor.digest()));
+                dependencies.push(state::hex(identity.digest()));
             }
         }
         dependencies.sort();

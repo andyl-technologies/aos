@@ -5,7 +5,7 @@
 //! already charged. Cold promises survive, and every started job remains owned
 //! if a later step fails or the Resume waiter's reply is cancelled.
 
-use super::{AdmissionBounds, Input, backing, chunk, handoff, io as native, reconcile, state};
+use super::{AdmissionBounds, Input, backing, handoff, io as native, reconcile, state};
 use crate::host_cache::{VerifiedStandaloneChunk, owner::retention::NativeOwnerExecutor};
 use std::{io, sync::Arc};
 use terrane_format::codec::Codec;
@@ -57,10 +57,14 @@ pub(in crate::host_cache::owner) async fn import(
                 .map_err(io::Error::other)?
                 .codec
             {
-                let (_, dependency) =
-                    chunk::dictionary(executor, Some(&resource), &owner, &digest)?;
-                hashes.push(state::hex(&digest));
-                job.dependencies.push(dependency);
+                let (_, dependency) = super::dictionary_read::verify(
+                    executor,
+                    Some(&resource),
+                    &owner,
+                    &digest,
+                    None,
+                )?;
+                super::dictionary_read::retain(&mut job, digest, dependency, &mut hashes)?;
             }
             source.check_current()?;
             state::begin(executor, &mut owner, &mut job, 0, &hashes)?

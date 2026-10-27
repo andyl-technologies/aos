@@ -3,8 +3,7 @@
 use super::{super::retention::Custody, Input, backing::AdmissionJob, io as native, state};
 use crate::host_quota::synchronized_allocated_bytes;
 use rustix::fs::{Mode, OFlags, openat};
-use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt, sync::Arc};
-use terrane_format::codec::Codec;
+use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
 
 /// Reconciles actual synchronized member allocation and fresh quota before acknowledgment.
 ///
@@ -86,36 +85,8 @@ pub(super) fn finish(owner: &mut Custody, job: &mut AdmissionJob) -> io::Result<
 /// Refuses changed registration, incomplete pairs, dictionaries or native bytes.
 pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
     state::check_registration(owner, job)?;
-    for root in dictionary_roots(owner, job)? {
-        if matches!(&job.input, Input::DataPack { .. }) {
-            super::dictionary_read::check(owner, &job.custody, &root.source, &root.digest)?;
-            continue;
-        }
-        let mut next = Some(root);
-        let mut previous_order = job.order;
-        let mut remaining = owner.preparation.config.state.records;
-        while let Some(edge) = next {
-            let source = super::backing::lock(&edge.source)?;
-            // Every external standalone source completed before its dependent.
-            // Walk one chain at a time without recursive dependency job locks.
-            if remaining == 0
-                || source.order >= previous_order
-                || !Arc::ptr_eq(&source.custody, &job.custody)
-            {
-                return Err(io::Error::other(
-                    "admission dictionary order, owner or member bound changed",
-                ));
-            }
-            let (identity, _, _) = super::chunk::checked_dictionary(owner, &source)?;
-            if identity.digest() != edge.digest {
-                return Err(io::Error::other(
-                    "admission dictionary differs from its original envelope dependency",
-                ));
-            }
-            next = dependency(&source)?;
-            previous_order = source.order;
-            remaining -= 1;
-        }
+    for (digest, source) in super::dictionary_read::roots(owner, job)? {
+        super::dictionary_read::check(owner, &job.custody, &source, &digest)?;
     }
     match &job.input {
         Input::Chunk { encoded, .. } if job.files.len() == 1 => {
@@ -129,45 +100,4 @@ pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
         }
         _ => Err(io::Error::other("admission pair closure is incomplete")),
     }
-}
-
-/// Matches every external pack edge to one genuine retained source job.
-fn dictionary_roots(owner: &Custody, job: &AdmissionJob) -> io::Result<Vec<Dependency>> {
-    if !matches!(&job.input, Input::DataPack { .. }) {
-        return dependency(job).map(|edge| edge.into_iter().collect());
-    }
-    Ok(super::dictionary_read::roots(owner, job)?
-        .into_iter()
-        .map(|(digest, source)| Dependency { digest, source })
-        .collect())
-}
-
-/// Checks each original envelope edge before following its genuine job custody.
-fn dependency(job: &AdmissionJob) -> io::Result<Option<Dependency>> {
-    let codec = match &job.input {
-        Input::Chunk { encoded, .. } => {
-            terrane_format::codec::parse_envelope(encoded)
-                .map_err(io::Error::other)?
-                .codec
-        }
-        Input::Metadata { .. } | Input::DataPack { .. } => Codec::Raw,
-    };
-    match (codec, job.dependencies.as_slice()) {
-        (Codec::ZstdDictionary(digest), [source]) => Ok(Some(Dependency {
-            digest,
-            source: Arc::clone(source),
-        })),
-        (Codec::ZstdDictionary(_), _) => Err(io::Error::other(
-            "admission lacks its original dictionary dependency",
-        )),
-        (_, []) => Ok(None),
-        _ => Err(io::Error::other(
-            "terminal admission retains unexpected dependencies",
-        )),
-    }
-}
-
-struct Dependency {
-    digest: [u8; 32],
-    source: Arc<std::sync::Mutex<AdmissionJob>>,
 }
