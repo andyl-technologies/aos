@@ -19,6 +19,8 @@ use crate::reference_packet::{
     native_import18_policy::NativeImport18PolicyData,
 };
 
+mod storage;
+
 /// Retains the actual fresh target and archive before any installing validation.
 pub(crate) struct Native18ModelInstallationInputs {
     /// Retains the original independently authenticated selected target values.
