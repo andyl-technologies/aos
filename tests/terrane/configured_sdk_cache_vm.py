@@ -886,6 +886,15 @@ def run(driver, image, wipe_only=False, refusals=False):
                 b"PASS: actual confined SDK reads recovered native residents while original lower chunks are unavailable"]:
             driver.require(offline.splitlines().count(witness) == 1,
                            "native SDK actor omitted or repeated a lower failure control")
+        dictionaries, _ = actor(driver, image, name + "-dictionaries",
+                                ["configured-sdk-cache-example", "read-cache-dictionaries", root, 840],
+                                mount_policy="readonly")
+        for witness in [
+                b"PASS: actual confined native lower driver verifies nested dictionary chains before admission",
+                b"PASS: corrupt terminal dictionary cannot warm a partial native chain",
+                b"PASS: actual confined native dictionary read-through completes without original publication writes"]:
+            driver.require(dictionaries.splitlines().count(witness) == 1,
+                           "native SDK actor omitted or repeated a dictionary-chain control")
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)
 
 

@@ -58,6 +58,30 @@ complete Serve restart and draining physical exposure release remain unqualified
 T-HOST-2 is independently accepted under the [publisher audit](publisher-role.md);
 this manager renewal does not accept T-HOST-1.
 
+## Nested dictionary read-through
+
+The lower read driver previously decoded a fetched dictionary without resolving
+that dictionary's own dependency. Ordinary dictionary chunks may themselves use
+codec 2, so valid nested chains could fail before the requested body was served.
+The driver now resolves chains iteratively within the configured request-count
+and individual encoded/plaintext allocation bounds. Repeated digests refuse
+before another fetch. Dependencies verify from the terminal chunk outward;
+optional native admission starts only after the requested body also verifies.
+Original stored encodings and the single lower-attempt deadline are preserved.
+
+Six regressions cover raw and compressed terminals, nested verification, corrupt
+terminals, missing dependencies, cycles and capacity limits. A separately confined
+configured SDK actor checks a real recovered native owner with untrusted lower
+candidates, original encoded dependency warming and no partial corrupt admission.
+These additions require fresh AOS guest qualification; compilation and source
+inventory checks alone do not establish their runtime behavior.
+
+Native custody and admission still reject a dictionary whose own encoding uses
+codec 2. Verified lower reads may therefore serve deeper chains while optional
+warming of those dependents is refused. Full nested native admission, recovery
+and retained dependency custody remain unfinished. This change neither accepts
+T-HOST-1 nor resolves the separate metadata-only GC dictionary-index gap.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |

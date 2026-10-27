@@ -21,6 +21,9 @@
 #[path = "configured_sdk_fixture/offline.rs"]
 mod offline;
 
+#[path = "configured_sdk_fixture/dictionaries.rs"]
+mod dictionaries;
+
 #[path = "configured_sdk_fixture/payload.rs"]
 mod payload;
 
@@ -177,6 +180,12 @@ fn dispatch() -> FixtureResult<&'static str> {
                 }
             }
             Ok("PASS: invalid startup Read uses neither exposure nor private token fallback")
+        }
+        "read-cache-dictionaries" => {
+            dictionaries::run(root, owner)?;
+            Ok(
+                "PASS: actual confined native dictionary read-through completes without original publication writes",
+            )
         }
         "read-cache-offline" => {
             offline::run(root, owner)?;

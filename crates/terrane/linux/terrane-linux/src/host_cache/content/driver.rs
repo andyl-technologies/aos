@@ -6,12 +6,12 @@
 //! verifying a lower body. Failed admission never invalidates verified lower
 //! bytes and never releases rejected original custody or funding.
 
+mod dictionaries;
+
 use super::NativeContentStore;
+use dictionaries::Dictionary;
 use std::{sync::Arc, time::Duration};
-use terrane_format::{
-    codec::{Codec, parse_envelope},
-    identity::{Identity, IdentityKind, TERRANE_V1},
-};
+use terrane_format::identity::{Identity, IdentityKind};
 use terrane_sdk::{
     bucket::BucketBinding,
     host::cache::{CircuitBreaker, FetchRequirement},
@@ -103,16 +103,10 @@ impl<S> NativeReadDriver<S> {
     }
 }
 
-struct Dictionary {
-    identity: Identity,
-    encoded: Vec<u8>,
-    plaintext: Vec<u8>,
-}
-
 struct Fetched {
     encoded: Vec<u8>,
     length: Option<usize>,
-    dictionary: Option<Dictionary>,
+    dictionaries: Vec<Dictionary>,
 }
 
 impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
@@ -157,11 +151,16 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             // state before this request's object chunks can enter custody.
             return Ok(fetched.encoded);
         }
-        if let Some(dictionary) = &fetched.dictionary {
+        // Dependencies are verified and offered from the terminal dictionary
+        // outward. A failed optional admission never invalidates lower bytes.
+        for dictionary in &fetched.dictionaries {
+            if Instant::now() >= deadline {
+                return Ok(fetched.encoded);
+            }
             let upload = ChunkUpload {
                 encoded: &dictionary.encoded,
                 identity: &dictionary.identity,
-                declared_plaintext_len: dictionary.plaintext.len(),
+                declared_plaintext_len: dictionary.length,
                 position: ChunkPosition::Final,
                 profile: self.native.ready.layout().layout().chunk_profile(),
             };
@@ -205,7 +204,7 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             return Ok(Fetched {
                 encoded,
                 length: None,
-                dictionary: None,
+                dictionaries: Vec::new(),
             });
         }
         let profile = self.native.ready.layout().layout().chunk_profile();
@@ -214,40 +213,21 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
         if length > self.native.max_allocation_bytes {
             return Err(StoreFailure::new(StoreErrorKind::Capacity));
         }
-        let envelope = parse_envelope(&encoded).map_err(|error| corrupt(identity, error))?;
-        let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
-            let id = TERRANE_V1
-                .from_digest(IdentityKind::Chunk, &digest)
-                .map_err(|error| corrupt(identity, error))?;
-            if id == *identity {
-                return Err(invalid());
-            }
-            let bytes = match self.native.get(&id, None).await {
-                Ok(bytes) => bytes,
-                Err(error) if retryable(&error) => self.lower.get(&id, None).await?,
-                Err(error) => return Err(error),
-            };
-            if bytes.len() > self.native.max_allocation_bytes {
-                return Err(StoreFailure::new(StoreErrorKind::Capacity));
-            }
-            let size = terrane_sdk::codec::encoded_plaintext_len(&bytes, profile.maximum())
-                .map_err(|error| corrupt(&id, error))?;
-            if size > self.native.max_allocation_bytes {
-                return Err(StoreFailure::new(StoreErrorKind::Capacity));
-            }
-            let plaintext =
-                terrane_sdk::codec::decode_verified(&bytes, size, profile, true, &id, None)
-                    .map_err(|error| corrupt(&id, error))?
-                    .plaintext()
-                    .to_vec();
-            Some(Dictionary {
-                identity: id,
-                encoded: bytes,
-                plaintext,
-            })
-        } else {
-            None
-        };
+        let dictionaries = dictionaries::resolve(
+            identity,
+            &encoded,
+            profile,
+            self.native.max_allocation_bytes,
+            self.native.max_requests,
+            |identity| async move {
+                match self.native.get(&identity, None).await {
+                    Ok(bytes) => Ok(bytes),
+                    Err(error) if retryable(&error) => self.lower.get(&identity, None).await,
+                    Err(error) => Err(error),
+                }
+            },
+        )
+        .await?;
         // Standalone cache admission accepts a final boundary; each actual
         // object reader independently enforces its declared length and position.
         FetchRequirement::Chunk {
@@ -255,13 +235,13 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             length,
             profile,
             final_chunk: true,
-            dictionary: dictionary.as_ref().map(|value| value.plaintext.as_slice()),
+            dictionary: dictionaries.plaintext.as_deref(),
         }
         .verify(&encoded, &self.native.validator)?;
         Ok(Fetched {
             encoded,
             length: Some(length),
-            dictionary,
+            dictionaries: dictionaries.entries,
         })
     }
 }
