@@ -2,10 +2,14 @@
 //!
 //! Four-field packet rows retain compiled layouts and original capacities. Raw
 //! pointer observations and common-history alias groups never enter this bank.
-//! Shared views receive no deduplication credit. This capacity-only adapter does
-//! not count scalar traversal work or provide a Source action or allocation right.
+//! Shared views receive no deduplication credit. The common typed walk reports
+//! traversal work independently of allocation rows. Other component-only roster
+//! helpers do not establish whole-Source work or provide allocation authority.
 
-use super::{OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk};
+use super::{
+    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacitySink,
+    OriginalRestoredOwnerCapacityWalk,
+};
 use crate::node_contract::RuntimeError;
 use crucible_node_transport::{
     ProviderError,
@@ -42,13 +46,13 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
     /// Visits the actual common owner's defining capacity roster.
     ///
     /// # Errors
-    /// Refuses unsupported owners, invalid or overflowing layout, exhausted rows
+    /// Refuses unsupported owners, checked work or layout overflow, exhausted rows
     /// or an unready physical bank. Earlier physical rows remain retained.
     pub(crate) fn observe<T: OriginalRestoredOwnerCapacityWalk + ?Sized>(
         &mut self,
         owner: &T,
     ) -> Result<(), RuntimeError> {
-        owner.capacities(0, &mut |row| self.record(packet_row_data(row)?))
+        owner.capacities(0, self)
     }
 
     /// Joins a closed SDK capture component and preserves earlier physical rows.
@@ -227,7 +231,9 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         Ok(())
     }
 
-    /// Returns capacity geometry without inventing a scalar traversal-work count.
+    /// Returns capacity geometry and work from the common and joined SDK walks.
+    ///
+    /// Direct allocation-only helpers do not prove complete Source traversal work.
     pub(crate) fn finish(self) -> RetainedProtocolMetadataFacts {
         self.facts
     }
@@ -250,14 +256,23 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
             + size_of::<&RetainedProtocolMetadataFacts>()
             + size_of::<&mut RetainedProtocolMetadataFacts>()
             + size_of::<Result<RetainedProtocolMetadataFacts, RuntimeError>>()
-            + size_of::<&mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>>(
-            )
+            + size_of::<&mut dyn OriginalRestoredOwnerCapacitySink>()
             + size_of::<[(&mut usize, usize); 11]>()
             + size_of::<std::array::IntoIter<(&mut usize, usize), 11>>()
             + size_of::<Option<usize>>()
             + size_of::<Result<usize, RuntimeError>>()
             + size_of::<&usize>()
-            + 4 * size_of::<usize>()
+            + 5 * size_of::<usize>()
+    }
+}
+
+impl OriginalRestoredOwnerCapacitySink for OriginalOwnerCapacityMetadataData<'_> {
+    fn capacity_row(&mut self, row: OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError> {
+        self.record(packet_row_data(row)?)
+    }
+
+    fn visit_work(&mut self, visits: usize) -> Result<(), RuntimeError> {
+        add(&mut self.facts.observed_nodes, visits)
     }
 }
 

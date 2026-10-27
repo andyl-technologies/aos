@@ -41,7 +41,8 @@ fn lineage_capacity_keeps_both_roots_and_each_repeated_core_view() {
             >= batch_facts.vector_capacity_bytes
                 + lineage.publications().len() * std::mem::size_of::<OriginalPublicationClaim>()
     );
-    assert_eq!(facts.observed_nodes, 0);
+    assert!(batch_facts.observed_nodes > 0);
+    assert!(facts.observed_nodes > batch_facts.observed_nodes);
     let retained = lineage.retained_copy();
     let mut repeated = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
 

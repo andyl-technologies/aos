@@ -8,7 +8,7 @@
 use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::node_contract::restored_owner_history::{
-    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk,
+    OriginalRestoredOwnerCapacitySink, OriginalRestoredOwnerCapacityWalk,
 };
 
 /// Names only the object roles created by this concrete original capture path.
@@ -37,8 +37,9 @@ impl OriginalRestoredOwnerCapacityWalk for OriginalBornObject {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             role,
             reference,

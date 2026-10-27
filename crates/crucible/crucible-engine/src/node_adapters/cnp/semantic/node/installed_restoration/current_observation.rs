@@ -9,6 +9,7 @@ use crate::node_admission::{
     OriginalRestoredSchedulingObservationClaim,
     OriginalRestoredSchedulingObservationConstructionData,
 };
+use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacitySink;
 use crate::node_scheduling::NativeSchedulingObservation;
 use crucible_node_transport::reference_packet::service::PacketNative5SourceLaunch;
 
@@ -372,10 +373,9 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(
-            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
-        ) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk;
         let Self {
             ordinal: _,

@@ -12,7 +12,7 @@ use crate::node_adapters::cnp::semantic::state::SemanticRuntimeCustody;
 use crate::node_admission::{OriginalRestoredCaptureClaim, OriginalRestoredCaptureRequestData};
 use crate::node_contract::restored_owner_history::{
     OriginalRestoredOwnerCapacityAliases, OriginalRestoredOwnerCapacityRows,
-    OriginalRestoredOwnerHistory,
+    OriginalRestoredOwnerCapacitySink, OriginalRestoredOwnerHistory,
 };
 use crucible_node_transport::retained_metadata::historical_response_body_data;
 use serde::{
@@ -842,10 +842,9 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(
-            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
-        ) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         use crate::node_contract::restored_owner_history::{
             OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk,
         };
@@ -856,11 +855,11 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
         base.prepared_owner.capacities(depth, sink)?;
         base.activation_attempt.capacities(depth, sink)?;
         base.active.capacities(depth, sink)?;
-        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow::tree_population_data::<
             crucible_node_format::Id,
             crate::node_adapters::cnp::semantic::state::OriginalOperation,
         >(base.operations.len()))?;
-        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow::tree_population_data::<
             crucible_node_format::Id,
             crate::node_adapters::cnp::semantic::state::OriginalInput,
         >(base.inputs.len()))?;
@@ -897,10 +896,9 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(
-            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
-        ) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk;
         self.admission.capacities(depth, sink)?;
         self.retained.capacities(depth, sink)?;
@@ -916,10 +914,9 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(
-            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
-        ) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk;
         self.pending.capacities(depth, sink)?;
         self.attempts.capacities(depth, sink)

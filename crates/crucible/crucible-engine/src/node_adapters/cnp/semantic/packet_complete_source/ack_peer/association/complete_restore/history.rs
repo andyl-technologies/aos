@@ -14,6 +14,8 @@
 //! ```
 
 use super::*;
+use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacitySink;
+
 use crate::node_contract::{
     RuntimeError,
     restored_owner_history::{
@@ -194,8 +196,9 @@ impl Serialize for SourceCompleteRestoreHistory<'_> {
 macro_rules! fields {
     ($ty:ty; $($owned:ident),*; $($inline:ident),* $(,)?) => {
         impl OriginalRestoredOwnerCapacityWalk for $ty {
-            fn capacities(&self, depth: usize, sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow)
-                -> Result<(), RuntimeError>) -> Result<(), RuntimeError> {
+            fn capacities(&self, depth: usize, sink: &mut dyn OriginalRestoredOwnerCapacitySink) -> Result<(), RuntimeError> {
+                let inline_fields: &[&str] = &[$(stringify!($inline)),*];
+                sink.visit_work(1 + inline_fields.len())?;
                 let Self { $($owned,)* $($inline: _,)* } = self;
                 $($owned.capacities(depth, sink)?;)*
                 Ok(())
@@ -278,7 +281,7 @@ fn portable_counter_scratch_data() -> usize {
             mapping,
             nonce,
         )
-    }) + size_of::<&mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>>()
+    }) + size_of::<&mut dyn OriginalRestoredOwnerCapacitySink>()
         + size_of::<OriginalRestoredOwnerCapacityRow>()
         + size_of::<usize>()
 }

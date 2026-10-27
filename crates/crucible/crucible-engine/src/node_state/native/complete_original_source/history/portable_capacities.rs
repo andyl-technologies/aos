@@ -5,8 +5,10 @@
 //! backing receive separate rows. Unsupported runtime families fail closed.
 
 use crate::node_contract::RuntimeError;
+
 use crate::node_contract::restored_owner_history::{
-    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk,
+    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacitySink,
+    OriginalRestoredOwnerCapacityWalk,
 };
 use crucible_node_format::U64;
 
@@ -17,8 +19,10 @@ macro_rules! fields {
             fn capacities(
                 &self,
                 depth: usize,
-                sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+                sink: &mut dyn OriginalRestoredOwnerCapacitySink,
             ) -> Result<(), RuntimeError> {
+                let inline_fields: &[&str] = &[$(stringify!($inline)),*];
+                sink.visit_work(1 + inline_fields.len())?;
                 let Self { $($owned,)* $($inline: _,)* } = self;
                 $($owned.capacities(depth, sink)?;)*
                 Ok(())
@@ -121,8 +125,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_scheduling::SchedulingSna
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             schema_version: _,
             original_epochs,
@@ -172,8 +177,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::HostSchedulingR
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::OriginalLineage(record) => record.capacities(depth, sink),
             Self::Legacy(_) => Err(RuntimeError::UnsupportedFacet),
@@ -185,8 +191,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::SavedRuntimeRes
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Pending => Ok(()),
             Self::Complete(outcome) | Self::Acknowledged(outcome) => {
@@ -201,8 +208,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::EffectKnowledge
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::CommittedPrefix(operations) => operations.capacities(depth, sink),
             Self::None | Self::MayHaveProgressed | Self::Unknown => Ok(()),
@@ -216,8 +224,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::Submission {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Refused(refusal) => refusal.capacities(depth, sink),
             Self::Accepted => Ok(()),
@@ -230,8 +239,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::OriginalCapture
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Settled { snapshot, journal } => {
                 snapshot.capacities(depth, sink)?;
@@ -246,8 +256,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_scheduling::SavedPermissi
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::ExactRun {
                 start: _,
@@ -274,8 +285,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_scheduling::ExecutionPoli
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Exact {
                 schema_version: _,

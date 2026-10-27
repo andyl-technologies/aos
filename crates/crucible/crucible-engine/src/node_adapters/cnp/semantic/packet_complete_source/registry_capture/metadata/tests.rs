@@ -38,7 +38,7 @@ fn registry_census_matches_independent_spare_backing_and_exact_credit() {
     assert_eq!(facts.vector_banks, 4);
     assert_eq!(facts.vector_capacity_bytes, bytes);
     assert_eq!(facts.string_banks, 0);
-    assert_eq!(facts.observed_nodes, 0);
+    assert_eq!(facts.observed_nodes, 1); // The actual empty encoding Vec.
     assert_eq!(
         capture.retained_storage_with_error::<RuntimeError>(bytes),
         Ok(bytes)

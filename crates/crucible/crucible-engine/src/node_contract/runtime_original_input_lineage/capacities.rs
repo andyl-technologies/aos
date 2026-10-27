@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::node_contract::restored_owner_history::{
-    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk,
+    OriginalRestoredOwnerCapacitySink, OriginalRestoredOwnerCapacityWalk,
 };
 use std::mem::size_of;
 
@@ -14,8 +14,9 @@ impl OriginalRestoredOwnerCapacityWalk for OriginalInputLineage {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self { data } = self;
         data.capacities(depth, sink)
     }
@@ -25,8 +26,9 @@ impl OriginalRestoredOwnerCapacityWalk for OriginalInputLineageData {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             source_scope,
             original,
@@ -42,8 +44,9 @@ impl OriginalRestoredOwnerCapacityWalk for OriginalPublicationClaim {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             event,
             origin,

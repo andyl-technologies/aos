@@ -241,7 +241,8 @@ fn execution_capacity_reservations_keep_all_three_original_sources_and_exact_cre
         assert_eq!(facts.capacity_records, 5);
         assert_eq!(facts.vector_banks, 5);
         assert_eq!(facts.vector_capacity_bytes, bytes);
-        assert_eq!(facts.observed_nodes, 0);
+        // Five empty reserved Vecs and six independently absent optional owners.
+        assert_eq!(facts.observed_nodes, 11);
         assert_eq!(
             execution.retained_storage_with_error::<RuntimeError>(bytes),
             Ok(bytes)

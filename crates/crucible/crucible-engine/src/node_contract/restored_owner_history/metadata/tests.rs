@@ -114,7 +114,9 @@ fn saved_activation_keeps_original_spare_capacity_and_independent_owner_strings(
             + owner.owner.allocated_capacity()
             + owner.incarnation.allocated_capacity()
     );
-    assert_eq!(facts.observed_nodes, 0);
+    // Root plus two inline fields, one Id, HashRef plus its three Strings,
+    // one Vec, and OwnerIdentity plus its inline generation and two Ids.
+    assert_eq!(facts.observed_nodes, 13);
     assert!(value.world_binding_hash.algorithm.capacity() >= 113);
 }
 
@@ -126,8 +128,9 @@ impl OriginalRestoredOwnerCapacityWalk for Aligned {
     fn capacities(
         &self,
         _depth: usize,
-        _sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         Ok(())
     }
 }
@@ -327,4 +330,94 @@ fn repeated_strong_zero_sized_views_keep_each_header_and_refused_prefix() {
     assert_eq!(facts.shared_value_bytes, 0);
     assert_eq!(facts.maximum_shared_value_alignment, align_of::<()>());
     assert_eq!(Rc::strong_count(&owner), 1);
+}
+
+#[test]
+fn scalar_and_absent_owners_report_work_without_allocating_record_rows() {
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe(&U64::new(19)).unwrap();
+    census.observe(&Option::<Id>::None).unwrap();
+    census.observe(&serde_json::Value::Null).unwrap();
+    census.observe(&serde_json::Value::Bool(true)).unwrap();
+    census.observe(&serde_json::json!(42)).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.observed_nodes, 5);
+    assert_eq!(facts.capacity_records, 0);
+    assert_eq!(facts.string_banks, 0);
+    assert_eq!(facts.vector_banks, 0);
+}
+
+#[test]
+fn initialized_inline_elements_add_work_while_spare_slots_keep_only_capacity() {
+    use super::super::OriginalRestoredOwnerCapacityRows;
+
+    let mut values = Vec::<U64>::with_capacity(257);
+    let mut empty = OriginalOwnerCapacityMetadataData::new(1, None);
+    empty.observe(&values).unwrap();
+    let empty = empty.finish();
+    let allocated = values.capacity();
+
+    values.extend((0..7).map(U64::new));
+    let mut initialized = OriginalOwnerCapacityMetadataData::new(1, None);
+    initialized.observe(&values).unwrap();
+    let initialized = initialized.finish();
+
+    assert_eq!(values.capacity(), allocated);
+    assert_eq!(empty.capacity_records, 1);
+    assert_eq!(initialized.capacity_records, 1);
+    assert_eq!(
+        empty.vector_capacity_bytes,
+        initialized.vector_capacity_bytes
+    );
+    assert_eq!(empty.observed_nodes, 1);
+    assert_eq!(initialized.observed_nodes, 8);
+    assert_eq!(
+        serde_json::to_value(OriginalRestoredOwnerCapacityRows(&values)).unwrap(),
+        serde_json::json!([{
+            "kind": "vector",
+            "length": 7,
+            "capacity": allocated,
+            "element_bytes": size_of::<U64>(),
+            "alignment": align_of::<U64>(),
+            "shared_group": null
+        }])
+    );
+}
+
+#[test]
+fn inline_work_overflow_preserves_the_previous_capacity_prefix() {
+    let values = vec![U64::new(1), U64::new(2)];
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+    census.observe(&values).unwrap();
+    let before = census.facts;
+    census.facts.observed_nodes = usize::MAX;
+
+    assert_eq!(
+        census.observe(&Option::<Id>::None),
+        Err(RuntimeError::ResourceLimit)
+    );
+    let after = census.finish();
+
+    assert_eq!(after.observed_nodes, usize::MAX);
+    assert_eq!(after.capacity_records, before.capacity_records);
+    assert_eq!(after.vector_capacity_bytes, before.vector_capacity_bytes);
+    assert_eq!(values, [U64::new(1), U64::new(2)]);
+}
+
+#[test]
+fn repeated_shared_scalar_views_count_each_visit_without_alias_discount() {
+    let original = Rc::new(U64::new(41));
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+
+    census.observe(&original).unwrap();
+    census.observe(&original).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.observed_nodes, 4);
+    assert_eq!(facts.capacity_records, 2);
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(Rc::strong_count(&original), 1);
+    assert_eq!(*original, U64::new(41));
 }

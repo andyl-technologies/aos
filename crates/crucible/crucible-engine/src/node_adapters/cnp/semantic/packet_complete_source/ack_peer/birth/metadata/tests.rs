@@ -76,7 +76,11 @@ fn birth_census_keeps_actual_input_spare_capacity_and_original_file() {
     );
     assert_eq!(facts.string_banks, 5);
     assert_eq!(facts.capacity_records, 7);
-    assert_eq!(facts.observed_nodes, 0);
+    // One full reference (seven visits), the private Id and both byte Vecs.
+    assert_eq!(
+        facts.observed_nodes,
+        10 + birth.source_birth.len() + birth.expected_host_registration.len()
+    );
     assert_eq!(
         PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
             &facts, old

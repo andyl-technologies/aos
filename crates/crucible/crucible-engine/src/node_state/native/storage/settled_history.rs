@@ -5,9 +5,11 @@
 //! role records retained ownership; it never reconstructs or opens a descriptor.
 
 use super::*;
+
 use crate::node_contract::restored_owner_history::{
     OriginalRestoredOwnerCapacityAliases, OriginalRestoredOwnerCapacityRow,
-    OriginalRestoredOwnerCapacityRows, OriginalRestoredOwnerCapacityWalk,
+    OriginalRestoredOwnerCapacityRows, OriginalRestoredOwnerCapacitySink,
+    OriginalRestoredOwnerCapacityWalk,
 };
 use crate::node_contract::{NativeCaptureLimits, RuntimeError};
 use serde::Serializer;
@@ -129,8 +131,9 @@ impl OriginalRestoredOwnerCapacityWalk for Index {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             schema_version: _,
             artifact,
@@ -151,8 +154,9 @@ impl OriginalRestoredOwnerCapacityWalk for Object {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             reference,
             dependencies,
@@ -166,8 +170,9 @@ impl OriginalRestoredOwnerCapacityWalk for NativeOwnerState {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             owner,
             participants,
@@ -190,8 +195,9 @@ impl OriginalRestoredOwnerCapacityWalk for NativeArtifactState {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             role,
             name,

@@ -39,7 +39,7 @@ fn all_three_static_lineage_views_keep_actual_empty_banks_without_installing_row
         assert_eq!(facts.vector_banks, usize::from(member != 0));
         assert_eq!(facts.string_banks, 0);
         assert_eq!(facts.shared_backing_views, 0);
-        assert_eq!(facts.observed_nodes, 0);
+        assert_eq!(facts.observed_nodes, usize::from(member != 0));
         assert!(source.ack_peer_birth.borrow().is_none());
         if member != 0 {
             assert!(

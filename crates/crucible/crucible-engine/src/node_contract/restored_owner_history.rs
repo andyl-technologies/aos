@@ -84,12 +84,52 @@ impl OriginalRestoredOwnerCapacityRow {
     }
 }
 
+/// Receives independent allocation rows and typed traversal-work observations.
+///
+/// Historical serializers implement only the row callback. Work events never
+/// enter their row stream or consume legacy row or alias slots.
+pub(crate) trait OriginalRestoredOwnerCapacitySink {
+    /// Retains or serializes one real allocation observation.
+    ///
+    /// # Errors
+    /// Refuses invalid geometry, exhausted backing or the receiving writer's error.
+    fn capacity_row(&mut self, row: OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>;
+
+    /// Counts actual typed visits, including inline fields and empty wrappers.
+    ///
+    /// # Errors
+    /// Refuses checked traversal-work overflow in observers that retain work.
+    fn visit_work(&mut self, _visits: usize) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+impl<F> OriginalRestoredOwnerCapacitySink for F
+where
+    F: FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+{
+    fn capacity_row(&mut self, row: OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError> {
+        self(row)
+    }
+}
+
 /// Walks the actual owners in a fixed defining order without creating a row bank.
 pub(crate) trait OriginalRestoredOwnerCapacityWalk {
+    /// Identifies leaves whose traversal is exactly one allocation-free visit.
+    ///
+    /// Containers aggregate these visits without dispatching once per byte.
+    /// Implementations setting this flag must emit no row or child visit and
+    /// perform exactly one successful work visit.
+    const INLINE_WORK_LEAF: bool = false;
+
+    /// Lends this owner's actual rows and visits in the defining field order.
+    ///
+    /// # Errors
+    /// Refuses unsupported variants, depth limits or a sink error.
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError>;
 }
 
@@ -104,16 +144,17 @@ impl<'a, T: OriginalRestoredOwnerCapacityWalk + ?Sized> OriginalRestoredOwnerCap
     pub(crate) fn metadata_demand_data(&self) -> Result<(usize, usize), RuntimeError> {
         let mut rows = 0usize;
         let mut shared = 0usize;
-        self.0.capacities(0, &mut |row| {
-            rows = rows.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
-            if rows > MAXIMUM_ROWS {
-                return Err(RuntimeError::ResourceLimit);
-            }
-            if row.identity.is_some() {
-                shared = shared.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
-            }
-            Ok(())
-        })?;
+        self.0
+            .capacities(0, &mut |row: OriginalRestoredOwnerCapacityRow| {
+                rows = rows.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
+                if rows > MAXIMUM_ROWS {
+                    return Err(RuntimeError::ResourceLimit);
+                }
+                if row.identity.is_some() {
+                    shared = shared.checked_add(1).ok_or(RuntimeError::ResourceLimit)?;
+                }
+                Ok(())
+            })?;
         Ok((rows, shared))
     }
 
@@ -160,7 +201,7 @@ fn serialize_rows<T: OriginalRestoredOwnerCapacityWalk + ?Sized, S: Serializer>(
 
     let mut count = 0usize;
     value
-        .capacities(0, &mut |row| {
+        .capacities(0, &mut |row: OriginalRestoredOwnerCapacityRow| {
             if row.identity.is_some() && aliases.is_none() {
                 return Err(RuntimeError::InvalidReceipt);
             }
@@ -175,7 +216,7 @@ fn serialize_rows<T: OriginalRestoredOwnerCapacityWalk + ?Sized, S: Serializer>(
     let mut rows = serializer.serialize_seq(Some(count))?;
     let mut failure = None;
     value
-        .capacities(0, &mut |mut row| {
+        .capacities(0, &mut |mut row: OriginalRestoredOwnerCapacityRow| {
             if let Some(identity) = row.identity {
                 row.shared_group = Some(
                     aliases
@@ -198,12 +239,14 @@ fn serialize_rows<T: OriginalRestoredOwnerCapacityWalk + ?Sized, S: Serializer>(
 macro_rules! no_capacity {
     ($($ty:ty),* $(,)?) => {$(
         impl OriginalRestoredOwnerCapacityWalk for $ty {
+            const INLINE_WORK_LEAF: bool = true;
+
             fn capacities(
                 &self,
                 _depth: usize,
-                _sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+                sink: &mut dyn OriginalRestoredOwnerCapacitySink,
             ) -> Result<(), RuntimeError> {
-                Ok(())
+                sink.visit_work(1)
             }
         }
     )*};
@@ -215,9 +258,10 @@ impl OriginalRestoredOwnerCapacityWalk for String {
     fn capacities(
         &self,
         _depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "string",
             length: self.len(),
             capacity: Some(self.capacity()),
@@ -233,9 +277,10 @@ impl OriginalRestoredOwnerCapacityWalk for Id {
     fn capacities(
         &self,
         _depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "string",
             length: self.as_str().len(),
             capacity: Some(self.allocated_capacity()),
@@ -251,8 +296,9 @@ impl<T: OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWalk for
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Some(value) => value.capacities(depth, sink),
             None => Ok(()),
@@ -264,9 +310,10 @@ impl<T: OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWalk for
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "vector",
             length: self.len(),
             capacity: Some(self.capacity()),
@@ -275,6 +322,9 @@ impl<T: OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWalk for
             shared_group: None,
             identity: None,
         })?;
+        if T::INLINE_WORK_LEAF {
+            return sink.visit_work(self.len());
+        }
         for value in self {
             value.capacities(depth, sink)?;
         }
@@ -286,8 +336,12 @@ impl<T: OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWalk for
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
+        if T::INLINE_WORK_LEAF {
+            return sink.visit_work(self.len());
+        }
         for value in self {
             value.capacities(depth, sink)?;
         }
@@ -299,9 +353,10 @@ impl<T: OriginalRestoredOwnerCapacityWalk + ?Sized> OriginalRestoredOwnerCapacit
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "shared",
             length: 1,
             capacity: None,
@@ -318,9 +373,10 @@ impl<T: OriginalRestoredOwnerCapacityWalk + ?Sized> OriginalRestoredOwnerCapacit
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "boxed",
             length: 1,
             capacity: None,
@@ -339,14 +395,15 @@ impl<T: Ord + OriginalRestoredOwnerCapacityWalk> OriginalRestoredOwnerCapacityWa
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         if depth >= MAXIMUM_DEPTH {
             return Err(RuntimeError::ResourceLimit);
         }
         // A set exposes key population, not hidden BTree node capacity. Its
         // zero-sized value is not an independently owned payload allocation.
-        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow::tree_population_data::<
             T,
             (),
         >(self.len()))?;
@@ -363,8 +420,10 @@ macro_rules! capacity_fields {
             fn capacities(
                 &self,
                 depth: usize,
-                sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+                sink: &mut dyn OriginalRestoredOwnerCapacitySink,
             ) -> Result<(), RuntimeError> {
+                let inline_fields: &[&str] = &[$(stringify!($scalar)),*];
+                sink.visit_work(1 + inline_fields.len())?;
                 let Self { $($field,)+ $($scalar: _,)* } = self;
                 $($field.capacities(depth, sink)?;)+
                 Ok(())
@@ -412,8 +471,9 @@ impl OriginalRestoredOwnerCapacityWalk for OperationRequest {
     fn capacities(
         &self,
         _depth: usize,
-        _sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::ExactRun {
                 start: _,
@@ -434,8 +494,9 @@ impl OriginalRestoredOwnerCapacityWalk for ProgressEvidence {
     fn capacities(
         &self,
         _depth: usize,
-        _sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Exact {
                 reached: _,
@@ -451,8 +512,9 @@ impl OriginalRestoredOwnerCapacityWalk for serde_json::Value {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         if depth >= MAXIMUM_DEPTH {
             return Err(RuntimeError::ResourceLimit);
         }
@@ -463,7 +525,7 @@ impl OriginalRestoredOwnerCapacityWalk for serde_json::Value {
             Self::Object(values) => {
                 // serde_json's tree exposes population, not node capacity.
                 // Preserve that distinction instead of inventing spare nodes.
-                sink(OriginalRestoredOwnerCapacityRow {
+                sink.capacity_row(OriginalRestoredOwnerCapacityRow {
                     kind: "tree",
                     length: values.len(),
                     capacity: None,
@@ -486,9 +548,10 @@ impl OriginalRestoredOwnerCapacityWalk for Bytes {
     fn capacities(
         &self,
         _depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
-        sink(OriginalRestoredOwnerCapacityRow {
+        sink.visit_work(1)?;
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow {
             kind: "vector",
             length: self.as_slice().len(),
             capacity: Some(self.allocation_capacity()),
@@ -506,12 +569,15 @@ impl<K: Ord + OriginalRestoredOwnerCapacityWalk, V: OriginalRestoredOwnerCapacit
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         if depth >= MAXIMUM_DEPTH {
             return Err(RuntimeError::ResourceLimit);
         }
-        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<K, V>(self.len()))?;
+        sink.capacity_row(
+            OriginalRestoredOwnerCapacityRow::tree_population_data::<K, V>(self.len()),
+        )?;
         for (key, value) in self {
             key.capacities(depth + 1, sink)?;
             value.capacities(depth + 1, sink)?;
@@ -533,6 +599,8 @@ pub(crate) fn original_restored_owner_capacity_counter_scratch_data() -> usize {
 
     let terms = [
         values::counter_scratch_data(),
+        size_of::<&[&str]>(),
+        size_of::<usize>(),
         size_of::<(usize, usize)>(),
         size_of::<Result<(usize, usize), RuntimeError>>(),
         size_of::<OriginalRestoredOwnerCapacityRow>(),
@@ -557,7 +625,7 @@ pub(crate) fn original_restored_owner_capacity_counter_scratch_data() -> usize {
         size_of::<RefMut<'static, OriginalRestoredOwnerCapacityAliases>>(),
         size_of::<Result<RefMut<'static, OriginalRestoredOwnerCapacityAliases>, BorrowMutError>>(),
         size_of::<Option<&RefCell<OriginalRestoredOwnerCapacityAliases>>>(),
-        size_of::<&mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>>(),
+        size_of::<&mut dyn OriginalRestoredOwnerCapacitySink>(),
         size_of::<Result<(), RuntimeError>>(),
         size_of::<Result<usize, RuntimeError>>(),
         size_of::<Option<usize>>(),
@@ -759,8 +827,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_contract::OperationFailur
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self { effects, reason } = self;
         reason.capacities(depth, sink)?;
         effects.capacities(depth, sink)
@@ -771,8 +840,9 @@ impl OriginalRestoredOwnerCapacityWalk for crate::node_scheduling::NativeInputAc
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             stage_operation,
             batch,

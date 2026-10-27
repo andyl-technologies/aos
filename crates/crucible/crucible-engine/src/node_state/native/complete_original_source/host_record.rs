@@ -1,6 +1,8 @@
 //! Keeps genuine initial Host2 and current Host17 records in distinct owners.
 
 use super::*;
+use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacitySink;
+
 use crate::node_contract::{
     HostSchedulingRestoredContinuationRecord17, HostSchedulingSelection, NodeRuntime,
 };
@@ -94,10 +96,9 @@ impl crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacity
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(
-            crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityRow,
-        ) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         use crate::node_contract::restored_owner_history::OriginalRestoredOwnerCapacityWalk;
         match self {
             Self::InitialInvocation15(record) => record.as_ref().capacities(depth, sink),

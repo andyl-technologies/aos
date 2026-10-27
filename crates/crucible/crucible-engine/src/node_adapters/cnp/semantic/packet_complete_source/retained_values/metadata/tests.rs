@@ -63,7 +63,9 @@ fn private_json_geometry_keeps_actual_spare_backing_at_exact_and_short_credit() 
             }
     );
     assert_eq!(facts.capacity_records, 5);
-    assert_eq!(facts.observed_nodes, 0);
+    // These are the two common String visits; the private JSON traversal
+    // still needs its independent complete work census.
+    assert_eq!(facts.observed_nodes, 2);
     assert_eq!(
         value_storage_with_error::<RuntimeError>(&value, 0, expected),
         Ok(expected)

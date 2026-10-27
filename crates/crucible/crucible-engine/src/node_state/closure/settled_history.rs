@@ -8,7 +8,7 @@ use super::*;
 use crate::node_contract::RuntimeError;
 use crate::node_contract::restored_owner_history::{
     OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityRows,
-    OriginalRestoredOwnerCapacityWalk,
+    OriginalRestoredOwnerCapacitySink, OriginalRestoredOwnerCapacityWalk,
 };
 use crucible_node_format::Bytes;
 use serde::{
@@ -103,15 +103,16 @@ impl OriginalRestoredOwnerCapacityWalk for VerifiedStateContent {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         let Self {
             objects,
             total_bytes: _,
             references,
             edition: _,
         } = self;
-        sink(OriginalRestoredOwnerCapacityRow::tree_population_data::<
+        sink.capacity_row(OriginalRestoredOwnerCapacityRow::tree_population_data::<
             HashRef,
             (ContentRef, Vec<u8>),
         >(objects.len()))?;
@@ -154,9 +155,7 @@ impl VerifiedStateContent {
             std::mem::size_of::<Result<(usize, usize), RuntimeError>>(),
             std::mem::size_of::<Result<usize, RuntimeError>>(),
             std::mem::size_of::<Result<(), RuntimeError>>(),
-            std::mem::size_of::<
-                &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
-            >(),
+            std::mem::size_of::<&mut dyn OriginalRestoredOwnerCapacitySink>(),
         ];
         let array_bytes = std::mem::size_of_val(&terms);
         let mut iterator = terms.into_iter();

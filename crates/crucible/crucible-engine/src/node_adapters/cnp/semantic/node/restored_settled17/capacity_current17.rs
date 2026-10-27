@@ -8,7 +8,8 @@ use crate::node_adapters::cnp::semantic::state::{
     OriginalCancellation, OriginalInput, OriginalInputCommit, OriginalOperation,
 };
 use crate::node_contract::restored_owner_history::{
-    OriginalRestoredOwnerCapacityRow as Row, OriginalRestoredOwnerCapacityWalk as Walk,
+    OriginalRestoredOwnerCapacityRow as Row, OriginalRestoredOwnerCapacitySink,
+    OriginalRestoredOwnerCapacityWalk as Walk,
 };
 use crate::node_contract::{OperationFailure, RuntimeError};
 use crate::node_scheduling::{InputCustodyCommit, NativeInputAcknowledgement};
@@ -18,9 +19,11 @@ use crucible_node_transport::envelope::Nullable;
 macro_rules! fields {
     ($type:ty; $($owned:ident),+; $($scalar:ident),* $(,)?) => {
         impl Walk for $type {
-            fn capacities(&self, depth: usize, sink: &mut dyn FnMut(Row) -> Result<(), RuntimeError>)
+            fn capacities(&self, depth: usize, sink: &mut dyn OriginalRestoredOwnerCapacitySink)
                 -> Result<(), RuntimeError>
             {
+                let inline_fields: &[&str] = &[$(stringify!($scalar)),*];
+                sink.visit_work(1 + inline_fields.len())?;
                 let Self { $($owned,)+ $($scalar: _,)* } = self;
                 $($owned.capacities(depth, sink)?;)+
                 Ok(())
@@ -49,8 +52,9 @@ impl<T: Walk> Walk for Nullable<T> {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(Row) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         self.0.capacities(depth, sink)
     }
 }
@@ -59,12 +63,13 @@ impl Walk for serde_json::Map<String, serde_json::Value> {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(Row) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         if depth >= 128 {
             return Err(RuntimeError::ResourceLimit);
         }
-        sink(Row::tree_population_data::<String, serde_json::Value>(
+        sink.capacity_row(Row::tree_population_data::<String, serde_json::Value>(
             self.len(),
         ))?;
         for (key, value) in self {
@@ -79,8 +84,9 @@ impl Walk for OriginalCancellation {
     fn capacities(
         &self,
         depth: usize,
-        sink: &mut dyn FnMut(Row) -> Result<(), RuntimeError>,
+        sink: &mut dyn OriginalRestoredOwnerCapacitySink,
     ) -> Result<(), RuntimeError> {
+        sink.visit_work(1)?;
         match self {
             Self::Failed(failure) => failure.capacities(depth, sink),
             Self::NotAttempted | Self::Pending | Self::Requested | Self::Unsupported => Ok(()),

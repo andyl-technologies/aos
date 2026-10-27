@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(facts.string_capacity_bytes, strings);
         assert_eq!(facts.boxed_value_bytes, 0);
         assert_eq!(facts.shared_value_bytes, 0);
-        assert_eq!(facts.observed_nodes, 0);
+        assert_eq!(facts.observed_nodes, 2); // The retained key and String leaf.
         assert_eq!(
             facts.vector_capacity_bytes,
             attempt.data.chunks.capacity() * size_of::<Vec<LiteralToken18>>()
