@@ -298,3 +298,7 @@ mod history;
 pub(crate) use history::{
     historical_capture17_counter_scratch_data, read_historical_capture17_borrowed_data,
 };
+
+pub(in crate::protocol_snapshot::restored_settled17) use history::{
+    historical_capture17_cut_counter_scratch_data, historical_capture17_cut_fields_data,
+};

@@ -75,10 +75,14 @@ pub(super) fn authenticate(
         return Err(invalid());
     }
     let capture = field(selected, "data")?;
+    let cut =
+        super::super::current_capture17_borrowed::historical_capture17_cut_fields_data(capture)?;
     if plain_string(field(field(capture, "body")?, "kind")?)? != "capture"
         || plain_string(field(capture, "stage")?)? != "typed"
         || field(capture, "confirmation")? != b"null"
-        || field(capture, "confirmation_receipt")? != b"null"
+        || cut
+            .as_ref()
+            .is_some_and(|cut| cut.confirmation_receipt != b"null")
     {
         return Err(invalid());
     }
@@ -89,19 +93,21 @@ pub(super) fn authenticate(
     emitted(field(capture, "capture_context")?, context)?;
     emitted(field(capture, "terminal")?, terminal)?;
     emitted(field(capture, "prepared_reply")?, &terminal.body)?;
-    let registration = field(capture, "registration")?;
-    if plain_string(field(registration, "capture_identity_role")?)?
-        != "current-native-control-identity"
-        || unsigned(field(registration, "creator")?)? != u64::from(after.creator_data())
-    {
-        return Err(invalid());
+    // Ordinary retained Capture history has fifteen fields. Registration is
+    // independently authenticated in the before graph and current Control join.
+    // The older decorated roster carries a second copy, which must still match.
+    if let Some(cut) = cut {
+        let registration = cut.registration;
+        if plain_string(field(registration, "capture_identity_role")?)?
+            != "current-native-control-identity"
+            || unsigned(field(registration, "creator")?)? != u64::from(after.creator_data())
+        {
+            return Err(invalid());
+        }
+        emitted(field(registration, "request")?, original)?;
+        emitted(field(registration, "arguments")?, arguments)?;
+        emitted(field(registration, "begin")?, begin)?;
     }
-
-    // The full root grammar defines one Control identity before any registration;
-    // every such role consumed its actual Shared row and that exact root alias.
-    emitted(field(registration, "request")?, original)?;
-    emitted(field(registration, "arguments")?, arguments)?;
-    emitted(field(registration, "begin")?, begin)?;
 
     let output = field(capture, "outputs")?;
     if plain_string(field(output, "schema")?)?

@@ -138,3 +138,70 @@ pub(crate) fn historical_capture17_counter_scratch_data() -> usize {
         + size_of::<Result<(), ProviderError>>()
         + size_of::<BorrowedCaptureOutputs17<'static>>()
 }
+
+/// Borrows the extra evidence emitted only by the seventeen-field active cut.
+pub(in crate::protocol_snapshot::restored_settled17) struct HistoricalCaptureCutFields17<'a> {
+    /// Borrows the separately recorded registration and its original identity.
+    pub(in crate::protocol_snapshot::restored_settled17) registration: &'a [u8],
+    /// Borrows the independently recorded confirmation receipt slot.
+    pub(in crate::protocol_snapshot::restored_settled17) confirmation_receipt: &'a [u8],
+}
+
+/// Distinguishes ordinary history from the separately decorated active-cut wire.
+///
+/// This framing-only walk consumes no metadata or constructor credit. The
+/// enclosing complete graph reader still validates every ordinary field. A
+/// fifteen-field historical Capture does not contain a second registration;
+/// its actual registration belongs to the independently checked before graph.
+///
+/// # Errors
+/// Refuses missing, duplicate, extra or reordered fields in either exact roster.
+pub(in crate::protocol_snapshot::restored_settled17) fn historical_capture17_cut_fields_data(
+    input: &[u8],
+) -> Result<Option<HistoricalCaptureCutFields17<'_>>, ProviderError> {
+    if HistoricalCaptureFields17::read(input).is_ok() {
+        return Ok(None);
+    }
+
+    let mut fields = Fields::object(input)?;
+    for name in [
+        "ordinal",
+        "original",
+        "body",
+        "arguments",
+        "capture",
+        "capture_context",
+        "upload",
+        "upload_context",
+        "continuation",
+        "confirmation",
+    ] {
+        fields.named(name)?;
+    }
+    let registration = fields.named("registration")?;
+    for name in ["checkpoint", "outputs", "terminal", "prepared_reply"] {
+        fields.named(name)?;
+    }
+    let confirmation_receipt = fields.named("confirmation_receipt")?;
+    fields.named("stage")?;
+    fields.finish()?;
+    Ok(Some(HistoricalCaptureCutFields17 {
+        registration,
+        confirmation_receipt,
+    }))
+}
+
+/// Names both framing passes and the surviving borrowed cut controls.
+pub(in crate::protocol_snapshot::restored_settled17) fn historical_capture17_cut_counter_scratch_data()
+-> usize {
+    historical_capture17_counter_scratch_data()
+        + size_of::<HistoricalCaptureCutFields17<'static>>()
+        + size_of::<Result<Option<HistoricalCaptureCutFields17<'static>>, ProviderError>>()
+        + size_of::<std::array::IntoIter<&'static str, 10>>()
+        + size_of::<std::array::IntoIter<&'static str, 4>>()
+        + size_of::<Result<&'static [u8], ProviderError>>()
+}
+
+#[cfg(test)]
+#[path = "history_tests.rs"]
+mod tests;

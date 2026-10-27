@@ -423,6 +423,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<(), ProviderError>>()
         + crate::protocol_snapshot::owned11::correspondence::envelope_comparison_scratch_data()
         + construction::counter_scratch_data()
+        + super::current_capture17_borrowed::historical_capture17_cut_counter_scratch_data()
 }
 
 mod anchor;
