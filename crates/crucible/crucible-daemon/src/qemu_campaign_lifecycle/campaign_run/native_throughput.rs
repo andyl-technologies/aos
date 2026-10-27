@@ -69,10 +69,19 @@ pub(crate) fn run(
     let planner = owner.inner.planner.clone();
     let store = CampaignExecutorStore::new(repository.clone());
     let checkpoints = owner.inner.checkpoints.clone();
-    let retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
-        store,
-        checkpoints.clone(),
-    ));
+    let campaign = super::guarded_default_campaign_name(&request)
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let retention = Arc::new(
+        CampaignRunFindingExactRetentionSource::new(
+            store,
+            checkpoints.clone(),
+            crate::automatic_finding_runner::synchronous_exact_retention_owner(
+                &campaign,
+                Some(owner.inner.exact_retention_namespace),
+            ),
+        )
+        .map_err(GuardedDefaultCampaignRunError::Repository)?,
+    );
     let production = QemuAttemptProductionVmLifecycleFactory::new(
         request.lifecycle.clone(),
         ComposedQemuAttemptResourceGuardFactory::new(owner.inner.host.clone()),
@@ -83,6 +92,7 @@ pub(crate) fn run(
         .with_terminal_exact_retention_source(retention.clone());
     run_guarded_default_campaign_with_repository(
         request,
+        campaign,
         runner,
         prepare_completed_reproduction,
         evidence,

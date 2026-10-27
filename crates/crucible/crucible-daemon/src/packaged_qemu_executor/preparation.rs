@@ -5,6 +5,7 @@
 //! native node cleaned before discharging its independent service entitlement.
 
 use super::*;
+use crate::AssignmentLedger;
 use crate::executor_pool::{PausedCheckpointObserver, PreparedExecutorActor};
 use crate::supervision::AssignmentHostWatchdogGuard;
 use crucible_host_resources::host_supervision::HostOperationSupervisor;
@@ -147,6 +148,65 @@ pub(super) fn prepare_runtime_with_owner(
                 &prepared_results,
                 &gc_exclusion,
             )?;
+            let retained = repository.load_executor_exact_retention()?;
+            let claim_count = retained.result_executions().count();
+            let _claim_credit = if claim_count == 0 {
+                None
+            } else {
+                let claim_bytes =
+                    crucible_store::owned_decode::DecodeBudget::btree_control_bytes::<
+                        crucible_campaign::ExecutionId,
+                        (),
+                    >(claim_count)?
+                    .checked_mul(2)
+                    .ok_or(crucible_store::content_store::StoreError::Quota)
+                    .map_err(CampaignRepositoryError::from)?;
+                let original = repository.ram_admission().original().ok_or(
+                    crucible_store::content_store::StoreError::Unsupported {
+                        capability: "executor-exact-retention-startup-original",
+                    },
+                )?;
+                Some(original.reserve_scratch_bytes(claim_bytes)?)
+            };
+            let claims = retained.result_executions().collect::<BTreeSet<_>>();
+            let mut terminal_claims = BTreeSet::new();
+            let mut completion_refusal = None;
+            ledger
+                .visit_attempt_states(&mut |key, state| {
+                    if completion_refusal.is_some() || !claims.contains(&state.execution()) {
+                        return;
+                    }
+                    match state {
+                        crate::AttemptRuntimeState::Completed {
+                            observation,
+                            finding_candidate,
+                            ..
+                        } => {
+                            if let Err(reason) = admission.validate_retained_completion(
+                                key.lineage(),
+                                key.attempt(),
+                                observation,
+                                finding_candidate.candidate(),
+                            ) {
+                                completion_refusal = Some(reason);
+                                return;
+                            }
+                            terminal_claims.insert(state.execution());
+                        }
+                        crate::AttemptRuntimeState::Canceled { .. }
+                        | crate::AttemptRuntimeState::TerminalFailure { .. } => {
+                            terminal_claims.insert(state.execution());
+                        }
+                        _ => {}
+                    }
+                })
+                .map_err(PackagedQemuExecutorError::Ledger)?;
+            if let Some(reason) = completion_refusal {
+                return Err(
+                    PackagedQemuExecutorError::ExactRetentionCompletionValidation { reason },
+                );
+            }
+            repository.retire_executor_exact_results_under(&gc_exclusion, &terminal_claims)?;
 
             for campaign in &config.campaigns {
                 loop {
@@ -179,6 +239,7 @@ pub(super) fn prepare_runtime_with_owner(
                     Arc::clone(repository),
                     Arc::clone(&checkpoints),
                     config.campaigns.clone(),
+                    config.store_namespace,
                     ledger,
                     &exact_pin_root,
                 )?;

@@ -2424,6 +2424,7 @@ where
         checkpoints: Arc::clone(&checkpoints),
         host: None,
         lifecycle_cleanup: None,
+        exact_retention_namespace: prepared_exact_pins.owner(),
     };
     let pool = LocalExecutorWorkerPool::start_prepared_with_observer(
         (actor, description),

@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crate::executor_supervisor::LocalExecutionActivity;
 use crate::{ProductionExactCheckpointRetirement, retire_production_exact_checkpoint_catalog};
+use crucible_campaign::CampaignRepositoryError;
 use crucible_campaign::{
     AttemptExecutionScope, CampaignExecutorStore, CampaignRepositoryGcExclusionGuard,
     CancelAttemptExecutionRequest, CancelAttemptExecutionResponse,
@@ -2577,6 +2578,22 @@ where
                 drop(executor);
                 retain_forever(shared, next);
             }
+            Err(AttemptWorkerReconcileError::ExactRetentionCleanupPending {
+                published: next,
+                source,
+            }) if source.executor_rejection() == ExecutorRejection::UnavailableInput => {
+                published = *next;
+                increment(&shared.counters.publication_retries);
+                drop(executor);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(AttemptWorkerReconcileError::ExactRetentionCleanupPending {
+                published: next,
+                ..
+            }) => {
+                drop(executor);
+                retain_forever(shared, next);
+            }
             Err(_) => {
                 drop(executor);
                 shared.poison();
@@ -2631,7 +2648,8 @@ fn reconcile_worker_failure<L, V, W>(
             }
             Err(
                 AttemptWorkerReconcileError::CompletionPending { published, .. }
-                | AttemptWorkerReconcileError::JournalCleanupPending { published, .. },
+                | AttemptWorkerReconcileError::JournalCleanupPending { published, .. }
+                | AttemptWorkerReconcileError::ExactRetentionCleanupPending { published, .. },
             ) => {
                 drop(executor);
                 retain_forever(shared, published);
@@ -2725,22 +2743,36 @@ where
 }
 
 trait PreparedJournalCleanup {
+    fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError>;
+
     fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError>;
 }
 
 impl PreparedJournalCleanup for PreparedAttemptResult {
+    fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        PreparedAttemptResult::retire_exact_retention(self)
+    }
+
     fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
         self.remove_journal()
     }
 }
 
 impl PreparedJournalCleanup for Box<StagedAttemptResult> {
+    fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        StagedAttemptResult::retire_exact_retention(self)
+    }
+
     fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
         self.remove_journal()
     }
 }
 
 impl PreparedJournalCleanup for PublishedAttemptResult {
+    fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        PublishedAttemptResult::retire_exact_retention(self)
+    }
+
     fn remove_prepared_journal(&self) -> Result<(), PreparedResultJournalError> {
         self.remove_journal()
     }
@@ -2776,6 +2808,16 @@ where
     V: AttemptAdmissionValidator,
     T: PreparedJournalCleanup,
 {
+    loop {
+        match token.retire_exact_retention() {
+            Ok(()) => break,
+            Err(source) if source.executor_rejection() == ExecutorRejection::UnavailableInput => {
+                increment(&shared.counters.publication_retries);
+                thread::sleep(WORKER_RETRY_INTERVAL);
+            }
+            Err(_) => retain_forever(shared, token),
+        }
+    }
     loop {
         match token.remove_prepared_journal() {
             Ok(()) => return,

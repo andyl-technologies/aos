@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use crucible_campaign::{
     AttemptRetentionPolicyBasis, AuthenticatedFindingExactCheckpoint, CampaignCodecError,
-    CampaignExecutorStore, CampaignHash, ConfigurationId, ExactCheckpointId,
+    CampaignExecutorStore, CampaignHash, CampaignName, CampaignRepositoryError,
+    CampaignRepositoryGcExclusionGuard, ConfigurationId, ExactCheckpointId,
+    ExecutorExactCatalogAllocationCustody, ExecutorExactRetentionCatalog,
+    ExecutorExactRetentionCatalogCustody, ExecutorExactRetentionOwnerLease,
     FindingAssertionFailureBoundary, FindingExactCheckpointAuthenticationError,
     FindingExactCheckpointAuthenticator, FindingExactPins, FindingExactRetention,
     FindingExactRetentionCandidate, FindingExactRetentionDisposition,
@@ -25,8 +28,23 @@ use crate::{
     ExactCheckpointStore, ExecutionCancellation,
 };
 
-const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_FINDING_EXACT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS: usize = 65_536;
+
+pub(crate) fn synchronous_exact_retention_owner(
+    campaign: &CampaignName,
+    writer_namespace: Option<CampaignHash>,
+) -> CampaignHash {
+    let mut material = Vec::with_capacity(32 + campaign.as_str().len());
+    if let Some(writer_namespace) = writer_namespace {
+        material.extend_from_slice(&writer_namespace.as_bytes());
+    }
+    material.extend_from_slice(campaign.as_str().as_bytes());
+    CampaignHash::derive(
+        "crucible.executor.synchronous-exact-retention-owner.v2",
+        &material,
+    )
+}
 
 struct FindingExactBoundary {
     failure_events: u64,
@@ -45,12 +63,81 @@ pub(crate) enum FindingExactCandidateInventoryError {
     LimitExceeded,
 }
 
+pub(crate) struct FindingExactCandidateInventory {
+    roots: Vec<ExactCheckpointId>,
+    // Declared after the vector so its allocation credit closes last.
+    _scratch: Option<crucible_store::owned_decode::DecodeScratch>,
+}
+
+impl std::fmt::Debug for FindingExactCandidateInventory {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FindingExactCandidateInventory")
+            .field("roots", &self.roots)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for FindingExactCandidateInventory {
+    fn eq(&self, other: &Self) -> bool {
+        self.roots == other.roots
+    }
+}
+
+impl Eq for FindingExactCandidateInventory {}
+
+#[cfg(test)]
+impl PartialEq<Vec<ExactCheckpointId>> for FindingExactCandidateInventory {
+    fn eq(&self, other: &Vec<ExactCheckpointId>) -> bool {
+        self.roots == *other
+    }
+}
+
+impl FindingExactCandidateInventory {
+    pub(crate) fn admitted(
+        roots: Vec<ExactCheckpointId>,
+        scratch: crucible_store::owned_decode::DecodeScratch,
+    ) -> Self {
+        Self {
+            roots,
+            _scratch: Some(scratch),
+        }
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            roots: Vec::new(),
+            _scratch: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(roots: Vec<ExactCheckpointId>) -> Self {
+        Self {
+            roots,
+            _scratch: None,
+        }
+    }
+
+    pub(crate) fn roots(&self) -> &[ExactCheckpointId] {
+        &self.roots
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.roots.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.roots.len()
+    }
+}
+
 pub(crate) trait FindingExactRetentionSource: FindingExactCheckpointAuthenticator {
     fn candidate_checkpoints(
         &self,
         configuration: ConfigurationId,
         maximum_candidates: usize,
-    ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError>;
+    ) -> Result<FindingExactCandidateInventory, FindingExactCandidateInventoryError>;
 
     /// Authenticates the admitted attempt's exact-findings policy before capture.
     fn exact_findings_enabled(
@@ -66,6 +153,28 @@ pub(crate) trait FindingExactRetentionSource: FindingExactCheckpointAuthenticato
         context: &AttemptExecutionContext,
         identity: FindingTerminalCheckpointIdentity,
     ) -> Result<(), FindingExactCandidateInventoryError>;
+
+    /// Installs catalog and selected-result ownership before execution releases GC exclusion.
+    fn retain_execution_result(
+        &self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _result: &PreparedSemanticAttemptResult,
+        _gc_exclusion: &CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), CampaignRepositoryError> {
+        Ok(())
+    }
+
+    /// Persists catalog ownership when execution fails after publishing a candidate.
+    fn retain_execution_catalog(
+        &self,
+        _gc_exclusion: &CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), CampaignRepositoryError> {
+        Ok(())
+    }
+
+    /// Stops advertising candidates whose durable handoff failed.
+    fn abandon_unretained_candidates(&self) {}
 }
 
 /// Semantic basis and completed event count required of an auxiliary root.
@@ -141,7 +250,11 @@ pub(crate) fn publish_authenticated_terminal_checkpoint(
 pub(crate) struct CampaignRunFindingExactRetentionSource {
     campaign: CampaignExecutorStore,
     checkpoints: Arc<ExactCheckpointStore>,
+    owner: CampaignHash,
+    // Field order keeps map allocation credit and owner custody through teardown.
     candidates: Mutex<CampaignRunExactCheckpointCatalog>,
+    _owner_lease: ExecutorExactRetentionOwnerLease,
+    _durable_catalog_custody: ExecutorExactRetentionCatalogCustody,
 }
 
 struct CampaignRunExactCheckpointCatalog {
@@ -152,6 +265,8 @@ struct CampaignRunExactCheckpointCatalog {
     by_configuration: BTreeMap<ConfigurationId, BTreeSet<ExactCheckpointId>>,
     incomplete_configurations: BTreeSet<ConfigurationId>,
     globally_incomplete: bool,
+    // Declared last so allocation credit outlives every producer-controlled map.
+    _allocation_custody: Option<ExecutorExactCatalogAllocationCustody>,
 }
 
 impl CampaignRunExactCheckpointCatalog {
@@ -166,7 +281,51 @@ impl CampaignRunExactCheckpointCatalog {
             by_configuration: BTreeMap::new(),
             incomplete_configurations: BTreeSet::new(),
             globally_incomplete: false,
+            _allocation_custody: None,
         }
+    }
+
+    fn from_durable(
+        maximum_roots: usize,
+        checkpoints: &ExactCheckpointStore,
+        durable: Option<&ExecutorExactRetentionCatalog>,
+        allocation_custody: Option<ExecutorExactCatalogAllocationCustody>,
+    ) -> Result<Self, CampaignRepositoryError> {
+        let mut catalog = Self::new(maximum_roots);
+        catalog._allocation_custody = allocation_custody;
+        let Some(durable) = durable else {
+            return Ok(catalog);
+        };
+        catalog.globally_incomplete = durable.globally_incomplete();
+        catalog.incomplete_configurations = durable.incomplete_configurations().clone();
+        for (root, configuration) in durable.entries() {
+            let loaded = checkpoints.load_attempt_checkpoint(*root).map_err(|_| {
+                CampaignRepositoryError::Integrity {
+                    reason: "durable exact-retention catalog root failed authentication",
+                }
+            })?;
+            let authenticated_configuration =
+                ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
+            if authenticated_configuration != *configuration {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "durable exact-retention catalog configuration changed",
+                });
+            }
+            if catalog.roots.len() >= catalog.maximum_roots
+                || catalog.roots.insert(*root, *configuration).is_some()
+            {
+                return Err(CampaignRepositoryError::Integrity {
+                    reason: "durable exact-retention catalog exceeds runtime bounds",
+                });
+            }
+            catalog.insertion_order.push_back(*root);
+            catalog
+                .by_configuration
+                .entry(*configuration)
+                .or_default()
+                .insert(*root);
+        }
+        Ok(catalog)
     }
 
     fn retain(
@@ -216,6 +375,23 @@ impl CampaignRunExactCheckpointCatalog {
         Ok(())
     }
 
+    fn required_allocation_entries(
+        &self,
+        checkpoint: ExactCheckpointId,
+        configuration: ConfigurationId,
+    ) -> Option<usize> {
+        if self.roots.contains_key(&checkpoint)
+            || self.globally_incomplete
+            || self.incomplete_configurations.contains(&configuration)
+        {
+            return None;
+        }
+        self.roots
+            .len()
+            .checked_add(self.incomplete_configurations.len())
+            .and_then(|entries| entries.checked_add(1))
+    }
+
     fn mark_incomplete(&mut self, configuration: ConfigurationId) {
         if self.globally_incomplete || self.incomplete_configurations.contains(&configuration) {
             return;
@@ -230,9 +406,10 @@ impl CampaignRunExactCheckpointCatalog {
 
     fn candidates(
         &self,
+        campaign: &CampaignExecutorStore,
         configuration: ConfigurationId,
         maximum_candidates: usize,
-    ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+    ) -> Result<FindingExactCandidateInventory, FindingExactCandidateInventoryError> {
         if self.globally_incomplete || self.incomplete_configurations.contains(&configuration) {
             return Err(FindingExactCandidateInventoryError::LimitExceeded);
         }
@@ -240,7 +417,56 @@ impl CampaignRunExactCheckpointCatalog {
         if candidates.is_some_and(|candidates| candidates.len() > maximum_candidates) {
             return Err(FindingExactCandidateInventoryError::LimitExceeded);
         }
-        Ok(candidates.into_iter().flatten().copied().collect())
+        let Some(candidates) = candidates else {
+            return Ok(FindingExactCandidateInventory::empty());
+        };
+        let scratch = campaign
+            .reserve_exact_candidate_inventory(candidates.len())
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        let mut roots = Vec::new();
+        roots
+            .try_reserve_exact(candidates.len())
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        roots.extend(candidates.iter().copied());
+        Ok(FindingExactCandidateInventory::admitted(roots, scratch))
+    }
+
+    fn durable_projection(&self) -> Result<ExecutorExactRetentionCatalog, CampaignCodecError> {
+        let entries = self
+            .insertion_order
+            .iter()
+            .map(|root| {
+                self.roots
+                    .get(root)
+                    .copied()
+                    .map(|configuration| (*root, configuration))
+                    .ok_or(CampaignCodecError::InvalidValue {
+                        reason: "exact-retention insertion order is inconsistent",
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ExecutorExactRetentionCatalog::new(
+            entries,
+            self.incomplete_configurations.clone(),
+            self.globally_incomplete,
+        )
+    }
+
+    fn projection_entries(&self) -> Result<usize, CampaignRepositoryError> {
+        1_usize
+            .checked_add(self.roots.len())
+            .and_then(|count| count.checked_add(self.incomplete_configurations.len()))
+            .ok_or(CampaignRepositoryError::Integrity {
+                reason: "campaign exact-retention catalog entry count overflowed",
+            })
+    }
+
+    fn abandon_unretained(&mut self) {
+        self.roots.clear();
+        self.insertion_order.clear();
+        self.by_configuration.clear();
+        self.incomplete_configurations.clear();
+        self.globally_incomplete = true;
     }
 }
 
@@ -248,14 +474,37 @@ impl CampaignRunFindingExactRetentionSource {
     pub(crate) fn new(
         campaign: CampaignExecutorStore,
         checkpoints: Arc<ExactCheckpointStore>,
-    ) -> Self {
-        Self {
+        owner: CampaignHash,
+    ) -> Result<Self, CampaignRepositoryError> {
+        let owner_lease = campaign.claim_exact_catalog_owner(owner)?;
+        let durable_catalog_custody = campaign.load_exact_catalog(owner)?;
+        let mut allocation_custody = None;
+        if let Some(catalog) = durable_catalog_custody.catalog() {
+            let entries = catalog
+                .entries()
+                .len()
+                .checked_add(catalog.incomplete_configurations().len())
+                .ok_or(CampaignRepositoryError::Integrity {
+                    reason: "durable exact-retention catalog entry count overflowed",
+                })?;
+            if entries != 0 {
+                campaign.ensure_exact_catalog_custody(&mut allocation_custody, entries)?;
+            }
+        }
+        let candidates = CampaignRunExactCheckpointCatalog::from_durable(
+            MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS,
+            &checkpoints,
+            durable_catalog_custody.catalog(),
+            allocation_custody,
+        )?;
+        Ok(Self {
             campaign,
             checkpoints,
-            candidates: Mutex::new(CampaignRunExactCheckpointCatalog::new(
-                MAX_CAMPAIGN_RUN_EXACT_CHECKPOINTS,
-            )),
-        }
+            owner,
+            _owner_lease: owner_lease,
+            _durable_catalog_custody: durable_catalog_custody,
+            candidates: Mutex::new(candidates),
+        })
     }
 
     pub(crate) fn retain_checkpoint(
@@ -268,10 +517,20 @@ impl CampaignRunFindingExactRetentionSource {
             .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
         let configuration =
             ConfigurationId::from_hash(CampaignHash::from_bytes(loaded.configuration().bytes));
-        self.candidates
+        let mut candidates = self
+            .candidates
             .lock()
-            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?
-            .retain(checkpoint, configuration)
+            .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        if let Some(entries) = candidates.required_allocation_entries(checkpoint, configuration) {
+            self.campaign
+                .ensure_exact_catalog_custody(&mut candidates._allocation_custody, entries)
+                .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?;
+        }
+        candidates.retain(checkpoint, configuration)
+    }
+
+    pub(crate) fn retire_catalog(&self) -> Result<(), CampaignRepositoryError> {
+        self.campaign.retire_exact_catalog(self.owner)
     }
 }
 
@@ -280,11 +539,11 @@ impl FindingExactRetentionSource for CampaignRunFindingExactRetentionSource {
         &self,
         configuration: ConfigurationId,
         maximum_candidates: usize,
-    ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+    ) -> Result<FindingExactCandidateInventory, FindingExactCandidateInventoryError> {
         self.candidates
             .lock()
             .map_err(|_| FindingExactCandidateInventoryError::Unavailable)?
-            .candidates(configuration, maximum_candidates)
+            .candidates(&self.campaign, configuration, maximum_candidates)
     }
 
     fn exact_findings_enabled(
@@ -309,6 +568,77 @@ impl FindingExactRetentionSource for CampaignRunFindingExactRetentionSource {
             identity,
         )?;
         self.retain_checkpoint(root)
+    }
+
+    fn retain_execution_result(
+        &self,
+        _input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        result: &PreparedSemanticAttemptResult,
+        gc_exclusion: &CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), CampaignRepositoryError> {
+        let roots = result
+            .finding()
+            .map(|finding| finding.bundle().exact_pins().all());
+        let candidates =
+            self.candidates
+                .lock()
+                .map_err(|_| CampaignRepositoryError::Integrity {
+                    reason: "campaign exact-retention catalog lock is poisoned",
+                })?;
+        if roots.is_none_or(BTreeSet::is_empty)
+            && candidates.roots.is_empty()
+            && candidates.incomplete_configurations.is_empty()
+            && !candidates.globally_incomplete
+        {
+            return Ok(());
+        }
+        let _projection_scratch = self
+            .campaign
+            .reserve_exact_catalog_projection(candidates.projection_entries()?)?;
+        let catalog = candidates.durable_projection()?;
+        // Keep the source catalog locked through publication. A later call
+        // must not publish an older projection after this handoff completes.
+        match (context.diagnostic_execution_id(), roots) {
+            (Some(execution), Some(roots)) if !roots.is_empty() => self
+                .campaign
+                .retain_exact_result_under(gc_exclusion, self.owner, catalog, execution, roots),
+            _ => self
+                .campaign
+                .replace_exact_catalog_under(gc_exclusion, self.owner, catalog),
+        }
+    }
+
+    fn retain_execution_catalog(
+        &self,
+        gc_exclusion: &CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), CampaignRepositoryError> {
+        let candidates =
+            self.candidates
+                .lock()
+                .map_err(|_| CampaignRepositoryError::Integrity {
+                    reason: "campaign exact-retention catalog lock is poisoned",
+                })?;
+        if candidates.roots.is_empty()
+            && candidates.incomplete_configurations.is_empty()
+            && !candidates.globally_incomplete
+        {
+            return Ok(());
+        }
+        let _projection_scratch = self
+            .campaign
+            .reserve_exact_catalog_projection(candidates.projection_entries()?)?;
+        let catalog = candidates.durable_projection()?;
+        // Serialize projection and publication for the shared synchronous
+        // source so concurrent failure handoffs cannot overwrite newer roots.
+        self.campaign
+            .replace_exact_catalog_under(gc_exclusion, self.owner, catalog)
+    }
+
+    fn abandon_unretained_candidates(&self) {
+        if let Ok(mut candidates) = self.candidates.lock() {
+            candidates.abandon_unretained();
+        }
     }
 }
 
@@ -572,7 +902,7 @@ fn select_finding_exact_retention(
 
     let mut candidates = Vec::with_capacity(roots.len());
     let mut remaining_metadata = MAX_FINDING_EXACT_METADATA_BYTES;
-    for root in roots {
+    for root in roots.roots().iter().copied() {
         let authenticated = match source.authenticate_finding_exact_checkpoint(
             root,
             scenario,
@@ -688,9 +1018,11 @@ mod tests {
             &self,
             _configuration: ConfigurationId,
             _maximum_candidates: usize,
-        ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+        ) -> Result<FindingExactCandidateInventory, FindingExactCandidateInventoryError> {
             match &self.inventory {
-                TestInventory::Roots(roots) => Ok(roots.clone()),
+                TestInventory::Roots(roots) => {
+                    Ok(FindingExactCandidateInventory::fixture(roots.clone()))
+                }
                 TestInventory::Failure(error) => Err(*error),
             }
         }
@@ -750,7 +1082,7 @@ mod tests {
             &self,
             configuration: ConfigurationId,
             maximum_candidates: usize,
-        ) -> Result<Vec<ExactCheckpointId>, FindingExactCandidateInventoryError> {
+        ) -> Result<FindingExactCandidateInventory, FindingExactCandidateInventoryError> {
             self.inner
                 .candidate_checkpoints(configuration, maximum_candidates)
         }
@@ -825,8 +1157,93 @@ mod tests {
     }
 
     #[test]
+    fn candidate_inventory_credit_refuses_bounded_outstanding_and_recovers_after_drop()
+    -> Result<(), Box<dyn Error>> {
+        let resources = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?;
+        let original = crucible_engine::owned_decode::DecodeBudget::for_store(resources)?;
+        // Existing metadata consumes the same original account. The remaining
+        // headroom must bound held responses across the admitted worker count.
+        let _other_metadata = original.reserve_scratch_bytes(240 * 1024 * 1024)?;
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(crucible_store::content_store::MemoryBlobBackend::new(
+                "candidate-inventory-credit",
+                1024,
+            )),
+            Arc::new(crucible_store::content_store::MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Available(original),
+        ));
+        let store = CampaignExecutorStore::new(repository);
+        let root = checkpoint(b"candidate-inventory-credit")?;
+        let count = crucible_campaign::MAX_FINDING_EXACT_RETENTION_CANDIDATES as usize;
+        let released = store.reserve_exact_candidate_inventory(count)?;
+        drop(FindingExactCandidateInventory::admitted(
+            vec![root; count],
+            released,
+        ));
+        let returned = store.reserve_exact_candidate_inventory(count)?;
+        drop(returned);
+
+        let mut outstanding = Vec::new();
+        let mut refused = false;
+
+        for _ in 0..=crate::MAX_LOCAL_EXECUTOR_WORKERS {
+            let scratch = match store.reserve_exact_candidate_inventory(count) {
+                Ok(scratch) => scratch,
+                Err(_) => {
+                    refused = true;
+                    break;
+                }
+            };
+            let mut roots = Vec::new();
+            roots.try_reserve_exact(count)?;
+            roots.resize(count, root);
+            outstanding.push(FindingExactCandidateInventory::admitted(roots, scratch));
+        }
+        assert!(refused, "finite fixture original must eventually refuse");
+        assert!(!outstanding.is_empty());
+        assert!(outstanding.len() <= crate::MAX_LOCAL_EXECUTOR_WORKERS);
+
+        drop(outstanding);
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_inventory_rejects_excessive_count_before_original_authority() {
+        let repository = Arc::new(CampaignRepository::new(
+            Arc::new(crucible_store::content_store::MemoryBlobBackend::new(
+                "candidate-inventory-limit",
+                1,
+            )),
+            Arc::new(crucible_store::content_store::MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
+        ));
+        let store = CampaignExecutorStore::new(repository);
+        let excessive = crucible_campaign::MAX_FINDING_EXACT_RETENTION_CANDIDATES as usize + 1;
+
+        assert!(matches!(
+            store.reserve_exact_candidate_inventory(excessive),
+            Err(CampaignRepositoryError::Codec(
+                CampaignCodecError::LimitExceeded {
+                    limit: "executor-exact-retention"
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn campaign_catalog_bounds_matching_roots_after_configuration_partitioning()
     -> Result<(), Box<dyn Error>> {
+        let resources = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?;
+        let original = crucible_engine::owned_decode::DecodeBudget::for_store(resources)?;
+        let store = CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
+            Arc::new(crucible_store::content_store::MemoryBlobBackend::new(
+                "candidate-partition-credit",
+                1024,
+            )),
+            Arc::new(crucible_store::content_store::MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Available(original),
+        )));
+
         let matching = ConfigurationId::from_hash(CampaignHash::derive(
             "exact-retention-test.matching-configuration",
             b"matching",
@@ -844,9 +1261,9 @@ mod tests {
 
         assert_eq!(catalog.roots.len(), 4_097);
         assert_eq!(catalog.by_configuration[&unrelated].len(), 4_096);
-        assert_eq!(catalog.candidates(matching, 4_096)?, vec![retained]);
+        assert_eq!(catalog.candidates(&store, matching, 4_096)?, vec![retained]);
         assert_eq!(
-            catalog.candidates(unrelated, 4_096),
+            catalog.candidates(&store, unrelated, 4_096),
             Err(FindingExactCandidateInventoryError::LimitExceeded),
         );
 
@@ -858,12 +1275,12 @@ mod tests {
         bounded.retain(retained, matching)?;
         bounded.retain(admitted, matching)?;
         assert_eq!(
-            bounded.candidates(unrelated, 4_096),
+            bounded.candidates(&store, unrelated, 4_096),
             Err(FindingExactCandidateInventoryError::LimitExceeded),
         );
         let mut expected = vec![retained, admitted];
         expected.sort();
-        assert_eq!(bounded.candidates(matching, 4_096)?, expected);
+        assert_eq!(bounded.candidates(&store, matching, 4_096)?, expected);
 
         let mut globally_bounded = CampaignRunExactCheckpointCatalog::new(2);
         let mut last_configuration = matching;
@@ -878,7 +1295,7 @@ mod tests {
         assert!(globally_bounded.globally_incomplete);
         assert!(globally_bounded.incomplete_configurations.is_empty());
         assert_eq!(
-            globally_bounded.candidates(last_configuration, 4_096),
+            globally_bounded.candidates(&store, last_configuration, 4_096),
             Err(FindingExactCandidateInventoryError::LimitExceeded),
         );
         Ok(())
@@ -1128,10 +1545,12 @@ mod tests {
             "campaign-run-exact-retention-integration",
             u64::MAX,
         ));
+        let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?;
+        let original = crucible_engine::owned_decode::DecodeBudget::for_store(metadata.clone())?;
         let repository = Arc::new(CampaignRepository::new(
             repository_backend,
             Arc::new(crucible_store::content_store::MemoryRefBackend::new()),
-            crucible_campaign::CampaignRamAdmission::Unavailable,
+            crucible_campaign::CampaignRamAdmission::Available(original),
         ));
         let scenario = fixture.source().scenario_def();
         let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
@@ -1145,25 +1564,33 @@ mod tests {
             fixture.configuration().id().bytes,
         ));
         let checkpoint_directory = tempfile::tempdir()?;
-        let checkpoint_backend = Arc::new(crucible_store::content_store::DirectoryBlobBackend::new(
-            "campaign-run-exact-retention-checkpoints",
-            checkpoint_directory.path(),
-        ));
+        let checkpoint_backend =
+            Arc::new(crucible_store::content_store::DirectoryBlobBackend::new(
+                "campaign-run-exact-retention-checkpoints",
+                checkpoint_directory.path(),
+            ));
         let checkpoints = Arc::new(
             ExactCheckpointStore::new(
                 checkpoint_backend,
                 u64::MAX,
                 repository.ram_retention_authority(),
             )?
-            .with_ram_root_resources(
-                crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()?,
-            ),
+            .with_ram_root_resources(metadata),
         );
         let prepared = checkpoints.prepare_production_closure(fixture.closure().clone())?;
         let checkpoint = checkpoints.publish_production_closure(&prepared)?.root();
-        let source = CampaignRunFindingExactRetentionSource::new(
-            CampaignExecutorStore::new(repository),
-            checkpoints,
+        let store = CampaignExecutorStore::new(repository);
+        let owner = CampaignHash::derive(
+            "crucible.executor.test-exact-retention-owner.v1",
+            b"exact-retention-unit",
+        );
+        let source =
+            CampaignRunFindingExactRetentionSource::new(store.clone(), checkpoints.clone(), owner)
+                .expect("open test exact-retention catalog");
+        assert!(
+            CampaignRunFindingExactRetentionSource::new(store.clone(), checkpoints.clone(), owner,)
+                .is_err(),
+            "a second live source must not appropriate the same catalog owner",
         );
         let loaded = Arc::new(source.checkpoints.load_attempt_checkpoint(checkpoint)?);
         let stored_scenario = source.campaign.load_scenario_artifact(scenario_artifact)?;
@@ -1252,6 +1679,9 @@ mod tests {
         );
         assert_eq!(pins.post_failure().len(), 1);
         assert!(pins.post_failure().contains(&checkpoint));
+        drop(source);
+        CampaignRunFindingExactRetentionSource::new(store, checkpoints, owner)
+            .expect("stopped predecessor releases its exact catalog owner");
         Ok(())
     }
 

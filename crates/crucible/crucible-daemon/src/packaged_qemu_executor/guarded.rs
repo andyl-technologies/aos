@@ -40,6 +40,7 @@ pub(super) struct PackagedGuardedState {
     pub(super) host:
         Option<SharedQemuAttemptHostResourceFactory<LinuxQemuAttemptHostResourceFactory>>,
     pub(super) lifecycle_cleanup: Option<Arc<crate::lifecycle_cleanup::LifecycleCleanupQueue>>,
+    pub(super) exact_retention_namespace: CampaignHash,
 }
 
 pub(crate) struct GuardedOwnerInner {
@@ -54,6 +55,7 @@ pub(crate) struct GuardedOwnerInner {
     admission: PackagedAttemptAdmission,
     profile: Mutex<Option<ExecutorCompatibilityProfile>>,
     sequence: AtomicU64,
+    pub(crate) exact_retention_namespace: CampaignHash,
     _quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
     imported_guest_assets: Option<Arc<dyn Send + Sync>>,
     _preparation:
@@ -107,6 +109,11 @@ impl GuardedCampaignOwner {
             .clone();
         let admission = PackagedAttemptAdmission::default();
         let (actor, registry) = preparation::prepare_owner(&config, admission.clone())?;
+        let exact_retention_namespace = actor.with_startup_supervisor(|supervisor| {
+            supervisor
+                .ledger()
+                .exact_catalog_owner(config.store_namespace)
+        })??;
         ram_catalog::admit_catalog_service(&config, &registry)?;
         let root = config.lifecycle.run_state_root().join("guarded-campaign");
         let storage = config
@@ -149,6 +156,7 @@ impl GuardedCampaignOwner {
                 admission,
                 profile: Mutex::new(None),
                 sequence: AtomicU64::new(0),
+                exact_retention_namespace,
                 _quota: Some(storage.quota),
                 imported_guest_assets: None,
                 _preparation: Some(actor),
@@ -204,6 +212,7 @@ impl GuardedCampaignOwner {
                 admission,
                 profile: Mutex::new(Some(profile)),
                 sequence: AtomicU64::new(0),
+                exact_retention_namespace: state.exact_retention_namespace,
                 _quota: Some(quota),
                 imported_guest_assets: None,
                 _preparation: None,

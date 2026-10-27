@@ -35,6 +35,28 @@ pub enum AttemptWorkerReconcileOutcome {
 pub struct PendingAttemptResult {
     queued: QueuedAttempt,
     result: PreparedSemanticAttemptResult,
+    exact_retention: Option<ExecutorExactResultClaim>,
+}
+
+#[derive(Clone)]
+struct ExecutorExactResultClaim {
+    execution: ExecutionId,
+    store: CampaignExecutorStore,
+}
+
+impl std::fmt::Debug for ExecutorExactResultClaim {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutorExactResultClaim")
+            .field("execution", &self.execution)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecutorExactResultClaim {
+    fn retire(&self) -> Result<(), CampaignRepositoryError> {
+        self.store.retire_exact_result(self.execution)
+    }
 }
 
 /// Captured checkpoint retained for no-write preparation retry.
@@ -74,6 +96,7 @@ pub struct PreparedAttemptResult {
     // Recovery's original metadata account survives every result phase and
     // closes after the decoded journal body.
     recovery_metadata: crucible_engine::owned_decode::DecodeCustody,
+    exact_retention: Option<ExecutorExactResultClaim>,
 }
 
 #[derive(Debug)]
@@ -175,6 +198,7 @@ impl PreparedAttemptResult {
             observation,
             finding_candidate,
             recovery_metadata,
+            exact_retention,
         } = self;
         match result {
             PreparedAttemptResultOwner::Volatile(_) => Ok(queued),
@@ -184,6 +208,7 @@ impl PreparedAttemptResult {
                 observation,
                 finding_candidate,
                 recovery_metadata,
+                exact_retention,
             })),
         }
     }
@@ -192,6 +217,13 @@ impl PreparedAttemptResult {
         match &self.result {
             PreparedAttemptResultOwner::Volatile(_) => Ok(()),
             PreparedAttemptResultOwner::Journal(journal) => journal.remove(),
+        }
+    }
+
+    pub(crate) fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        match &self.exact_retention {
+            Some(claim) => claim.retire(),
+            None => Ok(()),
         }
     }
 
@@ -262,6 +294,7 @@ pub struct PublishedAttemptResult {
     observation: ObservationId,
     finding_candidate: Option<crucible_campaign::FindingCandidateBundleId>,
     journal: Option<DirectoryPreparedResultJournal>,
+    exact_retention: Option<ExecutorExactResultClaim>,
 }
 
 /// Linear token proving the durable publication root was installed first.
@@ -456,6 +489,10 @@ impl StagedAttemptResult {
     pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
         self.prepared.remove_journal()
     }
+
+    pub(crate) fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        self.prepared.retire_exact_retention()
+    }
 }
 
 impl PublishedAttemptResult {
@@ -474,6 +511,13 @@ impl PublishedAttemptResult {
     pub(crate) fn remove_journal(&self) -> Result<(), PreparedResultJournalError> {
         match &self.journal {
             Some(journal) => journal.remove(),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn retire_exact_retention(&self) -> Result<(), CampaignRepositoryError> {
+        match &self.exact_retention {
+            Some(claim) => claim.retire(),
             None => Ok(()),
         }
     }
@@ -567,6 +611,14 @@ pub enum AttemptWorkerReconcileError<W, L> {
         published: Box<PublishedAttemptResult>,
         /// Durable journal removal failure.
         source: Box<PreparedResultJournalError>,
+    },
+    /// Completion is durable but exact-result ownership still needs retirement.
+    #[error("local exact-result retention cleanup is pending")]
+    ExactRetentionCleanupPending {
+        /// Published result retaining the exact claim for direct retry.
+        published: Box<PublishedAttemptResult>,
+        /// Repository failure from the exact claim transition.
+        source: Box<CampaignRepositoryError>,
     },
 }
 

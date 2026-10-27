@@ -647,6 +647,7 @@ pub struct CampaignRepository {
     merkle: MerkleMap,
     ram_admission: CampaignRamAdmission,
     mutation_lock: Mutex<()>,
+    executor_exact_owners: Arc<Mutex<BTreeSet<CampaignHash>>>,
     // Immutable heads are promoted only after a complete validation or from a
     // validated parent through one of the repository's exact owner mutations.
     // The map is optional bounded acceleration state, never campaign truth.
@@ -672,6 +673,8 @@ struct RepositoryMutationGuard<'a> {
 /// another fenced subsystem.
 pub struct CampaignRepositoryGcExclusionGuard {
     _publication: Box<dyn RefPublicationGuard>,
+    repository_blobs: Arc<dyn ImmutableBlobBackend>,
+    repository_refs: Arc<dyn MutableRefBackend>,
 }
 
 impl CampaignRepository {
@@ -696,6 +699,8 @@ impl CampaignRepository {
     ) -> Result<CampaignRepositoryGcExclusionGuard, CampaignRepositoryError> {
         Ok(CampaignRepositoryGcExclusionGuard {
             _publication: self.refs.acquire_publication_guard()?,
+            repository_blobs: Arc::clone(&self.blobs),
+            repository_refs: Arc::clone(&self.refs),
         })
     }
 }
@@ -724,6 +729,13 @@ pub use closure::CampaignValidationCheckpointMetrics;
 mod discovery;
 mod execution;
 mod executor_driver;
+mod executor_exact_retention;
+pub use executor_exact_retention::{
+    EXECUTOR_EXACT_RETENTION_REF, ExecutorExactCatalogAllocationCustody,
+    ExecutorExactRetentionCatalog, ExecutorExactRetentionCatalogCustody,
+    ExecutorExactRetentionManifest, ExecutorExactRetentionOwnerLease,
+    ExecutorExactRetentionSnapshot, MAX_EXECUTOR_EXACT_RETENTION_EDGES,
+};
 mod fact_references;
 #[cfg(feature = "destructive-recovery-faults")]
 mod fault_injection;

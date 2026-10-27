@@ -4,9 +4,12 @@ use std::collections::BTreeSet;
 
 use crucible_campaign::{
     CampaignArchiveManifestId, CampaignFactId, CampaignName, CampaignRepository,
-    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, PinRetention,
+    CampaignRepositoryError, CampaignSnapshotId, ConfigurationId, EXECUTOR_EXACT_RETENTION_REF,
+    PinRetention,
 };
-use crucible_store::content_store::{ContentId, RefInventoryFence, RefInventorySummary, StoreError};
+use crucible_store::content_store::{
+    ContentId, RefInventoryFence, RefInventorySummary, StoreError,
+};
 use crucible_store::owned_decode::DecodeBudget;
 
 use crate::exact_pin_retention::load_checkpoint_for_configuration;
@@ -45,12 +48,17 @@ pub(super) fn inventory_authoritative_refs(
 ) -> Result<RefInventorySummary, CampaignGcRootInventoryError> {
     let mut semantic_error = None;
     let mut archives = Vec::new();
+    let mut executor_exact_retention = None;
     let summary = fence.visit_refs(&mut |record| {
         operation.check()?;
         if semantic_error.is_some() {
             return Err(StoreError::InvalidComposition {
                 reason: "campaign GC exact-pin inventory already failed",
             });
+        }
+        if record.name().as_str() == EXECUTOR_EXACT_RETENTION_REF {
+            executor_exact_retention = Some(record.target());
+            return Ok(());
         }
         let archive_name = record
             .name()
@@ -207,6 +215,26 @@ pub(super) fn inventory_authoritative_refs(
         return Err(source);
     }
     let summary = summary.map_err(CampaignGcRootInventoryError::Ref)?;
+    if let Some(target) = executor_exact_retention {
+        operation
+            .check()
+            .map_err(CampaignGcRootInventoryError::Ref)?;
+        let manifest = repository
+            .inspect_executor_exact_retention_for_gc(target)
+            .map_err(CampaignGcRootInventoryError::Campaign)?;
+        roots
+            .insert_direct(target)
+            .map_err(RootInsertionError::into_inventory_error)?;
+        let mut insertion_error = None;
+        manifest.visit_roots(&mut |root| {
+            if insertion_error.is_none() {
+                insertion_error = roots.insert(root.content_id()).err();
+            }
+        });
+        if let Some(error) = insertion_error {
+            return Err(error.into_inventory_error());
+        }
+    }
     for archive in archives {
         let inspection = repository
             .inspect_campaign_archive_for_gc_with_boundary(archive, fence, &mut || {

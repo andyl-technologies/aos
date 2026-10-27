@@ -2575,10 +2575,10 @@ impl crate::automatic_finding_runner::FindingExactRetentionSource
         _configuration: ConfigurationId,
         _maximum_candidates: usize,
     ) -> Result<
-        Vec<ExactCheckpointId>,
+        crate::automatic_finding_runner::FindingExactCandidateInventory,
         crate::automatic_finding_runner::FindingExactCandidateInventoryError,
     > {
-        Ok(Vec::new())
+        Ok(crate::automatic_finding_runner::FindingExactCandidateInventory::fixture(Vec::new()))
     }
 
     fn exact_findings_enabled(

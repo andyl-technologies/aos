@@ -50,6 +50,7 @@ fn completed_campaign_throughput_matrix() {
                         .expect("actual Linux allocator"),
                 )),
                 lifecycle_cleanup: None,
+                exact_retention_namespace: prepared.prepared_exact_pins.owner(),
             };
             let owner = GuardedCampaignOwner::from_packaged(
                 &state,

@@ -288,6 +288,12 @@ pub use repository::{
     SavepointCaptureCursor, SavepointCaptureResolutionResult, SavepointCaptureResult,
     SavepointContinuationResult, SavepointContinuationSource, WorkerSlotId,
 };
+pub use repository::{
+    EXECUTOR_EXACT_RETENTION_REF, ExecutorExactCatalogAllocationCustody,
+    ExecutorExactRetentionCatalog, ExecutorExactRetentionCatalogCustody,
+    ExecutorExactRetentionManifest, ExecutorExactRetentionOwnerLease,
+    ExecutorExactRetentionSnapshot, MAX_EXECUTOR_EXACT_RETENTION_EDGES,
+};
 pub use statistics::{
     FiniteStatisticalEvidence, MAX_STATISTICAL_EVIDENCE_BYTES, MAX_STATISTICAL_EVIDENCE_ITEMS,
     SequentialMonteCarloEstimateReport, SequentialMonteCarloEvidence, SmcEstimateLabel,

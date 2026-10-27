@@ -140,6 +140,12 @@ pub enum PackagedQemuExecutorError {
     /// Campaign or lineage authentication failed.
     #[error(transparent)]
     Repository(#[from] CampaignRepositoryError),
+    /// A completed ledger successor failed immutable artifact authentication.
+    #[error("executor exact-retention completion failed authentication: {reason:?}")]
+    ExactRetentionCompletionValidation {
+        /// Stable retained-completion refusal.
+        reason: CompletionValidationFailure,
+    },
     /// A retained-source basis failed closed authentication.
     #[error(transparent)]
     HotForkSourceBasis(#[from] AuthenticatedQemuHotForkSourceBasisError),

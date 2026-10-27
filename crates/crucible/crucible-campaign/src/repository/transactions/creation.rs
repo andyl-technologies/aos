@@ -37,6 +37,7 @@ impl CampaignRepository {
             merkle,
             ram_admission,
             mutation_lock: Mutex::new(()),
+            executor_exact_owners: Arc::new(Mutex::new(BTreeSet::new())),
             validated_heads: Mutex::new(BTreeMap::new()),
             beam_projection_cache: Mutex::new(None),
             planner_authority: None,

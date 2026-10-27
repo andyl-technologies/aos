@@ -1312,12 +1312,19 @@ where
     )?;
     let repository = Arc::new(repository);
     let checkpoints = campaign_run_exact_checkpoint_store(&request, &repository)?;
-    let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
-        CampaignExecutorStore::new(Arc::clone(&repository)),
-        checkpoints,
-    ));
+    let campaign = super::guarded_default_campaign_name(&request)
+        .map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let exact_retention = Arc::new(
+        CampaignRunFindingExactRetentionSource::new(
+            CampaignExecutorStore::new(Arc::clone(&repository)),
+            checkpoints,
+            crate::automatic_finding_runner::synchronous_exact_retention_owner(&campaign, None),
+        )
+        .map_err(GuardedDefaultCampaignRunError::Repository)?,
+    );
     let completed = run_guarded_default_campaign_with_repository(
         request,
+        campaign,
         runner,
         operation_only_preparation,
         execution_evidence,
@@ -2297,10 +2304,19 @@ fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
             fail_start: true,
             mode: TerminalLifecycleMode::Terminal,
         });
-    let runner = QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver);
+    let retention_calls = Arc::new(AtomicUsize::new(0));
+    let runner = FailureRetentionProbe {
+        inner: QemuFreshExecutionRunner::new(factory, QemuFreshModeledDriver),
+        retention_calls: Arc::clone(&retention_calls),
+    };
 
     let error = run_guarded_default_campaign_with_runner(request, runner, evidence)
         .expect_err("injected lifecycle failure must reach the daemon caller");
+    assert_eq!(
+        retention_calls.load(Ordering::SeqCst),
+        1,
+        "the execution model must invoke failure retention before releasing its GC fence",
+    );
     assert!(matches!(
         &error,
         GuardedDefaultCampaignRunError::Supervisor(_)
@@ -2322,6 +2338,36 @@ fn shared_owner_preserves_the_terminal_lifecycle_error_source() {
             String::from("injected guarded lifecycle start failure"),
         ))
     );
+}
+
+struct FailureRetentionProbe<R> {
+    inner: R,
+    retention_calls: Arc<AtomicUsize>,
+}
+
+impl<R> CrucibleExecutionRunner for FailureRetentionProbe<R>
+where
+    R: CrucibleExecutionRunner,
+{
+    type Error = R::Error;
+
+    fn execute(
+        &mut self,
+        input: &crate::CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+    ) -> Result<crate::CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>> {
+        self.inner.execute(input, context)
+    }
+
+    fn retain_execution_failure(
+        &mut self,
+        _input: &crate::CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _gc_exclusion: &crucible_campaign::CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), AttemptWorkerFailure<Self::Error>> {
+        self.retention_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 fn request() -> (GuardedDefaultCampaignRunRequest, NodeId) {

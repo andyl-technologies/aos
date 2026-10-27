@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 699 bindings: 680 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 701 bindings: 682 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -108,9 +108,56 @@ All six Directory ref controls, ninety testing-standard controls and five
 engineering-hygiene controls also pass. The recovery classifier binds the
 expanded exact source and retains adversarial checks for extra attempts,
 changed originals, missing owner retirement and weakened progress assertions.
-Core evaluation and Nix formatting pass. The mandatory application-target
-compilation is still running for this checkpoint; no successful result is
-claimed yet.
+Core evaluation and Nix formatting pass. Mandatory application-target
+compilation passes for checkpoint `6197cae8eb` at
+`8m7f5accj9x6cbkrqrgyynaphyrkf1sv-aos-test-targets-0.1.0`: 185 executable
+test artifacts from all 58 selected application packages. Its frozen source is
+`0y3i7mlhfjvfyakmg59wqqma24flikzz-aos-workspace-src`. Of 5,474 compared
+Rust, TOML and lockfile inputs, 5,473 match; the sole differing policy-test file
+belongs to the excluded `crucible-test-support` package and passes separately.
+This build predates the later World admission, observation-builder and source
+fence changes, and the executor retention work below; it does not validate them.
+
+#### Executor exact-candidate handoff retention
+
+A bounded version-one `executor-exact-retention/v1` ref atomically retains
+producer catalogs and per-execution result claims. Capture candidates remain
+rooted after runner return; selected result roots gain independent durable
+ownership before publication releases its execution GC fence. Prepared, staged
+and published result tokens carry this claim through retry. Recovery authenticates
+the journal execution and selected root set before reconstructing ownership;
+terminal reconciliation retires the claim after durable ledger succession.
+Completed startup recovery also authenticates the published bundle and closure.
+
+The catalog owner derives from the retained assignment-ledger writer lock and
+campaign namespace. Concurrent reuse refuses. Catalog allocation, decoding and
+projection remain charged to the same original metadata account; bounded snapshot
+custody survives until its decoded maps close. Candidate inventories retain their
+own prepaid allocation custody, and incomplete markers count toward catalog
+growth before allocation. Synchronous snapshot publication holds the catalog lock
+through its durable update. The index limits the combined
+catalogs, markers and results to 65,536 entries, each configuration to 4,096
+candidates and each result to 256 roots. Invalid receipts, foreign GC guards,
+unknown versions, over-limit wire counts and ambiguous persistence refuse.
+
+Synchronous and packaged runner failures withdraw unretained candidates before
+their GC fence closes, preserving both the initiating failure classification and
+a later retention error. The packaged actor serializes snapshot installation with
+a release acknowledgment; invalidation waits for the actor while the caller
+still retains its GC fence. Empty complete catalogs require no RAM authority.
+Existing replay-capture publication exclusion also remains held through Publishing.
+
+All six index tests and four real-GC tests pass, including actual RAM descendants,
+restart, terminal claim retirement and failed handoff reclamation. Eight retention
+controls, the marker-growth regression, six actor/failure/identity controls and
+seven existing recovery controls also pass against the final Rust source.
+All-target checking, ninety policy controls and five hygiene controls pass for
+that source; core evaluation also passes. The required application-target build
+for the current source is still running. The updated coverage inventory verifies
+all thirteen normative source
+digests and counts 657 model, 25 format and nineteen native cases; it qualifies
+no capability. Native activation, physical return, paging and performance remain
+unfinished.
 
 #### Source birth, collection and control returns
 

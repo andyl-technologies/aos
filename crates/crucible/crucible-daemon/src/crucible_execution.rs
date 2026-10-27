@@ -967,6 +967,45 @@ pub trait CrucibleExecutionRunner {
         context: &AttemptExecutionContext,
     ) -> Result<CrucibleExecutionOutcome, AttemptWorkerFailure<Self::Error>>;
 
+    /// Transfers exact-candidate ownership while execution GC exclusion remains held.
+    ///
+    /// Runners that publish terminal exact candidates use this hook to install
+    /// a bounded durable catalog and a per-result successor before returning to
+    /// the ordinary result pipeline. Other runners retain no such candidates.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure without releasing the caller's exclusion.
+    fn retain_execution_result(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _product: &AttemptExecutionProduct,
+        _gc_exclusion: &crucible_campaign::CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), AttemptWorkerFailure<Self::Error>> {
+        Ok(())
+    }
+
+    /// Persists runner-owned exact candidates after a failed execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure while the caller still holds GC exclusion.
+    fn retain_execution_failure(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        _gc_exclusion: &crucible_campaign::CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), AttemptWorkerFailure<Self::Error>> {
+        Ok(())
+    }
+
+    /// Withdraws candidates that could not be transferred durably.
+    ///
+    /// This hook must stop the runner from advertising any candidate added by
+    /// the failed execution before the execution GC exclusion is released.
+    fn abandon_unretained_candidates(&mut self) {}
+
     /// Reconciles operational authority retained after one successful result.
     ///
     /// Runners without a retained process or template use the default no-op.
@@ -1076,6 +1115,31 @@ pub enum CrucibleExecutionModelError<E> {
     /// The concrete Crucible runner failed after authentication.
     #[error("Crucible execution runner failed")]
     Runner(#[source] E),
+    /// Execution failed and its later exact-retention handoff also failed.
+    #[error("Crucible execution and exact-retention handoff both failed")]
+    RunnerRetention {
+        /// The failure that ended execution and determines retry disposition.
+        #[source]
+        initiating: E,
+        /// The later failure while preserving captured exact candidates.
+        retention: E,
+    },
+    /// Required exact restore failed and preserving its captures also failed.
+    #[error("required exact restore and exact-retention handoff both failed")]
+    ExactRestoreRetention {
+        /// The failure while preserving captures from the rejected execution.
+        #[source]
+        retention: E,
+    },
+    /// Selected-source authentication and later capture retention both failed.
+    #[error("selected-source authentication and exact-retention handoff both failed")]
+    RepositoryRetention {
+        /// The failure that rejected the selected source.
+        #[source]
+        initiating: crucible_campaign::CampaignRepositoryError,
+        /// The later failure while preserving captures from that execution.
+        retention: E,
+    },
     /// A public exact-source continuation ran through a lower tier.
     #[error("selected public exact source did not materialize by exact restore")]
     ExactRestoreRequired,
@@ -1112,7 +1176,7 @@ where
         // Terminal native captures have no durable campaign pin. GC must not pass
         // its ref-inventory fence between root-last publication and restore.
         let outcome = {
-            let _gc_exclusion =
+            let gc_exclusion =
                 self.store
                     .acquire_execution_gc_exclusion_guard()
                     .map_err(|error| {
@@ -1120,27 +1184,75 @@ where
                             error,
                         ))
                     })?;
-            self.runner
-                .execute(&decoded, context)
-                .map_err(map_runner_failure)?
-        };
-        let (product, materialization) = outcome.into_parts();
-        if let crucible_campaign::AttemptStartMode::SelectedSavepoint {
-            snapshot, request, ..
-        } = context.start_mode()
-        {
-            let requires_exact = match self
-                .store
-                .selected_capture_requires_exact_restore(snapshot, request)
-            {
-                Ok(requires_exact) => requires_exact,
-                Err(error) => {
-                    self.runner.quarantine_pending_execution();
-                    return Err(AttemptWorkerFailure::Terminal(error.into()));
+            let outcome = match self.runner.execute(&decoded, context) {
+                Ok(outcome) => outcome,
+                Err(failure) => {
+                    if let Err(retention) =
+                        self.runner
+                            .retain_execution_failure(&decoded, context, &gc_exclusion)
+                    {
+                        self.runner.abandon_unretained_candidates();
+                        return Err(combine_runner_retention_failures(failure, retention));
+                    }
+                    return Err(map_runner_failure(failure));
                 }
             };
-            enforce_required_exact_restore(&mut self.runner, requires_exact, materialization)?;
-        }
+            if let crucible_campaign::AttemptStartMode::SelectedSavepoint {
+                snapshot,
+                request,
+                ..
+            } = context.start_mode()
+            {
+                let requires_exact = match self
+                    .store
+                    .selected_capture_requires_exact_restore(snapshot, request)
+                {
+                    Ok(requires_exact) => requires_exact,
+                    Err(error) => {
+                        self.runner.quarantine_pending_execution();
+                        if let Err(retention) =
+                            self.runner
+                                .retain_execution_failure(&decoded, context, &gc_exclusion)
+                        {
+                            self.runner.abandon_unretained_candidates();
+                            return Err(AttemptWorkerFailure::Terminal(
+                                CrucibleExecutionModelError::RepositoryRetention {
+                                    initiating: error,
+                                    retention: worker_failure_cause(retention),
+                                },
+                            ));
+                        }
+                        return Err(AttemptWorkerFailure::Terminal(error.into()));
+                    }
+                };
+                if let Err(exact_failure) = enforce_required_exact_restore(
+                    &mut self.runner,
+                    requires_exact,
+                    outcome.materialization(),
+                ) {
+                    if let Err(retention) =
+                        self.runner
+                            .retain_execution_failure(&decoded, context, &gc_exclusion)
+                    {
+                        self.runner.abandon_unretained_candidates();
+                        return Err(map_exact_restore_retention_failure(retention));
+                    }
+                    return Err(exact_failure);
+                }
+            }
+            if let Err(failure) = self.runner.retain_execution_result(
+                &decoded,
+                context,
+                outcome.product(),
+                &gc_exclusion,
+            ) {
+                self.runner.quarantine_pending_execution();
+                self.runner.abandon_unretained_candidates();
+                return Err(map_runner_failure(failure));
+            }
+            outcome
+        };
+        let (product, materialization) = outcome.into_parts();
         self.last_materialization = Some(materialization);
         record_materialization_diagnostic(input, materialization);
         Ok(product)
@@ -1206,9 +1318,97 @@ fn map_runner_failure<E>(
     }
 }
 
+fn combine_runner_retention_failures<E>(
+    initiating: AttemptWorkerFailure<E>,
+    retention: AttemptWorkerFailure<E>,
+) -> AttemptWorkerFailure<CrucibleExecutionModelError<E>> {
+    let retention = worker_failure_cause(retention);
+    match initiating {
+        AttemptWorkerFailure::Retryable(initiating) => {
+            AttemptWorkerFailure::Retryable(CrucibleExecutionModelError::RunnerRetention {
+                initiating,
+                retention,
+            })
+        }
+        AttemptWorkerFailure::Canceled(initiating) => {
+            AttemptWorkerFailure::Canceled(CrucibleExecutionModelError::RunnerRetention {
+                initiating,
+                retention,
+            })
+        }
+        AttemptWorkerFailure::Terminal(initiating) => {
+            AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::RunnerRetention {
+                initiating,
+                retention,
+            })
+        }
+    }
+}
+
+fn map_exact_restore_retention_failure<E>(
+    retention: AttemptWorkerFailure<E>,
+) -> AttemptWorkerFailure<CrucibleExecutionModelError<E>> {
+    AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::ExactRestoreRetention {
+        retention: worker_failure_cause(retention),
+    })
+}
+
+fn worker_failure_cause<E>(failure: AttemptWorkerFailure<E>) -> E {
+    match failure {
+        AttemptWorkerFailure::Retryable(error)
+        | AttemptWorkerFailure::Canceled(error)
+        | AttemptWorkerFailure::Terminal(error) => error,
+    }
+}
+
 #[cfg(test)]
 mod exact_source_tests {
     use super::*;
+
+    #[test]
+    fn later_retention_failure_preserves_the_initiating_failure_class_and_both_causes() {
+        for (class, expected_initiating, initiating) in [
+            (
+                "retryable",
+                "retry cause",
+                AttemptWorkerFailure::Retryable("retry cause"),
+            ),
+            (
+                "canceled",
+                "cancel cause",
+                AttemptWorkerFailure::Canceled("cancel cause"),
+            ),
+            (
+                "terminal",
+                "terminal cause",
+                AttemptWorkerFailure::Terminal("terminal cause"),
+            ),
+        ] {
+            let combined = combine_runner_retention_failures(
+                initiating,
+                AttemptWorkerFailure::Terminal("retention cause"),
+            );
+            let (actual_class, initiating, retention) = match combined {
+                AttemptWorkerFailure::Retryable(CrucibleExecutionModelError::RunnerRetention {
+                    initiating,
+                    retention,
+                }) => ("retryable", initiating, retention),
+                AttemptWorkerFailure::Canceled(CrucibleExecutionModelError::RunnerRetention {
+                    initiating,
+                    retention,
+                }) => ("canceled", initiating, retention),
+                AttemptWorkerFailure::Terminal(CrucibleExecutionModelError::RunnerRetention {
+                    initiating,
+                    retention,
+                }) => ("terminal", initiating, retention),
+                _ => panic!("combined failure must retain both runner causes"),
+            };
+
+            assert_eq!(actual_class, class);
+            assert_eq!(initiating, expected_initiating);
+            assert_eq!(retention, "retention cause");
+        }
+    }
 
     #[test]
     fn lazy_phase_notice_skips_unadmitted_work_and_preserves_failed_writes() {

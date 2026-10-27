@@ -1,6 +1,7 @@
 //! Staging, publication, recovery, and reconciliation for prepared results.
 
 use super::*;
+use std::collections::BTreeSet;
 
 /// Installs the durable checkpoint root with a short supervisor CAS.
 ///
@@ -183,14 +184,31 @@ pub fn prepare_attempt_result<W>(
         }
     };
     match product {
-        AttemptExecutionProduct::PreparedSemantic(result) => prepare_pending_attempt_result(
-            store,
-            PendingAttemptResult {
-                queued,
-                result: *result,
-            },
-        )
-        .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared))),
+        AttemptExecutionProduct::PreparedSemantic(result) => {
+            let result = *result;
+            let exact_retention = match exact_result_claim(store, queued.execution(), &result) {
+                Ok(claim) => claim,
+                Err(source) => {
+                    return Err(AttemptResultPreparationError::Candidate {
+                        pending: Box::new(PendingAttemptResult {
+                            queued,
+                            result,
+                            exact_retention: None,
+                        }),
+                        source: Box::new(source.into()),
+                    });
+                }
+            };
+            prepare_pending_attempt_result(
+                store,
+                PendingAttemptResult {
+                    exact_retention,
+                    queued,
+                    result,
+                },
+            )
+            .map(|prepared| PreparedAttemptWorkResult::Observation(Box::new(prepared)))
+        }
         AttemptExecutionProduct::ExactCheckpoint(capture) => prepare_pending_checkpoint_result(
             checkpoints,
             PendingCheckpointResult {
@@ -393,6 +411,16 @@ pub fn recover_prepared_attempt_result(
         }
     }
 
+    let execution = journal.execution();
+    let exact_retention = match exact_result_claim(store, execution, journal.result()) {
+        Ok(claim) => claim,
+        Err(source) => {
+            return Err(AttemptResultRecoveryError {
+                queued: Box::new(queued),
+                source: Box::new(AttemptResultPreparationFailure::Repository(source).into()),
+            });
+        }
+    };
     Ok(PreparedAttemptRecoveryOutcome::Prepared(Box::new(
         PreparedAttemptResult {
             queued,
@@ -400,8 +428,36 @@ pub fn recover_prepared_attempt_result(
             observation,
             finding_candidate,
             recovery_metadata: Default::default(),
+            exact_retention,
         },
     )))
+}
+
+fn selected_exact_roots(
+    result: &PreparedSemanticAttemptResult,
+) -> Option<&BTreeSet<ExactCheckpointId>> {
+    result
+        .finding()
+        .map(|finding| finding.bundle().exact_pins().all())
+}
+
+fn exact_result_claim(
+    store: &CampaignExecutorStore,
+    execution: ExecutionId,
+    result: &PreparedSemanticAttemptResult,
+) -> Result<Option<ExecutorExactResultClaim>, CampaignRepositoryError> {
+    let empty = BTreeSet::new();
+    let expected = selected_exact_roots(result).unwrap_or(&empty);
+    match store.validates_exact_result_claim(execution, expected)? {
+        Some(true) => Ok(Some(ExecutorExactResultClaim {
+            execution,
+            store: store.clone(),
+        })),
+        Some(false) => Err(CampaignRepositoryError::Integrity {
+            reason: "prepared exact finding differs from its durable executor result claim",
+        }),
+        None => Ok(None),
+    }
 }
 
 fn validate_recovered_finding_replay_captures(
@@ -509,6 +565,7 @@ fn prepare_pending_attempt_result<W>(
         None => None,
     };
     let result = pending.result.clone();
+    let exact_retention = pending.exact_retention.clone();
     let queued = pending.queued;
     if let Err(source) = validate_prepared_semantic_attempt_result(
         store,
@@ -516,7 +573,11 @@ fn prepare_pending_attempt_result<W>(
         &result,
     ) {
         return Err(AttemptResultPreparationError::Candidate {
-            pending: Box::new(PendingAttemptResult { queued, result }),
+            pending: Box::new(PendingAttemptResult {
+                queued,
+                result,
+                exact_retention,
+            }),
             source: Box::new(source),
         });
     }
@@ -526,6 +587,7 @@ fn prepare_pending_attempt_result<W>(
         observation,
         finding_candidate,
         recovery_metadata: Default::default(),
+        exact_retention,
     })
 }
 
@@ -727,6 +789,7 @@ pub fn publish_prepared_attempt_result(
         observation: prepared.observation,
         finding_candidate: prepared.finding_candidate,
         journal: prepared.result.into_journal(),
+        exact_retention: prepared.exact_retention,
     })
 }
 
@@ -889,6 +952,12 @@ where
             });
         }
     };
+    if let Err(source) = published.retire_exact_retention() {
+        return Err(AttemptWorkerReconcileError::ExactRetentionCleanupPending {
+            published: Box::new(published),
+            source: Box::new(source),
+        });
+    }
     if let Err(source) = published.remove_journal() {
         return Err(AttemptWorkerReconcileError::JournalCleanupPending {
             published: Box::new(published),

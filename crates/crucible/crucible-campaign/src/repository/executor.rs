@@ -5,10 +5,10 @@ use crucible_store::content_store::PutReceipt;
 
 /// Narrow immutable-record capability supplied to a local campaign executor.
 ///
-/// This facade deliberately exposes no campaign head, mutable-ref, owner
-/// projection, or coordinator transaction methods. It can authenticate the
-/// records needed to execute one attempt and publish a content-addressed
-/// observation candidate for later coordinator admission.
+/// This facade deliberately exposes no campaign head or general coordinator
+/// transaction methods. It authenticates one attempt, publishes immutable
+/// observation candidates, and performs only the bounded exact-retention ref
+/// transitions needed to hand executor-owned roots to durable result custody.
 #[derive(Clone)]
 pub struct CampaignExecutorStore {
     repository: Arc<CampaignRepository>,
@@ -41,6 +41,10 @@ impl CampaignExecutorStore {
     #[must_use]
     pub const fn new(repository: Arc<CampaignRepository>) -> Self {
         Self { repository }
+    }
+
+    pub(super) fn repository(&self) -> &Arc<CampaignRepository> {
+        &self.repository
     }
 
     /// Projects the original storage metadata authority without creating capacity.

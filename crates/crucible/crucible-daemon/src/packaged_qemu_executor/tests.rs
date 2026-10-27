@@ -15,16 +15,17 @@ use std::time::Duration;
 use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_campaign::{
     AssignmentId, AttemptId, BudgetGrant, CampaignCommandId, CampaignControlAction,
-    CampaignLineage, CampaignLineageId, CampaignMode, CampaignOperationalStatus, CampaignPolicy,
-    CampaignSeed, CampaignWorldStatus, ConfigurationId, ControlRequest, CoverageProjection,
-    ExactCheckpointId, ExactRational, ExecutionId, ExecutionRetentionIntent, ExecutorClient,
-    ExplorerPolicy, FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId,
-    FindingCandidateCore, FindingExactPins, FindingExactRetention,
-    FindingExactRetentionDisposition, FindingExactRetentionIncomplete, FindingKind,
-    FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
-    FindingTarget, MeasurementSet, Observation, ObservationCandidate, PinChange, PinRequest,
-    PinRetention, ProgressiveWideningPolicy, PropertyVerdictSet, PuctPolicy, RetentionPolicy,
-    ScenarioDefId, StopOutcome, SubmitAttemptRequest,
+    CampaignExecutorStore, CampaignLineage, CampaignLineageId, CampaignMode,
+    CampaignOperationalStatus, CampaignPolicy, CampaignSeed, CampaignWorldStatus, ConfigurationId,
+    ControlRequest, CoverageProjection, ExactCheckpointId, ExactRational, ExecutionId,
+    ExecutionRetentionIntent, ExecutorClient, ExecutorExactRetentionCatalog, ExplorerPolicy,
+    FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateCore,
+    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition,
+    FindingExactRetentionIncomplete, FindingKind, FindingMinimizationEvidence, FindingSignature,
+    FindingSignatureMinimizationEvidence, FindingTarget, MeasurementSet, Observation,
+    ObservationCandidate, PinChange, PinRequest, PinRetention, ProgressiveWideningPolicy,
+    PropertyVerdictSet, PuctPolicy, RetentionPolicy, ScenarioDefId, StopOutcome,
+    SubmitAttemptRequest,
 };
 use crucible_engine::{
     Configuration, ContentHash, ExecutionFingerprint, FingerprintSample, Icount, NodeId, Plan,
@@ -981,7 +982,9 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
         .expect("same original exact-pin namespace account");
     let repository = Arc::new(CampaignRepository::new(
         backend.clone(),
-        Arc::new(MemoryRefBackend::new()),
+        Arc::new(crucible_store::content_store::DirectoryRefBackend::new(
+            directory.path().join("refs"),
+        )),
         crucible_campaign::CampaignRamAdmission::Available(original),
     ));
     let scenario = production.source().scenario_def();
@@ -1079,6 +1082,229 @@ fn apply_exact_pin_command(
             },
         )
         .expect("apply exact pin");
+}
+
+#[test]
+fn durable_catalog_snapshot_serializes_its_successor_until_release() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let directory = tempfile::tempdir().expect("packaged catalog serialization directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
+        .expect("open one exclusive assignment ledger");
+    let (prepared, _observer) = exact_pin_materializer::prepare_packaged_exact_pin_materializer(
+        Arc::clone(&fixture.repository),
+        Arc::clone(&fixture.checkpoints),
+        BTreeSet::from([fixture.campaign.clone()]),
+        CampaignHash::derive("crucible.test.packaged-catalog-owner.v1", b"serialized"),
+        &ledger,
+        &directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY),
+    )
+    .expect("prepare exact-pin materializer");
+    let handle = prepared.durable_catalog_test_handle();
+    let owner = prepared.start(|| {}).expect("start exact-pin materializer");
+
+    let first = handle.acquire();
+    assert!(first.is_empty_complete());
+
+    let second_handle = handle.clone();
+    let (second_acquired, observe_second) = std::sync::mpsc::sync_channel(1);
+    let (release_second, await_second_release) = std::sync::mpsc::sync_channel(0);
+    let successor = thread::spawn(move || {
+        let second = second_handle.acquire();
+        second_acquired
+            .send(second.is_empty_complete())
+            .expect("report successor acquisition");
+        await_second_release
+            .recv()
+            .expect("release successor snapshot");
+        drop(second);
+    });
+
+    assert!(matches!(
+        observe_second.recv_timeout(Duration::from_millis(25)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    drop(first);
+    assert!(
+        observe_second
+            .recv_timeout(Duration::from_secs(1))
+            .expect("successor acquires after predecessor release")
+    );
+
+    release_second.send(()).expect("release successor");
+    successor.join().expect("join successor acquisition");
+    owner.join().expect("join exact-pin materializer");
+}
+
+#[test]
+fn catalog_allocation_custody_counts_roots_and_incomplete_markers() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let directory = tempfile::tempdir().expect("catalog allocation custody directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    let mut ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
+        .expect("open one exclusive assignment ledger");
+    let namespace = CampaignHash::derive(
+        "crucible.test.packaged-catalog-owner.v1",
+        b"allocation-custody",
+    );
+    let owner = ledger
+        .exact_catalog_owner(namespace)
+        .expect("derive durable catalog owner");
+    let incomplete = ConfigurationId::from_hash(CampaignHash::derive(
+        "crucible.test.packaged-incomplete-configuration.v1",
+        b"incomplete",
+    ));
+    let catalog =
+        ExecutorExactRetentionCatalog::new(Vec::new(), BTreeSet::from([incomplete]), false)
+            .expect("one retained incomplete marker catalog");
+    let gc_exclusion = fixture
+        .repository
+        .acquire_gc_exclusion_guard()
+        .expect("short catalog publication exclusion");
+    CampaignExecutorStore::new(Arc::clone(&fixture.repository))
+        .replace_exact_catalog_under(&gc_exclusion, owner, catalog)
+        .expect("publish durable catalog fixture");
+    drop(gc_exclusion);
+
+    // Restoring the marker admits one entry. A distinct ledger root must grow
+    // that same custody to two entries before it enters the live catalog.
+    let key = AttemptExecutionKey::new(
+        CampaignLineageId::parse(&format!(
+            "crucible.campaign.lineage@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"catalog-custody-lineage").encode()
+        ))
+        .expect("catalog custody lineage"),
+        AttemptId::parse(&format!(
+            "crucible.campaign.attempt@{}",
+            ContentId::for_bytes(ObjectKind::CampaignFact, 9, b"catalog-custody-attempt").encode()
+        ))
+        .expect("catalog custody attempt"),
+    );
+    let paused = AttemptRuntimeState::Paused {
+        execution_basis: CampaignHash::derive("catalog-custody-execution-basis", b"paused"),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: DaemonEpoch::from_bytes([0x72; 16]).expect("catalog daemon epoch"),
+        execution: ExecutionId::from_bytes([0x73; 16]).expect("catalog execution identity"),
+        checkpoint: fixture.checkpoint,
+        promotion_basis: None,
+        source_transfer: None,
+    };
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(paused))
+            .expect("retain authenticated paused checkpoint root"),
+        AttemptStateCas::Advanced
+    );
+
+    let (prepared, _observer) = exact_pin_materializer::prepare_packaged_exact_pin_materializer(
+        Arc::clone(&fixture.repository),
+        Arc::clone(&fixture.checkpoints),
+        BTreeSet::from([fixture.campaign.clone()]),
+        namespace,
+        &ledger,
+        &directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY),
+    )
+    .expect("prepare materializer with retained incomplete marker");
+
+    assert!(prepared.catalog_allocation_admitted_entries() >= 2);
+}
+
+#[test]
+fn failed_handoff_waits_for_owned_snapshot_before_catalog_invalidation() {
+    let _original_fixture_scope =
+        crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+
+    let directory = tempfile::tempdir().expect("packaged invalidation serialization directory");
+    let fixture = exact_pin_materializer_fixture(&directory);
+    let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
+        .expect("open one exclusive assignment ledger");
+    let (prepared, _observer) = exact_pin_materializer::prepare_packaged_exact_pin_materializer(
+        Arc::clone(&fixture.repository),
+        Arc::clone(&fixture.checkpoints),
+        BTreeSet::from([fixture.campaign.clone()]),
+        CampaignHash::derive("crucible.test.packaged-catalog-owner.v1", b"invalidate"),
+        &ledger,
+        &directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY),
+    )
+    .expect("prepare exact-pin materializer");
+    let source = prepared.finding_retention_source();
+    let handle = prepared.durable_catalog_test_handle();
+    let owner = prepared.start(|| {}).expect("start exact-pin materializer");
+    let predecessor = handle.acquire();
+
+    let (invalidated, observe_invalidation) = std::sync::mpsc::sync_channel(1);
+    let invalidator = thread::spawn(move || {
+        source.abandon_unretained_candidates();
+        invalidated.send(()).expect("report catalog invalidation");
+    });
+    assert!(matches!(
+        observe_invalidation.recv_timeout(Duration::from_millis(25)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+
+    drop(predecessor);
+    observe_invalidation
+        .recv_timeout(Duration::from_secs(1))
+        .expect("invalidation completes after predecessor release");
+    invalidator.join().expect("join catalog invalidation");
+    let invalidated_catalog = handle.acquire();
+    assert!(!invalidated_catalog.is_empty_complete());
+    drop(invalidated_catalog);
+
+    owner.join().expect("join exact-pin materializer");
+}
+
+#[test]
+fn empty_durable_catalog_needs_no_ram_authority_for_snapshot_or_retention() {
+    let directory = tempfile::tempdir().expect("empty packaged catalog directory");
+    let repository = repository_with_campaigns(&[("packaged", b"empty", "qemu-test")]);
+    let campaign = CampaignName::new("packaged").expect("campaign name");
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(
+            Arc::new(DirectoryBlobBackend::new(
+                "empty-packaged-exact-pin-store",
+                directory.path().join("checkpoints"),
+            )),
+            1024 * 1024,
+            repository.ram_retention_authority(),
+        )
+        .expect("empty exact checkpoint store"),
+    );
+    let ledger = DirectoryAssignmentLedger::open(directory.path().join("ledger"))
+        .expect("open one exclusive assignment ledger");
+    let (prepared, _observer) = exact_pin_materializer::prepare_packaged_exact_pin_materializer(
+        Arc::clone(&repository),
+        checkpoints,
+        BTreeSet::from([campaign]),
+        CampaignHash::derive("crucible.test.empty-packaged-catalog-owner.v1", b"empty"),
+        &ledger,
+        &directory.path().join(EXACT_PIN_MATERIALIZATION_DIRECTORY),
+    )
+    .expect("prepare empty exact-pin materializer without RAM authority");
+    let source = prepared.finding_retention_source();
+    let handle = prepared.durable_catalog_test_handle();
+    let owner = prepared
+        .start(|| {})
+        .expect("start empty exact-pin materializer");
+
+    let snapshot = handle.acquire();
+    assert!(snapshot.is_empty_complete());
+    drop(snapshot);
+    let gc_exclusion = repository
+        .acquire_gc_exclusion_guard()
+        .expect("short empty-catalog exclusion");
+    source
+        .retain_execution_catalog(&gc_exclusion)
+        .expect("empty failure handoff is a no-op without RAM authority");
+    drop(gc_exclusion);
+
+    owner
+        .join()
+        .expect("empty catalog retires without RAM authority");
 }
 
 #[test]

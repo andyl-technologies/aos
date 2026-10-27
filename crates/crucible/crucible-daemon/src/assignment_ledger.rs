@@ -1521,6 +1521,37 @@ impl DirectoryAssignmentLedger {
         &self.root
     }
 
+    /// Derives catalog custody from the authenticated writer-lock inode.
+    ///
+    /// Two ledgers with different writer authorities cannot name the same
+    /// executor catalog, even when a caller repeats a logical store namespace.
+    /// Reopening the same ledger after its predecessor stops preserves the
+    /// owner because the descriptor-bound lock file remains the same inode.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a replaced lock-file binding or missing descriptor authority.
+    pub(crate) fn exact_catalog_owner(
+        &self,
+        namespace: CampaignHash,
+    ) -> Result<CampaignHash, AssignmentLedgerError> {
+        self.writer_lock
+            .verify_path_binding()
+            .map_err(|source| anchored_ledger_error(source, "verify-exact-catalog-writer"))?;
+        let (device, inode) = self
+            .writer_lock
+            .bound_identity()
+            .ok_or_else(|| corrupt("exact-catalog-writer-is-not-path-bound"))?;
+        let mut material = [0_u8; 48];
+        material[..32].copy_from_slice(&namespace.as_bytes());
+        material[32..40].copy_from_slice(&device.to_be_bytes());
+        material[40..].copy_from_slice(&inode.to_be_bytes());
+        Ok(CampaignHash::derive(
+            "crucible.executor.exact-catalog-writer.v1",
+            &material,
+        ))
+    }
+
     fn assignment_path(&self, assignment: AssignmentId) -> PathBuf {
         let encoded = encode_hex(&assignment.as_bytes());
         self.root

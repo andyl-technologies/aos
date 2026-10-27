@@ -1,12 +1,386 @@
 //! GC retains each lazy reader's authenticated RAM graph without freezing unrelated collection.
 
 use super::*;
+use crucible_campaign::{CampaignExecutorStore, FindingExactCheckpointAuthenticator};
 use crucible_control_api::host_operational::{
     HostRamCaptureScope as Scope, HostRamInventoryLimits as Limits,
     HostRamInventoryRegion as RegionDescriptor, HostRamInventoryRegionClass as RegionClass,
     HostRamInventoryTopology as Topology,
 };
 use crucible_store::ram::{RamStore, RamStoreLimits};
+
+use crate::ExactCheckpointStore;
+use crate::automatic_finding_runner::{
+    CampaignRunFindingExactRetentionSource, FindingExactCandidateInventoryError,
+    FindingExactRetentionSource, FindingTerminalCheckpointIdentity,
+};
+
+#[test]
+fn failed_post_capture_handoff_withdraws_candidate_before_real_gc() {
+    let _fixture_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+    let directory = tempfile::tempdir().expect("failed capture retention storage");
+    let fixture_directory = tempfile::tempdir().expect("production checkpoint fixture");
+    let fixture =
+        crate::build_exact_ram_production_checkpoint_codec_fixture(fixture_directory.path())
+            .expect("production checkpoint fixture");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "failed-capture-retention-gc",
+        directory.path().join("objects"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
+    let admitted = Arc::new(ComponentRamBackend::new(blobs.clone(), None));
+    let original = crucible_store::owned_decode::DecodeBudget::for_store(
+        admitted
+            .metadata_resources()
+            .expect("failed capture metadata resources"),
+    )
+    .expect("failed capture original");
+    let repository = Arc::new(CampaignRepository::new(
+        admitted.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(original.clone()),
+    ));
+    let scenario = fixture.source().scenario_def();
+    let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));
+    let encoded_scenario = crate::encode_crucible_scenario_artifact(fixture.source())
+        .expect("encode scenario artifact");
+    let scenario_artifact = repository
+        .publish_scenario_artifact(
+            scenario_id,
+            encoded_scenario.payload_schema(),
+            encoded_scenario.payload().to_vec(),
+        )
+        .expect("publish scenario artifact");
+    let configuration =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(fixture.configuration().id().bytes));
+    let checkpoints = Arc::new(
+        ExactCheckpointStore::new(
+            admitted.clone(),
+            u64::MAX,
+            repository.ram_retention_authority(),
+        )
+        .expect("checkpoint store")
+        .with_ram_root_resources(
+            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+                .expect("checkpoint root resources"),
+        ),
+    );
+    let prepared = checkpoints
+        .prepare_production_closure(fixture.closure().clone())
+        .expect("prepare production checkpoint");
+    let checkpoint = checkpoints
+        .publish_production_closure(&prepared)
+        .expect("publish production checkpoint")
+        .root();
+    let owner = hash("crucible.test.failed-capture-retention-owner.v1", 0x51);
+    let store = CampaignExecutorStore::new(repository.clone());
+    let source =
+        CampaignRunFindingExactRetentionSource::new(store.clone(), checkpoints.clone(), owner)
+            .expect("exact candidate source");
+    let authenticated = source
+        .authenticate_finding_exact_checkpoint(
+            checkpoint,
+            scenario_id,
+            scenario_artifact,
+            configuration,
+            crate::automatic_finding_runner::MAX_FINDING_EXACT_METADATA_BYTES,
+        )
+        .expect("authenticate captured checkpoint");
+    let context = crate::AttemptExecutionContext::new(
+        AttemptResourceLimits::new(2, 64 * 1024 * 1024, 128 * 1024 * 1024, 4)
+            .expect("attempt limits"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        crate::ExecutionCancellation::default(),
+        crate::ExecutionCheckpointRequest::default(),
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    );
+    source
+        .retain_terminal_checkpoint(
+            &crate::CapturedAttemptCheckpoint::from_production_closure(fixture.closure().clone()),
+            &context,
+            FindingTerminalCheckpointIdentity {
+                scenario: scenario_id,
+                scenario_artifact,
+                configuration,
+                event_count: authenticated.event_count(),
+            },
+        )
+        .expect("capture candidate before runner failure");
+    assert_eq!(
+        source
+            .candidate_checkpoints(configuration, 1)
+            .expect("captured candidate inventory"),
+        vec![checkpoint],
+    );
+
+    let foreign_repository = CampaignRepository::new(
+        admitted,
+        Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Available(original),
+    );
+    let foreign_guard = foreign_repository
+        .acquire_gc_exclusion_guard()
+        .expect("foreign handoff guard");
+    assert!(source.retain_execution_catalog(&foreign_guard).is_err());
+    source.abandon_unretained_candidates();
+    assert_eq!(
+        source.candidate_checkpoints(configuration, 1),
+        Err(FindingExactCandidateInventoryError::LimitExceeded),
+        "a failed post-capture handoff must withdraw the unprotected candidate",
+    );
+    drop(foreign_guard);
+    drop(source);
+
+    let physical = CampaignGcRawPhysicalStore::new("failed-capture-retention-gc", blobs.as_ref())
+        .expect("physical GC authority");
+    let graph = hash("crucible.test.failed-capture-retention-graph.v1", 0x52);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared_gc = plan_single_host_campaign_gc(
+        repository.as_ref(),
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        (&[physical], &gc_operation),
+    )
+    .expect("plan GC after failed capture handoff");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        directory.path().join("failed-capture-gc"),
+        &prepared_gc,
+        &gc_operation,
+    )
+    .expect("failed capture GC journal");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(repository.as_ref(), refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+        &gc_operation,
+    )
+    .expect("apply GC after failed capture handoff");
+    assert!(
+        !blobs
+            .contains(checkpoint.content_id())
+            .expect("captured root inventory"),
+        "withdrawn post-capture root must remain an ordinary collectible orphan",
+    );
+}
+
+#[test]
+fn executor_exact_result_handoff_survives_restart_and_real_gc_until_terminal_retirement() {
+    let _fixture_scope = crate::exact_checkpoint_store::test_support::fixture_decode_scope();
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+    let directory = tempfile::tempdir().expect("executor exact-retention storage");
+    let fixture_directory = tempfile::tempdir().expect("production checkpoint fixture");
+    let fixture =
+        crate::build_exact_ram_production_checkpoint_codec_fixture(fixture_directory.path())
+            .expect("production checkpoint fixture");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "executor-exact-retention-gc",
+        directory.path().join("objects"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
+    let admitted = Arc::new(ComponentRamBackend::new(blobs.clone(), None));
+    let original = crucible_store::owned_decode::DecodeBudget::for_store(
+        admitted
+            .metadata_resources()
+            .expect("exact-retention metadata resources"),
+    )
+    .expect("exact-retention original");
+    let repository = CampaignRepository::new(
+        admitted.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(original.clone()),
+    );
+    let checkpoints = ExactCheckpointStore::new(
+        admitted.clone(),
+        u64::MAX,
+        repository.ram_retention_authority(),
+    )
+    .expect("checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("checkpoint root resources"),
+    );
+    let prepared = checkpoints
+        .prepare_production_closure(fixture.closure().clone())
+        .expect("prepare production checkpoint");
+    let root = checkpoints
+        .publish_production_closure(&prepared)
+        .expect("publish production checkpoint")
+        .root();
+    let root_content = root.content_id();
+    let ram_descendant = admitted
+        .published_ram_descendant()
+        .expect("production checkpoint publishes a RAM descendant");
+    let configuration =
+        ConfigurationId::from_hash(CampaignHash::from_bytes(fixture.configuration().id().bytes));
+    let owner = hash("crucible.test.executor-exact-retention-owner.v1", 0x42);
+    repository
+        .replace_executor_exact_catalog(
+            owner,
+            crucible_campaign::ExecutorExactRetentionCatalog::new(
+                vec![(root, configuration)],
+                BTreeSet::new(),
+                false,
+            )
+            .expect("bounded owner catalog"),
+        )
+        .expect("install catalog predecessor");
+
+    let execution = ExecutionId::from_bytes([0x43; 16]).expect("result execution");
+    let handoff = repository
+        .acquire_gc_exclusion_guard()
+        .expect("result handoff guard");
+    repository
+        .retain_executor_exact_result_under(
+            &handoff,
+            owner,
+            crucible_campaign::ExecutorExactRetentionCatalog::default(),
+            execution,
+            &BTreeSet::from([root]),
+        )
+        .expect("install successor before catalog eviction");
+    drop(handoff);
+
+    let orphan_bytes = b"executor exact unrelated orphan".to_vec();
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("publish unrelated orphan");
+    let physical = CampaignGcRawPhysicalStore::new("executor-exact-retention-gc", blobs.as_ref())
+        .expect("physical GC authority");
+    let graph = hash("crucible.test.executor-exact-retention-graph.v1", 0x44);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        (&[physical], &gc_operation),
+    )
+    .expect("plan GC through exact-result successor");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        directory.path().join("retained-gc"),
+        &prepared,
+        &gc_operation,
+    )
+    .expect("retained GC journal");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+        &gc_operation,
+    )
+    .expect("apply GC through exact-result successor");
+    assert!(
+        blobs
+            .contains(root_content)
+            .expect("retained root inventory")
+    );
+    assert!(
+        blobs
+            .contains(ram_descendant)
+            .expect("retained RAM descendant inventory")
+    );
+    assert!(!blobs.contains(orphan).expect("orphan inventory"));
+
+    drop(repository);
+    let restarted = CampaignRepository::new(
+        admitted,
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(original),
+    );
+    assert_eq!(
+        restarted
+            .load_executor_exact_retention()
+            .expect("reopen exact-result successor")
+            .result(execution),
+        Some(&BTreeSet::from([root]))
+    );
+    let ledger_root = directory.path().join("terminal-ledger");
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 1, b"lineage").encode()
+    ))
+    .expect("terminal lineage");
+    let attempt = AttemptId::parse(&format!(
+        "crucible.campaign.attempt@{}",
+        ContentId::for_bytes(ObjectKind::CampaignFact, 9, b"attempt").encode()
+    ))
+    .expect("terminal attempt");
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::for_request(&request);
+    let terminal = AttemptRuntimeState::Canceled {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+    };
+    {
+        let mut terminal_ledger =
+            DirectoryAssignmentLedger::open(&ledger_root).expect("terminal ledger");
+        assert_eq!(
+            terminal_ledger
+                .compare_exchange_attempt(key, None, Some(terminal))
+                .expect("publish durable terminal successor"),
+            AttemptStateCas::Advanced,
+        );
+    }
+    let terminal_ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("reopen terminal ledger");
+    assert_eq!(
+        terminal_ledger
+            .load_attempt(key)
+            .expect("authenticate terminal successor after restart"),
+        Some(terminal),
+    );
+    restarted
+        .retire_executor_exact_result(execution)
+        .expect("retire after authenticated terminal successor");
+
+    let released = plan_single_host_campaign_gc(
+        &restarted,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        (&[physical], &gc_operation),
+    )
+    .expect("plan GC after terminal retirement");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        directory.path().join("released-gc"),
+        &released,
+        &gc_operation,
+    )
+    .expect("released GC journal");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&restarted, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+        &gc_operation,
+    )
+    .expect("apply GC after terminal retirement");
+    assert!(
+        !blobs
+            .contains(root_content)
+            .expect("released root inventory")
+    );
+    assert!(
+        !blobs
+            .contains(ram_descendant)
+            .expect("released RAM descendant inventory")
+    );
+}
 
 #[test]
 fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph() {
@@ -33,7 +407,8 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
     );
     let ram = RamStore::new(
         admitted,
-        crucible_store::content_store::DurabilityRequirement::new(1, false).expect("durable reader"),
+        crucible_store::content_store::DurabilityRequirement::new(1, false)
+            .expect("durable reader"),
         RamStoreLimits::default(),
     )
     .expect("RAM store");
@@ -165,6 +540,7 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
 struct ComponentRamBackend {
     backend: Arc<DirectoryBlobBackend>,
     page_read: Option<Arc<std::sync::atomic::AtomicBool>>,
+    published: std::sync::Mutex<BTreeSet<ContentId>>,
     resources: Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard>,
 }
 
@@ -178,8 +554,18 @@ impl ComponentRamBackend {
         Self {
             backend,
             page_read,
+            published: std::sync::Mutex::new(BTreeSet::new()),
             resources,
         }
+    }
+
+    fn published_ram_descendant(&self) -> Option<ContentId> {
+        self.published
+            .lock()
+            .expect("component publication inventory")
+            .iter()
+            .copied()
+            .find(|id| matches!(id.kind(), ObjectKind::RamExtent | ObjectKind::RamTree))
     }
 }
 
@@ -232,7 +618,12 @@ impl ImmutableBlobBackend for ComponentRamBackend {
         id: ContentId,
         source: &BlobHandle,
     ) -> Result<crucible_store::content_store::PutReceipt, StoreError> {
-        self.backend.put_if_absent(id, source)
+        let receipt = self.backend.put_if_absent(id, source)?;
+        self.published
+            .lock()
+            .expect("component publication inventory")
+            .insert(id);
+        Ok(receipt)
     }
 
     fn read_with_boundary(
@@ -259,8 +650,14 @@ impl ImmutableBlobBackend for ComponentRamBackend {
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<crucible_store::content_store::PutBatchReceipt, StoreError> {
-        self.backend
-            .put_many_if_absent_with_boundary(original, objects, boundary)
+        let receipt = self
+            .backend
+            .put_many_if_absent_with_boundary(original, objects, boundary)?;
+        self.published
+            .lock()
+            .expect("component publication inventory")
+            .extend(objects.iter().map(|(id, _)| *id));
+        Ok(receipt)
     }
 }
 

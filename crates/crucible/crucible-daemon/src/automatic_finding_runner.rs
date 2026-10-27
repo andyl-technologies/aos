@@ -37,11 +37,14 @@ const EXECUTION_QUANTA_TIMEOUT_CLASS: &str = "qemu.execution-quanta-timeout";
 const VIRTUAL_TIME_TIMEOUT_CLASS: &str = "qemu.virtual-time-timeout";
 const DIVERGENCE_FAILURE_CLASS: &str = "qemu.causal-log-divergence";
 mod exact_retention;
+#[cfg(test)]
+pub(crate) use exact_retention::MAX_FINDING_EXACT_METADATA_BYTES;
 use exact_retention::prepare_finding_exact_retention;
 pub(crate) use exact_retention::{
-    CampaignRunFindingExactRetentionSource, FindingExactCandidateInventoryError,
-    FindingExactRetentionSource, FindingTerminalCheckpointIdentity, exact_findings_enabled,
-    publish_authenticated_terminal_checkpoint,
+    CampaignRunFindingExactRetentionSource, FindingExactCandidateInventory,
+    FindingExactCandidateInventoryError, FindingExactRetentionSource,
+    FindingTerminalCheckpointIdentity, exact_findings_enabled,
+    publish_authenticated_terminal_checkpoint, synchronous_exact_retention_owner,
 };
 
 #[cfg(test)]
@@ -76,10 +79,17 @@ pub(crate) fn test_finding_exact_retention_source() -> Arc<dyn FindingExactReten
         }
         Err(error) => panic!("test exact checkpoint store: {error}"),
     };
-    Arc::new(CampaignRunFindingExactRetentionSource::new(
-        CampaignExecutorStore::new(repository),
-        Arc::new(checkpoints),
-    ))
+    Arc::new(
+        CampaignRunFindingExactRetentionSource::new(
+            CampaignExecutorStore::new(repository),
+            Arc::new(checkpoints),
+            CampaignHash::derive(
+                "crucible.executor.test-exact-retention-owner.v1",
+                b"automatic-finding",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("open automatic-finding exact retention: {error}")),
+    )
 }
 
 mod divergence_signature;
@@ -270,7 +280,7 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
     /// incompatibility is returned as a typed successful outcome.
     fn replay_finding_candidate_boundary(
         &mut self,
-        input: &CrucibleAttemptExecution,
+        _input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
         replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
@@ -937,6 +947,9 @@ where
     /// The deterministic minimization or final finding attachment failed.
     #[error("automatic finding preparation failed: {0}")]
     Preparation(#[source] AutomaticFindingPreparationError),
+    /// Durable exact-candidate ownership could not be installed.
+    #[error("automatic finding exact retention failed: {0}")]
+    Repository(#[source] crucible_campaign::CampaignRepositoryError),
     /// A runner returned a result shape outside the private replay contract.
     #[error("automatic finding result is inconsistent: {reason}")]
     Inconsistent {
@@ -1134,6 +1147,39 @@ where
             AttemptExecutionProduct::prepared_semantic(prepared),
             materialization,
         ))
+    }
+
+    fn retain_execution_result(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        product: &AttemptExecutionProduct,
+        gc_exclusion: &crucible_campaign::CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), AttemptWorkerFailure<Self::Error>> {
+        let AttemptExecutionProduct::PreparedSemantic(result) = product else {
+            return Ok(());
+        };
+        self.exact_retention
+            .retain_execution_result(input, context, result, gc_exclusion)
+            .map_err(AutomaticFindingExecutionRunnerError::Repository)
+            .map_err(AttemptWorkerFailure::Terminal)
+    }
+
+    fn retain_execution_failure(
+        &mut self,
+        _input: &CrucibleAttemptExecution,
+        _context: &AttemptExecutionContext,
+        gc_exclusion: &crucible_campaign::CampaignRepositoryGcExclusionGuard,
+    ) -> Result<(), AttemptWorkerFailure<Self::Error>> {
+        self.exact_retention
+            .retain_execution_catalog(gc_exclusion)
+            .map_err(AutomaticFindingExecutionRunnerError::Repository)
+            .map_err(AttemptWorkerFailure::Terminal)
+    }
+
+    fn abandon_unretained_candidates(&mut self) {
+        self.exact_retention.abandon_unretained_candidates();
+        self.main.abandon_unretained_candidates();
     }
 
     fn reconcile_execution(

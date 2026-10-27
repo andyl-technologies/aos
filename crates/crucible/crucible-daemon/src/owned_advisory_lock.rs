@@ -17,6 +17,13 @@ pub(crate) struct OwnedAdvisoryLock {
 }
 
 impl OwnedAdvisoryLock {
+    /// Returns the descriptor-bound device and inode identity, when present.
+    pub(crate) fn bound_identity(&self) -> Option<(u64, u64)> {
+        self.authority
+            .as_ref()
+            .map(|authority| authority.identity())
+    }
+
     /// Acquires a nonblocking exclusive lock over `file`.
     ///
     /// # Errors

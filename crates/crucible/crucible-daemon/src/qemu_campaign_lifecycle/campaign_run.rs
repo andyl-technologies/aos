@@ -1509,10 +1509,19 @@ where
                 .map(|source| source.checkpoints.clone())
         })
         .unwrap_or_else(|| execution.inner.checkpoints.clone());
-    let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
-        store.clone(),
-        Arc::clone(&checkpoints),
-    ));
+    let campaign =
+        guarded_default_campaign_name(&request).map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let exact_retention = Arc::new(
+        CampaignRunFindingExactRetentionSource::new(
+            store.clone(),
+            Arc::clone(&checkpoints),
+            crate::automatic_finding_runner::synchronous_exact_retention_owner(
+                &campaign,
+                Some(execution.inner.exact_retention_namespace),
+            ),
+        )
+        .map_err(GuardedDefaultCampaignRunError::Repository)?,
+    );
 
     let (runner, execution_evidence) = production_campaign_runner(
         request.lifecycle.clone(),
@@ -1526,6 +1535,7 @@ where
 
     run_guarded_default_campaign_with_repository(
         request,
+        campaign,
         runner,
         prepare_completed_reproduction,
         execution_evidence,
@@ -1597,6 +1607,18 @@ where
     (runner, execution_evidence)
 }
 
+pub(super) fn guarded_default_campaign_name(
+    request: &GuardedDefaultCampaignRunRequest,
+) -> Result<CampaignName, CampaignCodecError> {
+    match &request.execution {
+        Some(execution) => execution.campaign(request.seed),
+        None => CampaignName::new(format!(
+            "guarded-campaign-run-{:016x}",
+            request.seed.decision_rng_root_seed()
+        )),
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 fn run_guarded_default_campaign_with_runner<R>(
     request: GuardedDefaultCampaignRunRequest,
@@ -1650,13 +1672,20 @@ where
     let (repository, planner_authority) = default_run_repository(blobs, refs)?;
     let repository = Arc::new(repository);
     let checkpoints = campaign_run_exact_checkpoint_store(&request, &repository)?;
-    let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
-        CampaignExecutorStore::new(Arc::clone(&repository)),
-        checkpoints,
-    ));
+    let campaign =
+        guarded_default_campaign_name(&request).map_err(GuardedDefaultCampaignRunError::Codec)?;
+    let exact_retention = Arc::new(
+        CampaignRunFindingExactRetentionSource::new(
+            CampaignExecutorStore::new(Arc::clone(&repository)),
+            checkpoints,
+            crate::automatic_finding_runner::synchronous_exact_retention_owner(&campaign, None),
+        )
+        .map_err(GuardedDefaultCampaignRunError::Repository)?,
+    );
 
     run_guarded_default_campaign_with_repository(
         request,
+        campaign,
         runner,
         operation_only_preparation,
         execution_evidence,
@@ -1668,6 +1697,7 @@ where
 
 fn run_guarded_default_campaign_with_repository<R>(
     request: GuardedDefaultCampaignRunRequest,
+    campaign: CampaignName,
     runner: R,
     prepare_reproduction: CompletedReproductionPreparation<CrucibleExecutionModel<R>>,
     execution_evidence: QemuAttemptExecutionEvidence,
@@ -1716,14 +1746,6 @@ where
         request.exploration,
         supplemental_finding_source,
     )?;
-    let campaign = match &request.execution {
-        Some(execution) => execution.campaign(request.seed),
-        None => CampaignName::new(format!(
-            "guarded-campaign-run-{:016x}",
-            request.seed.decision_rng_root_seed()
-        )),
-    }
-    .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let principal = CampaignPrincipal::new("local:guarded-campaign-run")
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let client = CampaignClient::new(RepositoryCampaignService::new(
@@ -1832,7 +1854,7 @@ where
             execution.inner.config.guarded_epoch(),
             SynchronousCampaignExecutor::new_admitted(
                 store.clone(),
-                exact_retention,
+                Arc::clone(&exact_retention),
                 model,
                 request.cancellation.clone(),
                 execution.clone(),
@@ -1849,7 +1871,7 @@ where
             );
             let service = SynchronousCampaignExecutor::new(
                 store.clone(),
-                exact_retention,
+                Arc::clone(&exact_retention),
                 model,
                 admission,
                 epoch,
@@ -1962,14 +1984,18 @@ where
         execution.final_snapshot,
         &request.cancellation,
     )?;
-    materialize_result(
+    let result = materialize_result(
         &repository,
         campaign,
         execution,
         finding_export,
         request.capture_reached_stop.as_deref(),
         request.resume_source.as_ref(),
-    )
+    )?;
+    exact_retention
+        .retire_catalog()
+        .map_err(GuardedDefaultCampaignRunError::Repository)?;
+    Ok(result)
 }
 
 fn default_run_lineage<E>(

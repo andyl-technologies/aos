@@ -489,6 +489,7 @@ fn restore(lane: RestoreLane<'_>) -> ReceiverEvidence {
         checkpoints: Arc::clone(&prepared.checkpoints),
         host: Some(host),
         lifecycle_cleanup: None,
+        exact_retention_namespace: prepared.prepared_exact_pins.owner(),
     };
     let owner = crate::qemu_campaign_lifecycle::GuardedCampaignOwner::from_packaged(
         &state,

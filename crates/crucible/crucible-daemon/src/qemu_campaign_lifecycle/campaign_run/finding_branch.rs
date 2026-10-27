@@ -68,7 +68,11 @@ pub(crate) fn run_admitted_finding_branch(
     let exact_retention = Arc::new(CampaignRunFindingExactRetentionSource::new(
         store.clone(),
         owner.inner.checkpoints.clone(),
-    ));
+        crate::automatic_finding_runner::synchronous_exact_retention_owner(
+            campaign,
+            Some(owner.inner.exact_retention_namespace),
+        ),
+    )?);
     let (lifecycle, _, _) = owner
         .inner
         .config
@@ -86,7 +90,7 @@ pub(crate) fn run_admitted_finding_branch(
     let model = CrucibleExecutionModel::new(store.clone(), runner);
     let service = SynchronousCampaignExecutor::new_admitted(
         store,
-        exact_retention,
+        exact_retention.clone(),
         model,
         cancellation.clone(),
         owner.clone(),
@@ -126,6 +130,8 @@ pub(crate) fn run_admitted_finding_branch(
                     ));
                 }
                 boundary().map_err(GuardedFindingBranchError::Boundary)?;
+                drop(driver);
+                exact_retention.retire_catalog()?;
                 return Ok(observation);
             }
             CampaignExecutorStepOutcome::Blocked { .. }

@@ -33,6 +33,35 @@ fn writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor() {
 }
 
 #[test]
+fn exact_catalog_owner_is_stable_for_one_writer_and_distinct_for_another_ledger() {
+    let first_root = tempfile::tempdir().expect("first ledger directory");
+    let second_root = tempfile::tempdir().expect("second ledger directory");
+    let namespace = CampaignHash::derive("exact-catalog-owner-test", b"shared-namespace");
+    let first = DirectoryAssignmentLedger::open(first_root.path()).expect("first writer");
+    let first_owner = first
+        .exact_catalog_owner(namespace)
+        .expect("first exact catalog owner");
+    assert!(DirectoryAssignmentLedger::open(first_root.path()).is_err());
+    drop(first);
+
+    let reopened = DirectoryAssignmentLedger::open(first_root.path()).expect("reopened writer");
+    assert_eq!(
+        reopened
+            .exact_catalog_owner(namespace)
+            .expect("reopened exact catalog owner"),
+        first_owner,
+    );
+    let independent =
+        DirectoryAssignmentLedger::open(second_root.path()).expect("independent writer");
+    assert_ne!(
+        independent
+            .exact_catalog_owner(namespace)
+            .expect("independent exact catalog owner"),
+        first_owner,
+    );
+}
+
+#[test]
 fn directory_ledger_fences_a_replaced_root_and_writer_lock() {
     for replaced in ["root", "writer-lock"] {
         let parent = tempfile::tempdir().expect("ledger parent");
