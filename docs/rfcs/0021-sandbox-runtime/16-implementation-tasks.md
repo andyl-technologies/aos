@@ -41,6 +41,12 @@ Recent committed startup fixes close narrower prerequisites:
   candidate. The separate composition check retains its exact passing output
   and 494-derivation closure without production policy. Native parent compilation
   and the enforcing lifecycle-funded startup VM are running through AOS Nix.
+  `checks.fleet.sandbox-method46-initial-startup` also instantiates with the same
+  production policy and both initializer profiles. Its boot and power-cycle
+  assertions require both normal endpoints in required mode and check that the
+  manual producers remain unstarted after reboot. The VM's own parent compiler
+  consumes its harness-selected manager configuration; this release build is
+  running and has no installed result yet.
   These selection and regression results establish no installed startup, TPM
   provisioning or lifecycle completion; admission remains closed.
 
