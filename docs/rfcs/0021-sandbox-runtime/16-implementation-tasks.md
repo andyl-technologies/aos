@@ -38,10 +38,16 @@ Recent committed startup fixes close narrower prerequisites:
   sandbox exclusion profile and makes the QEMU Domain check require every
   excluded Domain case to report success in its complete, unfiltered suite.
   Default, CI and host-native selections remain unchanged. Profile and generated
-  guest-script checks pass; the guest run, rebuilt parent and enforcing startup
-  remain pending. Commit `3d7664cf3c` also moves manual-unit inactivity checks
-  inside both boot checks, covering execution before the real power cycle.
-  Neither change supplies installed producer or public lifecycle qualification.
+  guest-script checks pass. The QEMU suite now passes at
+  `/nix/store/nqcmx8pk7wvw3pan7lgxx2pv4sv9flv8-aos-fleet-test-sandbox-domain-native-journal-0`
+  (NAR hash `sha256-IzDLOiCGG3ZLjxB7G47O38jY0XN1e3BeWbxSkIz1/ZE=`).
+  Its actual executable lists 1,946 unit cases with none ignored; the unfiltered
+  guest run requires success for all 62 excluded Domain cases, including the
+  52 Method46 cases. This non-enforcing component check supplies no production
+  Source, TPM provisioning, installed journal-hook or public lifecycle proof.
+  The rebuilt parent and enforcing startup remain pending. Commit `3d7664cf3c`
+  also moves manual-unit inactivity checks inside both boot checks, covering
+  execution before the real power cycle.
 
 - The exact firmware-enrollment prerequisite shared by the lifecycle-funded
   and selected-initializer VMs passes at
