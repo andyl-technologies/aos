@@ -1,0 +1,155 @@
+{
+  "actual_graph": {
+    "path": "/nix/store/4xvsybjl04rmswasc5cw6g6syn68lmiq-aos-bazel-architecture/architecture.json",
+    "rejected_controls": {
+      "forbidden-dependency": "crucible-qemu-protocol: forbidden production dependencies: libc",
+      "missing-package": "crucible-qemu-protocol: missing Bazel source package",
+      "missing-required-dependency": "crucible-qemu-protocol: missing required production dependencies: libc",
+      "omitted-target": "crucible-qemu-protocol: no modeled production compilation",
+      "omitted-target-edges": "crucible-qemu-protocol: inconsistent production target dependencies: //crates/crucible/crucible-qemu-protocol:lib",
+      "summary-drift": "crucible-qemu-protocol: production package summary differs from target dependencies",
+      "unmodeled-package": "crucible-qemu-protocol production dependencies: expected unique sorted names"
+    },
+    "sha256": "f207ce234b9e508eadd6356d91e1a82d4a913a571e62bb3b3aa5e58922d0cded"
+  },
+  "cargo_oracle": {
+    "derivation": "/nix/store/16z3wdy1vifv6r19qgp0fsvxf3a7d1di-aos-bazel-protocol-cargo-oracle-1.drv",
+    "messages_sha256": "44d0fb330ef1c70445da5db9301d0e77729ca5263d4587207d014cedcc89ca24",
+    "output": "/nix/store/8yn74b8d9v9yy6mkzsq9xhi7f17lqy3s-aos-bazel-protocol-cargo-oracle-1",
+    "source": "/nix/store/bx3p3ii1qgpb32s03dnqwyx8ilvan7gf-crucible-cargo-src"
+  },
+  "inventory_review": {
+    "added_sources": [
+      "tests/crucible/_bazel-package-requirements.nix"
+    ],
+    "analysis_output": "/nix/store/g6jv0zvlarzhc98al4jrqpqrik5kiac5-aos-bazel-crucible-controller-test-inventory-1",
+    "configured_record_count": 2021,
+    "declaration_contracts_unchanged": true,
+    "existing_configured_semantics_unchanged": true,
+    "removed_sources": [],
+    "sha256": "3de38d93fdb5f9307a01867d2cc5e16481dac0ef58bbddeeaa89cbbe72630a04"
+  },
+  "limits": [
+    "Qualifies this public native protocol gate only; other Cargo-dependent Nix gates remain to migrate.",
+    "The controller inventory adds the new Nix runtime input; this receipt does not rerun the complete controller harness.",
+    "Runtime, platform, production cutover and all remaining RFC gates retain their separate qualification."
+  ],
+  "original_result_fields_preserved": true,
+  "preserved_source_assertions_sha256": "810254545b319906f544d51ee35980f2e60704138ab80437b56631b0eae8d287",
+  "production_dependency_requirement": {
+    "inputs_sha256": {
+      "graph": "f207ce234b9e508eadd6356d91e1a82d4a913a571e62bb3b3aa5e58922d0cded",
+      "requirements": "75b0b6c7f94511ff4dd32a46b0e1553c1be1f6feb237132d776cdc95b8d98afc"
+    },
+    "packages": {
+      "crucible-qemu-protocol": {
+        "forbidden": [],
+        "production_dependencies": [
+          "blake3",
+          "libc",
+          "sha2",
+          "thiserror",
+          "unicode-normalization"
+        ],
+        "production_targets": [
+          "//crates/crucible/crucible-qemu-protocol:lib"
+        ],
+        "required": [
+          "libc"
+        ]
+      }
+    },
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "public_gate": {
+    "build_driver": "bazel",
+    "derivation": "/nix/store/am5gqr6g0cqx0ix182l7ildlq3cba1y2-crucible-phase2-protocol-descriptor-handover-0.drv",
+    "output": "/nix/store/4bmg8q7ywzrwf7yqsmrm2gp2dssc79gi-crucible-phase2-protocol-descriptor-handover-0",
+    "result_sha256": "4850f9753ab333cb9f49d8a6e0a8860403c2747f54243b5ac650589f4d91eb55"
+  },
+  "schema_version": 1,
+  "scope": "Public protocol descriptor-handover Nix gate: Bazel integration execution and direct production dependency validation.",
+  "selected_compiler_sources": {
+    "schema_version": 1,
+    "sources_sha256": {
+      "crates/crucible/crucible-qemu-protocol/src/app_random_branch_plan.rs": "22db2498b3354ba18ed9d2b68697b33f79d0a004e4141ee742bc9cc9d4f05f5b",
+      "crates/crucible/crucible-qemu-protocol/src/app_random_transport.rs": "34452e7a7015d92d3e1a13abb9866e4eeba3deda77bc5c390b8f1f5de79e4c5c",
+      "crates/crucible/crucible-qemu-protocol/src/choice.rs": "a1b5e612869ef1fc41daf32b74386d330808a3fd847fa6fc8b4bcc175c82ab82",
+      "crates/crucible/crucible-qemu-protocol/src/choice/group.rs": "33511bc21ec25286bb0bb339e98c500ffb5ead89c381985fc04f5a531d1a2415",
+      "crates/crucible/crucible-qemu-protocol/src/codec_fuzz.rs": "1b13c1e9eafd3ae56e17036584f773a6f9d23ac9cdaea66d9c4d1c581b4b1a81",
+      "crates/crucible/crucible-qemu-protocol/src/debug_gateway.rs": "75c870e850dce4e2abf7ab02116dbc812bc7fef977ace2baa9e446b92157f57c",
+      "crates/crucible/crucible-qemu-protocol/src/device_group_opportunity.rs": "f15e60edc73eecf9b7f88f62813e7693b1f6d25b48a9af3d2da0cb03b8030b25",
+      "crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs": "7fba8fd49880548529dd4ede6e0255eac92027286295b338a77bcbaa8b3cb38e",
+      "crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs": "9451f37891036b7f138bb0467eaaf65520c46a3a574232abb707dc2be083e26d",
+      "crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs": "32abed4d1e5591ce9d963dca3551084db60f3e3a4bc0d3a3deaec3b4b05089b5",
+      "crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs": "1ecc4536f03c02381e198f719ada1ad6db90d25edbc75d21ed9b2f4ce321c582",
+      "crates/crucible/crucible-qemu-protocol/src/guest_introspection.rs": "16e4b6f1caad903255fcf52aaab5b90ad01983663cc850f27d75621606f3b091",
+      "crates/crucible/crucible-qemu-protocol/src/guest_introspection_doorbell.rs": "3c4b5aaa2ba2522ef62aaed6fc9a73fc4a90c57c02208bdb3484daa7c31a1515",
+      "crates/crucible/crucible-qemu-protocol/src/lib.rs": "f709428169b724f78df0dedf4a9e44fb264d0fd1bf5a09f923aaf86acba327d8",
+      "crates/crucible/crucible-qemu-protocol/src/plugin_setup_plan.rs": "0ca0492c25b6735a237830572fb7d443cc3457a1d818bcc1ed2fa12f33d9534c",
+      "crates/crucible/crucible-qemu-protocol/src/preemption.rs": "7a7a6c2ab7074bba8160f3e7175783b092f5d9a5b8219b9db975638313bd2f8a",
+      "crates/crucible/crucible-qemu-protocol/src/selectable.rs": "7e8282d22de10fb7b7a1f828bc792be6b338849ae7b2a5e7e704290e27eec9ea",
+      "crates/crucible/crucible-qemu-protocol/src/selectable/tests.rs": "e06a3a3bd4d1ff3acea229b8bf47273158661edcecbe0986a8cf1c1117c1c902",
+      "crates/crucible/crucible-qemu-protocol/src/selectable_catalog_plan.rs": "c89f8c464226801be78c0e530412519063f7340daa3912048e78047e79dfa187",
+      "crates/crucible/crucible-qemu-protocol/src/selectable_catalog_plan/tests.rs": "11235efd947e2d9b5156f14f3ff45de8fa176fdea7eaa5681911fb2f897e6445",
+      "crates/crucible/crucible-qemu-protocol/src/selectable_transport.rs": "70c4becc06f06232b15ba054590bd9101b57d3f0c0bc7c878a35507c2954c6d0",
+      "crates/crucible/crucible-qemu-protocol/src/test_oracle.rs": "67b2589977f1640734b8e9e2100895e89e1c72f7c277f6ad69e29bfe697e7b7f",
+      "crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs": "e8b2c5215969fa44119a75ec6957ba4e9de1ff51e7dbbd60e7e172ce85100be6"
+    }
+  },
+  "source_sha256": {
+    "tests/crucible/_bazel-package-requirements.nix": "1798306ef3fc52dd0f4288e6bd5ef32c9bf101fd7c1edaa7d185d637014b5991",
+    "tests/crucible/phase2-protocol-descriptor-handover.nix": "df57d0193c95f8bed123e52dc714190c3dbf46932dde1de38a018f6ab1a8b359",
+    "tools/bazel/docs/architecture.md": "0743b468fed64b9a8f8f172e5a423ee084833d113a69152d723ee570ba6399e4",
+    "tools/bazel/metadata/crucible-controller-tests-inventory.json": "3de38d93fdb5f9307a01867d2cc5e16481dac0ef58bbddeeaa89cbbe72630a04",
+    "tools/bazel/tests/test_package_requirements.py": "98eabbe0e774418d23ca7207874918c612a6aa3f6104124493b1a6b2b723028e",
+    "tools/bazel/tests/verify_package_requirements.py": "301aafc1fc553ece7f0bcb391121e5bcb5b79e8fca29138224173becc1ec9fab"
+  },
+  "status": "PASS",
+  "tests": {
+    "actions": {
+      "Rustc": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "03c4cf61f40da4b33b16fdc2654360cf676f6d58bd8029f5b3face72d3cd3411",
+        "runner": "linux-sandbox"
+      },
+      "TestRunner": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "fd50cce077f62953ab311540319f40bd013162bc24668fcf4315551d1c8e6aa3",
+        "runner": "linux-sandbox"
+      }
+    },
+    "cases": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/crucible/crucible-qemu-protocol:descriptor_handover": {
+          "executed": [
+            "setup_handover_accepts_split_descriptor_control_messages",
+            "setup_handover_rejects_wrong_descriptor_count",
+            "setup_handover_reports_closed_peer_on_send",
+            "setup_handover_transfers_three_descriptors_in_fixed_order"
+          ],
+          "ignored": []
+        }
+      }
+    },
+    "derivation": "/nix/store/fahvmfj32wk4rpddhvaa2j9qkcsqkbvb-crucible-protocol-descriptor-handover-tests-1.drv",
+    "execution_sha256": "49df68a8ff60bd20e9fd88f0930ddaff8ef5bc84e7eb486eee58b5318a6d9de6",
+    "output": "/nix/store/h9x66fbbmll5m65pgx7yyl9rmmvkn0bp-crucible-protocol-descriptor-handover-tests-1",
+    "source": "/nix/store/q5kg2a83zjc206g9dx7j78w00xy4v842-aos-bazel-workspace"
+  },
+  "validation": {
+    "core_evaluation": {
+      "output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+      "status": "PASS"
+    },
+    "helper_suite": {
+      "cases": 538,
+      "output": "/nix/store/va16lb8924lwk6rnkfy9q07f6inizdgr-aos-bazel-policy-checks",
+      "status": "PASS"
+    }
+  }
+}

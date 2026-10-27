@@ -50,3 +50,18 @@ nix-build tools/bazel/tests/aos-cli.nix -A architecture --no-out-link
 This comparison qualifies the declared package graph. Configured compilation,
 runtime behavior, license closure checks, and compiler-option equivalence have
 their own gates.
+
+Nix source gates can require or forbid direct production package dependencies
+through `tests/crucible/_bazel-package-requirements.nix`. The guard checks the
+package summary against its owned compilation targets and resolved target
+edges. A missing or unmodeled package fails even a negative requirement;
+test-only and transitive dependencies cannot satisfy a direct requirement.
+Aliases and platform selectors retain the exporter's union semantics.
+
+The protocol descriptor-handover gate uses this guard for its `libc` dependency
+and executes its integration target through Bazel with one test worker. Its
+existing Rust source assertions and result fields remain in the Nix gate:
+
+```text
+nix-build -A checks.crucible.phase2.protocolDescriptorHandover --no-out-link
+```

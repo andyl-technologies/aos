@@ -195196,6 +195196,7 @@
         "pkgs/emulation/qemu-patches/_atomic-patch.nix",
         "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
         "pkgs/emulation/qemu.nix",
+        "tests/crucible/_bazel-package-requirements.nix",
         "tests/crucible/_bounded-scheduler-preemption-target.sh",
         "tests/crucible/_bounded-scheduler-preemption.sh",
         "tests/crucible/_campaign-rust-runtime.nix",
@@ -214478,6 +214479,7 @@
         "stdenv/phases.nix",
         "tests/build/_bazel-crucible-controller-tests.nix",
         "tests/crucible/.validate-enumerate.nix",
+        "tests/crucible/_bazel-package-requirements.nix",
         "tests/crucible/_campaign-rust-runtime.nix",
         "tests/crucible/_cargo-deps.nix",
         "tests/crucible/_cli-production-source.nix",
@@ -228173,6 +228175,7 @@
       "crate_root": "",
       "defines": [],
       "dependencies": [
+        "//tests/crucible:_bazel-package-requirements.nix",
         "//tests/crucible:_bounded-scheduler-preemption-target.sh",
         "//tests/crucible:_bounded-scheduler-preemption.sh",
         "//tests/crucible:_campaign-rust-runtime.nix",
@@ -228753,6 +228756,7 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
+        "tests/crucible/_bazel-package-requirements.nix",
         "tests/crucible/_bounded-scheduler-preemption-target.sh",
         "tests/crucible/_bounded-scheduler-preemption.sh",
         "tests/crucible/_campaign-rust-runtime.nix",
@@ -229457,6 +229461,7 @@
       "defines": [],
       "dependencies": [
         "//tests/crucible:.validate-enumerate.nix",
+        "//tests/crucible:_bazel-package-requirements.nix",
         "//tests/crucible:_campaign-rust-runtime.nix",
         "//tests/crucible:_cargo-deps.nix",
         "//tests/crucible:_cli-production-source.nix",
@@ -230070,6 +230075,7 @@
       "schema_version": 1,
       "sources": [
         "tests/crucible/.validate-enumerate.nix",
+        "tests/crucible/_bazel-package-requirements.nix",
         "tests/crucible/_campaign-rust-runtime.nix",
         "tests/crucible/_cargo-deps.nix",
         "tests/crucible/_cli-production-source.nix",
@@ -274463,6 +274469,7 @@
     "tests/build/_bazel-crucible-controller-tests.nix",
     "tests/build/_bazel-guest.nix",
     "tests/crucible/.validate-enumerate.nix",
+    "tests/crucible/_bazel-package-requirements.nix",
     "tests/crucible/_bounded-scheduler-preemption-target.sh",
     "tests/crucible/_bounded-scheduler-preemption.sh",
     "tests/crucible/_campaign-rust-runtime.nix",
