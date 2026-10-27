@@ -15,7 +15,7 @@ use crucible_node_transport::retained_metadata::{
 use std::mem::size_of;
 
 impl SourceBirthDerivationJob {
-    /// Reports known original job buffers with their same deployment obligation.
+    /// Reports known original job capacities with their same deployment obligation.
     ///
     /// The caller owns this job's inline header. Shared program buffers are
     /// conservatively repeated, not deduplicated by digest or equal contents.
@@ -33,17 +33,26 @@ impl SourceBirthDerivationJob {
         lease
             .authenticate_in(context)
             .map_err(|_| RuntimeError::ForeignAuthority)?;
-        let bytes = self.known_direct_backing_data()?;
+        let facts = self.known_capacity_data(usize::MAX, None)?;
+        let bytes =
+            PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+                &facts,
+                usize::MAX,
+            )?;
         if bytes > maximum {
             return Err(RuntimeError::ResourceLimit);
         }
+        lease
+            .authenticate_in(context)
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
         Ok(SourceDeploymentStorageRead::from_original(bytes, lease))
     }
 
     /// Observes the original selected direct buffers with their defining geometry.
     ///
-    /// This is the same partial userspace population as
-    /// [`Self::deployment_storage_read`]. It excludes opaque runtime and native
+    /// This compatibility view selects direct buffers only. The enclosing
+    /// deployment read additionally includes known identities and mechanism
+    /// payloads through [`Self::known_capacity_data`]. It excludes opaque runtime and native
     /// resources, which still require the original deployment lease. Shared
     /// attempt/completion views repeat their rows without alias subtraction.
     /// Physical rows append without clearing earlier components or failed prefixes.
@@ -83,23 +92,14 @@ impl SourceBirthDerivationJob {
         Ok(census.finish())
     }
 
-    pub(in crate::node_adapters::cnp) fn known_direct_backing_data(
-        &self,
-    ) -> Result<usize, RuntimeError> {
-        let facts = self.direct_buffer_capacity_data(usize::MAX, None)?;
-        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
-            &facts,
-            usize::MAX,
-        )
-    }
-
     /// Names only this explicit-buffer visitor's new fixed wrapper headers.
     ///
     /// L2/private error/runtime authentication is independently contained by the
     /// original deployment. This is neither their logical row nor a complete
     /// allocation/physical-memory claim.
     pub fn deployment_storage_counter_scratch_data() -> usize {
-        size_of::<&Self>()
+        Self::known_capacity_counter_scratch_data()
+            + size_of::<&Self>()
             + size_of::<usize>() * 2
             + size_of::<Option<&LinuxPureWorkerAttempt>>()
             + size_of::<Option<&LinuxPureWorkerCompletion>>()
@@ -122,7 +122,7 @@ impl SourceBirthDerivationJob {
 }
 
 /// Preserves one defining host allocation without inventing rows from byte sums.
-fn record_buffer(
+pub(super) fn record_buffer(
     buffer: LinuxPureWorkerBufferCapacityData,
     census: &mut OriginalOwnerCapacityMetadataData<'_>,
 ) -> Result<(), RuntimeError> {

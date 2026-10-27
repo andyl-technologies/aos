@@ -23,6 +23,9 @@ use std::{fmt, rc::Rc, thread::ThreadId};
 #[path = "job/storage.rs"]
 mod storage;
 
+#[path = "job/metadata.rs"]
+mod metadata;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Reserving,

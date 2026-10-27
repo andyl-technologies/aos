@@ -137,6 +137,80 @@ impl OriginalLaunchMetadataObservation {
         self.report_owner_binding.as_ref()
     }
 
+    /// Counts fixed fields in the retained observation, including failed prefixes.
+    ///
+    /// Stored numeric facts are history. Their recorded capacities are never
+    /// replayed as current owner rows, and this does not remeasure a launch or
+    /// establish currentness. The closed field rosters contain no owned buffers.
+    pub fn retained_inline_field_visits_data(&self) -> usize {
+        let Self {
+            selection,
+            provider,
+            realization,
+            program_definition,
+            hello_guarantees,
+            report_owner_binding,
+            started: _,
+            complete: _,
+        } = self;
+        let mut visits = 8;
+        for record in [
+            selection,
+            provider,
+            realization,
+            program_definition,
+            hello_guarantees,
+            report_owner_binding,
+        ] {
+            if let Some(RetainedProtocolMetadataFacts {
+                string_capacity_bytes,
+                string_banks,
+                vector_capacity_bytes,
+                vector_banks,
+                boxed_value_bytes,
+                shared_value_bytes,
+                shared_backing_views,
+                tree_containers,
+                tree_entries,
+                maximum_tree_key_value_bytes,
+                maximum_tree_entry_alignment,
+                maximum_shared_value_alignment,
+                observed_nodes,
+                capacity_records,
+            }) = record
+            {
+                let fields: [&usize; 14] = [
+                    string_capacity_bytes,
+                    string_banks,
+                    vector_capacity_bytes,
+                    vector_banks,
+                    boxed_value_bytes,
+                    shared_value_bytes,
+                    shared_backing_views,
+                    tree_containers,
+                    tree_entries,
+                    maximum_tree_key_value_bytes,
+                    maximum_tree_entry_alignment,
+                    maximum_shared_value_alignment,
+                    observed_nodes,
+                    capacity_records,
+                ];
+                // Six optional records make this fixed sum at most 92.
+                visits += fields.len();
+            }
+        }
+        visits
+    }
+
+    /// Names the fixed retained-history field views without launch remeasurement.
+    pub fn retained_inline_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<[&Option<RetainedProtocolMetadataFacts>; 6]>()
+            + size_of::<std::array::IntoIter<&Option<RetainedProtocolMetadataFacts>, 6>>()
+            + size_of::<[&usize; 14]>()
+            + size_of::<usize>()
+    }
+
     /// Names the explicit observer, record and same-original remeasurement bank.
     ///
     /// Recursive traversal and opaque runtime retain their defining contracts;
@@ -163,4 +237,34 @@ fn observe<T: ObserveMetadata + ?Sized>(
 
 fn observation_refused() -> ProviderError {
     ProviderError::Correlation("original launch metadata observation")
+}
+
+#[cfg(test)]
+mod retained_history_tests {
+    use super::*;
+
+    #[test]
+    fn retained_numeric_history_counts_fields_without_replaying_recorded_capacities() {
+        let mut history = OriginalLaunchMetadataObservation::empty();
+        assert_eq!(history.retained_inline_field_visits_data(), 8);
+        history.started = true;
+        history.selection = Some(RetainedProtocolMetadataFacts {
+            vector_capacity_bytes: usize::MAX,
+            capacity_records: usize::MAX,
+            observed_nodes: usize::MAX,
+            ..RetainedProtocolMetadataFacts::default()
+        });
+        let before = history.clone();
+
+        assert_eq!(history.retained_inline_field_visits_data(), 22);
+        assert_eq!(history, before);
+        assert!(!history.is_complete_data());
+        history.provider = history.selection;
+        history.realization = history.selection;
+        history.program_definition = history.selection;
+        history.hello_guarantees = history.selection;
+        history.report_owner_binding = history.selection;
+        assert_eq!(history.retained_inline_field_visits_data(), 92);
+        assert!(!history.is_complete_data());
+    }
 }

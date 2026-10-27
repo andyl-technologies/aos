@@ -110,3 +110,47 @@ fn repeated_program_views_repeat_rows_and_preserve_callback_refusal_prefix() {
     assert_eq!(Arc::strong_count(&program.original), references);
     assert!(program.original.revoked.load(Ordering::Acquire));
 }
+
+#[test]
+fn retained_identity_repeats_program_geometry_without_cloning_or_authentication() {
+    let program = revoked_program();
+    let identity = program.identity();
+    let references = Arc::strong_count(&program.original);
+    let mut program_rows = Vec::new();
+    let mut identity_rows = Vec::new();
+
+    program
+        .observe_direct_buffers(&mut |row| {
+            program_rows.push(row);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    identity
+        .observe_direct_buffers(&mut |row| {
+            identity_rows.push(row);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+    assert_eq!(
+        identity.retained_payload_layout_data(),
+        program.retained_payload_layout_data()
+    );
+    assert_eq!(identity_rows, program_rows);
+    assert_eq!(Arc::strong_count(&program.original), references);
+    assert!(program.original.revoked.load(Ordering::Acquire));
+    assert!(program.original.worker.lock().unwrap().lease().is_none());
+    let mut prefix = Vec::new();
+    assert_eq!(
+        identity.observe_direct_buffers(&mut |row| {
+            if prefix.len() == 1 {
+                return Err("row restriction");
+            }
+            prefix.push(row);
+            Ok(())
+        }),
+        Err("row restriction")
+    );
+    assert_eq!(prefix, program_rows[..1]);
+    assert_eq!(Arc::strong_count(&program.original), references);
+}

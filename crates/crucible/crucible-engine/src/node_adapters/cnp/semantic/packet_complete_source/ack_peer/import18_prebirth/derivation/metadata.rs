@@ -106,7 +106,7 @@ impl NativeImport18DerivationState {
         census.observe_inline_data(&job.is_some())?;
         if let Some(job) = job {
             census.observe_component_capacity_data(|remaining, bank| {
-                job.direct_buffer_capacity_data(remaining, bank)
+                job.known_capacity_data(remaining, bank)
             })?;
         }
         census.observe_inline_data(&banks.is_some())?;

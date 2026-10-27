@@ -43,6 +43,29 @@ impl PartialEq for LinuxPureWorkerProgramIdentity {
 
 impl Eq for LinuxPureWorkerProgramIdentity {}
 
+impl LinuxPureWorkerProgramIdentity {
+    /// Reports the retained original program payload's compiled layout as DATA.
+    ///
+    /// This neither clones the identity nor authenticates a program or its leases.
+    pub fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        std::alloc::Layout::for_value(self.original.as_ref())
+    }
+
+    /// Observes the identity's actual retained program buffers without cloning.
+    ///
+    /// Each strong view repeats its rows, including revoked originals. Native
+    /// descriptors and lease notification backing require separate custody.
+    ///
+    /// # Errors
+    /// Returns the observer's first refusal without changing the original.
+    pub fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.original.observe_direct_buffers(observe)
+    }
+}
+
 impl std::fmt::Debug for LinuxPureWorkerProgramIdentity {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -216,19 +239,7 @@ impl LinuxPureWorkerProgram {
         &self,
         observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
     ) -> Result<(), E> {
-        let OriginalProgram {
-            launcher: _,
-            launcher_measurement: _,
-            launcher_exec: _,
-            worker: _,
-            worker_measurement: _,
-            worker_path,
-            worker_digest: _,
-            algorithm_digest: _,
-            roots,
-            revoked: _,
-        } = self.original.as_ref();
-        observe_program_buffers(worker_path, roots, observe)
+        self.original.observe_direct_buffers(observe)
     }
 
     /// Names concrete program layout and direct-buffer observation controls.
@@ -341,6 +352,27 @@ fn normalized_absolute(path: &Path) -> bool {
                 std::path::Component::RootDir | std::path::Component::Normal(_)
             )
         })
+}
+
+impl OriginalProgram {
+    fn observe_direct_buffers<E>(
+        &self,
+        observe: &mut impl FnMut(LinuxPureWorkerBufferCapacityData) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Self {
+            launcher: _,
+            launcher_measurement: _,
+            launcher_exec: _,
+            worker: _,
+            worker_measurement: _,
+            worker_path,
+            worker_digest: _,
+            algorithm_digest: _,
+            roots,
+            revoked: _,
+        } = self;
+        observe_program_buffers(worker_path, roots, observe)
+    }
 }
 
 fn canonical_store_root(path: &Path) -> bool {
