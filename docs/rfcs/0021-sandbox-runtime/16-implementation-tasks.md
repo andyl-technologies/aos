@@ -31,6 +31,22 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- A host-only independent-approval fixture now uses the production request and
+  provisioning decoders before signing either fixed purpose. It compares the
+  producer's complete request with separately supplied provisioning/checkpoint
+  expectations and requires the operator seed to match the supplied public pin.
+  Its two mutation suites pass. The command-line check also passes at
+  `/nix/store/7li0b33v85rvnbqqfm3k2fp4n4myibiz-sandbox-method46-independent-approval-check`
+  (NAR hash `sha256-1CIXni6s+3dOMCSFYinXyF5bow5bTw5EsL4o5Kghltg=`),
+  including independent OpenSSL verification for both purposes, exclusive output
+  creation, inexact input rejection and refusal of unsafe seed modes/links
+  without publishing a signature. The actual source is retained only for this
+  fixture and integration inputs; ordinary production Rust source and both
+  selected parent/startup derivations are unchanged. The installed startup graph
+  excludes the signer. These DATA tests establish no key provenance, independent
+  history readback, genuine Source, live approval exchange or installed producer
+  execution. The complete Rust test-target compile is running separately.
+
 - Host-only preparation of both fixed TPM purposes now passes QEMU/vTPM
   qualification at
   `/nix/store/w10079cfyq3cqnbmyxi53fm37q5jhli6-aos-fleet-test-sandbox-method46-external-preparation-0`
