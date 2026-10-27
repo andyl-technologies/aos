@@ -907,7 +907,7 @@ mod tests {
 
     const PUBLIC_SETUP: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crucible-qemu-protocol/src/whole_control/testdata/host-setup-launch2-complete.bin"
+        "/../crucible-qemu-protocol/src/whole_control/testdata/host-setup-launch2-complete.bin"
     ));
     thread_local! {
         static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

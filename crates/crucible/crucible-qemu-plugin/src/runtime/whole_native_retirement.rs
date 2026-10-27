@@ -251,15 +251,15 @@ mod tests {
 
     const REQUEST: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crucible-qemu-protocol/src/whole_control/testdata/native-zero-request.bin"
+        "/../crucible-qemu-protocol/src/whole_control/testdata/native-zero-request.bin"
     ));
     const RESULT: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crucible-qemu-protocol/src/whole_control/testdata/native-zero-result.bin"
+        "/../crucible-qemu-protocol/src/whole_control/testdata/native-zero-result.bin"
     ));
     const ACK: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/crucible-qemu-protocol/src/whole_control/testdata/native-zero-ack.bin"
+        "/../crucible-qemu-protocol/src/whole_control/testdata/native-zero-ack.bin"
     ));
 
     thread_local! {
