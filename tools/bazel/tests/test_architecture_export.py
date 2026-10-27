@@ -91,6 +91,7 @@ class ArchitectureExportTests(unittest.TestCase):
         ]
         result = export(records, {})
         targets = result["dependency_targets"]
+        self.assertEqual(result["dependency_target_count"], len(targets))
         self.assertEqual(targets["//crates/app:integration"], {
             "package": "app", "kind": "rust_test", "test_only": True,
             "dependencies": [

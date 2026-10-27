@@ -4329,6 +4329,31 @@ records 1,921 targets and compares every existing production/artifact field with
 the previous exporter and the qualified graph. The remaining Cargo-dependent
 audits still need their consumers converted to this separate view.
 
+`harness_components`, `standalone_dependencies`, and `single_scheduler_boundary`
+now consume declared graph inputs. The harness audit checks empty ordinary
+library dependencies, test-only support targets, and the absence of support
+from production edges. The standalone audit checks dependency aliases and
+resolved package names across compilation, test, build-script, documentation,
+and lint branches. The scheduler audit keeps the existing source classifiers
+and checks the session-to-engine edge without Cargo manifests. Their Cargo
+paths and original negative fixtures remain independent oracles.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-dependencies-parity --no-out-link
+```
+
+The [dependency audit receipt](tests/evidence/crucible-controller-dependency-audits.json)
+binds independent strict/broad sandbox execution to all nine Cargo cases, exact
+Rust bytes, and the executed architecture input. Twenty-four modified inputs
+exercise the real Rust backend with Cargo unavailable, including missing
+test records and scheduler source. The complete dependency view requires its
+exported record count and must agree with compilation and production ownership.
+The [declaration receipt](tests/evidence/crucible-controller-dependency-inventories.json)
+retains six configured analyses and verifies all 80 source guards and 79 SDK
+contracts. The shared reader also passes the existing structural and license
+audit parity checks. This does not qualify the remaining controller runtime
+or production-cutover gates.
+
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture-parity --no-out-link

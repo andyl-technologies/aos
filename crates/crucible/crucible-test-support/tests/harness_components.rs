@@ -5,6 +5,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
@@ -162,6 +165,9 @@ fn must_some<T>(option: Option<T>, message: &str) -> T {
 
 #[test]
 fn crucible_harness_is_dev_dependency_only() -> Result<(), Box<dyn Error>> {
+    if let Some(graph) = architecture::load()? {
+        return bazel_harness_dependencies(&graph);
+    }
     let crates_dir = workspace_root().join("crates");
     let workspace_manifest: Value = fs::read_to_string(crates_dir.join("Cargo.toml"))?.parse()?;
     let workspace_dependencies = workspace_manifest
@@ -214,6 +220,68 @@ fn crucible_harness_is_dev_dependency_only() -> Result<(), Box<dyn Error>> {
         failures.join("\n")
     );
 
+    Ok(())
+}
+
+// The library has no ordinary compilation dependencies; test binaries own their
+// development dependencies. Check every declared production branch separately.
+fn bazel_harness_dependencies(graph: &architecture::Architecture) -> Result<(), Box<dyn Error>> {
+    let support = "crucible-test-support";
+    let targets = graph.dependency_targets()?;
+    let libraries: Vec<_> = graph
+        .compilation_targets(support)?
+        .filter(|(_, target)| {
+            target.kind == "rust_library" && target.crate_roots.contains("src/lib.rs")
+        })
+        .collect();
+    assert!(
+        !libraries.is_empty(),
+        "test support omitted its declared library"
+    );
+    for (label, _) in libraries {
+        let library = targets
+            .get(label)
+            .ok_or("test support library omitted its dependency record")?;
+        assert!(
+            library.dependencies.is_empty(),
+            "crucible-test-support must keep third-party crates as dev-dependencies only"
+        );
+    }
+
+    let mut failures = Vec::new();
+    for (label, target) in targets {
+        if target.package == support {
+            if !target.test_only {
+                failures.push(format!("{label}: test support must remain test-only"));
+            }
+            continue;
+        }
+        let production = !target.test_only
+            && matches!(
+                target.kind.as_str(),
+                "rust_library"
+                    | "rust_binary"
+                    | "rust_proc_macro"
+                    | "rust_shared_library"
+                    | "rust_static_library"
+                    | "cargo_build_script"
+            );
+        if production
+            && target
+                .dependencies
+                .iter()
+                .any(|edge| edge.packages.contains(support))
+        {
+            failures.push(format!(
+                "{label} has production dependency on crucible-test-support"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "crucible-test-support must not enter release/runtime dependency graphs:\n{}",
+        failures.join("\n")
+    );
     Ok(())
 }
 

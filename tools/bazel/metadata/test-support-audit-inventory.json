@@ -17214,7 +17214,7 @@
     "crates/crucible/crucible-session/BUILD.bazel": "e26185e11ac173d4d0decf8658a0beccc1a2d826ff2181ba1937b7af4e224719",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "5bc9c50360faeb40761376bdde766aa204116c4d8d09250fe8c79bbefc6e27ba",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
-    "crates/crucible/crucible-test-support/BUILD.bazel": "628759dccd0ada5fe08ede05aaa149f55234944c5758819a9186121db1e3baac",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "75e3cbbabb1b4e007197e1df77fa4a6eb35253763b9ba14ef8c8e37bcefc72b2",
     "crates/hub/aos-hub-api/BUILD.bazel": "4c50befe92642cc15aa9c4e23100ac1bfee440500a5dbb2a03218f0b859a1dd2",
     "crates/hub/aos-hub-client/BUILD.bazel": "e27eb0fa91e5d1f521e16734db8783f337e402020e600e34c84a3db8ac35952d",
     "crates/hub/aos-hub-console/BUILD.bazel": "2be1adf9bf59017aababf40a07b14c2c44523e7ff850326f3a2b7cb6250aabe9",

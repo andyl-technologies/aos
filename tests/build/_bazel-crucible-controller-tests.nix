@@ -182,4 +182,15 @@ in {
     retainActionGraph = true;
     sharedBuildCache = false;
   };
+  dependencies = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-dependencies";
+    inherit workspace;
+    targets = map (name: "//crates/crucible/crucible-test-support:${name}_controller") [
+      "harness_components"
+      "standalone_dependencies"
+      "single_scheduler_boundary"
+    ];
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
 }

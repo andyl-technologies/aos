@@ -9,6 +9,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
@@ -20,9 +23,13 @@ const FORBIDDEN_DEPENDENCY_PREFIXES: [&str; 2] = ["ratchet-", "aos-nix-"];
 const FORBIDDEN_DEPENDENCY_NAMES: [&str; 2] = ["ratchet", "aos-nix"];
 #[test]
 fn crucible_crates_do_not_depend_on_ratchet_or_aos_nix() -> Result<(), Box<dyn Error>> {
-    let manifests = load_crucible_manifests()?;
-    let workspace_dependencies = load_workspace_dependencies()?;
-    let findings = forbidden_dependency_findings(&manifests, &workspace_dependencies);
+    let findings = if let Some(graph) = architecture::load()? {
+        bazel_dependency_findings(&graph)?
+    } else {
+        let manifests = load_crucible_manifests()?;
+        let workspace_dependencies = load_workspace_dependencies()?;
+        forbidden_dependency_findings(&manifests, &workspace_dependencies)
+    };
 
     assert!(
         findings.is_empty(),
@@ -31,6 +38,35 @@ fn crucible_crates_do_not_depend_on_ratchet_or_aos_nix() -> Result<(), Box<dyn E
     );
 
     Ok(())
+}
+
+// Resolve package identities before applying the original name policy so
+// aliases, platform branches, macros, and development targets cannot hide edges.
+fn bazel_dependency_findings(
+    graph: &architecture::Architecture,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut findings = Vec::new();
+    for (label, target) in graph.dependency_targets()? {
+        if !target.package.starts_with("crucible") {
+            continue;
+        }
+        for edge in &target.dependencies {
+            let key = edge.label.rsplit(':').next().unwrap_or(&edge.label);
+            if forbidden_dependency_name(key)
+                || edge
+                    .packages
+                    .iter()
+                    .any(|name| forbidden_dependency_name(name))
+            {
+                findings.push(format!(
+                    "`{}` has forbidden dependency `{}` resolved as [{}] in declared Bazel {} target `{label}` ({})",
+                    target.package, edge.label, edge.packages.iter().cloned().collect::<Vec<_>>().join(", "),
+                    target.kind, edge.attribute
+                ));
+            }
+        }
+    }
+    Ok(findings)
 }
 
 #[test]

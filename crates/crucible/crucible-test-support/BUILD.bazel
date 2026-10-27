@@ -116,7 +116,14 @@ aos_rust_test(
             "AOS_BAZEL_LICENSE_CLOSURES": "@aos_architecture//:license-closures.json",
         } if source == "tests/gate_license_boundary.rs" else {
             "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
-        } if source in ["tests/control_plane_boundary.rs", "tests/crate_layer_graph.rs", "tests/crate_artifact_types.rs"] else {},
+        } if source in [
+            "tests/control_plane_boundary.rs",
+            "tests/crate_layer_graph.rs",
+            "tests/crate_artifact_types.rs",
+            "tests/harness_components.rs",
+            "tests/standalone_dependencies.rs",
+            "tests/single_scheduler_boundary.rs",
+        ] else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",
             "//tests/crucible:testing-standards-baseline.txt",

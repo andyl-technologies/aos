@@ -20,6 +20,35 @@ in
     };
     test-feature-policy = test-graph.feature-policy;
     test-architecture = test-graph.architecture;
+    test-dependencies = test-graph.dependencies;
+    test-dependencies-cargo = import ../../../tests/build/_bazel-crucible-controller-dependency-cargo.nix {inherit pkgs;};
+    test-dependencies-parity = let
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-dependency-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_dependencies.py"
+            "verify_controller_architecture.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-dependency-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_dependencies.py \
+          --strict ${test-graph.dependencies} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.dependencies} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-dependencies-cargo} --cargo-root ${test-dependencies-cargo.src} \
+          --graph ${pkgs.aosBazelArchitecture}/architecture.json --output "$out"
+      '';
     test-license-boundary = test-graph.license-boundary;
     test-license-boundary-cargo = import ../../../tests/build/_bazel-crucible-controller-license-cargo.nix {inherit pkgs;};
     test-license-boundary-parity = let

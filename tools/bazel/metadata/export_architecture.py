@@ -249,6 +249,7 @@ def export(records, repositories):
         "target_dependencies": target_edges,
         "compilation_targets": compilations,
         "dependency_target_selection": "union of all declared Rust production, test, build-script, documentation, and lint branches",
+        "dependency_target_count": len(dependency_targets),
         "dependency_targets": dependency_targets,
         "unavailable_profile_targets": dict(sorted(unavailable.items())),
         "native_dependencies": production_native,
