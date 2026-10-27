@@ -236,10 +236,12 @@ the same frozen source; all 277 store files match checkpoint `1ea0e81eec`.
 These are separate passing observations, not a passing whole-suite invocation,
 and they predate the later custody and archive-inspection changes.
 Formatting and coverage inventory pass: 665 model, 25 format and nineteen native
-bindings qualify no capability. Mandatory application compilation is running
-against an immutable source matching all 7,943 frozen inputs, including 5,479
-Rust, TOML and lockfile inputs. No passing application result or blocked-I/O
-deadline qualification is recorded for this component.
+bindings qualify no capability. Mandatory application compilation passes at
+`cdpzryn1d7fzklxda3qxpl5smmxwxkn4-aos-test-targets-0.1.0`: 185 executable test
+artifacts from all 58 selected application packages. Its immutable source matches
+all 7,943 frozen inputs, including 5,479 Rust, TOML and lockfile inputs. This build
+predates the later custody and archive-inspection changes and does not validate
+the current checked closure work. Blocked-I/O deadlines remain unqualified.
 
 The child-launch investigation also finds that separate source snapshots sharing
 one Cargo output directory can reuse a later snapshot's executable as fresh.
