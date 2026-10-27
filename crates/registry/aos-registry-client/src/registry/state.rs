@@ -26,11 +26,76 @@
 //! last_update = "2026-02-13T10:30:00Z"
 //! ```
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::types::{RegistryFile, RegistryState, RegistryUploadAuthConfig, SigningKeySource};
+
+/// An exclusive transaction lock for one registry's consumer state.
+///
+/// Package refresh and image discovery acquire this lock before reading any
+/// trust state and hold it through verified catalog publication and durable
+/// state replacement. Callers that also acquire a cache-local lock must take
+/// this registry lock first. A transaction never holds locks for two
+/// registries, so independent registries remain concurrent.
+#[derive(Debug)]
+pub struct RegistryStateLock {
+    _file: File,
+}
+
+impl RegistryStateLock {
+    /// Acquires the transaction lock associated with `state_path`.
+    ///
+    /// Lock acquisition runs on Tokio's blocking pool because another process
+    /// may be completing a registry transaction. The stable lock file remains
+    /// beside the state file after use; removing it could split concurrent
+    /// callers across different inodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state directory or lock file cannot be opened,
+    /// the blocking task cannot be joined, or the operating system rejects the
+    /// exclusive lock.
+    pub async fn acquire(state_path: &Path) -> Result<Self> {
+        let lock_path = transaction_lock_path(state_path);
+
+        tokio::task::spawn_blocking(move || acquire_lock(&lock_path))
+            .await
+            .context("joining registry state lock task")?
+    }
+}
+
+fn transaction_lock_path(state_path: &Path) -> PathBuf {
+    let mut file_name = state_path
+        .file_name()
+        .map_or_else(|| OsString::from("registry-state"), OsString::from);
+    file_name.push(".lock");
+
+    state_path.with_file_name(file_name)
+}
+
+fn acquire_lock(lock_path: &Path) -> Result<RegistryStateLock> {
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
+        .with_context(|| format!("locking {}", lock_path.display()))?;
+
+    Ok(RegistryStateLock { _file: file })
+}
 
 // ---------------------------------------------------------------------------
 // Load / save
@@ -71,7 +136,8 @@ pub fn load_state(path: &Path) -> Result<Option<RegistryState>> {
 /// # Errors
 ///
 /// Returns an error when an existing file cannot be read or parsed, when the
-/// parent directory cannot be created, or when the file cannot be written.
+/// parent directory cannot be created, or when the atomic replacement cannot
+/// be written and synchronized.
 pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     let mut root: toml::Value = if path.exists() {
         let content =
@@ -96,7 +162,37 @@ pub fn save_state(path: &Path, state: &RegistryState) -> Result<()> {
     registry.insert("state".to_string(), toml::Value::try_from(state)?);
 
     let rendered = toml::to_string_pretty(&root)?;
-    std::fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
+    let temporary = prepare_state_replacement(path, rendered.as_bytes())?;
+    persist_state_replacement(path, temporary)
+}
+
+fn prepare_state_replacement(path: &Path, contents: &[u8]) -> Result<tempfile::NamedTempFile> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary state in {}", parent.display()))?;
+    temporary
+        .write_all(contents)
+        .with_context(|| format!("writing temporary state for {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("synchronizing temporary state for {}", path.display()))?;
+
+    Ok(temporary)
+}
+
+fn persist_state_replacement(path: &Path, temporary: tempfile::NamedTempFile) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    temporary
+        .persist(path)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("synchronizing {}", parent.display()))?;
 
     Ok(())
 }
@@ -305,7 +401,118 @@ fn find_section(content: &str, header: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Arc;
     use tempfile::TempDir;
+    use tokio::sync::{Barrier, oneshot};
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registry_transactions_reload_state_after_waiting_for_the_lock() {
+        let tmp = TempDir::new().unwrap();
+        let path = Arc::new(tmp.path().join("aos-core.toml"));
+        save_state(
+            &path,
+            &RegistryState {
+                last_commit: Some("c0".into()),
+                ..RegistryState::default()
+            },
+        )
+        .unwrap();
+
+        let first_holds_lock = Arc::new(Barrier::new(2));
+        let release_first = Arc::new(Barrier::new(2));
+        let first_path = Arc::clone(&path);
+        let first_holds_lock_worker = Arc::clone(&first_holds_lock);
+        let release_first_worker = Arc::clone(&release_first);
+        let first = tokio::spawn(async move {
+            let _transaction = RegistryStateLock::acquire(&first_path).await.unwrap();
+            let observed = load_state(&first_path).unwrap().unwrap();
+            assert_eq!(observed.last_commit.as_deref(), Some("c0"));
+            first_holds_lock_worker.wait().await;
+            release_first_worker.wait().await;
+
+            save_state(
+                &first_path,
+                &RegistryState {
+                    last_commit: Some("c1".into()),
+                    ..observed
+                },
+            )
+            .unwrap();
+        });
+        first_holds_lock.wait().await;
+
+        let (second_started_tx, second_started_rx) = oneshot::channel();
+        let (second_acquired_tx, mut second_acquired_rx) = oneshot::channel();
+        let second_path = Arc::clone(&path);
+        let second = tokio::spawn(async move {
+            second_started_tx.send(()).unwrap();
+            let _transaction = RegistryStateLock::acquire(&second_path).await.unwrap();
+            second_acquired_tx.send(()).unwrap();
+            let observed = load_state(&second_path).unwrap().unwrap();
+            assert_eq!(observed.last_commit.as_deref(), Some("c1"));
+
+            save_state(
+                &second_path,
+                &RegistryState {
+                    last_commit: Some("c2".into()),
+                    ..observed
+                },
+            )
+            .unwrap();
+        });
+        second_started_rx.await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), &mut second_acquired_rx)
+                .await
+                .is_err(),
+            "the second registry transaction acquired a held lock"
+        );
+
+        release_first.wait().await;
+        first.await.unwrap();
+        second_acquired_rx.await.unwrap();
+        second.await.unwrap();
+
+        let final_state = load_state(&path).unwrap().unwrap();
+        assert_eq!(final_state.last_commit.as_deref(), Some("c2"));
+
+        let _replay = RegistryStateLock::acquire(&path).await.unwrap();
+        let replay_base = load_state(&path).unwrap().unwrap();
+        assert_ne!(
+            replay_base.last_commit.as_deref(),
+            Some("c0"),
+            "a delayed c1 worker must observe c2 and reject its stale base"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn independent_registry_transactions_do_not_block_each_other() {
+        let tmp = TempDir::new().unwrap();
+        let first_path = tmp.path().join("first.toml");
+        let second_path = tmp.path().join("second.toml");
+        let _first = RegistryStateLock::acquire(&first_path).await.unwrap();
+
+        timeout(
+            Duration::from_secs(1),
+            RegistryStateLock::acquire(&second_path),
+        )
+        .await
+        .expect("independent registry lock timed out")
+        .unwrap();
+    }
+
+    #[test]
+    fn interrupted_atomic_replacement_preserves_the_published_state() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("aos-core.toml");
+        fs::write(&path, "published state\n").unwrap();
+
+        let pending = prepare_state_replacement(&path, b"pending state\n").unwrap();
+        drop(pending);
+
+        assert_eq!(fs::read_to_string(path).unwrap(), "published state\n");
+    }
 
     #[test]
     fn load_state_from_registry_file() {

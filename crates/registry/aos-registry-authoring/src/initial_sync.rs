@@ -14,7 +14,13 @@ pub(crate) async fn run(config: &ApmConfig, name: &str, printer: &Printer) -> Re
         format!("newly registered origin '{name}' is absent after reloading configuration")
     })?;
     let tracking = registry.tracking_mode()?;
-    let mut current_state = existing_state.clone().unwrap_or_default();
+    let state_path = config.registry_overlay_path(name);
+    let _transaction_lock = state::RegistryStateLock::acquire(&state_path)
+        .await
+        .with_context(|| format!("locking state for registry '{name}'"))?;
+    let mut current_state = state::load_state(&state_path)?
+        .or_else(|| existing_state.clone())
+        .unwrap_or_default();
     let result = git::sync_git(
         registry,
         &tracking,
@@ -25,7 +31,7 @@ pub(crate) async fn run(config: &ApmConfig, name: &str, printer: &Printer) -> Re
         printer,
     )
     .await?;
-    state::save_state(&config.registry_overlay_path(name), &current_state)
+    state::save_state(&state_path, &current_state)
         .with_context(|| format!("saving state for registry '{name}'"))?;
 
     printer.success(&format!(
