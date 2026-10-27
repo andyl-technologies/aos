@@ -149,6 +149,7 @@ pub(super) fn canonical_error_storage_data() -> Result<usize, RuntimeError> {
     ])
 }
 
+#[cfg(test)]
 pub(super) fn registration_storage(
     plan: &PacketCompleteAckHostRegistrationPlan,
 ) -> Result<usize, RuntimeError> {

@@ -155,16 +155,8 @@ pub(super) fn record_registration_capacity_data(
     census.observe(envelope_extensions)
 }
 
-/// Names the standalone registration byte observer and its defining field walk.
-pub(super) fn registration_counter_scratch_data() -> usize {
-    OriginalOwnerCapacityMetadataData::counter_scratch_data()
-        + registration_field_counter_scratch_data()
-        + size_of::<&PacketCompleteAckHostRegistrationPlan>()
-        + size_of::<RetainedProtocolMetadataFacts>()
-        + size_of::<Result<usize, RuntimeError>>()
-}
-
-fn registration_field_counter_scratch_data() -> usize {
+/// Names the concrete registration field and extension traversal controls.
+pub(super) fn registration_field_counter_scratch_data() -> usize {
     size_of::<(&Id, &Vec<Id>, &Vec<ExtensionSelection>, &Vec<String>)>()
         + size_of::<(
             &ContentRef,

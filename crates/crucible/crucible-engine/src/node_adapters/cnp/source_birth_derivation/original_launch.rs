@@ -179,6 +179,7 @@ impl OriginalSourceBirthLaunch {
         authenticate(&self.original)
     }
 
+    #[cfg(test)]
     pub(in crate::node_adapters::cnp) fn known_backing_data(&self) -> Result<usize, RuntimeError> {
         known_backing(&self.original)
     }

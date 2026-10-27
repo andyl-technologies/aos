@@ -16,6 +16,9 @@ use crate::node_adapters::cnp::source_birth_derivation::{
 use crucible_host_resources::LinuxPureWorkerAttemptIdentity;
 use std::ops::Range;
 
+#[path = "derivation/metadata.rs"]
+mod metadata;
+
 #[path = "derivation/private_seed.rs"]
 mod private_seed;
 
@@ -415,7 +418,7 @@ impl PacketCompleteSemanticSource {
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
             + SourceBirthDerivationJob::fresh_export_counter_scratch_data()
             + Self::native_import18_private_seed_counter_scratch_data()
-            + super::metadata::registration_counter_scratch_data()
+            + metadata::counter_scratch_data()
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_isolated_derivation_storage_custody(
@@ -459,35 +462,8 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        let Some(state) = &self.native_import18_derivation else {
-            return Ok(0);
-        };
-        self.authenticate_isolated_derivation_storage_custody()?;
-        let mut bytes = state
-            .private_launch
-            .as_ref()
-            .map_or(0, Id::allocated_capacity);
-        if let Some(original) = &state.original_launch {
-            bytes = storage::sum(&[bytes, original.known_backing_data()?])?;
-        }
-        if let Some(plan) = &state.registration {
-            bytes = storage::sum(&[bytes, storage::registration_storage(plan)?])?;
-        }
-        if let Some(job) = &state.job {
-            bytes = storage::sum(&[bytes, job.known_direct_backing_data()?])?;
-        }
-        if let Some(seed) = &state.private_seed {
-            bytes = storage::sum(&[bytes, seed.known_backing()?])?;
-        }
-        bytes = storage::sum(&[
-            bytes,
-            state.source_bank.capacity(),
-            state.registration_bank.capacity(),
-        ])?;
-        if bytes > maximum {
-            return Err(RuntimeError::ResourceLimit);
-        }
-        Ok(bytes)
+        let facts = self.native_import18_derivation_known_capacity_data(usize::MAX, None)?;
+        Self::complete_retained_metadata_storage_precredit_data(&facts, maximum)
     }
 }
 

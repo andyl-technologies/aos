@@ -6,6 +6,7 @@
 //! Recipe, Initial or native member. Original banks remain with Completion.
 
 use super::*;
+#[cfg(test)]
 use crate::node_adapters::cnp::PacketCompleteSemanticSource;
 use crate::node_adapters::cnp::semantic::source::{
     private_birth_clone_construction_data, private_birth_clone_counter_scratch_data,
@@ -289,12 +290,13 @@ impl OriginalImport18PrivateSeed {
     ///
     /// # Errors
     /// Refuses foreign creator custody or checked census geometry/work overflow.
+    #[cfg(test)]
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn known_backing(
         &self,
     ) -> Result<usize, RuntimeError> {
         let mut census = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
         self.record_retained_capacity_data(&mut census)?;
-        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+        crate::node_adapters::cnp::PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
             &census.finish(),
             usize::MAX,
         )

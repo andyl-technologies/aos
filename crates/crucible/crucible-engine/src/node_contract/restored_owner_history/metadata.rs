@@ -159,6 +159,35 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         merge_capacity_metadata_data(&mut self.facts, &additional)
     }
 
+    /// Joins a defining component walk within the remaining selected row bound.
+    ///
+    /// The caller authenticates the original component and declares its callback
+    /// capture controls. Physical rows append through the same bank loan; a
+    /// refused child preserves its emitted prefix without issuing complete facts.
+    ///
+    /// # Errors
+    /// Preserves the child's refusal and rejects aggregate row exhaustion or
+    /// checked geometry/work overflow without clearing earlier physical rows.
+    pub(crate) fn observe_component_capacity_data(
+        &mut self,
+        observe: impl FnOnce(
+            usize,
+            Option<&mut PacketRuntimeMetadataRecordBank>,
+        ) -> Result<RetainedProtocolMetadataFacts, RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        let remaining = self
+            .maximum_rows
+            .checked_sub(self.facts.capacity_records)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let additional = observe(remaining, self.bank.as_deref_mut())?;
+        self.facts
+            .capacity_records
+            .checked_add(additional.capacity_records)
+            .filter(|rows| *rows <= self.maximum_rows)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        merge_capacity_metadata_data(&mut self.facts, &additional)
+    }
+
     /// Counts one inspected Copy field in the defining allocation-free roster.
     ///
     /// This compile-time bound prevents a fixed field from silently acquiring an
@@ -349,7 +378,8 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
             + size_of::<Option<usize>>()
             + size_of::<Result<usize, RuntimeError>>()
             + size_of::<&usize>()
-            + 5 * size_of::<usize>()
+            + size_of::<Option<&mut PacketRuntimeMetadataRecordBank>>()
+            + 6 * size_of::<usize>()
     }
 }
 

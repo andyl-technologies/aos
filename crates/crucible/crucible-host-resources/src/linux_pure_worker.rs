@@ -299,6 +299,19 @@ struct AttemptIdentity;
 #[derive(Clone, Debug)]
 pub struct LinuxPureWorkerAttemptIdentity(Arc<AttemptIdentity>);
 
+impl LinuxPureWorkerAttemptIdentity {
+    /// Reports the original identity Arc's compiled payload layout as DATA.
+    ///
+    /// The shared control allocation remains an additional caller term. This
+    /// neither clones the identity nor proves wait, cleanup or result authority.
+    pub fn retained_payload_layout_data(&self) -> std::alloc::Layout {
+        match self.0.as_ref() {
+            // A future owning marker field must change this closed roster.
+            AttemptIdentity => std::alloc::Layout::new::<AttemptIdentity>(),
+        }
+    }
+}
+
 impl PartialEq for LinuxPureWorkerAttemptIdentity {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
