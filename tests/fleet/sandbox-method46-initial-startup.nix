@@ -7,7 +7,16 @@
   systems,
   ...
 } @ args: let
-  baseline = import ./sandbox-funded-startup.nix (args // {expectedFloorMode = "required-v1";});
+  # The shared enclosure check observes the manual units before and after the
+  # real QEMU/vTPM power cycle, including whether either unit has ever executed.
+  baseline = import ./sandbox-funded-startup.nix (args
+    // {
+      expectedFloorMode = "required-v1";
+      expectedUnstartedUnits = [
+        "aos-sandbox-controller-floor-initialize.service"
+        "aos-sandbox-storage-floor-initialize.service"
+      ];
+    });
   initialSystem = import ./_sandbox-method46-initial-system.nix {
     inherit lib pkgs systems;
     approvalPublicKeys = {
@@ -23,27 +32,4 @@ in
   // {
     name = "sandbox-method46-initial-startup";
     machines.vm = baseline.machines.vm // {inherit system;};
-    testScript =
-      baseline.testScript
-      + ''
-        # The shared enclosure assertions cover enforcing boot and a real
-        # QEMU/vTPM power cycle. The selected manual purposes must remain inert
-        # afterwards; their definitions supply no automatic initialization.
-        initial_units = (
-            "aos-sandbox-controller-floor-initialize.service",
-            "aos-sandbox-storage-floor-initialize.service",
-        )
-        with startup_diagnostics(vm, *initial_units):
-            for unit in initial_units:
-                properties = dict(line.split("=", 1) for line in vm.succeed(
-                    f"systemctl show {unit} --property=LoadState,ActiveState,SubState,MainPID,ExecMainPID"
-                ).splitlines())
-                assert properties == {
-                    "LoadState": "loaded",
-                    "ActiveState": "inactive",
-                    "SubState": "dead",
-                    "MainPID": "0",
-                    "ExecMainPID": "0",
-                }, (unit, properties)
-      '';
   }

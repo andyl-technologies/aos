@@ -4,6 +4,7 @@
   pkgs,
   systems,
   expectedFloorMode ? "legacy-closed-v1",
+  expectedUnstartedUnits ? [],
   ...
 }: let
   fundedSystem = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
@@ -99,6 +100,20 @@ in {
           assert vm.succeed(
               "cat /etc/aos/method46-tpm-floor/storage-mode"
           ).strip() == "${expectedFloorMode}"
+
+          # Manual provisioning must remain untouched on both boots. A dead
+          # process alone would also accept a producer that already ran.
+          for unit in ${builtins.toJSON expectedUnstartedUnits}:
+              properties = dict(line.split("=", 1) for line in vm.succeed(
+                  f"systemctl show {unit} --property=LoadState,ActiveState,SubState,MainPID,ExecMainPID"
+              ).splitlines())
+              assert properties == {
+                  "LoadState": "loaded",
+                  "ActiveState": "inactive",
+                  "SubState": "dead",
+                  "MainPID": "0",
+                  "ExecMainPID": "0",
+              }, (unit, properties)
 
       with startup_diagnostics(vm):
           check_startup_enclosure()
