@@ -4343,6 +4343,26 @@ static libraries. The QEMU test oracle and its package, lint, format, and licens
 carry `manual` tags to keep this optional helper out of ordinary wildcard builds.
 Its binary remains test-only and explicitly enables `qemu-test-oracle`.
 
+`checks.build.bazel.license-closures` prepares the Rust package inputs for the
+license gate from four separate configured analyses: the production QEMU plugin,
+debug gateway, protocol library, and shared-memory library. Each analysis has
+exactly one production compilation root. Closure membership includes procedural
+macros and build dependencies reached through build-script bridge rules. Pinned
+SDK source manifests supply external package names, versions, licenses, and
+archive hashes; the architecture query supplies first-party source ownership.
+Unknown sources and compiler tools fail closed. Five explicitly named, pinned
+`rules_rust` implementation tools are recorded separately from application crates.
+
+```sh
+nix-build -A checks.build.bazel.license-closures --no-out-link
+```
+
+The [configured closure receipt](tests/evidence/crucible-license-closures.json)
+retains the four inventories and their source bindings. This export is a
+preparatory step: the existing Rust license gate still needs its Bazel adapter
+and Cargo/Bazel parity qualification. It does not qualify native-library licenses
+or replace the ABI, QEMU source-retention, or publication gates.
+
 `checks.build.bazel.controller-native.check` qualifies the controller's pinned
 `ring` dependency using four uncached builds. Strict and broad source selections
 use deliberately different private output bases. The ordinary compiler must

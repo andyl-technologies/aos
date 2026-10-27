@@ -156,6 +156,7 @@ in
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
+    license-closures = import ./_bazel-license-closures.nix {inherit pkgs;};
     shared = import ./_bazel-shared.nix {inherit pkgs;};
     directory-packages = import ./_bazel-directory-packages.nix {inherit pkgs;};
     workspace-status = import ./_bazel-workspace-status.nix {inherit pkgs;};
