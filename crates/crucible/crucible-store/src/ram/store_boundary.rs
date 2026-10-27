@@ -217,7 +217,10 @@ impl<'a> WorkAccount<'a> {
                         ..
                     } if returned == &source
                 ) {
-                    Err(storage.into())
+                    // The provider identifies the direct refusal, but it does
+                    // not choose which account remains its owner. Rebuild the
+                    // inline error under the operation's saved original.
+                    Err(RamStoreError::from_admission(original, source))
                 } else {
                     let first = RamStoreError::from_admission(original, source);
                     Err(self.fail_validation_with_provider(first, storage).into())

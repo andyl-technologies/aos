@@ -19,10 +19,14 @@ struct Authority {
 
 impl Authority {
     fn new() -> Arc<Self> {
+        Self::with_refusal(DecodeAdmissionError::new(RevokedOriginal))
+    }
+
+    fn with_refusal(refusal: DecodeAdmissionError) -> Arc<Self> {
         Arc::new(Self {
             resources: FixtureResourceBudget::new(0, 1024 * 1024),
             revoked: AtomicBool::new(false),
-            refusal: DecodeAdmissionError::new(RevokedOriginal),
+            refusal,
         })
     }
 }
@@ -114,6 +118,101 @@ fn adapter_refuses_success_after_operation_swallows_original_failure() {
     )
     .expect_err("an operation cannot swallow original revocation and report success");
     assert_revoked_original(&error, &authority.refusal);
+}
+
+#[test]
+fn adapter_restores_saved_original_custody_when_provider_omits_it() {
+    let authority = Authority::new();
+    let original =
+        DecodeBudget::new(authority.clone(), 1024 * 1024).expect("finite adapter original");
+
+    let error = super::super::with_store_operation_boundary(
+        &original,
+        &mut || {
+            authority.revoked.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        |checked_boundary| {
+            let StoreError::DecodeAdmission { source, .. } =
+                checked_boundary().expect_err("post-callback original refusal")
+            else {
+                panic!("original refusal must use the inline admission shape");
+            };
+            Err::<(), _>(StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            })
+        },
+    )
+    .expect_err("missing provider custody cannot replace the saved original");
+    assert_revoked_original(&error, &authority.refusal);
+
+    drop(original);
+    assert_ne!(
+        authority
+            .resources
+            .usage()
+            .expect("retained original credit"),
+        (0, 0)
+    );
+    drop(error);
+    assert_eq!(authority.resources.usage().expect("closed credit"), (0, 0));
+}
+
+#[test]
+fn adapter_replaces_foreign_custody_with_saved_original_custody() {
+    let original_authority = Authority::new();
+    let foreign_authority = Authority::with_refusal(original_authority.refusal.clone());
+    let original = DecodeBudget::new(original_authority.clone(), 1024 * 1024)
+        .expect("finite adapter original");
+    let foreign =
+        DecodeBudget::new(foreign_authority.clone(), 1024 * 1024).expect("finite foreign account");
+
+    let error = super::super::with_store_operation_boundary(
+        &original,
+        &mut || {
+            original_authority.revoked.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        |checked_boundary| {
+            let StoreError::DecodeAdmission { source, .. } =
+                checked_boundary().expect_err("post-callback original refusal")
+            else {
+                panic!("original refusal must use the inline admission shape");
+            };
+            Err::<(), _>(StoreError::DecodeAdmission {
+                source,
+                custody: Some(foreign.custody()),
+            })
+        },
+    )
+    .expect_err("foreign custody cannot replace the saved original");
+    assert_revoked_original(&error, &original_authority.refusal);
+
+    drop(original);
+    drop(foreign);
+    assert_ne!(
+        original_authority
+            .resources
+            .usage()
+            .expect("retained original credit"),
+        (0, 0)
+    );
+    assert_eq!(
+        foreign_authority
+            .resources
+            .usage()
+            .expect("released foreign credit"),
+        (0, 0)
+    );
+    drop(error);
+    assert_eq!(
+        original_authority
+            .resources
+            .usage()
+            .expect("closed original credit"),
+        (0, 0)
+    );
 }
 
 #[test]
