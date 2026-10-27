@@ -137,6 +137,7 @@ impl Registry {
     ) -> io::Result<Arc<ReadActivity>> {
         self.for_inode(inode, ReadOrigin::Admission(order), limit)
     }
+
     /// Captures one consistent read-order cut without holding the clock during allocation.
     ///
     /// # Errors
@@ -195,7 +196,7 @@ impl Registry {
         self.for_admission_allocations(source.original_allocations(), limit)
     }
 
-    /// Shares scheduling state for both verified original metadata members.
+    /// Shares scheduling state for a verified pair and its original dictionaries.
     ///
     /// # Errors
     /// Refuses exhausted finite activity storage.
@@ -213,17 +214,25 @@ impl Registry {
         limit: usize,
     ) -> io::Result<ReadActivities> {
         let mut activities = Vec::new();
-        activities.try_reserve_exact(2).map_err(io::Error::other)?;
+        // A read can span a nested dictionary chain as well as both pack
+        // members. The owner-wide registry, rather than a two-file assumption,
+        // bounds its closure; consumer storage accounts for this many Arcs.
+        activities
+            .try_reserve_exact(limit)
+            .map_err(io::Error::other)?;
         for (inode, order) in allocations {
             let activity = self.for_inode(inode, ReadOrigin::Admission(order), limit)?;
             if !activities.iter().any(|old| Arc::ptr_eq(old, &activity)) {
+                if activities.len() >= limit {
+                    return Err(invalid(
+                        "admitted read activity exceeds its bounded closure",
+                    ));
+                }
                 activities.push(activity);
             }
         }
-        if activities.is_empty() || activities.len() > 2 {
-            return Err(invalid(
-                "admitted read activity exceeds its bounded closure",
-            ));
+        if activities.is_empty() {
+            return Err(invalid("admitted read activity has no original allocation"));
         }
         Ok(ReadActivities(activities))
     }
@@ -290,6 +299,59 @@ mod tests {
             first: AtomicU64::new(0),
             latest: AtomicU64::new(0),
         })
+    }
+
+    #[test]
+    fn nested_dictionary_read_records_each_original_allocation_once() -> io::Result<()> {
+        let mut registry = Registry::default();
+        let allocations = [((1, 10), 1), ((1, 11), 2), ((1, 12), 3), ((1, 13), 3)];
+        let group =
+            registry.for_admission_allocations(allocations.into_iter().chain([((1, 11), 2)]), 4)?;
+
+        group.record()?;
+
+        let rows = registry.snapshot()?;
+        assert_eq!(rows.len(), 4);
+        for (position, row) in rows.iter().enumerate() {
+            assert_eq!(row.inode, allocations[position].0);
+            assert_eq!(row.first, position as u64 + 1);
+            assert_eq!(row.latest, row.first);
+        }
+        assert_eq!(
+            *registry
+                .clock
+                .lock()
+                .map_err(|_| invalid("test clock poisoned"))?,
+            4
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dictionary_activity_refusal_preserves_clock_and_registry_bound() -> io::Result<()> {
+        let mut registry = Registry::default();
+        let error = registry
+            .for_admission_allocations([((1, 10), 1), ((1, 11), 2), ((1, 12), 3)].into_iter(), 2)
+            .err()
+            .ok_or_else(|| invalid("oversized dictionary activity unexpectedly accepted"))?;
+
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        let rows = registry.snapshot()?;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.first == 0 && row.latest == 0));
+        assert_eq!(
+            *registry
+                .clock
+                .lock()
+                .map_err(|_| invalid("test clock poisoned"))?,
+            0
+        );
+        assert!(
+            registry
+                .for_admission_allocations(std::iter::empty(), 2)
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]

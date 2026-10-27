@@ -46,6 +46,45 @@ struct Member {
 }
 
 impl AdmittedRead {
+    /// Retains a genuine standalone dictionary within an existing physical turn.
+    ///
+    /// The caller holds policy custody and checks publisher phase outside that
+    /// lock. No raw descriptor or caller-provided digest can create this source.
+    ///
+    /// # Errors
+    /// Refuses changed original jobs, protection, native bytes or resource bounds.
+    pub(super) fn prepare_dictionary(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        resource: &Arc<Mutex<AdmissionJob>>,
+    ) -> io::Result<Self> {
+        executor.check_physical_worker()?;
+        executor.admission_context_locked(owner)?;
+        let (identity, length, _) = {
+            let job = super::backing::lock(resource)?;
+            super::chunk::checked_dictionary(owner, &job)?
+        };
+        let members = collect_members(executor, owner, resource)?;
+        let layout = Arc::clone(owner.preparation.layout());
+        let source = NativeChunkSource::open_bounded(
+            &layout,
+            identity,
+            length,
+            true,
+            owner.preparation.config.reads.max_allocation_bytes,
+            owner.preparation.config.state.records,
+        )
+        .inspect_err(|error| reject_read(&members, error))?;
+        let read = Self {
+            layout,
+            source,
+            members,
+            project: owner.preparation.config.project_id,
+        };
+        read.check_protected(owner)?;
+        Ok(read)
+    }
+
     /// Opens only actual completed cache admissions on this physical executor.
     ///
     /// # Errors
@@ -275,7 +314,7 @@ impl AdmittedRead {
             .ok_or_else(|| invalid("admitted read header storage overflow"))
     }
 
-    fn check_native(&self) -> io::Result<()> {
+    pub(super) fn check_native(&self) -> io::Result<()> {
         for member in &self.members {
             member.observation.check_readable()?;
         }
@@ -321,6 +360,11 @@ impl AdmittedRead {
             member.observation.check_readable()?;
         }
         Ok(())
+    }
+
+    /// Borrows actual body/dictionary handles for a deduplicated allocation census.
+    pub(super) fn original_files(&self) -> impl Iterator<Item = &File> {
+        self.source.handles().map(|(_, _, file)| file)
     }
 }
 

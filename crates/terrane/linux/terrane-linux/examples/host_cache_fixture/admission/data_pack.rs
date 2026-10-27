@@ -150,6 +150,128 @@ fn external_dictionary(chunks: &[Chunk]) -> io::Result<SealedPack> {
     writer.seal().map_err(io::Error::other)
 }
 
+/// Exercises a pack retaining two genuine original standalone dictionary jobs.
+pub(super) fn run_external(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let (_, chunks) = fixture()?;
+    let pair = external_dictionary(&chunks)?;
+    let id = PackId::from_random_bytes([121; 16]);
+    let mut sources = Vec::new();
+    let mut holds = Vec::new();
+    let mut dictionary_paths = Vec::new();
+    for (position, chunk) in chunks[..2].iter().enumerate() {
+        let declared = descriptor(&chunk.plaintext)?;
+        let hashes = chunks[..=position]
+            .iter()
+            .map(|chunk| descriptor(&chunk.plaintext).map(|value| hex(value.digest())))
+            .collect::<io::Result<Vec<_>>>()?;
+        holds.push(hold(chunk.encoded.len(), hashes)?);
+        sources.push(
+            runtime
+                .block_on(owner.admit_chunk(
+                    declared.clone(),
+                    ChunkPosition::Final,
+                    chunk.encoded.clone(),
+                ))
+                .map_err(io::Error::other)?,
+        );
+        let mut relative = chunk_path(&declared);
+        relative.set_extension(if position == 0 { "0" } else { "2" });
+        canonical(inputs, &relative, &chunk.encoded)?;
+        dictionary_paths.push(relative);
+    }
+    check_state(runtime, inputs, &holds)?;
+    let reader = PackReader::open(pair.bytes()).map_err(io::Error::other)?;
+    let mut hashes = reader
+        .entries()
+        .iter()
+        .map(|entry| hex(entry.hash()))
+        .collect::<Vec<_>>();
+    hashes.push(hex(TERRANE_V1
+        .calculate(IdentityKind::Pack, pair.bytes())
+        .map_err(io::Error::other)?
+        .digest()));
+    hashes.push(hex(descriptor(&chunks[1].plaintext)?.digest()));
+    holds.push(hold(
+        pair.bytes().len() + pair.index_object().len(),
+        hashes,
+    )?);
+    let receipt = runtime
+        .block_on(owner.admit_data_pack(id, pair.bytes().to_vec(), pair.index_object().to_vec()))
+        .map_err(io::Error::other)?;
+    check_state(runtime, inputs, &holds)?;
+    let pack_path = PathBuf::from(format!("objects/pack/79/{id}.pack"));
+    let index_path = PathBuf::from(format!("objects/pack/79/{id}.idx"));
+    let (pack_bytes, _) = canonical(inputs, &pack_path, pair.bytes())?;
+    let (index_bytes, _) = canonical(inputs, &index_path, pair.index_object())?;
+    if receipt.synchronized_pair_bytes() != pack_bytes + index_bytes {
+        return Err(invalid("external dictionary pair allocation differs"));
+    }
+    emit("READY external data pair retains genuine producer-held nested dictionaries")?;
+    control("handoff-external-pack")?;
+    runtime
+        .block_on(receipt.into_cache(owner))
+        .map_err(io::Error::other)?;
+    let root = &chunks[2];
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &root.plaintext)
+        .map_err(io::Error::other)?;
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(90)
+        .ok_or_else(|| invalid("external lease expiry overflow"))?;
+    let lease = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
+    if lease.read_verified()? != root.plaintext || lease.read_encoded()? != root.encoded {
+        return Err(invalid(
+            "external data pack did not read its original dictionary chain",
+        ));
+    }
+    runtime.block_on(owner.release_consumer_lease(&lease))?;
+    drop(lease);
+    for source in sources {
+        runtime
+            .block_on(source.into_cache(owner))
+            .map_err(io::Error::other)?;
+    }
+    let lease = runtime.block_on(owner.pin_resident_chunk(identity, expires))?;
+    if lease.read_verified()? != root.plaintext {
+        return Err(invalid(
+            "dictionary handoff broke the existing pack dependency",
+        ));
+    }
+    runtime.block_on(owner.release_consumer_lease(&lease))?;
+    for (relative, chunk) in dictionary_paths.iter().zip(&chunks) {
+        canonical(inputs, relative, &chunk.encoded)?;
+    }
+    canonical(inputs, &pack_path, pair.bytes())?;
+    canonical(inputs, &index_path, pair.index_object())?;
+    if inputs
+        .root
+        .join(chunk_path(&descriptor(&root.plaintext)?))
+        .exists()
+        || fs::read_dir(inputs.root.join("pending-delete"))?
+            .next()
+            .is_some()
+    {
+        return Err(invalid(
+            "external data read extracted or retired an original allocation",
+        ));
+    }
+    emit(
+        "READY external data pair reads original dictionaries before and after their cache handoff",
+    )?;
+    control("external-pack-observed")?;
+    emit(
+        "PASS actual external data pack retains nested standalone dictionary custody through producer and cache handoff without extraction; no Ready",
+    )
+}
+
 /// Checks real producer refusal and original pair custody through cache consumers.
 ///
 /// # Errors

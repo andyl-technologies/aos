@@ -76,6 +76,7 @@ UNIT_TESTS = (
     'host_cache::owner::admission::pack_reads::tests::registry_absence_never_masks_native_missing_or_corrupt_backing',
     'host_cache::owner::admission::packed_body::tests::closed_pack_verification_and_range_decoding_follow_the_original_nested_graph',
     'host_cache::owner::admission::packed_body::tests::external_and_self_dependent_data_dictionaries_remain_unavailable',
+    'host_cache::owner::admission::packed_body::tests::external_dictionary_reads_verify_identity_and_keep_original_range_checks',
     'host_cache::owner::admission::packed_body::tests::native_range_candidates_cannot_bypass_content_codec_or_resource_checks',
     'host_cache::owner::admission::tests::cancelled_started_phase_faults_without_native_authority_or_mutexes',
     'host_cache::owner::admission::tests::untrusted_pair_input_is_bounded_with_checked_addition',
@@ -90,6 +91,8 @@ UNIT_TESTS = (
     'host_cache::owner::index_io::tests::invalid_index_error_preserves_typed_source',
     'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_read_groups_keep_dictionary_hits_in_the_same_clock_cut',
     'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_reads_share_one_order_without_losing_first_hits',
+    'host_cache::owner::publication::eviction::activity::tests::dictionary_activity_refusal_preserves_clock_and_registry_bound',
+    'host_cache::owner::publication::eviction::activity::tests::nested_dictionary_read_records_each_original_allocation_once',
     'host_cache::owner::publication::eviction::activity::tests::reused_inode_starts_fresh_activity_without_changing_other_allocations',
     'host_cache::owner::publication::eviction::activity::tests::verified_read_group_overflow_preserves_body_and_dictionary_activity',
     'host_cache::owner::publication::eviction::activity::tests::verified_read_order_keeps_first_promotion_separate_from_later_hits',
@@ -639,7 +642,7 @@ def main():
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in [
         "prepare", "prepare-readonly-refuse", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
-        "admit-chunk", "admit-metadata", "admit-data-pack", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "read-through-chunk", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure",
+        "admit-chunk", "admit-metadata", "admit-data-pack", "admit-external-data-pack", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "read-through-chunk", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure",
         "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
         "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",
         "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",

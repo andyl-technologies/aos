@@ -65,6 +65,7 @@ pub(super) fn run(
         "admit-chunk" => "tenant:admission-chunk",
         "admit-metadata" => "tenant:admission-metadata",
         "admit-data-pack" => "tenant:admission-data-pack",
+        "admit-external-data-pack" => "tenant:admission-external-data-pack",
         "admit-cancel" => "tenant:admission-cancel",
         _ => return Err(invalid("unknown admission selector")),
     };
@@ -83,6 +84,7 @@ pub(super) fn run(
         "admit-chunk" => chunks(owner, runtime, inputs),
         "admit-metadata" => metadata(owner, runtime, inputs),
         "admit-data-pack" => data_pack::run(owner, runtime, inputs),
+        "admit-external-data-pack" => data_pack::run_external(owner, runtime, inputs),
         "admit-cancel" => cancelled(owner, runtime, inputs),
         _ => Err(invalid("unreachable admission selector")),
     }

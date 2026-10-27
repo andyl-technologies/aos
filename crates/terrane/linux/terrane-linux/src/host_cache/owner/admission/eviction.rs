@@ -355,8 +355,20 @@ pub(in crate::host_cache::owner) fn capture(
                     Input::Chunk { descriptor, .. } => {
                         BTreeSet::from([state::hex(descriptor.digest())])
                     }
-                    Input::Metadata { .. } | Input::DataPack { .. } => {
-                        job.hashes.iter().cloned().collect()
+                    Input::Metadata { pack, .. } | Input::DataPack { pack, .. } => {
+                        let reader =
+                            terrane_sdk::pack::PackReader::open(pack).map_err(io::Error::other)?;
+                        let identity = terrane_format::identity::TERRANE_V1
+                            .calculate(terrane_format::identity::IdentityKind::Pack, pack)
+                            .map_err(io::Error::other)?;
+                        std::iter::once(state::hex(identity.digest()))
+                            .chain(
+                                reader
+                                    .entries()
+                                    .iter()
+                                    .map(|entry| state::hex(entry.hash())),
+                            )
+                            .collect()
                     }
                 };
                 units.push(EncodedAllocation {

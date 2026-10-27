@@ -768,6 +768,24 @@ impl NativeOwnerExecutor {
                     self.register_recovered_sealed_order()?;
                     super::super::consumer::sweep(self).await?;
                     while let Some(source) = self.recovered_metadata.last().cloned() {
+                        let dictionaries =
+                            super::super::recovery_metadata::external_dictionaries(&source)?;
+                        // The standalone inventory is already topologically
+                        // ordered. Preserve the old pair-first order when a pack
+                        // is closed; otherwise import the required dictionary
+                        // prefix before registering this dependent pair.
+                        while self.recovered_chunks.iter().any(|chunk| {
+                            dictionaries
+                                .iter()
+                                .any(|digest| chunk.identity().digest() == digest)
+                        }) {
+                            let dictionary =
+                                self.recovered_chunks.last().cloned().ok_or_else(|| {
+                                    io::Error::other("recovered dictionary prefix disappeared")
+                                })?;
+                            super::super::admission::recovery::import(self, &dictionary).await?;
+                            self.recovered_chunks.pop();
+                        }
                         super::super::admission::recovery::import_metadata(self, &source).await?;
                         self.recovered_metadata.pop();
                     }

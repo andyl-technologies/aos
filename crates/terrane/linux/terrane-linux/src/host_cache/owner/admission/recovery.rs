@@ -108,7 +108,7 @@ pub(in crate::host_cache::owner) async fn import(
 /// Registers an original verified pair without replacing either canonical inode.
 ///
 /// # Errors
-/// Refuses changed sources, external data dictionaries, invalid indexes, exhausted bounds,
+/// Refuses changed sources, unavailable dictionary admissions, invalid indexes, exhausted bounds,
 /// insufficient metadata funding and failed durable registration or handoff.
 pub(in crate::host_cache::owner) async fn import_metadata(
     executor: &mut NativeOwnerExecutor,
@@ -126,34 +126,6 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         .header()
         .class()
         == terrane_sdk::pack::PackClass::Data;
-    let custody = Arc::clone(executor.custody());
-    let hashes = {
-        let owner = custody
-            .lock()
-            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        if !Arc::ptr_eq(source.layout(), owner.preparation.layout()) {
-            return Err(io::Error::other(
-                "recovered metadata belongs to another native domain",
-            ));
-        }
-        let config = &owner.preparation.config;
-        let bounds = AdmissionBounds::new(config)?;
-        bounds.check(pack.len(), index.len())?;
-        bounds.check(pack.capacity(), index.capacity())?;
-        let verify = if data {
-            super::packed_body::verify
-        } else {
-            super::metadata::verify
-        };
-        verify(
-            &pack,
-            &index,
-            source.pack_id(),
-            config.location.chunk_profile(),
-            config.reads,
-            config.inventory_entries.min(config.state.records),
-        )?
-    };
     let input = if data {
         Input::DataPack {
             expected_id: source.pack_id(),
@@ -167,6 +139,35 @@ pub(in crate::host_cache::owner) async fn import_metadata(
             index: Arc::clone(&index),
         }
     };
+    let custody = Arc::clone(executor.custody());
+    let (hashes, dependencies) = {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        if !Arc::ptr_eq(source.layout(), owner.preparation.layout()) {
+            return Err(io::Error::other(
+                "recovered metadata belongs to another native domain",
+            ));
+        }
+        let config = &owner.preparation.config;
+        let bounds = AdmissionBounds::new(config)?;
+        bounds.check(pack.len(), index.len())?;
+        bounds.check(pack.capacity(), index.capacity())?;
+        if data {
+            let verified = super::metadata::verify_data(executor, &owner, None, &input)?;
+            (verified.hashes, verified.dependencies)
+        } else {
+            let hashes = super::metadata::verify(
+                &pack,
+                &index,
+                source.pack_id(),
+                config.location.chunk_profile(),
+                config.reads,
+                config.inventory_entries.min(config.state.records),
+            )?;
+            (hashes, Vec::new())
+        }
+    };
     let resource = executor.register_admission(input)?;
     let result = async {
         let reservation = {
@@ -176,6 +177,7 @@ pub(in crate::host_cache::owner) async fn import_metadata(
                 .map_err(|_| io::Error::other("recovery custody poisoned"))?;
             super::refuse_completed(executor, &owner, &resource, &job.input)?;
             source.check_current()?;
+            job.dependencies = dependencies;
             state::begin(executor, &mut owner, &mut job, 0, &hashes)?
         };
         super::super::snapshot::persist(executor, reservation).await?;

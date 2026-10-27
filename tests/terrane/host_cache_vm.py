@@ -113,6 +113,7 @@ CASES += ["read-through"]
 CASES += ["sealed-consumer"]
 CASES += ["sealed-consumer-cold"]
 CASES += ["admission-data-pack"]
+CASES += ["admission-external-data-pack"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -701,6 +702,7 @@ def admission_cases(helper, uuid):
                 "missing exact encoded-admission completion: " + case)
 
     runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_data_pack"](sys.modules[__name__], uuid)
+    runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_external_data_pack"](sys.modules[__name__], uuid)
 
     process = controlled_actor("admission-cancel", "admit-cancel", uuid)
     stopped = False

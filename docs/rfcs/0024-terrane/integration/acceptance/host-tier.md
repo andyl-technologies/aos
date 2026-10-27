@@ -186,10 +186,40 @@ records and same-inode handoff; consumers check plaintext and original envelopes
 without extraction. Feature-enabled and minimal-feature compilation pass
 all-target Clippy with warnings denied; source inventory and selector checks
 pass. These assertions are implemented but not yet guest qualified, and the
-required application compile must be renewed for this source. Producer and cold
-data admission still require dictionary closure
-inside a pack; external dictionary custody and cyclic pack-unit lifecycle remain
-open. This increment does not advance task acceptance.
+required application compile must be renewed for this source. At that producer
+checkpoint, producer and cold data admission require dictionary closure inside
+a pack. This increment does not advance task acceptance.
+
+The subsequent external-dictionary implementation retains genuine completed
+standalone dictionary admissions with a data pair, including their nested
+dependency chains. Verification precedes pressure and funding. Publisher
+observations are captured for each actual dependency before exposing reads;
+consumer protection, native allocation measurement and activity tracking include
+the original dictionary inodes. A pair's eviction hashes describe its own
+physical contents, keeping separately retained dictionaries outside that unit.
+Cold Resume imports the required topologically ordered standalone prefix before
+its dependent pair. Original pair-first ordering remains for closed packs.
+
+The previous two-file activity-group limit incorrectly refused longer verified
+dictionary chains. Activity groups now use the same finite record limit as the
+owner registry and existing consumer memory accounting. New guest unit selectors
+cover a four-allocation read, duplicate-source deduplication, bounded refusal and
+external dictionary identity/envelope verification. A new native producer case
+and independent observer check reads before and after dictionary handoff, all
+four original inodes, nested edges, funding and durable dependency pins.
+
+Feature-enabled and minimal all-target Clippy pass with warnings denied; exact
+source inventories contain 154/282 ordinary tests plus five creator tests. These
+are compilation and source checks only. The new guest assertions and cold
+external-dictionary recovery path remain unqualified. Cross-pack dictionary
+custody, cyclic pack-unit lifecycle and full trunk qualification remain open.
+Acceptance remains 28/64.
+
+Separately, frozen `d9435d032d` passes required application compilation (190
+targets across 59 packages), complete comparison of 8,306 immutable source files,
+all four image artifact reviews and prerequisite execution review. Its 32 output
+paths and seven original controller records are retained. This establishes no
+runtime pass and does not qualify the subsequent external-dictionary changes.
 
 ## Clause coverage
 

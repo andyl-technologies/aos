@@ -165,6 +165,50 @@ pub(super) fn observe(
     Ok(original)
 }
 
+/// Captures each actual standalone dependency before exposing a pack read.
+///
+/// # Errors
+/// Refuses exhausted bounds, changed original jobs or failed publisher inspection.
+pub(super) fn observe_dependencies(
+    executor: &mut NativeOwnerExecutor,
+    resource: &Arc<Mutex<AdmissionJob>>,
+) -> io::Result<()> {
+    let limit = executor
+        .custody()
+        .lock()
+        .map_err(|_| invalid("dependency observation custody poisoned"))?
+        .preparation
+        .config
+        .state
+        .records;
+    let mut sources = backing::lock(resource)?.dependencies.clone();
+    let mut position = 0;
+    while position < sources.len() {
+        if sources.len() > limit {
+            return Err(invalid(
+                "dependency observations exceed the original record bound",
+            ));
+        }
+        let source = backing::lock(&sources[position])?;
+        let dependencies = source.dependencies.clone();
+        drop(source);
+        for dependency in dependencies {
+            if Arc::ptr_eq(&dependency, resource) {
+                return Err(invalid("pack observation dependency cycle"));
+            }
+            if !sources.iter().any(|seen| Arc::ptr_eq(seen, &dependency)) {
+                sources.try_reserve_exact(1).map_err(io::Error::other)?;
+                sources.push(dependency);
+            }
+        }
+        position += 1;
+    }
+    for source in sources.into_iter().rev() {
+        observe(executor, &source)?;
+    }
+    Ok(())
+}
+
 /// Processes actual read reports while retaining every original funding promise.
 ///
 /// # Errors

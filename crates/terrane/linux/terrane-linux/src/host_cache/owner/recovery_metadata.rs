@@ -9,11 +9,11 @@ use crate::host_cache::{DerivedIndexRepair, NativeRecoveryInspection, VerifiedEn
 use std::{io, os::unix::fs::MetadataExt, sync::Arc};
 use terrane_sdk::pack::PackReader;
 
-/// Selects independently verified metadata and closed data pairs from the inventory.
+/// Selects verified pairs whose external dictionaries have standalone cold custody.
 ///
 /// # Errors
-/// Refuses unresolved candidates, external data dictionaries and changed or
-/// unbounded pairs. External dictionary transfer requires separate owner jobs.
+/// Refuses unresolved candidates, unavailable standalone dictionaries and changed
+/// or unbounded pairs. Inspection never substitutes for running admission custody.
 pub(super) fn select(
     inventory: &NativeRecoveryInspection,
     referenced: &[Arc<crate::host_cache::NativeManifestSource>],
@@ -63,18 +63,62 @@ pub(super) fn select(
         let pack = PackReader::open(&bytes).map_err(io::Error::other)?;
         if pack.header().class() == terrane_sdk::pack::PackClass::Data {
             let (limits, max_entries) = source.read_policy();
-            super::admission::packed_body::verify(
-                &bytes,
-                &index,
-                source.pack_id(),
-                source.layout().layout().chunk_profile(),
-                limits,
-                max_entries,
-            )?;
+            let external =
+                super::admission::packed_body::external_dictionaries(&bytes, limits, max_entries)?;
+            if external.is_empty() {
+                super::admission::packed_body::verify(
+                    &bytes,
+                    &index,
+                    source.pack_id(),
+                    source.layout().layout().chunk_profile(),
+                    limits,
+                    max_entries,
+                )?;
+            } else {
+                // DerivedIndexRepair already verified every original body and
+                // retained dictionary inode. Require genuine complete standalone
+                // candidates here; Resume must import them before this pair.
+                for digest in external {
+                    let dictionary = inventory
+                        .candidates()
+                        .iter()
+                        .find_map(|candidate| match candidate.verified() {
+                            Some(VerifiedEncodedBody::Chunk(chunk))
+                                if chunk.identity().digest() == digest =>
+                            {
+                                Some(chunk)
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "data recovery requires original standalone dictionary custody",
+                            )
+                        })?;
+                    dictionary.check_current()?;
+                }
+            }
         }
         sources.push(Arc::clone(source));
     }
     Ok(sources)
+}
+
+/// Selects actual external edges to import before the original data pair.
+///
+/// # Errors
+/// Refuses changed native pairs, malformed data or exceeded inspection bounds.
+pub(super) fn external_dictionaries(
+    source: &DerivedIndexRepair,
+) -> io::Result<Vec<terrane_format::identity::Digest>> {
+    let (bytes, _) = source.pair_bytes()?;
+    let pack = PackReader::open(&bytes).map_err(io::Error::other)?;
+    if pack.header().class() != terrane_sdk::pack::PackClass::Data {
+        return Ok(Vec::new());
+    }
+    let (limits, max_entries) = source.read_policy();
+    super::admission::packed_body::external_dictionaries(&bytes, limits, max_entries)
 }
 
 /// Checks exact original verified metadata against a fresh complete inventory.

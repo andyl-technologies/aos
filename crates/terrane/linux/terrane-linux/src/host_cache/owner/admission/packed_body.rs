@@ -1,8 +1,8 @@
-//! Verifies closed data-pack graphs and decodes original positioned body reads.
+//! Verifies data-pack graphs and decodes original positioned body reads.
 //!
 //! This format layer grants no native authority. Its caller binds every read to
 //! an original admitted pack/index pair and verifies both complete native files.
-//! External dictionary custody requires a separate owner transfer path.
+//! The caller supplies external dictionaries through its genuine retained custody.
 
 use crate::host_cache::recovery_inspection::bounded_pack;
 use std::{collections::BTreeMap, io, ops::Range};
@@ -30,6 +30,24 @@ pub(in crate::host_cache::owner) fn verify(
     limits: HostReadLimits,
     max_entries: usize,
 ) -> io::Result<Vec<String>> {
+    verify_with_dictionaries(bytes, index, id, profile, limits, max_entries, |_| {
+        Err(external_unavailable())
+    })
+}
+
+/// Verifies a complete pair using only the caller's verified external dictionaries.
+///
+/// # Errors
+/// Refuses invalid pairs, unavailable or incorrect dictionaries and exceeded bounds.
+pub(super) fn verify_with_dictionaries(
+    bytes: &[u8],
+    index: &[u8],
+    id: PackId,
+    profile: &ChunkProfile,
+    limits: HostReadLimits,
+    max_entries: usize,
+    mut external: impl FnMut(&Digest) -> io::Result<Vec<u8>>,
+) -> io::Result<Vec<String>> {
     let reader = inspect(bytes, limits, max_entries)?;
     if reader.header().id() != id {
         return Err(invalid("data pack differs from its canonical key"));
@@ -46,12 +64,20 @@ pub(in crate::host_cache::owner) fn verify(
             let identity = TERRANE_V1
                 .from_digest(IdentityKind::Chunk, &digest)
                 .map_err(invalid)?;
-            let plaintext = decode(bytes, &identity, profile, limits, max_entries, |range| {
-                bytes
-                    .get(range)
-                    .map(<[u8]>::to_vec)
-                    .ok_or_else(|| invalid("data dictionary range absent"))
-            })?;
+            let plaintext = decode_with_dictionaries(
+                bytes,
+                &identity,
+                profile,
+                limits,
+                max_entries,
+                |range| {
+                    bytes
+                        .get(range)
+                        .map(<[u8]>::to_vec)
+                        .ok_or_else(|| invalid("data dictionary range absent"))
+                },
+                &mut external,
+            )?;
             retained_bytes = retained_bytes
                 .checked_add(plaintext.capacity())
                 .ok_or_else(|| invalid("data dictionary memory overflow"))?;
@@ -107,13 +133,32 @@ pub(in crate::host_cache::owner) fn verify(
 /// # Errors
 /// Refuses foreign identities, unavailable/cyclic dictionaries, changed codecs,
 /// invalid content or framing, failed reads and exceeded finite resource bounds.
-pub(super) fn decode(
+#[cfg(test)]
+fn decode(
+    bytes: &[u8],
+    identity: &Identity,
+    profile: &ChunkProfile,
+    limits: HostReadLimits,
+    max_entries: usize,
+    read: impl FnMut(Range<usize>) -> io::Result<Vec<u8>>,
+) -> io::Result<Vec<u8>> {
+    decode_with_dictionaries(bytes, identity, profile, limits, max_entries, read, |_| {
+        Err(external_unavailable())
+    })
+}
+
+/// Decodes original local ranges and identity-checked external dictionary reads.
+///
+/// # Errors
+/// Refuses changed envelopes, invalid dictionaries, failed reads or bounded decode.
+pub(super) fn decode_with_dictionaries(
     bytes: &[u8],
     identity: &Identity,
     profile: &ChunkProfile,
     limits: HostReadLimits,
     max_entries: usize,
     mut read: impl FnMut(Range<usize>) -> io::Result<Vec<u8>>,
+    mut external: impl FnMut(&Digest) -> io::Result<Vec<u8>>,
 ) -> io::Result<Vec<u8>> {
     if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
         return Err(io::Error::new(
@@ -124,20 +169,31 @@ pub(super) fn decode(
     let reader = inspect(bytes, limits, max_entries)?;
     let mut digest = identity.terrane_v1_digest().map_err(invalid)?;
     let mut chain: Vec<&IndexEntry> = Vec::new();
-    loop {
-        if chain.len() >= max_entries || chain.iter().any(|entry| entry.hash() == &digest) {
-            return Err(invalid("data dictionary cycle or member bound exceeded"));
+    let mut plaintext = loop {
+        if chain.iter().any(|entry| entry.hash() == &digest) {
+            return Err(invalid("data dictionary cycle"));
         }
         let entry = reader
             .entries()
             .iter()
-            .find(|entry| entry.hash() == &digest)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "data pack requires separately registered external dictionary custody",
-                )
-            })?;
+            .find(|entry| entry.hash() == &digest);
+        let Some(entry) = entry else {
+            let plaintext = external(&digest)?;
+            check_length(plaintext.capacity(), limits)?;
+            let expected = TERRANE_V1
+                .from_digest(IdentityKind::Chunk, &digest)
+                .map_err(invalid)?;
+            TERRANE_V1.verify(&expected, &plaintext).map_err(invalid)?;
+            if plaintext.len() > profile.maximum()
+                || profile.first_boundary(&plaintext) != plaintext.len()
+            {
+                return Err(invalid("external dictionary is not a valid final chunk"));
+            }
+            break Some(plaintext);
+        };
+        if chain.len() >= max_entries {
+            return Err(invalid("data dictionary member bound exceeded"));
+        }
         check_length(entry.plaintext_len() as usize, limits)?;
         let encoded = read(range(entry)?)?;
         check_length(encoded.capacity(), limits)?;
@@ -146,12 +202,11 @@ pub(super) fn decode(
         chain.push(entry);
         match actual_codec {
             Codec::ZstdDictionary(next) => digest = next,
-            _ => break,
+            _ => break None,
         }
-    }
+    };
 
-    let mut plaintext: Option<Vec<u8>> = None;
-    let mut dictionary: Option<Digest> = None;
+    let mut dictionary = plaintext.as_ref().map(|_| digest);
     for entry in chain.into_iter().rev() {
         let encoded = read(range(entry)?)?;
         check_length(encoded.capacity(), limits)?;
@@ -175,6 +230,40 @@ pub(super) fn decode(
         dictionary = Some(*entry.hash());
     }
     plaintext.ok_or_else(|| invalid("data chunk chain is empty"))
+}
+
+/// Selects unique dictionary edges that leave the structurally checked data pack.
+///
+/// # Errors
+/// Refuses another class, malformed records or envelopes and exceeded bounds.
+pub(in crate::host_cache::owner) fn external_dictionaries(
+    bytes: &[u8],
+    limits: HostReadLimits,
+    max_entries: usize,
+) -> io::Result<Vec<Digest>> {
+    let reader = inspect(bytes, limits, max_entries)?;
+    let mut external = Vec::new();
+    for entry in reader.entries() {
+        let encoded = bytes
+            .get(range(entry)?)
+            .ok_or_else(|| invalid("data body absent"))?;
+        if let Codec::ZstdDictionary(digest) = codec(entry, encoded)?
+            && !reader.entries().iter().any(|entry| entry.hash() == &digest)
+            && !external.contains(&digest)
+        {
+            external.try_reserve_exact(1).map_err(invalid)?;
+            external.push(digest);
+        }
+    }
+    external.sort_unstable();
+    Ok(external)
+}
+
+fn external_unavailable() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "data pack requires separately registered external dictionary custody",
+    )
 }
 
 fn inspect(bytes: &[u8], limits: HostReadLimits, max_entries: usize) -> io::Result<PackReader<'_>> {
@@ -330,6 +419,103 @@ mod tests {
             reads[3..].iter().rev().cloned().collect::<Vec<_>>()
         );
         Ok(())
+    }
+
+    #[test]
+    fn external_dictionary_reads_verify_identity_and_keep_original_range_checks() -> TestResult {
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let dictionary = b"external pack retained dictionary vocabulary ".repeat(64);
+        let plaintext = b"external pack retained dictionary vocabulary content ".repeat(128);
+        let dictionary_id = TERRANE_V1.calculate(IdentityKind::Chunk, &dictionary)?;
+        let digest = dictionary_id.terrane_v1_digest()?;
+        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &plaintext)?;
+        let encoded =
+            terrane_sdk::codec::encode_chunk(&plaintext, profile.maximum(), 3, Some(&dictionary))?;
+        assert_eq!(codec_for_test(&encoded)?, Codec::ZstdDictionary(digest));
+        let dictionaries = BTreeMap::from([(digest, dictionary.clone())]);
+        let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
+        let id = PackId::from_random_bytes([64; 16]);
+        let mut writer = PackWriter::new(id, PackClass::Data, false);
+        writer.append_chunk(
+            identity.terrane_v1_digest()?,
+            &encoded,
+            u32::try_from(plaintext.len())?,
+            0,
+            &decoder,
+        )?;
+        let pair = writer.seal()?;
+        let limits = HostReadLimits {
+            max_allocation_bytes: 1024 * 1024,
+        };
+        assert_eq!(
+            external_dictionaries(pair.bytes(), limits, 1)?,
+            vec![digest]
+        );
+        let mut requests = Vec::new();
+
+        let hashes = verify_with_dictionaries(
+            pair.bytes(),
+            pair.index_object(),
+            id,
+            &profile,
+            limits,
+            1,
+            |requested| {
+                requests.push(*requested);
+                Ok(dictionary.clone())
+            },
+        )?;
+        let actual = decode_with_dictionaries(
+            pair.bytes(),
+            &identity,
+            &profile,
+            limits,
+            1,
+            |range| Ok(pair.bytes()[range].to_vec()),
+            |requested| {
+                requests.push(*requested);
+                Ok(dictionary.clone())
+            },
+        )?;
+
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(actual, plaintext);
+        assert_eq!(requests, vec![digest, digest]);
+
+        let error = decode_with_dictionaries(
+            pair.bytes(),
+            &identity,
+            &profile,
+            limits,
+            1,
+            |range| Ok(pair.bytes()[range].to_vec()),
+            |_| Ok(b"different dictionary".to_vec()),
+        )
+        .err()
+        .ok_or("incorrect external dictionary accepted")?;
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let error = decode_with_dictionaries(
+            pair.bytes(),
+            &identity,
+            &profile,
+            limits,
+            1,
+            |range| {
+                let mut bytes = pair.bytes()[range].to_vec();
+                bytes[0] = 0;
+                Ok(bytes)
+            },
+            |_| Ok(dictionary.clone()),
+        )
+        .err()
+        .ok_or("changed original envelope accepted")?;
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        Ok(())
+    }
+
+    fn codec_for_test(encoded: &[u8]) -> TestResult<Codec> {
+        Ok(terrane_format::codec::parse_envelope(encoded)?.codec)
     }
 
     #[test]

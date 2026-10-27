@@ -331,7 +331,7 @@ pub(in crate::host_cache::owner) fn storage_bytes(
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(
             AdmittedRead::storage_bytes(domain, records)?
-                .max(AdmittedPackRead::storage_bytes()?)
+                .max(AdmittedPackRead::storage_bytes(domain, records)?)
                 .max(SealedObjectSource::storage_bytes()),
         )
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))

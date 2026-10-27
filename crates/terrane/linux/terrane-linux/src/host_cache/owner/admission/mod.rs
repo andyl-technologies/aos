@@ -416,6 +416,7 @@ async fn pair(
     };
     // A producer may retain this pair for reconstruction before cache handoff.
     // Capture its healthy incarnation before exposing that first read authority.
+    read_custody::observe_dependencies(executor, &job)?;
     read_custody::observe(executor, &job)?;
     context.check_current().map_err(std_io::Error::other)?;
     let (future_hold, directory_allocated) = {

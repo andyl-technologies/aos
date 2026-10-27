@@ -120,6 +120,110 @@ def run_data_pack(driver, uuid):
             original.close()
 
 
+def run_external_data_pack(driver, uuid):
+    """Binds a packed consumer to four original inodes and two dependency edges."""
+    from encoded_eviction_vm import Original
+
+    case = "admission-external-data-pack"
+    root = driver.root(case)
+    snapshot = root / "state/cache/records.toml"
+    process = driver.controlled_actor(case, "admit-external-data-pack", uuid)
+    lines = driver.Lines(process)
+    originals = []
+
+    def control(value):
+        process.stdin.write((value + "\n").encode())
+        process.stdin.flush()
+
+    try:
+        lines.until("READY external data pair retains genuine producer-held nested dictionaries", timeout=30)
+        driver.require(lines.bytes.decode().splitlines().count(
+            "ACK actual empty recovery Resume; no Ready") == 1,
+            "external pack lacks genuine empty recovery and Resume")
+        print(driver.process_status(process, 840), flush=True)
+        chunk_paths = sorted((root / "chunks").glob("*/*"))
+        pair_paths = sorted((root / "objects/pack").glob("*/*"))
+        driver.require(len(chunk_paths) == 2 and {path.suffix for path in chunk_paths} == {".0", ".2"}
+                       and len(pair_paths) == 2 and {path.suffix for path in pair_paths} == {".pack", ".idx"}
+                       and all(path.stem == "79" * 16 and path.parent.name == "79" for path in pair_paths),
+                       "external pack did not retain exactly two original dictionary files and its pair")
+        for path in chunk_paths + pair_paths:
+            originals.append(Original(driver, case, path, 840))
+        terminal_path = next(path for path in chunk_paths if path.suffix == ".0")
+        middle_path = next(path for path in chunk_paths if path.suffix == ".2")
+        terminal = terminal_path.read_bytes()
+        middle = middle_path.read_bytes()
+        pair = next(path for path in pair_paths if path.suffix == ".pack").read_bytes()
+        detached = next(path for path in pair_paths if path.suffix == ".idx").read_bytes()
+        driver.require(terminal == b"\0" + b"producer packed terminal vocabulary " * 16
+                       and middle[0] == 2 and middle[1:33].hex() == terminal_path.stem
+                       and pair[:8] == b"TRPK\x01\0\0\0" and pair[8:24] == bytes([121]) * 16
+                       and pair[-4:] == b"TRPE",
+                       "external observer found a different standalone graph or data header")
+        offset = struct.unpack_from("<Q", pair, len(pair) - 16)[0]
+        driver.require(pair[offset:offset + 4] == b"TRIX"
+                       and struct.unpack_from("<Q", pair, offset + 4)[0] == 1
+                       and offset + 12 + 56 == len(pair) - 16
+                       and detached == pair[:24] + pair[offset:-16],
+                       "external pack lost its exact one-record detached index")
+        record = pair[offset + 12:offset + 12 + 56]
+        start, size, length, codec, kind = struct.unpack_from("<QIIBB", record, 32)
+        driver.require(24 <= start < start + size <= offset and codec == 2 and kind == 0
+                       and record[50:] == bytes(6)
+                       and length == len(b"producer packed terminal vocabulary intermediate content " * 128)
+                       and pair[start] == 2 and pair[start + 1:start + 33].hex() == middle_path.stem,
+                       "packed root does not depend on the actual original middle dictionary")
+        before_chunks = files(root / "chunks")
+        before_pair = files(root / "objects/pack")
+        policy = tomllib.loads(snapshot.read_text())
+        expected_holds = [262144, 262144 + len(terminal), 262144 + len(middle),
+                          262144 + len(pair) + len(detached)]
+        driver.require(sorted(row["bytes"] for row in policy["reservations"]) == sorted(expected_holds)
+                       and len(policy["pins"]) == 6 and len(policy["leases"]) == 3
+                       and all(row["owner"].startswith("admission:") for row in policy["pins"])
+                       and not files(root / "pending-delete"),
+                       "external pair lacks actual producer funding and dictionary protection")
+        driver.require(quota(driver, case) + sum(expected_holds) <= 6 * 1024 * 1024,
+                       "external pack exceeds original physical capacity")
+
+        control("handoff-external-pack")
+        lines.until("READY external data pair reads original dictionaries before and after their cache handoff", timeout=30)
+
+        policy = tomllib.loads(snapshot.read_text())
+        dependencies = [row for row in policy["pins"] if row["owner"].startswith("cache-dependency:")]
+        driver.require(len(policy["reservations"]) == 1 and policy["reservations"][0]["bytes"] == 262144
+                       and len(dependencies) == 2
+                       and {row["hash"] for row in dependencies} == {terminal_path.stem, middle_path.stem}
+                       and not any(row["owner"].startswith("admission:") for row in policy["pins"])
+                       and files(root / "chunks") == before_chunks
+                       and files(root / "objects/pack") == before_pair
+                       and not files(root / "pending-delete"),
+                       "external dictionary handoff changed original inodes or lost dependency protection")
+        for original in originals:
+            original.check(1)
+        control("external-pack-observed")
+        remaining, error = process.communicate(timeout=10)
+        driver.require(process.returncode == 0 and not error and remaining.decode().splitlines() == [
+            "PASS actual external data pack retains nested standalone dictionary custody through producer and cache handoff without extraction; no Ready"
+        ], "external dictionary native actor did not complete both consumer reads")
+        print("PASS independent observer verifies four original external-pack inodes, nested dictionary edges and durable dependency handoff", flush=True)
+    except BaseException:
+        print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+        if process.poll() is None:
+            process.kill()
+        remaining, error = process.communicate(timeout=5)
+        print(remaining.decode(), end="", flush=True)
+        if error:
+            print(error.decode(), end="", flush=True)
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for original in originals:
+            original.close()
+
+
 def run(driver, uuid):
     """Checks actual resources independently of reports from the native actor."""
     case = "admission-cache"

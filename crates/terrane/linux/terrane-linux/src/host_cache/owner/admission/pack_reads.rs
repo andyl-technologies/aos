@@ -48,6 +48,7 @@ pub(in crate::host_cache) struct AdmittedPackRead {
     uid: u32,
     gid: u32,
     chunk: Option<ChunkRead>,
+    dictionaries: Vec<super::reads::AdmittedRead>,
 }
 
 struct ChunkRead {
@@ -164,10 +165,7 @@ impl AdmittedPackRead {
                 ));
             }
             state::check_registration(owner, &job)?;
-            if job.files.len() != 2
-                || !job.dependencies.is_empty()
-                || !Arc::ptr_eq(&job.custody, executor.custody())
-            {
+            if job.files.len() != 2 || !Arc::ptr_eq(&job.custody, executor.custody()) {
                 return Err(invalid(
                     "metadata read lost original completed pair custody",
                 ));
@@ -203,6 +201,22 @@ impl AdmittedPackRead {
             if pack.get(start..end).is_none() {
                 return Err(invalid("metadata body exceeds original pack"));
             }
+            let mut dictionaries = Vec::new();
+            dictionaries
+                .try_reserve_exact(job.dependencies.len())
+                .map_err(io::Error::other)?;
+            for dependency in &job.dependencies {
+                let source = super::backing::lock(dependency)?;
+                if source.order >= job.order {
+                    return Err(invalid(
+                        "pack dictionary does not precede its dependent admission",
+                    ));
+                }
+                drop(source);
+                dictionaries.push(super::reads::AdmittedRead::prepare_dictionary(
+                    executor, owner, dependency,
+                )?);
+            }
             let read = Self {
                 layout: Arc::clone(owner.preparation.layout()),
                 job: Arc::clone(resource),
@@ -228,6 +242,7 @@ impl AdmittedPackRead {
                         .records
                         .min(owner.preparation.config.inventory_entries),
                 }),
+                dictionaries,
             };
             drop(job);
             read.check_native()?;
@@ -267,7 +282,12 @@ impl AdmittedPackRead {
     pub(in crate::host_cache::owner) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
         self.check_consumer_backing(owner)?;
         let job = super::backing::lock(&self.job)?;
-        state::check_registration(owner, &job)
+        state::check_registration(owner, &job)?;
+        drop(job);
+        for dictionary in &self.dictionaries {
+            dictionary.check_protected(owner)?;
+        }
+        Ok(())
     }
 
     /// Checks original backing independently of producer funding after handoff.
@@ -296,13 +316,22 @@ impl AdmittedPackRead {
         let result = (|| {
             self.check_bytes()?;
             let body = match &self.chunk {
-                Some(policy) => super::packed_body::decode(
+                Some(policy) => super::packed_body::decode_with_dictionaries(
                     &self.members[1].expected,
                     &self.identity,
                     &policy.profile,
                     policy.limits,
                     policy.max_entries,
                     |range| self.read_range(range),
+                    |digest| {
+                        self.dictionaries
+                            .iter()
+                            .find(|source| source.identity().digest() == digest)
+                            .ok_or_else(|| {
+                                invalid("pack read lost its original dictionary source")
+                            })?
+                            .read_verified()
+                    },
                 )?,
                 None => {
                     let body = self.read_range(self.range.clone())?;
@@ -403,12 +432,14 @@ impl AdmittedPackRead {
 
     /// Recognizes the actual original job while consumer custody exists.
     pub(in crate::host_cache::owner) fn retains(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
-        Arc::ptr_eq(&self.job, job)
+        Arc::ptr_eq(&self.job, job) || self.dictionaries.iter().any(|source| source.retains(job))
     }
 
     /// Iterates metadata and complete-container digests for independent pins.
     pub(in crate::host_cache::owner) fn digests(&self) -> impl Iterator<Item = &[u8]> {
-        [self.identity.digest(), self.pack_identity.digest()].into_iter()
+        [self.identity.digest(), self.pack_identity.digest()]
+            .into_iter()
+            .chain(self.dictionaries.iter().flat_map(|source| source.digests()))
     }
 
     /// Iterates both original allocations and their physical registration order.
@@ -418,6 +449,11 @@ impl AdmittedPackRead {
         self.members
             .iter()
             .map(|member| ((member.inode.0, member.inode.1), self.order))
+            .chain(
+                self.dictionaries
+                    .iter()
+                    .flat_map(|source| source.original_allocations()),
+            )
     }
 
     /// Synchronizes and measures both distinct original member allocations.
@@ -442,9 +478,23 @@ impl AdmittedPackRead {
         {
             return Err(invalid("metadata pair aliases one inode"));
         }
-        let bytes = synchronized_allocated_bytes(&self.members[0].file)?
-            .checked_add(synchronized_allocated_bytes(&self.members[1].file)?)
-            .ok_or_else(|| invalid("metadata allocation overflow"))?;
+        let mut allocations = std::collections::BTreeMap::new();
+        for file in self.members.iter().map(|member| &member.file).chain(
+            self.dictionaries
+                .iter()
+                .flat_map(|source| source.original_files()),
+        ) {
+            let metadata = file.metadata()?;
+            allocations.insert(
+                (metadata.dev(), metadata.ino()),
+                synchronized_allocated_bytes(file)?,
+            );
+        }
+        let bytes = allocations.values().try_fold(0_u64, |total, bytes| {
+            total
+                .checked_add(*bytes)
+                .ok_or_else(|| invalid("metadata allocation overflow"))
+        })?;
         self.check_native()?;
         Ok(bytes)
     }
@@ -453,14 +503,24 @@ impl AdmittedPackRead {
     ///
     /// # Errors
     /// Refuses overflow in fixed header storage accounting.
-    pub(in crate::host_cache::owner) fn storage_bytes() -> io::Result<usize> {
+    pub(in crate::host_cache::owner) fn storage_bytes(
+        domain: usize,
+        records: usize,
+    ) -> io::Result<usize> {
+        let dictionaries = super::reads::AdmittedRead::storage_bytes(domain, records)?
+            .checked_mul(records)
+            .ok_or_else(|| invalid("pack dictionary storage overflow"))?;
         std::mem::size_of::<Self>()
             .checked_add(2 * (TERRANE_V1.name().len() + TERRANE_V1.digest_len()))
+            .and_then(|bytes| bytes.checked_add(dictionaries))
             .ok_or_else(|| invalid("metadata read header storage overflow"))
     }
 
     fn check_native(&self) -> io::Result<()> {
         self.observation.check_readable()?;
+        for dictionary in &self.dictionaries {
+            dictionary.check_native()?;
+        }
         let checked = (|| {
             self.layout.recheck()?;
             for member in &self.members {

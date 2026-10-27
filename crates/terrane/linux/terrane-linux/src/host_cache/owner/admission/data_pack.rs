@@ -64,13 +64,13 @@ impl NativeMetadataOwner {
     /// Submits a bounded untrusted data pack and its exact detached index.
     ///
     /// Every chunk and dictionary chain must verify before bounded eviction,
-    /// reservation or namespace writes. Dictionaries currently must be present
-    /// in the offered pack; external dictionary custody is not yet supported.
+    /// reservation or namespace writes. External dictionaries require genuine
+    /// completed standalone admissions in this owner, retained with the pair.
     /// Dropping the accepted waiter cannot cancel the physical command.
     ///
     /// # Errors
     /// Returns untouched inputs on local or queue refusal. Invalid content,
-    /// unsupported external dictionaries, insufficient capacity, and failed
+    /// unavailable external dictionaries, insufficient capacity, and failed
     /// native durability return accepted errors. Started work remains owned;
     /// verification refusal before reservation creates no files or funding.
     pub async fn admit_data_pack(

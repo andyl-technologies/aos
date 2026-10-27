@@ -59,6 +59,7 @@ fn main() -> std::process::ExitCode {
             "admit-chunk",
             "admit-metadata",
             "admit-data-pack",
+            "admit-external-data-pack",
             "admit-cancel",
             "cache-admission-handoff",
             "dictionary-custody",

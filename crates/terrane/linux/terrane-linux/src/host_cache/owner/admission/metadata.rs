@@ -27,7 +27,7 @@ pub(super) async fn run(
     resource: &Arc<Mutex<AdmissionJob>>,
 ) -> io::Result<(u64, u64)> {
     let (expected_id, pack, index, payload, hashes) = {
-        let job = backing::lock(resource)?;
+        let mut job = backing::lock(resource)?;
         let (expected_id, pack, index, data) = match &job.input {
             Input::Metadata {
                 expected_id,
@@ -48,19 +48,20 @@ pub(super) async fn run(
         let config = &owner.preparation.config;
         super::AdmissionBounds::new(config)?.check(pack.len(), index.len())?;
         super::AdmissionBounds::new(config)?.check(pack.capacity(), index.capacity())?;
-        let verify = if data {
-            super::packed_body::verify
+        let hashes = if data {
+            let verified = verify_data(executor, &owner, Some(resource), &job.input)?;
+            job.dependencies = verified.dependencies;
+            verified.hashes
         } else {
-            verify
+            verify(
+                &pack,
+                &index,
+                expected_id,
+                config.location.chunk_profile(),
+                config.reads,
+                config.inventory_entries.min(config.state.records),
+            )?
         };
-        let hashes = verify(
-            &pack,
-            &index,
-            expected_id,
-            config.location.chunk_profile(),
-            config.reads,
-            config.inventory_entries.min(config.state.records),
-        )?;
         let payload = pack
             .len()
             .checked_add(index.len())
@@ -114,6 +115,70 @@ pub(super) async fn run(
         .lock()
         .map_err(|_| io::Error::other("admission custody poisoned"))?;
     reconcile::finish(&mut owner, &mut job)
+}
+
+/// Retains verified data identities and their genuine direct external source jobs.
+pub(super) struct VerifiedData {
+    /// Includes the pack, its records and directly retained external dictionaries.
+    pub(super) hashes: Vec<String>,
+    /// Retains actual completed standalone admissions rather than digest claims.
+    pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
+}
+
+/// Verifies every data body using only original admitted standalone dictionaries.
+///
+/// # Errors
+/// Refuses unavailable or changed original custody, invalid content or bounds.
+pub(super) fn verify_data(
+    executor: &super::super::retention::NativeOwnerExecutor,
+    owner: &Custody,
+    current: Option<&Arc<Mutex<AdmissionJob>>>,
+    input: &Input,
+) -> io::Result<VerifiedData> {
+    let Input::DataPack {
+        expected_id,
+        pack,
+        index,
+    } = input
+    else {
+        return Err(io::Error::other(
+            "data verification received another input class",
+        ));
+    };
+    let config = &owner.preparation.config;
+    let mut dependencies = Vec::new();
+    let mut hashes = super::packed_body::verify_with_dictionaries(
+        pack,
+        index,
+        *expected_id,
+        config.location.chunk_profile(),
+        config.reads,
+        config.inventory_entries.min(config.state.records),
+        |digest| {
+            let (plaintext, source) = super::chunk::dictionary(executor, current, owner, digest)?;
+            if !dependencies
+                .iter()
+                .any(|original| Arc::ptr_eq(original, &source))
+            {
+                dependencies
+                    .try_reserve_exact(1)
+                    .map_err(io::Error::other)?;
+                dependencies.push(source);
+            }
+            Ok(plaintext)
+        },
+    )?;
+    for dependency in &dependencies {
+        let dependency = backing::lock(dependency)?;
+        let (identity, _, _) = super::chunk::checked_dictionary(owner, &dependency)?;
+        hashes.push(state::hex(identity.digest()));
+    }
+    hashes.sort();
+    hashes.dedup();
+    Ok(VerifiedData {
+        hashes,
+        dependencies,
+    })
 }
 
 /// Verifies bounded real bytes without minting filesystem or retention authority.
