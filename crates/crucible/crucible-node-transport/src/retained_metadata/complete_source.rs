@@ -52,6 +52,24 @@ pub fn observe_retained_native_coordinator(
     Ok(observer.finish())
 }
 
+/// Appends the original coordinator's defining capacity rows to an admitted bank.
+///
+/// Earlier rows and every refused prefix remain retained. This shares the
+/// observation roster with [`observe_retained_native_coordinator`]; the caller
+/// authenticates the enclosing Source before lending this ordinary DTO.
+///
+/// # Errors
+/// Refuses unavailable backing, exhausted rows, arithmetic overflow or the
+/// unchanged ordinary component traversal and depth restrictions.
+pub fn record_retained_native_coordinator_data(
+    original: &PacketNative5CoordinatorInstallation,
+    bank: &mut records::PacketRuntimeMetadataRecordBank,
+) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    let mut observer = MetadataObserver::appending(bank.recording_bank_data()?);
+    observer.observe(original)?;
+    Ok(observer.finish())
+}
+
 /// Reports actual backing retained by one original typed native launch.
 ///
 /// The enclosing launch header or array is excluded. Independently retained

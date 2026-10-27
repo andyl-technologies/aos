@@ -415,6 +415,7 @@ impl PacketCompleteSemanticSource {
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
             + SourceBirthDerivationJob::fresh_export_counter_scratch_data()
             + Self::native_import18_private_seed_counter_scratch_data()
+            + super::metadata::registration_counter_scratch_data()
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_isolated_derivation_storage_custody(

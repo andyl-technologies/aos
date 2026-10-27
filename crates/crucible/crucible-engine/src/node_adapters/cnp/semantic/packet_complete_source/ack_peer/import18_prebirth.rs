@@ -25,6 +25,8 @@ use serde_json::Value;
 use std::io::Write;
 use std::{mem::size_of, os::unix::ffi::OsStrExt, thread::ThreadId};
 
+#[path = "import18_prebirth/metadata.rs"]
+mod metadata;
 #[path = "import18_prebirth/storage.rs"]
 mod storage;
 #[path = "import18_prebirth/views.rs"]
@@ -95,17 +97,6 @@ impl NativeImport18BirthConstruction {
     pub(in crate::node_adapters::cnp::semantic) fn counter_scratch_data() -> usize {
         storage::counter_scratch_data()
     }
-
-    /// Counts all transferred inputs and partial outputs independently of success.
-    ///
-    /// # Errors
-    /// Refuses unsupported nested metadata, checked overflow or excessive backing.
-    pub(in crate::node_adapters::cnp::semantic) fn retained_storage_data(
-        &self,
-        maximum: usize,
-    ) -> Result<usize, RuntimeError> {
-        storage::retained_storage(self, maximum)
-    }
 }
 
 impl PacketCompleteSemanticSource {
@@ -130,12 +121,8 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, RuntimeError> {
-        self.storage_origin_with_error::<RuntimeError>()?;
-        self.native_import18_birth_construction
-            .as_ref()
-            .map(|owner| owner.retained_storage_data(maximum))
-            .transpose()
-            .map(|value| value.unwrap_or(0))
+        let facts = self.native_import18_birth_construction_capacity_data(None)?;
+        Self::complete_retained_metadata_storage_precredit_data(&facts, maximum)
     }
 
     /// Checks storage custody without requiring a successful constructor stage.

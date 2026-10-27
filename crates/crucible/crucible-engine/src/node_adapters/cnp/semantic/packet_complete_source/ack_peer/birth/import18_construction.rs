@@ -42,38 +42,67 @@ impl NativeImport18PrivateBirthAttempt {
         size_of::<Self>()
     }
 
-    /// Counts actual complete child clones even after a later IO refusal.
+    /// Records all retained clone prefixes without reopening the executable File.
+    ///
+    /// File/kernel custody remains an independent descriptor obligation. Fixed
+    /// fields contribute traversal work without becoming allocation rows.
     ///
     /// # Errors
-    /// Refuses checked capacity overflow or backing beyond the supplied bound.
-    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retained_storage_data(
+    /// Refuses capacity/work overflow, exhausted rows or unavailable backing.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn record_retained_capacity_data(
         &self,
-        maximum: usize,
-    ) -> Result<usize, RuntimeError> {
-        let mut host_bytes = 0usize;
-        if let Some(host) = &self.host {
-            for capacity in [
-                host.hash.algorithm.capacity(),
-                host.hash.domain.capacity(),
-                host.hash.digest.capacity(),
-                host.media_type.capacity(),
-            ] {
-                host_bytes = host_bytes
-                    .checked_add(capacity)
-                    .ok_or(RuntimeError::ResourceLimit)?;
-            }
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            host,
+            private_launch,
+            file,
+            revision,
+            started,
+            failed,
+        } = self;
+        census.observe(host)?;
+        census.observe(private_launch)?;
+        census.observe_inline_data(&file.is_some())?;
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(&revision.is_some())?;
+        if let Some(HostRevision {
+            device,
+            inode,
+            length,
+            uid,
+            mode,
+            modified,
+            changed,
+        }) = revision
+        {
+            census.observe_inline_data(device)?;
+            census.observe_inline_data(inode)?;
+            census.observe_inline_data(length)?;
+            census.observe_inline_data(uid)?;
+            census.observe_inline_data(mode)?;
+            census.observe_inline_data(modified)?;
+            census.observe_inline_data(changed)?;
         }
-        let id = self
-            .private_launch
-            .as_ref()
-            .map_or(0, Id::allocated_capacity);
-        let total = host_bytes
-            .checked_add(id)
-            .ok_or(RuntimeError::ResourceLimit)?;
-        if total > maximum {
-            return Err(RuntimeError::ResourceLimit);
-        }
-        Ok(total)
+        Ok(())
+    }
+
+    /// Names the actual borrowed clone, File-presence and revision field controls.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn capacity_counter_scratch_data()
+    -> usize {
+        size_of::<&Self>()
+            + size_of::<(
+                &Option<ContentRef>,
+                &Option<Id>,
+                &Option<File>,
+                &Option<HostRevision>,
+                &bool,
+                &bool,
+            )>()
+            + size_of::<(&u64, &u64, &u64, &u32, &u32, &(i64, i64), &(i64, i64))>()
+            + size_of::<bool>() * 2
+            + size_of::<Result<(), RuntimeError>>()
     }
 
     /// Quotes the exact String-clone requests and genuine fixed IO/hash work.

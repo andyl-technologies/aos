@@ -43,6 +43,8 @@ type ObserverScalarViews = (
 pub fn retained_native_coordinator_counter_scratch_data() -> usize {
     size_of::<&PacketNative5CoordinatorInstallation>()
         + size_of::<MetadataObserver<'static>>()
+        + size_of::<&mut records::PacketRuntimeMetadataRecordBank>()
+        + size_of::<Result<&mut records::MetadataRecordBank, ProviderError>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()

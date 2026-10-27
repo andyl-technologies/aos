@@ -339,8 +339,10 @@ fn real_parent_census_retains_failed_worker_and_legacy_header_refuses_omission()
             .retain_initial_operands_data(&mut private, &mut plan)
             .is_err()
     );
-    let expected = partial.retained_storage_data(usize::MAX).unwrap();
     source.native_import18_birth_construction = Some(Box::new(partial));
+    let expected = source
+        .native_import18_birth_construction_retained_storage_data(usize::MAX)
+        .unwrap();
     let owner = source
         .native_import18_birth_construction
         .as_ref()
@@ -445,9 +447,11 @@ fn actual_template_attempt_counts_same_source_failed_worker_without_code_or_birt
                 worker.retain_initial_operands_data(&mut private, &mut plan),
                 Err(RuntimeError::OwnerUnavailable)
             );
-            let extra = worker.retained_storage_data(usize::MAX).unwrap();
             source.ack_birth_attempted = true;
             source.native_import18_birth_construction = Some(Box::new(worker));
+            let extra = source
+                .native_import18_birth_construction_retained_storage_data(usize::MAX)
+                .unwrap();
             let address = source
                 .native_import18_birth_construction
                 .as_deref()
@@ -547,5 +551,140 @@ fn template_attempt_rejects_foreign_or_unspent_failed_worker_without_erasing_it(
                 .unwrap()
                 .failed
         );
+    }
+}
+
+#[test]
+fn constructor_census_retains_failed_box_spare_banks_and_private_json_geometry() {
+    use crucible_node_format::ExtensionSelection;
+
+    let mut source = ordinary_source(false);
+    let mut partial = failed_input_fixture(&source);
+    partial.inputs_started = true;
+    partial.private_launch = Some(Id::new("retained-private-launch").unwrap());
+    partial.registration = Some(PacketCompleteAckHostRegistrationPlan {
+        connection_id: Id::new("retained-connection").unwrap(),
+        features: Vec::with_capacity(3),
+        extensions: Vec::with_capacity(2),
+        envelope_extensions: Vec::with_capacity(5),
+    });
+    let mut source_bank = Vec::with_capacity(31);
+    source_bank.extend_from_slice(b"prefix");
+    partial.source_bank = Some(source_bank);
+    partial.registration_bank = Some(Vec::with_capacity(47));
+    let mut source_text = String::with_capacity(73);
+    source_text.push_str("source-owned");
+    let mut values = Vec::with_capacity(7);
+    values.push(Value::String(source_text));
+    values.push(Value::Bool(true));
+    partial.source_value = Some(Value::Array(values));
+    let mut registration_text = String::with_capacity(83);
+    registration_text.push_str("registration-owned");
+    partial.registration_value = Some(Value::String(registration_text));
+    let expected_strings = partial
+        .private_launch
+        .as_ref()
+        .unwrap()
+        .allocated_capacity()
+        + partial
+            .registration
+            .as_ref()
+            .unwrap()
+            .connection_id
+            .allocated_capacity()
+        + 73
+        + 83;
+    let expected_vectors = 31
+        + 47
+        + 3 * size_of::<Id>()
+        + 2 * size_of::<ExtensionSelection>()
+        + 5 * size_of::<String>()
+        + 7 * size_of::<Value>();
+    let original_bank = partial.source_bank.as_ref().unwrap().as_ptr();
+    source.ack_birth_attempted = true;
+    source.native_import18_birth_construction = Some(Box::new(partial));
+    let original_box = source
+        .native_import18_birth_construction
+        .as_deref()
+        .unwrap() as *const _;
+
+    let facts = source
+        .native_import18_birth_construction_capacity_data(None)
+        .unwrap();
+    let expected_bytes =
+        expected_strings + expected_vectors + size_of::<NativeImport18BirthConstruction>();
+
+    assert_eq!(facts.capacity_records, 11);
+    assert_eq!(facts.string_banks, 4);
+    assert_eq!(facts.string_capacity_bytes, expected_strings);
+    assert_eq!(facts.vector_banks, 6);
+    assert_eq!(facts.vector_capacity_bytes, expected_vectors);
+    assert_eq!(
+        facts.boxed_value_bytes,
+        size_of::<NativeImport18BirthConstruction>()
+    );
+    assert_eq!(facts.shared_backing_views, 0);
+    assert_eq!(facts.tree_containers, 0);
+    assert!(facts.observed_nodes > facts.capacity_records);
+    assert_eq!(
+        source.native_import18_birth_construction_retained_storage_data(expected_bytes),
+        Ok(expected_bytes)
+    );
+    assert_eq!(
+        source.native_import18_birth_construction_retained_storage_data(expected_bytes - 1),
+        Err(RuntimeError::ResourceLimit)
+    );
+    let retained = source
+        .native_import18_birth_construction
+        .as_deref()
+        .unwrap();
+    assert_eq!(retained as *const _, original_box);
+    assert_eq!(
+        retained.source_bank.as_ref().unwrap().as_ptr(),
+        original_bank
+    );
+    assert!(retained.failed && retained.inputs_started);
+    assert!(retained.stage == Stage::Initialized);
+
+    source
+        .native_import18_birth_construction
+        .as_mut()
+        .unwrap()
+        .identity
+        .source ^= 1;
+    assert_eq!(
+        source.native_import18_birth_construction_capacity_data(None),
+        Err(RuntimeError::ForeignAuthority)
+    );
+    assert_eq!(
+        source
+            .native_import18_birth_construction
+            .as_deref()
+            .unwrap() as *const _,
+        original_box
+    );
+}
+
+#[test]
+fn constructor_census_absence_is_data_and_foreign_creator_refuses() {
+    for reactive in [false, true] {
+        let mut source = ordinary_source(reactive);
+        let facts = source
+            .native_import18_birth_construction_capacity_data(None)
+            .unwrap();
+        assert_eq!(facts.capacity_records, 0);
+        assert_eq!(facts.observed_nodes, 1);
+        assert_eq!(
+            source.native_import18_birth_construction_retained_storage_data(0),
+            Ok(0)
+        );
+
+        source.process = source.process.wrapping_add(1);
+        assert_eq!(
+            source.native_import18_birth_construction_capacity_data(None),
+            Err(RuntimeError::ForeignAuthority)
+        );
+        assert!(source.native_import18_birth_construction.is_none());
+        assert!(!source.ack_birth_attempted);
     }
 }

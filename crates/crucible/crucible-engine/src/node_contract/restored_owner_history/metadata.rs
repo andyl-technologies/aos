@@ -131,6 +131,34 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         merge_capacity_metadata_data(&mut self.facts, &additional)
     }
 
+    /// Joins the defining SDK walk of one original native coordinator DTO.
+    ///
+    /// The enclosing Source checks creator custody before lending this owner.
+    ///
+    /// # Errors
+    /// Refuses unavailable backing, SDK traversal limits, aggregate row
+    /// exhaustion or checked geometry overflow. Earlier physical rows remain.
+    pub(crate) fn observe_native_coordinator_data(
+        &mut self,
+        owner: &crucible_node_transport::reference_packet::coordinator::PacketNative5CoordinatorInstallation,
+    ) -> Result<(), RuntimeError> {
+        use crucible_node_transport::retained_metadata::{
+            observe_retained_native_coordinator, record_retained_native_coordinator_data,
+        };
+
+        let additional = match self.bank.as_deref_mut() {
+            Some(bank) => record_retained_native_coordinator_data(owner, bank),
+            None => observe_retained_native_coordinator(owner),
+        }
+        .map_err(metadata_error)?;
+        self.facts
+            .capacity_records
+            .checked_add(additional.capacity_records)
+            .filter(|rows| *rows <= self.maximum_rows)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        merge_capacity_metadata_data(&mut self.facts, &additional)
+    }
+
     /// Counts one inspected Copy field in the defining allocation-free roster.
     ///
     /// This compile-time bound prevents a fixed field from silently acquiring an

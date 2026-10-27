@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::node_adapters::cnp::semantic::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics;
-use crate::node_adapters::cnp::semantic::packet_complete_source::retained_values;
 use crucible_node_format::{ExtensionSelection, HashRef};
 use crucible_node_transport::reference_packet::control::PacketDecodedCaptureFutureControlData;
 use crucible_node_transport::reference_packet::service::PacketNative5CoordinatorConstructionStorage;
@@ -16,9 +15,7 @@ use crucible_node_transport::reference_packet::service::complete_restore::import
     PacketNativeImport18HelloDeclarationData, PacketNativeImport18ProspectiveHostRegistrationData,
     native_import18_registration_counter_scratch_data,
 };
-use crucible_node_transport::retained_metadata::{
-    RetainedProtocolMetadataFacts, observe_retained_native_coordinator,
-};
+use crucible_node_transport::retained_metadata::RetainedProtocolMetadataFacts;
 use std::{cell::Ref, mem::size_of};
 
 /// Measures only real Bytes leaves of this pre-report SourceBirth view.
@@ -152,104 +149,19 @@ pub(super) fn canonical_error_storage_data() -> Result<usize, RuntimeError> {
     ])
 }
 
-pub(super) fn retained_storage(
-    owner: &NativeImport18BirthConstruction,
-    maximum: usize,
-) -> Result<usize, RuntimeError> {
-    let mut bytes = sum(&[
-        size_of::<NativeImport18BirthConstruction>(),
-        owner
-            .private_launch
-            .as_ref()
-            .map_or(0, Id::allocated_capacity),
-        owner.source_bank.as_ref().map_or(0, Vec::capacity),
-        owner.registration_bank.as_ref().map_or(0, Vec::capacity),
-        owner.private_birth.retained_storage_data(maximum)?,
-    ])?;
-    if let Some(plan) = &owner.registration {
-        bytes = sum(&[bytes, registration_storage(plan)?])?;
-    }
-    if let Some(coordinator) = &owner.coordinator {
-        let facts = observe_retained_native_coordinator(coordinator)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        bytes = sum(&[
-            bytes,
-            PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
-                &facts, maximum,
-            )?,
-        ])?;
-    }
-    for value in [&owner.source_value, &owner.registration_value]
-        .into_iter()
-        .flatten()
-    {
-        bytes = sum(&[
-            bytes,
-            retained_values::value_storage_with_error::<RuntimeError>(value, 0, maximum)?,
-        ])?;
-    }
-    if bytes > maximum {
-        return Err(RuntimeError::ResourceLimit);
-    }
-    Ok(bytes)
-}
-
-fn hash_storage(hash: &HashRef) -> Result<usize, RuntimeError> {
-    sum(&[
-        hash.algorithm.capacity(),
-        hash.domain.capacity(),
-        hash.digest.capacity(),
-    ])
-}
-
-fn content_storage(content: &ContentRef) -> Result<usize, RuntimeError> {
-    sum(&[hash_storage(&content.hash)?, content.media_type.capacity()])
-}
-
 pub(super) fn registration_storage(
     plan: &PacketCompleteAckHostRegistrationPlan,
 ) -> Result<usize, RuntimeError> {
-    let mut bytes = sum(&[
-        plan.connection_id.allocated_capacity(),
-        plan.features
-            .capacity()
-            .checked_mul(size_of::<Id>())
-            .ok_or(RuntimeError::ResourceLimit)?,
-        plan.extensions
-            .capacity()
-            .checked_mul(size_of::<ExtensionSelection>())
-            .ok_or(RuntimeError::ResourceLimit)?,
-        plan.envelope_extensions
-            .capacity()
-            .checked_mul(size_of::<String>())
-            .ok_or(RuntimeError::ResourceLimit)?,
-    ])?;
-    for feature in &plan.features {
-        bytes = sum(&[bytes, feature.allocated_capacity()])?;
-    }
-    for name in &plan.envelope_extensions {
-        bytes = sum(&[bytes, name.capacity()])?;
-    }
-    // A refused nonempty registry still retains every transferred child.
-    for extension in &plan.extensions {
-        bytes = sum(&[
-            bytes,
-            content_storage(&extension.declaration)?,
-            extension.identifier.allocated_capacity(),
-            hash_storage(&extension.schema_digest)?,
-            extension
-                .semantic_version
-                .prerelease
-                .as_ref()
-                .map_or(0, String::capacity),
-            extension
-                .semantic_version
-                .build
-                .as_ref()
-                .map_or(0, String::capacity),
-        ])?;
-    }
-    Ok(bytes)
+    let mut census =
+        crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData::new(
+            usize::MAX,
+            None,
+        );
+    super::metadata::record_registration_capacity_data(plan, &mut census)?;
+    PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+        &census.finish(),
+        usize::MAX,
+    )
 }
 
 /// Names the real quote, source facade, typed view and partial-census controls.
@@ -258,7 +170,8 @@ pub(super) fn registration_storage(
 /// retained observation scratch. No unrelated large DTO is a size donor.
 /// Caller-specific admission callbacks remain independent work.
 pub(super) fn counter_scratch_data() -> usize {
-    let controls = size_of::<NativeImport18BirthConstruction>()
+    let controls = super::metadata::counter_scratch_data()
+        + size_of::<NativeImport18BirthConstruction>()
         + size_of::<Option<Box<NativeImport18BirthConstruction>>>()
         + size_of::<Box<NativeImport18BirthConstruction>>()
         + size_of::<NativeImport18BirthConstructionQuote>()

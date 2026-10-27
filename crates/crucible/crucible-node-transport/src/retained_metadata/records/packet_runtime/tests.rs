@@ -517,3 +517,51 @@ fn original_native_launch_appends_defining_rows_and_keeps_refused_prefixes() {
     assert!(record_retained_native_launch_data(&launch, &mut unallocated).is_err());
     assert!(unallocated.rows().is_empty());
 }
+
+#[test]
+fn original_native_coordinator_appends_actual_spare_geometry_and_refused_prefix() {
+    use crate::reference_packet::{
+        control::PacketControlSelection, coordinator::PacketNative5CoordinatorInstallation,
+    };
+    use crate::retained_metadata::{
+        observe_retained_native_coordinator, record_retained_native_coordinator_data,
+    };
+    use std::mem::{align_of, size_of};
+
+    let (_, _, _, installed) =
+        crate::reference_packet::coordinator::original_native5_controller_scope();
+    // The typed original is geometry DATA; no native coordinator is installed.
+    let mut coordinator: PacketNative5CoordinatorInstallation =
+        serde_json::from_slice(installed.bytes.as_slice()).unwrap();
+    coordinator.participants.reserve(7);
+    let participants = coordinator.participants.as_ptr();
+    let expected = observe_retained_native_coordinator(&coordinator).unwrap();
+    let prefix = row(MetadataRecordKind::String, 19, 1, 1);
+    let mut complete = bank(expected.capacity_records + 1);
+    complete.reserve_retained_data().unwrap();
+    complete.append_capacity_record_data(prefix).unwrap();
+    let allocated = complete.allocated_bytes();
+
+    assert_eq!(
+        record_retained_native_coordinator_data(&coordinator, &mut complete).unwrap(),
+        expected
+    );
+
+    assert_eq!(complete.rows()[0], prefix);
+    assert_eq!(complete.allocated_bytes(), allocated);
+    assert_eq!(coordinator.participants.as_ptr(), participants);
+    assert!(complete.rows()[1..].contains(&row(
+        MetadataRecordKind::Vector,
+        coordinator.participants.capacity(),
+        size_of::<PacketControlSelection>(),
+        align_of::<PacketControlSelection>(),
+    )));
+    let mut short = bank(expected.capacity_records);
+    short.reserve_retained_data().unwrap();
+    short.append_capacity_record_data(prefix).unwrap();
+    assert!(record_retained_native_coordinator_data(&coordinator, &mut short).is_err());
+    assert_eq!(short.rows(), &complete.rows()[..expected.capacity_records]);
+    let mut unallocated = bank(expected.capacity_records);
+    assert!(record_retained_native_coordinator_data(&coordinator, &mut unallocated).is_err());
+    assert!(unallocated.rows().is_empty());
+}
