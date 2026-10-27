@@ -299,9 +299,9 @@ long-held locks.
   trait-level SimDouble outbound sends without scheduler authorization.
   `T-SESS-12` is completed by `checks.crucible.phase5.sessionSimDoubleSuite`,
   which runs the full `crucible-session` suite plus the API/daemon
-  control-responsive tests under in-process `crucible::SimDouble` quantum-loop
+  control-responsive tests under in-process `crucible_engine::SimDouble` quantum-loop
   adapters, and runs `gate:scheduler-liveness` under `test-double` with an
-  initialized and stepped `crucible::SimDouble` smoke path before the pure
+  initialized and stepped `crucible_engine::SimDouble` smoke path before the pure
   scheduler-liveness reduction. Source checks reserve real QEMU for Contract A,
   guest non-mutation, and patch inertness fidelity properties.
   `T-SESS-13` is green through `checks.crucible.phase5.sessionDebugTimeTravel`,
@@ -378,7 +378,7 @@ long-held locks.
   RPC server, covers scenario-ref and inline creation, both attach paths, command
   send, fault, breakpoint, savepoint, fork, `GetReproduction`, stale epoch
   rejection, destroy, idempotent destroy, and per-message RPC ABI snapshot
-  coverage, and also runs the `crucible-qemu` `QemuNode`
+  coverage, and also runs the `crucible-qemu-host` `QemuNode`
   `SimulationBackend` contract test.
   `T-API-14` is green through `checks.crucible.phase5.apiNondeterminism`,
   which compares quiet/noisy in-process, quiet/noisy HTTP/2 RPC, and
@@ -430,7 +430,7 @@ long-held locks.
   `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN`, then AOS package-set order, rejects host
   `$PATH` discovery, requires the patched-QEMU sim-capability marker and matched
   plugin ABI/QEMU-build metadata, derives that plugin ABI from
-  `crucible_shmem::ABI_VERSION`, fails explicit absence or mismatched candidate
+  `crucible_qemu_shmem::ABI_VERSION`, fails explicit absence or mismatched candidate
   pairs with exit 4 and actionable discovery guidance, wires the packaged CLI
   with compile-time AOS store-path hints for `qemu-crucible` and
   `crucible-qemu-plugin`, and pins the selected QEMU build identity plus plugin

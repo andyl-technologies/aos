@@ -11,7 +11,7 @@
     pname = "crucible-qemu-rr-control-boundary-device-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-rr-control-boundary-device-flight = "build --release -p crucible-qemu --example crucible-qemu-rr-control-boundary-device-flight";
+      crucible-qemu-rr-control-boundary-device-flight = "build --release -p crucible-qemu-host --example crucible-qemu-rr-control-boundary-device-flight";
     };
   };
   rootfsDeps = [

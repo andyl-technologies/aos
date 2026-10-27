@@ -76,7 +76,7 @@ in
             grep -Fxq PASS "$SCALE_RESULT/result"
             grep -Fxq "tests=$SCALE_TESTS" "$SCALE_RESULT/result"
             crucible-cargo test -p crucible-campaign --test gate_campaign_model
-            crucible-exact-tests -p crucible --lib -- \
+            crucible-exact-tests -p crucible-engine --lib -- \
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples
             crucible-exact-tests -p crucible-daemon --lib -- \
               crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples \

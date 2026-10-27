@@ -8,17 +8,17 @@
 
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   catalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/crucible-engine/src/event_catalog.rs;
   };
-  catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
-  proximityTest = builtins.readFile ../../crates/crucible/tests/event_log_assertion_proximity.rs;
+  catalogTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_kind_catalog.rs;
+  proximityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -36,7 +36,7 @@
         needle = "minimum-distance";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "assertion proximity constructor";
         needle = "pub fn assertion_proximity(";
@@ -54,7 +54,7 @@
         needle = "ObservableEventPayload::AssertionProximity { .. } => false";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "assertion proximity projection entry";
         needle = "pub struct EventLogAssertionProximityProjectionEntry";
@@ -104,7 +104,7 @@
         needle = "ObservableEventPayload::AssertionProximity { .. } => EventLevel::Debug";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "checkpoint proximity fingerprint";
         needle = "pub assertion_proximity_fingerprint: ContentHash";
@@ -130,7 +130,7 @@
         needle = "assertion_proximity_fingerprint={}";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "assertion proximity projection export";
         needle = "EventLogAssertionProximityProjection";
@@ -148,7 +148,7 @@
         needle = "event_log_assertion_proximity_projection";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
+    ++ failuresFor "crates/crucible/crucible-engine/src/event_catalog.rs" catalog [
       {
         label = "assertion proximity catalog kind";
         needle = "kind: \"assertion_proximity\"";
@@ -158,7 +158,7 @@
         needle = "attributes: &[\"distance\", \"id\", \"node\", \"quantifier\"]";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_kind_catalog.rs" catalogTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_kind_catalog.rs" catalogTest [
       {
         label = "assertion proximity catalog golden vector";
         needle = "event_kind_catalog_canonical_serialization_matches_golden_vector";
@@ -168,7 +168,7 @@
         needle = "(\"assertion_proximity\", SchedulerEventLogClass::Observational)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_assertion_proximity.rs" proximityTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs" proximityTest [
       {
         label = "observational projection test";
         needle = "assertion_proximity_entries_are_observational_and_projected";
@@ -244,7 +244,7 @@
         needle = "taskIds = [\"T-OBS-14\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_assertion_proximity.rs" proximityTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs" proximityTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -258,7 +258,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "parallel proximity fingerprint setter";
         needle = "with_assertion_proximity_fingerprint";
@@ -271,7 +271,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-log-assertion-proximity";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -283,7 +286,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_assertion_proximity \
               --test event_kind_catalog \
               -- --test-threads=1

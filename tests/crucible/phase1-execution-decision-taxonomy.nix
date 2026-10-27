@@ -7,15 +7,15 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  decision = builtins.readFile ../../crates/crucible/src/decision.rs;
+  canonical = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
+  decision = builtins.readFile ../../crates/crucible/crucible-engine/src/decision.rs;
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "closed decision enum";
         needle = "pub enum Decision";
@@ -61,7 +61,7 @@
         needle = "pub stream: RngStreamId";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" canonical [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/canonical.rs" canonical [
       {
         label = "decision canonicalization match";
         needle = "fn write_decision(hasher: &mut MaterialHasher, decision: &Decision)";
@@ -87,13 +87,13 @@
         needle = "Decision::Selection(selection)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model/canonical.rs" canonical [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model/canonical.rs" canonical [
       {
         label = "wildcard decision canonicalization arm";
         needle = "_ =>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/decision.rs" decision [
+    ++ failuresFor "crates/crucible/crucible-engine/src/decision.rs" decision [
       {
         label = "decision recorder type";
         needle = "pub struct DecisionRecorder";
@@ -131,7 +131,7 @@
         needle = "edited.schedule().decisions().get(1)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "schedule prefix test";
         needle = "schedule_prefix_bounds_are_checked";
@@ -157,6 +157,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.sed
+        pkgs.sqlite
       ];
 
       phases = [
@@ -166,7 +167,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --test-threads=1
           '';

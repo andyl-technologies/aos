@@ -8,10 +8,10 @@
 
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   phasePlan = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  gateCatalogRust = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
-  rfcConsistency = builtins.readFile ../../crates/crucible-harness/tests/rfc_consistency.rs;
-  rfcConsistencyMisc = builtins.readFile ../../crates/crucible-harness/tests/support/rfc_consistency_misc.rs;
+  gateCatalogRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
+  rfcConsistency = builtins.readFile ../../crates/crucible/crucible-test-support/tests/rfc_consistency.rs;
+  rfcConsistencyMisc = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/rfc_consistency_misc.rs;
   phaseGateWiring = builtins.readFile ./phase1-phase-gate-wiring.nix;
   defaultChecks = builtins.readFile ./default.nix;
   phaseGateWiringCheck = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
@@ -51,7 +51,7 @@
   failures =
     map (gate: "${gate}: canonical gate lacks a phase-gate CI target") missingTargets
     ++ map (gate: "${gate}: phase-gate CI target is not canonical") unknownTargets
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalogRust [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" gateCatalogRust [
       {
         label = "canonical gate catalog";
         needle = "pub const CANONICAL_GATES: &[GateSpec]";
@@ -61,7 +61,7 @@
         needle = "pub fn find_gate(name: &str) -> Option<&'static GateSpec>";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "catalog table/reference equality test";
         needle = "canonical_gate_catalog_matches_rfc_table_and_references";
@@ -83,7 +83,7 @@
         needle = "gate_catalog_doc_lint_failure_modes_remain_wired";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/rfc_consistency.rs" rfcConsistency [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/rfc_consistency.rs" rfcConsistency [
       {
         label = "referenced/undefined gate failure hook";
         needle = "failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));";
@@ -93,7 +93,7 @@
         needle = "rfc_consistency_rules_reject_undefined_and_unreferenced_gates";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/rfc_consistency_misc.rs" rfcConsistencyMisc [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/support/rfc_consistency_misc.rs" rfcConsistencyMisc [
       {
         label = "catalog table parser";
         needle = "pub(super) fn gate_catalog";
@@ -168,7 +168,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test gate_catalog \
               -- --test-threads=1
           '';
@@ -184,7 +184,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=${toString (builtins.length catalogGates)}
             phase_gate_targets=${toString (builtins.length phaseGateTargets)}
-            rust_test=crucible-harness::gate_catalog
+            rust_test=crucible_test_support::gate_catalog
             RESULT
           '';
         }

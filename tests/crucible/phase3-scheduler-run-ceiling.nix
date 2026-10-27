@@ -9,16 +9,16 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   runCeilingTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs;
   };
   shmem = import ./_crucible-shmem-source.nix {inherit lib;};
   shmemTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+    entry = ../../crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -41,7 +41,7 @@
         needle = "published once per quantum";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "ceiling publication record";
         needle = "pub struct SchedulerRunCeilingPublication";
@@ -87,13 +87,13 @@
         needle = "ceiling: plan.ceiling.clone()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "ceiling publication export";
         needle = "SchedulerRunCeilingPublication";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "single publication test";
         needle = "run_publishes_one_max_advance_ceiling_for_selected_node";
@@ -123,7 +123,7 @@
         needle = "slot.publish_scheduler_advance(";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "shmem slot publish API";
         needle = "pub fn publish_scheduler_advance";
@@ -141,7 +141,7 @@
         needle = "pub fn authorize_advance_ceiling";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
       {
         label = "shmem handoff regression";
         needle = "scheduler_publishes_ceiling_and_node_publishes_reached_icount";
@@ -153,7 +153,7 @@
         needle = "schedulerRunCeiling = import ./phase3-scheduler-run-ceiling.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -170,7 +170,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-run-ceiling";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -182,12 +185,12 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test scheduler_run_ceiling \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test advance_ceiling_handoff \
               scheduler_publishes_ceiling_and_node_publishes_reached_icount \
               -- --test-threads=1

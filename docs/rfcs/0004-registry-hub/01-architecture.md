@@ -28,11 +28,17 @@ registry" a first-class operation rather than a migration.
 Corollary: the hub displays *verified* state, never trusted state. The
 indexer performs the same checks an `apm` client performs — tag
 signature verification, name-binding, roster walks, anti-rollback
-floors (`crates/aos-package/src/registry/verify.rs`,
+floors (`crates/registry/aos-registry-client/src/registry/verify.rs`,
 `channel.rs`) — and surfaces verification failures as first-class
 health states rather than hiding them.
 
 ### Architecture and runtime targets
+
+The following single-crate sketch records the original proposal. Current Cargo
+ownership is documented in the [workspace map](README.md#current-workspace-ownership):
+Hub API messages belong to `aos-hub-api`, separate from `aos-build-api`, and the
+registry format reader is shared by the native service and Worker. The old paths
+and binary spellings in this sketch are historical, not current build targets.
 
 One new crate, **`crates/aos-registry-hub`**, plus proto additions to
 the existing `aos-proto` crate (a new `aos.registry.v1` package,
@@ -61,13 +67,13 @@ crates/aos-registry-hub/
 - **Native target** — what a self-hosting operator runs: axum server,
   sqlx with the driver selected at runtime by database URL
   (`sqlite://`, `postgres://`, `mysql://`), S3 via the existing
-  `aos-net` SigV4 engine. Packaged as an AOS package + module
+  `aos-transfer` SigV4 engine. Packaged as an AOS package + module
   (`aos.registry-hub.enable = true`) so operators deploy the hub *with*
   AOS.
 - **Local-first operation is a hard requirement, not a degraded
   mode.** The native binary + a sqlite file + `LocalFs` storage
   bindings is a *complete* hub: `file://` paths are valid registry
-  backends exactly as they already are for `apr` and `aos-cache`'s
+  backends exactly as they already are for `apr` and `aos-nix-cache`'s
   `FsBackend`, and every feature — the dumb-HTTP/nix-cache facade,
   browse UI, indexing and verification, publish leases and the upload
   facade, the web surface — works
@@ -99,7 +105,7 @@ crates/aos-registry-hub/
   object parsing with SSH-format Ed25519 verification (`ed25519-dalek`
   is wasm-clean), package TOML, narinfo, and channel partition
   resolution with name-binding checks. It reimplements the *read half*
-  of `crates/aos-package/src/registry/` without the git CLI (which
+  of `crates/packages/aos-package-manager/src/registry/` without the git CLI (which
   `apm` shells out to and which does not exist on Workers). The pure
   parsing types (`types.rs`, `registry/parse.rs`) should be shared with
   `aos-package` — day one by direct reuse if they prove wasm-clean,

@@ -9,11 +9,11 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   shmemGate = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
+    entry = ../../crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
   };
   gateTargets = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/src/gate_targets.rs;
+    entry = ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   };
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -25,7 +25,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "Lamport SPSC ring header";
         needle = "pub struct RingHeader";
@@ -79,7 +79,7 @@
         needle = "fn live_count(";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "SPSC exhaustive ordering model";
         needle = "assert_spsc_ring_exhaustive_ordering_model(";
@@ -145,7 +145,7 @@
         needle = "assert_ne!(producer_skewed, consumer_skewed);";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -155,16 +155,16 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented shmem layer1 target";
-        needle = "package: \"crucible-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
+        needle = "package: \"crucible-qemu-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented shmem layer1 mapping target";
-        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-qemu-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -196,7 +196,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test gate_layer1_injection \
               -- --test-threads=1
           '';
@@ -211,7 +211,7 @@ in
             check=${attrPath}
             gate=gate:layer1-injection
             tasks=${taskList}
-            rust_tests=crucible-shmem::gate_layer1_injection
+            rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
             model=source-guarded-exhaustive-memory-order-interleavings

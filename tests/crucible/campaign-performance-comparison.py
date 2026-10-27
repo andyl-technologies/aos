@@ -245,7 +245,7 @@ def compare(comparison_path, decision_plan_path, reference_host_path, *, current
     reference_sources, candidate_sources = (plan["production"][revision] for revision in revisions)
     native_keys = {
         path for path in set(reference_sources) | set(candidate_sources)
-        if path.startswith("native/") or path.startswith("crates/crucible-qemu-plugin/")
+        if path.startswith("native/") or path.startswith("crates/crucible/crucible-qemu-plugin/")
     }
     if any(reference_sources.get(path) != candidate_sources.get(path) for path in native_keys):
         raise ValueError("native changes require separate authenticated None-path and equal-byte console timing; campaign medians cannot qualify them")

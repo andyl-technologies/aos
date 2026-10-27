@@ -8,33 +8,33 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   authoritativeScheduler =
-    builtins.readFile ../../crates/crucible/src/scheduler/single_scheduler_drive.rs;
+    builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/single_scheduler_drive.rs;
   patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
   quantumTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_quantum_loop.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs;
   };
   effectiveHorizonTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_effective_horizon.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs;
   };
   runCeilingTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs;
   };
   resolveTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_resolve.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_resolve.rs;
   };
   eventOrderTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_event_order.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_event_order.rs;
   };
   emitStepTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_emit_step.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
   };
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -135,7 +135,7 @@
         needle = "schedulerQuantumPattern = import ./phase3-scheduler-quantum-pattern.nix";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "authoritative quantum implementation";
         needle = "fn drive_authoritative_quantum";
@@ -161,7 +161,7 @@
         needle = "fn step_quantum";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
       {
         label = "control boundary before pick";
         needle = "self.admit_control_at_boundary(request.control)";
@@ -195,7 +195,7 @@
         needle = "self.yield_to_control_inbox()";
       }
     ]
-    ++ orderedNeedlesFor "crates/crucible/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
+    ++ orderedNeedlesFor "crates/crucible/crucible-engine/src/scheduler/single_scheduler_drive.rs::drive_authoritative_quantum" authoritativeQuantum [
       {
         label = "boundary admission";
         needle = "self.admit_control_at_boundary(request.control)";
@@ -221,7 +221,7 @@
         needle = "// STEP phase";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs" quantumTest [
       {
         label = "atomic quantum test";
         needle = "quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary";
@@ -231,7 +231,7 @@
         needle = "quantum_loop_sequence_is_pure_for_identical_scenario_inputs";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
       {
         label = "PICK unified projection test";
         needle = "effective_horizon_pick_uses_running_idle_halted_done_projection";
@@ -241,7 +241,7 @@
         needle = "run_reaches_horizon_and_never_advances_past_it";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "single ceiling per RUN test";
         needle = "run_publishes_one_max_advance_ceiling_for_selected_node";
@@ -251,7 +251,7 @@
         needle = "each_run_gets_one_ceiling_and_no_intermediate_publication";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "mixed due set total-order test";
         needle = "resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order";
@@ -261,7 +261,7 @@
         needle = "resolve_due_events_are_independent_of_pending_transport_order";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_event_order.rs" eventOrderTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_event_order.rs" eventOrderTest [
       {
         label = "four-field event key ordering test";
         needle = "scheduled_event_keys_order_by_virtual_consumer_producer_sequence";
@@ -271,7 +271,7 @@
         needle = "single_scheduler_allocates_control_event_keys_from_saved_sequence_state";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "ordered EMIT test";
         needle = "emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes";
@@ -281,7 +281,7 @@
         needle = "step_advances_schedule_and_event_log_prefix_across_quanta";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_quantum_loop.rs" quantumTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs" quantumTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -291,7 +291,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -301,7 +301,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -311,7 +311,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -321,7 +321,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_event_order.rs" eventOrderTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_event_order.rs" eventOrderTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -331,7 +331,7 @@
         needle = "todo!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -348,7 +348,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-quantum-pattern";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -360,27 +363,27 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_quantum_loop \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_effective_horizon \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_run_ceiling \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_resolve \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_event_order \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_emit_step \
               -- --test-threads=1
           '';

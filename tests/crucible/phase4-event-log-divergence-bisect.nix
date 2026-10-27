@@ -8,9 +8,9 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  determinismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  determinismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_determinism.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -28,7 +28,7 @@
         needle = "node/logical tick, source, and kind directly from the log";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "causal divergence point type";
         needle = "pub struct EventLogCausalDivergencePoint";
@@ -74,13 +74,13 @@
         needle = "kind: entry.entry.event_payload().kind().to_owned()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "causal divergence point export";
         needle = "EventLogCausalDivergencePoint";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "bisection request localization field";
         needle = "pub first_different_causal_entry: Option<EventLogCausalDivergencePoint>";
@@ -114,7 +114,7 @@
         needle = "first_different_causal_entry: first_different_causal_entry.clone()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_determinism.rs" determinismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "node-local causal localization test";
         needle = "causal_mismatch_reports_first_differing_entry_coordinate";
@@ -136,7 +136,7 @@
         needle = "expected_location.kind.as_str()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "replay bisection localization test";
         needle = "violation_reproduction_bisection_reports_first_differing_causal_entry";
@@ -176,7 +176,7 @@
         needle = "taskIds = [\"T-OBS-8\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_determinism.rs" determinismTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -190,7 +190,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -223,7 +223,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_determinism \
               --test assertion_violation_reproduction \
               -- --test-threads=1

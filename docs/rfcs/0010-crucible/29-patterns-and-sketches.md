@@ -1130,7 +1130,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [x] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
   enum-of-states + bounded-quantum actor-loop shape. — satisfies [PAT-1],
   [PAT-2]; realized by **T-EXEC-14**, **T-SESS-2** (spec 05 §10, 20 §3).
-  - Completed by `crates/crucible-session/src/lib.rs`: `EngineState` is the
+  - Completed by `crates/crucible/crucible-session/src/lib.rs`: `EngineState` is the
     closed Loaded/Running/Paused/Stopped run-state enum with typed
     `PauseReason` and `Outcome`, `Engine` keeps `Configuration` as the source of
     truth and `RuntimeState` as a rebuildable cache, and `SessionActor::run`
@@ -1142,15 +1142,15 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [x] **T-PAT-4** Ensure the temporal graph follows the §29.4 content-addressed
   store + thin/fat + CoW-delta shape. — satisfies [PAT-6]; realized by the 07
   temporal-graph tasks and **T-EXEC-10** (spec 07 §§2–5).
-  - Completed by the temporal-graph model and gates: `crucible::Checkpoint`
+  - Completed by the temporal-graph model and gates: `crucible_engine::Checkpoint`
     identity is schedule-derived and independent of cached state,
-    `crucible::NodeBlobRef` represents both baked and CoW-delta VM state,
-    `crucible::CowDeltaRef` records typed VM/device/schedule/log deltas,
-    `crucible::DagStore` / `crucible::LocalDagStore` provide idempotent
+    `crucible_engine::NodeBlobRef` represents both baked and CoW-delta VM state,
+    `crucible_engine::CowDeltaRef` records typed VM/device/schedule/log deltas,
+    `crucible_engine::DagStore` / `crucible_engine::LocalDagStore` provide idempotent
     content-addressed storage, and `TemporalGraph::persist_checkpoint_closure`
     plus `TemporalGraph::collect_cached_snapshot_store` preserve the
     store-key closure while fat cache entries can be collected back to thin
-    checkpoints. `crucible::MaterializationPolicy`,
+    checkpoints. `crucible_engine::MaterializationPolicy`,
     `TemporalGraph::evict_fat_checkpoint_to_thin`, and the replay-oracle
     admission path keep materialization a cache policy rather than identity.
     `checks.crucible.phase1.gates.contentAddress` and
@@ -1158,9 +1158,9 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [x] **T-PAT-5** Ensure the decision RNG follows the §29.5 keyed stream
   shape with recorded `RngStreamId`. — satisfies [PAT-7]; realized by
   **T-EXEC-2** and the 04 determinism-contract tasks (spec 04 §4.7).
-  - Completed by `crucible_sim::DecisionRng`,
+  - Completed by `crucible_determinism::DecisionRng`,
     `DECISION_RNG_NODE_STREAM_DOMAIN`, `DECISION_RNG_LINK_STREAM_DOMAIN`,
-    the `keyed-blake3-v2` derivation, and `crucible::decision::DecisionRecorder`:
+    the `keyed-blake3-v2` derivation, and `crucible_engine::decision::DecisionRecorder`:
     stream keys derive from the root seed, domain and name instead of a shared
     root cursor, link frames address their draws by direction and producer
     sequence, same-name node/link streams use separate fixed domains,
@@ -1178,8 +1178,8 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     `SimBackend`, `SimDouble`, and QEMU `QemuNode`; trait-level stepping cannot
     authorize cross-node sends or own scheduler time; and the session, API,
     daemon, and control-responsive gate exercise the same in-process
-    `crucible::SimDouble` quantum-loop adapter, while scheduler-liveness uses an
-    initialized `crucible::SimDouble` liveness harness, without constructing
+    `crucible_engine::SimDouble` quantum-loop adapter, while scheduler-liveness uses an
+    initialized `crucible_engine::SimDouble` liveness harness, without constructing
     real QEMU.
 - [x] **T-PAT-9** Ensure each runtime realization operation crosses one typed,
   authenticated boundary and cold boot remains confined to baked-genesis capture.
@@ -1201,9 +1201,9 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   - Completed by `cargo test --manifest-path crates/Cargo.toml -p
     crucible-shmem`, `cargo test --manifest-path crates/Cargo.toml -p
     crucible-shmem --test gate_layer1_injection`, `cargo test --manifest-path
-    crates/Cargo.toml -p crucible-shmem --test advance_ceiling_handoff`, and
-    `cargo test --manifest-path crates/Cargo.toml -p crucible-shmem --test
-    icount_stamped_injection`. `crucible_shmem::RingHeader` is the
+    crates/Cargo.toml -p crucible-qemu-shmem --test advance_ceiling_handoff`, and
+    `cargo test --manifest-path crates/Cargo.toml -p crucible-qemu-shmem --test
+    icount_stamped_injection`. `crucible_qemu_shmem::RingHeader` is the
     cache-line-separated Lamport SPSC queue with release-published frame writes
     and acquire-observed peer indices; `NodeSlot` exposes the scheduler ceiling
     handoff, acquire node-side ceiling loads, race-free idle precondition checks,

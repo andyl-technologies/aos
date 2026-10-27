@@ -7,9 +7,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
-  pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginArgs = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/args.rs;
+  pluginDeadline = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/deadline.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
@@ -25,27 +25,27 @@
 
   pluginSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/lib.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/lib.rs";
       content = pluginLib;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/args.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/args.rs";
       content = pluginArgs;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/deadline.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/deadline.rs";
       content = pluginDeadline;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/registration.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/registration.rs";
       content = pluginRegistration;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/setup.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/setup.rs";
       content = pluginSetup;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/time_control.rs";
+      label = "crates/crucible/crucible-qemu-plugin/src/time_control.rs";
       content = pluginTimeControl;
     }
   ];
@@ -77,11 +77,11 @@
     pluginSources;
 
   copyableRegistrationReadyFailures = lib.optionals (hasInfix "#[derive(Clone, Copy" pluginRegistration) [
-    "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationReady must remain non-Copy so one completed registration cannot mint multiple clock owners"
+    "crates/crucible/crucible-qemu-plugin/src/registration.rs: PluginRegistrationReady must remain non-Copy so one completed registration cannot mint multiple clock owners"
   ];
 
   clonableRegistrationSequenceFailures = lib.optionals (hasInfix "#[derive(Clone, Debug, Default" pluginRegistration) [
-    "crates/crucible-qemu-plugin/src/registration.rs: PluginRegistrationSequence must remain non-Clone so completed registration cannot be duplicated before finish"
+    "crates/crucible/crucible-qemu-plugin/src/registration.rs: PluginRegistrationSequence must remain non-Clone so completed registration cannot be duplicated before finish"
   ];
 
   failures =
@@ -135,7 +135,7 @@
         needle = "QEMU_PLUGIN_API\n void qemu_plugin_update_ns(const void *handle, int64_t time);";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "PluginVirtualClock exported";
         needle = "PluginVirtualClock";
@@ -149,7 +149,7 @@
         needle = "PluginClockError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "finish consumes registration sequence";
         needle = "pub fn finish(self)";
@@ -159,7 +159,7 @@
         needle = "registration_ready_token_consumes_sequence";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "request time-control symbol";
         needle = "pub const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL: &str = \"qemu_plugin_request_time_control\";";
@@ -260,6 +260,8 @@ in
   else
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-time-control";
+
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sed

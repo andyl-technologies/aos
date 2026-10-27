@@ -4,7 +4,7 @@
 #   1. Build a minimal rootfs ext4 image with Nix store closures
 #      (uses mkfs.ext4 -d — no losetup/mount, sandbox-compatible)
 #   2. Boot Firecracker with --no-api --config-file (no REST API)
-#   3. The test script IS the init process (PID 1) — no systemd, no agent
+#   3. Init runs assertions from a separate read-only virtio input disk
 #   4. Serial console (Firecracker stdout) captures test output
 #   5. Init prints TEST_RESULT:PASS or TEST_RESULT:FAIL to /dev/ttyS0
 #   6. Init triggers SysRq reboot (echo b > /proc/sysrq-trigger) for clean FC exit
@@ -24,16 +24,47 @@
   coreutilsPkg = pkgs.coreutils;
   utilLinuxPkg = pkgs.util-linux;
   kernel = pkgs.linux;
+  imageMetadata = import ../build/image-metadata.nix {inherit pkgs;};
+
+  # Compile outside runtime image assembly: the compiler wrapper embeds $out/lib
+  # in RPATHs, so a runtime scratch output would make the base irreproducible.
+  rebootHelper = pkgs.mkDerivation {
+    pname = "fc-reboot-helper";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          cat > reboot.c <<'SOURCE'
+          #include <stdio.h>
+          #include <sys/reboot.h>
+          #include <unistd.h>
+
+          int main(void) {
+            sync();
+            if (reboot(RB_AUTOBOOT) != 0) {
+              perror("reboot");
+              return 1;
+            }
+            return 0;
+          }
+          SOURCE
+          mkdir -p "$out/bin"
+          cc reboot.c -o "$out/bin/reboot"
+        '';
+      }
+    ];
+  };
 
   # -------------------------------------------------------------------------
   # Build a minimal rootfs ext4 image for headless Firecracker tests
   # -------------------------------------------------------------------------
-  # Uses exportReferencesGraph to discover the Nix store closure, then
+  # Uses closure-info to discover the Nix store closure, then
   # creates an ext4 image populated via mkfs.ext4 -d (no mount needed).
 
   mkFirecrackerRootfs = {
-    pname,
-    testScript,
+    development ? false,
     rootfsDeps,
     extraWritableMiB ? 0,
   }: let
@@ -49,26 +80,14 @@
         pkgs.grep
         utilLinuxPkg
         bootstrapTools
+        rebootHelper
       ]
     );
 
-    # Build the exportReferencesGraph pairs list: ["name1" drv1 "name2" drv2 ...]
-    graphPairs =
-      lib.imap (i: dep: [
-        "closure-${builtins.toString i}"
-        dep
-      ])
-      allDeps;
-    flatGraphPairs = builtins.concatLists graphPairs;
-
     regInfo = import ../build/closure-info.nix {inherit pkgs lib;} {
       rootPaths = allDeps;
-      pname = "fc-rootfs-${pname}-closure-info";
+      pname = "fc-rootfs-closure-info";
     };
-
-    closureFileNames = builtins.genList (i: "closure-${builtins.toString i}") (builtins.length allDeps);
-
-    catClosures = builtins.concatStringsSep " " closureFileNames;
 
     # Build PATH entries for all deps — include both bin/ and sbin/
     depPaths = builtins.concatStringsSep ":" (
@@ -114,10 +133,13 @@
       # shell compound command directly on the left side of `||` suppresses
       # errexit throughout that compound command, so failed assertions could
       # otherwise fall through to TEST_RESULT:PASS.
-      cat > /run/aos-vm-test << 'AOS_VM_TEST_EOF'
-      set -e
-      ${testScript}
-      AOS_VM_TEST_EOF
+      mkdir -p /run/aos-test-input
+      mount -t ext4 -o ro /dev/vdb /run/aos-test-input || {
+        echo 'TEST_RESULT:FAIL'
+        sync
+        reboot -f
+      }
+      cp /run/aos-test-input/test /run/aos-vm-test
       chmod 0700 /run/aos-vm-test
 
       test_result=0
@@ -153,19 +175,20 @@
       reboot -f
     '';
 
-    # Keep the generated init and its potentially large user test out of the
-    # rootfs builder's argv. Linux limits each individual exec argument to
-    # MAX_ARG_STRLEN, which realistic lifecycle tests can exceed even though
-    # the total environment remains below ARG_MAX.
+    # Keep the stable boot harness separate from the per-test input volume.
     initScriptFile = pkgs.writeTextFile {
-      name = "fc-init-${pname}";
+      name = "fc-init";
       text = initScript;
       destination = "/init";
       executable = true;
     };
   in
-    pkgs.mkDerivation {
-      pname = "fc-rootfs-${pname}";
+    (
+      if (pkgs.sharedImageCacheDir or null) == null || !development
+      then pkgs.mkDerivation
+      else (import ./image-recipe.nix {inherit pkgs lib;}) {}
+    ) {
+      pname = "fc-rootfs-base";
       version = "0";
       src = null;
 
@@ -173,9 +196,8 @@
         pkgs.e2fsprogs
         pkgs.coreutils
         pkgs.fakeroot
+        pkgs.python3
       ];
-
-      exportReferencesGraph = flatGraphPairs;
 
       AOS_BASH = builtins.toString bashPkg;
       COREUTILS = builtins.toString coreutilsPkg;
@@ -199,8 +221,7 @@
                         mkdir -p rootfs/etc rootfs/var/log rootfs/var/tmp
 
                         # Collect all unique store paths from the closure graphs
-                        cat ${catClosures} \
-                          | grep '^/nix/store/' | sort -u > all-paths
+                        cp "$REGINFO/store-paths" all-paths
 
                         echo "==> Copying $(wc -l < all-paths) store paths to rootfs"
 
@@ -209,7 +230,9 @@
                         while IFS= read -r p; do
                           count=$((count + 1))
                           if [ -e "$p" ]; then
-                            cp -a "$p" rootfs/nix/store/
+                            # NAR inputs have no hardlink identity; store
+                            # optimization must not change guest inode layout.
+                            cp -a --no-preserve=links "$p" rootfs/nix/store/
                           fi
                           if [ $((count % 10)) -eq 0 ]; then
                             printf '\r    [%d/%d]' "$count" "$total"
@@ -282,25 +305,8 @@
             CPPWRAP
                         chmod +x rootfs/usr/local/bin/cpp
 
-                        # util-linux is built without reboot(8), but the
-                        # headless init needs an orderly reboot syscall so
-                        # serial TEST_RESULT markers drain before Firecracker
-                        # exits. Build the tiny helper into the VM rootfs.
-                        cat > reboot.c << 'REBOOT_C'
-            #include <stdio.h>
-            #include <sys/reboot.h>
-            #include <unistd.h>
-
-            int main(void) {
-              sync();
-              if (reboot(RB_AUTOBOOT) != 0) {
-                perror("reboot");
-                return 1;
-              }
-              return 0;
-            }
-            REBOOT_C
-                        cc reboot.c -o rootfs/sbin/reboot
+                        # Orderly reboot drains serial result markers.
+                        cp ${rebootHelper}/bin/reboot rootfs/sbin/reboot
 
                         # Symlink binaries from all rootfsDeps
                         ${builtins.concatStringsSep "\n" (
@@ -341,16 +347,10 @@
                         # oversized argument to this derivation's builder.
                         cp ${initScriptFile}/init rootfs/init
 
-                        # Calculate image size: use actual store closure size (not rootfs
-                        # symlink tree), then add generous overhead for ext4 metadata.
-                        STORE_KB=0
-                        while IFS= read -r p; do
-                          if [ -e "$p" ]; then
-                            THIS_KB=$(du -sk "$p" 2>/dev/null | cut -f1)
-                            STORE_KB=$((STORE_KB + THIS_KB))
-                          fi
-                        done < all-paths
-                        STORE_MB=$(( STORE_KB / 1024 ))
+                        # Host allocation and directory st_size must not change
+                        # image geometry when the same tree is reconstructed.
+                        TREE_BYTES=$(${imageMetadata.command} size rootfs)
+                        STORE_MB=$(( TREE_BYTES / 1048576 ))
                         # 3x for ext4 overhead (journal, inodes, superblocks) + 512MB headroom.
                         # Some tests also keep full guest checkpoints on this writable root.
                         IMAGE_MB=$(( STORE_MB * 3 + 512 + ${toString extraWritableMiB} ))
@@ -358,20 +358,44 @@
                         if [ "$IMAGE_MB" -lt 512 ]; then IMAGE_MB=512; fi
 
                         echo "==> Rootfs closure: ''${STORE_MB}MB, image: ''${IMAGE_MB}MB"
-                        # stdenv setup.sh creates $out as a directory; remove it so
-                        # mkfs.ext4 can write a flat image file there.
-                        rm -rf "$out"
+                        # Keep the directory output compatible with runtime recipes.
+                        mkdir -p "$out"
                         # Nix builders do not run as uid 0, but the populated
                         # guest root filesystem must. In particular, native
                         # services reject secrets beneath store parents owned
                         # by an unrelated build uid. fakeroot makes mkfs record
                         # production-like uid/gid values without a host mount.
-                        fakeroot -- mkfs.ext4 -d rootfs -L rootfs -m 1 -q \
-                          "$out" "''${IMAGE_MB}M"
+                        ${imageMetadata.environment}
+                        IMAGE_UUID=$(${imageMetadata.command} tree aos-headless-root rootfs)
+                        fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options} -d rootfs -L rootfs -m 1 -q \
+                          "$out/root.img" "''${IMAGE_MB}M"
+          '';
+        }
+      ];
+    };
+  # Assertions use a small read-only virtio block device on both supported VMMs.
+  mkFirecrackerTestInput = testScript:
+    pkgs.mkDerivation {
+      pname = "fc-test-input";
+      version = "0";
+      src = null;
+      test = "set -e\n" + testScript;
+      passAsFile = ["test"];
+      buildDeps = [pkgs.e2fsprogs pkgs.coreutils pkgs.fakeroot pkgs.python3];
+      phases = [
+        {
+          name = "input";
+          script = ''
+            mkdir -p input "$out"
+            cp "$testPath" input/test
+            image_mib=$(( ($(stat -c %s input/test) + 1048575) / 1048576 + 8 ))
+            ${imageMetadata.environment}
+            IMAGE_UUID=$(${imageMetadata.command} tree aos-headless-test input)
+            fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options} -d input -L aos-test -m 0 -q "$out/test.img" "''${image_mib}M"
           '';
         }
       ];
     };
 in {
-  inherit mkFirecrackerRootfs;
+  inherit mkFirecrackerRootfs mkFirecrackerTestInput;
 }

@@ -8,8 +8,8 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  eventGraphTest = builtins.readFile ../../crates/crucible/tests/event_graph_control_flow.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  eventGraphTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_control_flow.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -20,9 +20,12 @@
     trigger
     libSource
     (import ./_crucible-scheduler-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-api/src/lib.rs)
+    (import ./_crucible-control-source.nix {
+      inherit lib;
+      component = "exports";
+    })
     (import ./_cli-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-daemon/src/lib.rs)
+    (builtins.readFile ../../crates/crucible/crucible-daemon/src/lib.rs)
     (import ./_crucible-session-source.nix {inherit lib;})
   ];
   failures =
@@ -40,13 +43,13 @@
         needle = "content-addressed** form";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "event id";
         needle = "pub struct EventId";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "shared condition alias";
         needle = "pub type Condition = Predicate";
@@ -132,7 +135,7 @@
         needle = "for event in graph.events()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "trigger module export";
         needle = "pub mod trigger;";
@@ -154,7 +157,7 @@
         needle = "LogLevel";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_control_flow.rs" eventGraphTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_graph_control_flow.rs" eventGraphTest [
       {
         label = "entrypoint and trigger policy test";
         needle = "event_graph_evaluates_entrypoints_named_triggers_and_fire_policies";
@@ -210,7 +213,7 @@
         needle = "eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_graph_control_flow.rs" eventGraphTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_graph_control_flow.rs" eventGraphTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -249,7 +252,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-graph-control-flow";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -261,7 +267,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_control_flow \
               -- --test-threads=1
           '';

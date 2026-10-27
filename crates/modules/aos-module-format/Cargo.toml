@@ -1,0 +1,19 @@
+[package]
+name = "aos-module-format"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Portable module options, declarations, and checked activation graphs"
+
+[dependencies]
+aos-artifact-evidence.workspace = true
+anyhow = { workspace = true }
+aos-core.workspace = true
+schemars = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

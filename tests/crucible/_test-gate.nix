@@ -62,7 +62,7 @@
 ##!     {
 ##!       name = "run-example";
 ##!       script = ''
-##!         crucible-cargo test -p crucible --lib -- --test-threads=1
+##!         crucible-cargo test -p crucible-engine --lib -- --test-threads=1
 ##!       '';
 ##!     }
 ##!   ];
@@ -259,7 +259,7 @@ in {
   # `postInstall` runs after the copies; other attributes, such as
   # `dontStrip`, pass through to mkDerivation.
   #
-  #   executables = { flight = "build --release -p crucible-qemu --example x"; };
+  #   executables = { flight = "build --release -p crucible-qemu-host --example x"; };
   mkCrucibleBinaries = {
     pname,
     builds,

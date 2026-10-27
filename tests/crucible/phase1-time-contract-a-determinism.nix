@@ -7,15 +7,15 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
-  contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
-  simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
+  contractA = builtins.readFile ../../crates/crucible/crucible-determinism/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible/crucible-determinism/tests/contract_a.rs;
+  simGate = builtins.readFile ../../crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
+  pluginDeadline = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  qemuLaunch = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
@@ -60,36 +60,36 @@
         forbiddenFor source.label source.content hostTimeReadBan
     ) [
       {
-        label = "crates/crucible-sim/src/contract_a.rs";
+        label = "crates/crucible/crucible-determinism/src/contract_a.rs";
         content = contractA;
       }
       {
-        label = "crates/crucible/src/model.rs";
+        label = "crates/crucible/crucible-engine/src/model.rs";
         content = model;
       }
       {
-        label = "crates/crucible/src/scheduler.rs";
+        label = "crates/crucible/crucible-engine/src/scheduler.rs";
         content = scheduler;
       }
       {
-        label = "crates/crucible-shmem/src/lib.rs";
+        label = "crates/crucible/crucible-qemu-shmem/src/lib.rs";
         content = shmemLib;
       }
       {
-        label = "crates/crucible-qemu-plugin/src/deadline.rs";
+        label = "crates/crucible/crucible-qemu-plugin/src/deadline.rs";
         content = pluginDeadline;
       }
       {
-        label = "crates/crucible-qemu-plugin/src/time_control.rs";
+        label = "crates/crucible/crucible-qemu-plugin/src/time_control.rs";
         content = pluginTimeControl;
       }
       {
-        label = "crates/crucible-qemu/src/launch.rs";
+        label = "crates/crucible/crucible-qemu-host/src/launch.rs";
         content = qemuLaunch;
       }
     ];
 
-  contractALegacyFailures = forbiddenFor "crates/crucible-sim/src/contract_a.rs" contractA [
+  contractALegacyFailures = forbiddenFor "crates/crucible/crucible-determinism/src/contract_a.rs" contractA [
     {
       label = "configurable icount shift constructor";
       needle = "new_with_icount_shift";
@@ -105,7 +105,7 @@
   ];
 
   failures =
-    failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
+    failuresFor "crates/crucible/crucible-determinism/src/contract_a.rs" contractA [
       {
         label = "fixed exact tick scale";
         needle = "pub const CONTRACT_A_TICKS_PER_NS: u64 = 8;";
@@ -151,7 +151,7 @@
         needle = "pub final_virtual_time_ticks: u64";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/contract_a.rs" contractATests [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/contract_a.rs" contractATests [
       {
         label = "exact tick and guest nanosecond trajectory test";
         needle = "contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds";
@@ -173,7 +173,7 @@
         needle = "run.time_fingerprint.ticks_per_ns, CONTRACT_A_TICKS_PER_NS";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" simGate [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs" simGate [
       {
         label = "layer0 gate asserts time trajectory";
         needle = "first.time_trajectory.len()";
@@ -244,11 +244,11 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test contract_a \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test gate_layer0_determinism \
               gate_layer0_determinism_reduces_fixed_contract_a_twice \
               -- --test-threads=1

@@ -7,12 +7,12 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  eventLogTest = builtins.readFile ../../crates/crucible/tests/event_log_unified.rs;
-  emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  eventLogTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_unified.rs;
+  emitStepTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
   triggerFiringTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/event_graph_replay_oracle.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,7 +39,7 @@
         needle = "every consumer reads a projection";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "unified log entry name";
         needle = "pub struct SchedulerEventLogEntry";
@@ -81,7 +81,7 @@
         needle = "ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "EventLog export";
         needle = "EventLog,";
@@ -103,7 +103,7 @@
         needle = "NetworkLookahead,";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_unified.rs" eventLogTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_unified.rs" eventLogTest [
       {
         label = "unified append test";
         needle = "event_log_append_path_feeds_offsets_and_condition_projection";
@@ -121,7 +121,7 @@
         needle = "log.condition_prefix().point().kind()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "scheduler EMIT still appends through log";
         needle = "emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes";
@@ -131,7 +131,7 @@
         needle = "step_advances_schedule_and_event_log_prefix_across_quanta";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_replay_oracle.rs" triggerFiringTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs" triggerFiringTest [
       {
         label = "trigger consumers use event-log prefix";
         needle = "event_graph_replay_oracle_rederives_identical_firings_actions_and_verdict";
@@ -143,7 +143,7 @@
         needle = "eventLogUnified = import ./phase4-event-log-unified.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_unified.rs" eventLogTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_log_unified.rs" eventLogTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -160,7 +160,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-log-unified";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -172,15 +175,15 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_unified \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_emit_step \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_replay_oracle \
               -- --test-threads=1
           '';

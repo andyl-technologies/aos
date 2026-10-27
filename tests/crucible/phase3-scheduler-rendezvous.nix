@@ -7,14 +7,14 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  rendezvousTest = builtins.readFile ../../crates/crucible/tests/scheduler_rendezvous.rs;
-  livenessTest = builtins.readFile ../../crates/crucible/tests/gate_scheduler_liveness.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  rendezvousTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs;
+  livenessTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs;
   # Bounded ceilings (RFC-0010 SCHED-12) must not move guest events: a costed
   # double proves it for the scheduler, and the live flight's partition probe
   # proves it on the production QEMU path.
-  frequencyTest = builtins.readFile ../../crates/crucible/tests/scheduler_frequency_independence.rs;
-  partitionProbe = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight/partition_probe.rs;
+  frequencyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_frequency_independence.rs;
+  partitionProbe = builtins.readFile ../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/partition_probe.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -28,7 +28,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerRendezvous`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "rendezvous policy type";
         needle = "pub struct SchedulerRendezvous";
@@ -58,7 +58,7 @@
         needle = "if selected_candidates.is_empty()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "rendezvous export";
         needle = "SchedulerRendezvous";
@@ -68,7 +68,7 @@
         needle = "rendezvous_cap_for";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_rendezvous.rs" rendezvousTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs" rendezvousTest [
       {
         label = "cap boundary test";
         needle = "rendezvous_cap_uses_next_shared_boundary";
@@ -106,7 +106,7 @@
         needle = "vec![(12, vec![77])]";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_frequency_independence.rs" frequencyTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_frequency_independence.rs" frequencyTest [
       {
         label = "costed bounded-ceiling trajectory test";
         needle = "bounded_ceilings_leave_every_guest_event_independent_of_the_schedule";
@@ -132,7 +132,7 @@
         needle = "settling_below_an_exact_topology_swap_is_refused";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight/partition_probe.rs" partitionProbe [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/partition_probe.rs" partitionProbe [
       {
         label = "production alternating rendezvous bounds";
         needle = "PartitionSchedule::AlternatingRendezvous";
@@ -146,13 +146,13 @@
         needle = "bound_frequency_independent=true";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_scheduler_liveness.rs" livenessTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs" livenessTest [
       {
         label = "liveness no per-quantum decision assumption";
         needle = "recorded decisions without canonical event-log entries";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_rendezvous.rs" rendezvousTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs" rendezvousTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -175,7 +175,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-rendezvous";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -187,7 +190,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_rendezvous \
               --test scheduler_frequency_independence \
               -- --test-threads=1

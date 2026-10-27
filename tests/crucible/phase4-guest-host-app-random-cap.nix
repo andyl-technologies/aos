@@ -7,11 +7,11 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
-  guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
-  guestMain = builtins.readFile ../../crates/crucible-guest/src/main.rs;
-  guestAbiGate = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
+  engineDecision = builtins.readFile ../../crates/crucible/crucible-engine/src/decision.rs;
+  channelDeterminismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs;
+  guestLib = builtins.readFile ../../crates/crucible/crucible-guest/src/lib.rs;
+  guestMain = builtins.readFile ../../crates/crucible/crucible-guest/src/main.rs;
+  guestAbiGate = builtins.readFile ../../crates/crucible/crucible-guest/tests/gate_abi_conformance.rs;
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,7 +39,7 @@
         needle = "`crucible-guest get-random <width> [tag]`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "default cap constant";
         needle = "pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;";
@@ -93,7 +93,7 @@
         needle = "fn validate_app_random_draw_cap";
       }
     ]
-    ++ failuresFor "crates/crucible/src/decision.rs" engineDecision [
+    ++ failuresFor "crates/crucible/crucible-engine/src/decision.rs" engineDecision [
       {
         label = "app-random draw counter";
         needle = "app_random_draws: u64";
@@ -123,7 +123,7 @@
         needle = "app_random_draw_cap_round_trips_through_scenario_form_serialization";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "zero request test";
         needle = "app_random_compiled_in_zero_requests_is_fingerprint_identical";
@@ -145,7 +145,7 @@
         needle = "disabled.determinism_material()";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/lib.rs" guestLib [
+    ++ failuresFor "crates/crucible/crucible-guest/src/lib.rs" guestLib [
       {
         label = "usage exposes get-random";
         needle = "get-random <width> [tag]";
@@ -175,7 +175,7 @@
         needle = "GuestCommandOutcome::Random";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/main.rs" guestMain [
+    ++ failuresFor "crates/crucible/crucible-guest/src/main.rs" guestMain [
       {
         label = "main prints random reply";
         needle = "GuestCommandOutcome::Random";
@@ -185,7 +185,7 @@
         needle = "println!(\"{}\", hex_lower(&reply));";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/tests/gate_abi_conformance.rs" guestAbiGate [
+    ++ failuresFor "crates/crucible/crucible-guest/tests/gate_abi_conformance.rs" guestAbiGate [
       {
         label = "guest CLI shared payload test includes get-random";
         needle = "guest_cli_verbs_encode_shared_marker_payloads";
@@ -260,7 +260,7 @@ in
               fi
             }
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --list > "$TMPDIR/crucible-lib-tests"
             require_listed \
@@ -282,7 +282,7 @@ in
               "$TMPDIR/crucible-lib-tests" \
               "decision::tests::app_random_draw_cap_fails_loud_in_checked_step_and_reduce"
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               -- --list > "$TMPDIR/channel-tests"
@@ -303,31 +303,31 @@ in
               "$TMPDIR/guest-abi-tests" \
               "guest_cli_rejects_malformed_inputs"
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_enforces_app_random_draw_cap \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_counts_existing_app_random_decisions_against_cap \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::decision_recorder_app_random_override_obeys_draw_cap \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_is_scenario_hash_material \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_round_trips_through_scenario_form_serialization \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib decision::tests::app_random_draw_cap_fails_loud_in_checked_step_and_reduce \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test guest_host_channel_determinism \
               app_random_compiled_in_zero_requests_is_fingerprint_identical \

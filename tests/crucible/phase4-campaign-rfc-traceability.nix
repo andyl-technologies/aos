@@ -28,7 +28,7 @@ in
             set -eu
 
             crucible-cargo test \
-              -p crucible-harness --test campaign_gate_traceability -- --test-threads=1
+              -p crucible-test-support --test campaign_gate_traceability -- --test-threads=1
           '';
         }
         {

@@ -8,15 +8,15 @@
   executionRuntime =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/src/model/fault_signal/execution_runtime.rs;
+      entry = ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs;
     }
-    + builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime_test.rs
-    + builtins.readFile ../../crates/crucible/src/model/fault_signal/execution_runtime_replay_test.rs;
+    + builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime_test.rs
+    + builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime_replay_test.rs;
   defaultChecks = builtins.readFile ./default.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "crates/crucible/src/model/fault_signal/execution_runtime.rs" executionRuntime [
+    failuresFor "crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
         label = "seeded signal evaluator ownership";
         needle = "OwnedFaultExecutionRuntime";
@@ -52,7 +52,7 @@
         needle = "schedulerResolveRng = import ./phase3-scheduler-resolve-rng.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model/fault_signal/execution_runtime.rs" executionRuntime [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
         label = "wall-clock entropy";
         needle = "thread_rng";
@@ -71,15 +71,15 @@ in
           script = ''
             cd crates
             crucible-cargo test \
-              -p crucible --lib \
+              -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::recorded_effects_execute_in_every_network_replay_mode \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible --lib \
+              -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::recomputed_replay_rejects_a_derivation_continuation_mismatch \
               -- --exact --test-threads=1
             crucible-cargo test \
-              -p crucible --lib \
+              -p crucible-engine --lib \
               model::fault_signal::execution_runtime::tests::failed_replay_installation_leaves_the_owned_continuation_unchanged \
               -- --exact --test-threads=1
           '';

@@ -7,13 +7,13 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  launchLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs;
   validationLib =
-    builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/validation/values.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/validation.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/validation/values.rs;
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   spatialSpec = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -87,7 +87,7 @@
         needle = "never MTTCG";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" launchLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/launch.rs" launchLib [
       {
         label = "deterministic profile stores vCPU count";
         needle = "smp_vcpus: u16,";
@@ -165,7 +165,7 @@
         needle = "pub fn smp_vcpus(&self) -> u16";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/validation.rs" validationLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/launch/validation.rs" validationLib [
       {
         label = "MTTCG validator rejection";
         needle = "QemuPreSpawnLaunchValidationError::MultiThreadTcg";
@@ -215,7 +215,7 @@
         needle = "QemuPreSpawnLaunchValidationError::SmpZero";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs" launchTest [
       {
         label = "multi-vCPU RR test";
         needle = "multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed";
@@ -324,7 +324,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed \
               -- --test-threads=1
@@ -366,7 +366,7 @@ in
             rejects_adaptive_rr_quantum=true
             rejects_realtime_switching=true
             scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology
-            rust_test=crucible-qemu::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
+            rust_test=crucible_qemu_host::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
             RESULT
           '';
         }

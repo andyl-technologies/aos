@@ -24,7 +24,7 @@ in
           set -eu
           # The tests run real child processes, so they keep one thread, but
           # share one listing and one exact invocation.
-          crucible-exact-tests -p crucible-qemu --lib -- --test-threads=1 \
+          crucible-exact-tests -p crucible-qemu-host --lib -- --test-threads=1 \
             host_setup::tests::qemu_host_plugin_setup_rejects_nonready_ack_after_descriptor_handoff \
             host_setup::tests::qemu_host_plugin_setup_rejects_peer_close_during_descriptor_handoff \
             host_setup::tests::qemu_host_plugin_setup_rejects_plugin_detected_real_region_corruption \

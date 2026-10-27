@@ -6,9 +6,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
-  pluginGate = builtins.readFile ../../crates/crucible-qemu-plugin/tests/gate_qemu_inert.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginInertness = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/inertness.rs;
+  pluginGate = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/tests/gate_qemu_inert.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -50,7 +50,7 @@
         needle = "behaviorally identical to an unpatched reference build";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "inertness module exported";
         needle = "pub mod inertness;";
@@ -64,7 +64,7 @@
         needle = "`inertness` owns plugin-side sim-off load and effect assertions";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
       {
         label = "sim-off observation constructor";
         needle = "pub const fn sim_off() -> Self";
@@ -146,7 +146,7 @@
         needle = "plugin_sim_on_observation_records_loaded_plugin_effects";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/tests/gate_qemu_inert.rs" pluginGate [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/tests/gate_qemu_inert.rs" pluginGate [
       {
         label = "plugin-half gate test";
         needle = "gate_qemu_inert_plugin_half_is_backed_by_phase_check";
@@ -172,6 +172,8 @@ in
   else
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-qemu-inert";
+
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sed

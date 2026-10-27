@@ -11,9 +11,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  unifyingTest = builtins.readFile ../../crates/crucible/tests/gate_unifying_view.rs;
+  unifyingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_unifying_view.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -44,7 +44,7 @@
         needle = "There\n  MUST be no abstract specification engine";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "unified operation enum";
         needle = "pub enum UnifiedGraphOperationKind";
@@ -110,7 +110,7 @@
         needle = "ExecutionFingerprint { hash: runtime.id }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libRs [
       {
         label = "unified operation evidence export";
         needle = "UnifiedGraphOperationEvidence";
@@ -124,7 +124,7 @@
         needle = "UnifiedGraphOperationReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_unifying_view.rs" unifyingTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_unifying_view.rs" unifyingTest [
       {
         label = "unifying view gate";
         needle = "gate_unifying_view_validates_every_advanced_operation_on_one_graph";
@@ -256,7 +256,7 @@
         needle = "phase4.gates.replayOracle.rawGate";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_unifying_view.rs" unifyingTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_unifying_view.rs" unifyingTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -281,7 +281,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-unifying-view";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -294,7 +297,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_unifying_view \
               -- --test-threads=1
           '';

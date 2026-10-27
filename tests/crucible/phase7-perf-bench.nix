@@ -59,22 +59,22 @@
   # and its submodules so the public-surface needles match wherever a symbol
   # lands.
   perfModule = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-harness/src/perf.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/admission.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/model.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/sweeps.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/report.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/gate.rs)
-    (builtins.readFile ../../crates/crucible-harness/src/perf/corpus.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/admission.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/model.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/sweeps.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/report.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/gate.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/src/perf/corpus.rs)
   ];
   perfGate = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench.rs)
-    (builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/syscall_accounting.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_perf_bench.rs)
+    (builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_perf_bench/syscall_accounting.rs)
   ];
-  perfHotPathIo = builtins.readFile ../../crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
-  libRs = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
+  perfHotPathIo = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_perf_bench/hot_path_io.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
+  libRs = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rootChecks = builtins.readFile ../../default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
@@ -148,7 +148,7 @@
         needle = "`gate:perf-bench`";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/perf.rs" perfModule [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/perf.rs" perfModule [
       {
         label = "cost-model evaluator";
         needle = "pub fn evaluate_cost_model(";
@@ -258,7 +258,7 @@
         needle = "pub fn canonical_bench_corpus(";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_perf_bench.rs" perfGate [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_perf_bench.rs" perfGate [
       {
         label = "cost-model term coverage";
         needle = "gate_perf_bench_reports_every_cost_model_term";
@@ -344,7 +344,7 @@
         needle = "gate_perf_bench_rejects_unknown_proving_gate";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_perf_bench/hot_path_io.rs" perfHotPathIo [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_perf_bench/hot_path_io.rs" perfHotPathIo [
       {
         label = "no advance/delivery socket or control IPC";
         needle = "advance_and_delivery_owners_have_no_socket_or_control_io";
@@ -354,7 +354,7 @@
         needle = "hot_path_io_scanner_rejects_socket_qmp_and_plugin_control_fixture";
       }
     ]
-    ++ forbiddenFor "crates/crucible-harness/tests/gate_perf_bench.rs" perfGate [
+    ++ forbiddenFor "crates/crucible/crucible-test-support/tests/gate_perf_bench.rs" perfGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -364,23 +364,23 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" libRs [
       {
         label = "perf module exported";
         needle = "pub mod perf;";
       }
       {
         label = "perf-bench gate marked implemented";
-        needle = "name: \"gate:perf-bench\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:perf-bench\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented perf-bench gate target";
-        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-harness\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],";
+        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-test-support\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_catalog.rs" gateCatalog [
       {
         label = "perf-bench catalog status implemented";
         needle = "find_gate(\"gate:perf-bench\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
@@ -389,7 +389,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "perf-bench target in mapping lint";
-        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-test-support\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -446,7 +446,7 @@
     set -eu
     cd crates
     crucible-cargo test \
-      -p crucible-harness \
+      -p crucible-test-support \
       --test gate_perf_bench \
       -- --test-threads=1
   '';
@@ -490,7 +490,7 @@
     tasks=${taskList}
     open_tasks=${openTaskList}
     status=component-only
-    owner=crucible-harness
+    owner=crucible-test-support
     phase=phase7
     gate_class=regression
     cost_model=wall_clock=busy/(tcg_ips*P)+amortized_boot+sync_overhead

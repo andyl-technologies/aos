@@ -8,8 +8,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  coverageTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -27,7 +27,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "CoveragePoint predicate";
         needle = "CoveragePoint {\n        /// Node whose execution is observed.";
@@ -73,7 +73,7 @@
         needle = "Predicate::CoveragePoint { node, .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "resolved code point";
         needle = "pub struct ResolvedCodePoint";
@@ -127,7 +127,7 @@
         needle = "self.inner.resolve_code_point(node, point)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "CodePoint export";
         needle = "CodePoint";
@@ -137,7 +137,7 @@
         needle = "ResolvedCodePoint";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "current block execution test";
         needle = "coverage_point_observes_current_basic_block_execution_event";
@@ -189,7 +189,7 @@
         needle = "coverageConditionLeaf = import ./phase4-coverage-condition-leaf.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -210,7 +210,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-coverage-condition-leaf";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -222,7 +225,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test coverage_condition_leaf \
               -- --test-threads=1
           '';

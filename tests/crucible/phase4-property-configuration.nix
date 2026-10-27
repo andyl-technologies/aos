@@ -9,11 +9,11 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   configurationTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/property_configuration.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/property_configuration.rs;
   };
   vocabularyTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/property_vocabulary.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/property_vocabulary.rs;
   };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -28,7 +28,7 @@
         needle = "Completed by `checks.crucible.phase4.propertyConfiguration`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "assertion definition";
         needle = "pub struct AssertionDef";
@@ -102,7 +102,7 @@
         needle = "on_unreached={}";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_configuration.rs" configurationTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_configuration.rs" configurationTest [
       {
         label = "configuration canonical and hash test";
         needle = "property_configuration_is_canonical_and_hash_affecting";
@@ -156,7 +156,7 @@
         needle = "deadline_from_system_time";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_vocabulary.rs" vocabularyTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_vocabulary.rs" vocabularyTest [
       {
         label = "missing reachable expectation remains invalid";
         needle = "property kind `reachable` missing `expectation`";
@@ -172,7 +172,7 @@
         needle = "attrPath = \"checks.crucible.phase4.propertyConfiguration\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/property_configuration.rs" configurationTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/property_configuration.rs" configurationTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -193,7 +193,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-property-configuration";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -205,7 +208,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test property_configuration \
               --test property_vocabulary \
               -- --test-threads=1

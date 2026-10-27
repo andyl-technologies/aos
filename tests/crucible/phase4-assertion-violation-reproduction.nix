@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionViolationReproduction`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "public replay checker";
         needle = "pub fn check_assertion_violation_reproduction";
@@ -84,7 +84,7 @@
         needle = "MissingRecordedViolation";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "checker export";
         needle = "check_assertion_violation_reproduction";
@@ -106,7 +106,7 @@
         needle = "AssertionViolationBisectionRequest";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "successful reproduction test";
         needle = "violation_reproduction_replays_same_artifact_and_violation";
@@ -170,7 +170,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionViolationReproduction\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -194,6 +194,7 @@ in
       # The crucible crate links the campaign store's SQLite backend, so its
       # test binaries need SQLite at link time.
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -205,7 +206,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_violation_reproduction \
               --test assertion_violation_records \
               -- --test-threads=1

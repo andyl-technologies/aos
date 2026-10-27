@@ -6,10 +6,10 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  readinessTest = builtins.readFile ../../crates/crucible/tests/guest_host_readiness.rs;
+  readinessTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_host_readiness.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -30,7 +30,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "fixed icount ready point";
         needle = "ReadyPoint::FixedIcount";
@@ -60,7 +60,7 @@
         needle = "ReadyPointConsoleMarkerEmpty";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "ready point resolver";
         needle = "pub fn resolve_ready_point";
@@ -102,7 +102,7 @@
         needle = "AgentSignalRequiresWhiteBoxChannel";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "ready point resolver export";
         needle = "resolve_ready_point";
@@ -120,7 +120,7 @@
         needle = "ReadyPointResolutionKind";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_readiness.rs" readinessTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/guest_host_readiness.rs" readinessTest [
       {
         label = "fixed icount test";
         needle = "fixed_icount_readiness_resolves_to_deterministic_icount_and_virtual_time";
@@ -196,7 +196,7 @@
         needle = "taskIds = [\"T-GHC-3\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_host_readiness.rs" readinessTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_host_readiness.rs" readinessTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -228,7 +228,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test guest_host_readiness \
               -- --test-threads=1
           '';

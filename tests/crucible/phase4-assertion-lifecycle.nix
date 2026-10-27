@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  lifecycleTest = builtins.readFile ../../crates/crucible/tests/assertion_lifecycle.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  lifecycleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_lifecycle.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionLifecycle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "passed terminal outcome";
         needle = "HostAssertionOutcomeKind::Passed";
@@ -60,7 +60,7 @@
         needle = ".chain(";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "public lifecycle export";
         needle = "PropertyLifecycleState";
@@ -70,7 +70,7 @@
         needle = "HostAssertionLifecycle";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_lifecycle.rs" lifecycleTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_lifecycle.rs" lifecycleTest [
       {
         label = "lifecycle progression test";
         needle = "lifecycle_states_progress_and_terminal_outcomes_distinguish_passed_from_satisfied";
@@ -114,7 +114,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionLifecycle\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_lifecycle.rs" lifecycleTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_lifecycle.rs" lifecycleTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -135,7 +135,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-lifecycle";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -147,7 +150,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_lifecycle \
               --test host_side_assertions \
               --test guest_marker_assertions \

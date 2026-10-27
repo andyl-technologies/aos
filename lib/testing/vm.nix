@@ -29,6 +29,8 @@
   # The selected image package owns its test disk shape. The harness only
   # supplies generic builders and the evaluated system inputs.
   mkTestDisk = arguments: let
+    development = arguments.development or true;
+    inputs = builtins.removeAttrs arguments ["development"];
     platform = arguments.system.config.aos.image.platform;
   in
     if platform == null
@@ -37,9 +39,13 @@
       platform.buildTestDisk {
         closureInfoFor = lib.build.closureInfo {inherit pkgs;};
         inherit (pkgs) mkDerivation;
+        mkImageRecipe =
+          if !development || (pkgs.sharedImageCacheDir or null) == null
+          then null
+          else import ./image-recipe.nix {inherit pkgs lib;};
         testAgent = pkgs.aos-test-agent;
         sshTools = pkgs.openssh;
-        inputs = arguments;
+        inherit inputs;
       };
 
   # ---------------------------------------------------------------------------
@@ -48,27 +54,28 @@
   checksLib = import ./checks.nix;
 
   # ---------------------------------------------------------------------------
-  # Headless test: test script IS init (PID 1), serial PASS/FAIL markers
+  # Headless test: stable init, separate assertions, serial PASS/FAIL markers
   # ---------------------------------------------------------------------------
   mkHeadlessTest = {
     name,
     testScript,
     rootfsDeps ? [],
     memory ? 256,
+    timeout ? null,
     extraWritableMiB ? 0,
     vcpuCount ? 1,
     hostCpuPin ? false,
     hostCpuPinIndex ? null,
-    timeout ? null,
   }: let
     headlessTimeout =
       if timeout == null || ((builtins.isInt timeout || builtins.isFloat timeout) && timeout > 0)
       then timeout
       else throw "mkVMTest headless timeout must be a positive number or null";
     rootfs = fcLib.mkFirecrackerRootfs {
-      pname = name;
-      inherit testScript rootfsDeps extraWritableMiB;
+      development = true;
+      inherit rootfsDeps extraWritableMiB;
     };
+    testInput = fcLib.mkFirecrackerTestInput testScript;
     # Firecracker boots the uncompressed vmlinux ELF, which lives in the
     # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
     # `out`, whose /boot ships only the compressed vmlinuz.
@@ -80,6 +87,8 @@
         pkgs.grep
         pkgs.sed
         firecracker
+        pkgs.python3
+        pkgs.aos-test-driver
       ]
       ++ (
         if hostCpuPin
@@ -107,7 +116,8 @@
         exit 1
       fi
 
-      cp $ROOTFS rootfs.img
+      PYTHONPATH=${pkgs.aos-test-driver}/lib/aos-test-driver \
+        ${pkgs.python3}/bin/python3 -m aos_test_driver.image_cache copy "$ROOTFS" rootfs.img
       chmod u+w rootfs.img
 
       echo "Kernel: $VMLINUX"
@@ -129,6 +139,12 @@
             "is_read_only": false,
             "cache_type": "Unsafe",
             "io_engine": "Sync"
+          },
+          {
+            "drive_id": "test-input",
+            "path_on_host": "${testInput}/test.img",
+            "is_root_device": false,
+            "is_read_only": true
           }
         ],
         "machine-config": {
@@ -240,7 +256,7 @@
 
       buildDeps = headlessBuildDeps;
 
-      ROOTFS = builtins.toString rootfs;
+      ROOTFS = "${rootfs}/root.img";
       KERNEL = kernelPath;
 
       phases = [
@@ -251,6 +267,7 @@
       ];
 
       requiredSystemFeatures = ["kvm"];
+      passthru = {inherit rootfs testInput;};
     };
 
   # ---------------------------------------------------------------------------
@@ -258,14 +275,14 @@
   # ---------------------------------------------------------------------------
   # Supports two modes:
   #   - System mode (system parameter): selected platform + agent
-  #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
+  #   - Headless mode (rootfsDeps parameter): minimal init plus test input volume
   mkVMTest = {
     name,
     # System mode (selected platform + agent):
     system ? null,
     groupName ? name,
     checks ? [],
-    # Headless mode (test script IS init):
+    # Headless mode (minimal init plus test input volume):
     rootfsDeps ? null,
     # Shared:
     testScript ? null,
@@ -295,12 +312,12 @@
             extraWritableMiB
             hostCpuPin
             hostCpuPinIndex
-            timeout
             ;
           memory =
             if memory != null
             then memory
             else 256;
+          inherit timeout;
           vcpuCount = headlessVcpuCount;
         }
     else if system != null

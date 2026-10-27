@@ -7,19 +7,25 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiControl = builtins.readFile ../../crates/crucible-api/src/control_responsive.rs;
-  apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
-  daemonManifest = builtins.readFile ../../crates/crucible-daemon/Cargo.toml;
-  daemonLib = builtins.readFile ../../crates/crucible-daemon/src/lib.rs;
-  daemonControl = builtins.readFile ../../crates/crucible-daemon/src/control_responsiveness.rs;
-  daemonGateTest = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiControl = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "control_responsive";
+  };
+  apiGateTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_control_responsive.rs;
+  daemonManifest = builtins.readFile ../../crates/crucible/crucible-daemon/Cargo.toml;
+  daemonLib = builtins.readFile ../../crates/crucible/crucible-daemon/src/lib.rs;
+  daemonControl = builtins.readFile ../../crates/crucible/crucible-daemon/src/control_responsiveness.rs;
+  daemonGateTest = builtins.readFile ../../crates/crucible/crucible-daemon/tests/gate_control_responsive.rs;
   sessionGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/crucible-session/tests/gate_control_responsive.rs;
   };
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
+  harnessLib = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   protocolShutdownEscalation = builtins.readFile ./phase2-protocol-shutdown-escalation.nix;
@@ -43,7 +49,7 @@
         needle = "Completed by `checks.crucible.phase5.gates.controlResponsive`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "control-responsive module";
         needle = "pub mod control_responsive;";
@@ -53,7 +59,7 @@
         needle = "validate_control_responsiveness";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/control_responsive.rs" apiControl [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/control_responsive.rs" apiControl [
       {
         label = "one quantum bound";
         needle = "pub const CONTROL_RESPONSIVE_QUANTUM_BOUND: u64 = 1;";
@@ -115,7 +121,7 @@
         needle = "RequiredOperationRejected";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-api/src/control_responsive.rs" apiControl [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-control-api/src/control_responsive.rs" apiControl [
       {
         label = "wall-clock duration type";
         needle = "Duration";
@@ -129,7 +135,7 @@
         needle = "SystemTime";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_responsive.rs" apiGateTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest [
       {
         label = "implemented API gate success test";
         needle = "gate_control_responsive_accepts_required_ops_within_quantum_bound";
@@ -163,7 +169,7 @@
         needle = "RequiredOperationRejected";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-api/tests/gate_control_responsive.rs" apiGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -173,13 +179,13 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/Cargo.toml" daemonManifest [
+    ++ failuresFor "crates/crucible/crucible-daemon/Cargo.toml" daemonManifest [
       {
         label = "daemon uses API contract";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/lib.rs" daemonLib [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/lib.rs" daemonLib [
       {
         label = "daemon control-responsive module";
         needle = "pub mod control_responsiveness;";
@@ -189,7 +195,7 @@
         needle = "validate_daemon_control_responsiveness";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/control_responsiveness.rs" daemonControl [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/control_responsiveness.rs" daemonControl [
       {
         label = "daemon API validation call";
         needle = "validate_control_responsiveness";
@@ -207,7 +213,7 @@
         needle = "self.probe.issue_against_running_session(operation).await";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
+    ++ failuresFor "crates/crucible/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
       {
         label = "implemented daemon gate test";
         needle = "gate_control_responsive_daemon_routes_use_api_quantum_bound";
@@ -225,7 +231,7 @@
         needle = "RequiredOperationRejected";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -235,7 +241,7 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
       {
         label = "session live snapshot read";
         needle = "live.read()";
@@ -273,16 +279,16 @@
         needle = "observed_control_operations(&observed_control)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" harnessLib [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" harnessLib [
       {
         label = "catalog control-responsive implemented";
         needle = "name: \"gate:control-responsive\",\n        phase: GatePhase::Phase5,\n        owner: \"crucible-session\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "API control-responsive target implemented";
-        needle = "package: \"crucible-api\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
+        needle = "package: \"crucible-control-server\",\n        test_target: \"gate_control_responsive\",\n        required_features: &[],";
       }
       {
         label = "daemon control-responsive target implemented";
@@ -292,7 +298,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetNix [
       {
         label = "API control-responsive Nix target implemented";
-        needle = "package = \"crucible-api\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
+        needle = "package = \"crucible-control-server\";\n      testTarget = \"gate_control_responsive\";\n      requiredFeatures = [];";
       }
       {
         label = "daemon control-responsive Nix target implemented";
@@ -354,7 +360,7 @@ in
               -- --test-threads=1
 
             crucible-cargo test \
-              -p crucible-api \
+              -p crucible-control-server \
               --test gate_control_responsive \
               -- --test-threads=1
 

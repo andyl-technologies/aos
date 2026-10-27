@@ -28,7 +28,7 @@
         needle = "`checks.crucible.phase1.spatialCanonicalization`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world canonical node ordering";
         needle = "fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef>";
@@ -82,7 +82,7 @@
         needle = "fn scenario_world_plan_properties_seed_material";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "focused world canonicalization test";
         needle = "fn world_topology_hashes_nodes_and_links_canonically()";
@@ -112,7 +112,7 @@
         needle = "assert_ne!(base.id, changed_bandwidth.id)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "signal authoring order identity test";
         needle = "fn authored_order_does_not_change_identity()";
@@ -143,7 +143,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-canonicalization";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -160,7 +163,7 @@ in
               outer_plan_identity_commits_to_the_complete_fault_layer
             do
               crucible-cargo test \
-                -p crucible \
+                -p crucible-engine \
                 --lib \
                 "$test_name" \
                 -- --test-threads=1

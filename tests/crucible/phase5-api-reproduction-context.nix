@@ -9,15 +9,27 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  client = builtins.readFile ../../crates/crucible-api/src/client.rs;
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
+  client = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   session = import ./_crucible-session-source.nix {inherit lib;};
-  reproductionTest = builtins.readFile ../../crates/crucible-api/tests/gate_reproduction_context.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_reproduction_context.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -38,7 +50,7 @@
         needle = "`T-API-9` is green through `checks.crucible.phase5.apiReproductionContext`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "session reproduction log";
         needle = "pub struct SessionReproductionLog";
@@ -60,7 +72,7 @@
         needle = "sync_reproduction_log";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "GetReproduction request";
         needle = "pub struct GetReproductionRequest";
@@ -94,7 +106,7 @@
         needle = "pub fn get_reproduction";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "attach snapshot reproduction stream";
         needle = "pub reproduction: Vec<ReproductionCommandRecord>";
@@ -108,7 +120,7 @@
         needle = "map(ReproductionCommandRecord::from)";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" client [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" client [
       {
         label = "ControlClient GetReproduction method";
         needle = "fn get_reproduction";
@@ -130,7 +142,7 @@
         needle = ''"reproduction="'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "GetReproduction request re-export";
         needle = "GetReproductionRequest";
@@ -140,7 +152,7 @@
         needle = "ReproductionCommandRecord";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_reproduction_context.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_reproduction_context.rs" reproductionTest [
       {
         label = "read-only attach snapshot test";
         needle = "reproduction_context_is_read_only_and_visible_on_attach_snapshot";
@@ -166,7 +178,7 @@
         needle = "record.observational_order";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC GetReproduction coverage";
         needle = "RPC GetReproduction should decode";
@@ -224,7 +236,7 @@ in
 
           cd crates
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_reproduction_context \
             -- --test-threads=1
         '';

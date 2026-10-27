@@ -1,0 +1,16 @@
+[package]
+name = "aos-cli-ui"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Terminal presentation, structured results, progress, and command hints"
+
+[dependencies]
+aos-transfer = { workspace = true, default-features = false }
+console.workspace = true
+indicatif.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

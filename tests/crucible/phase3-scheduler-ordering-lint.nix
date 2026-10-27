@@ -9,28 +9,28 @@
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
-  harnessLintMain = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
-  harnessLintAnnotations = builtins.readFile ../../crates/crucible-harness/tests/harness_lint_annotations.rs;
-  harnessLintCommon = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/common.rs;
-  harnessLintScan = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
+  harnessLintMain = builtins.readFile ../../crates/crucible/crucible-test-support/tests/harness_lint.rs;
+  harnessLintAnnotations = builtins.readFile ../../crates/crucible/crucible-test-support/tests/harness_lint_annotations.rs;
+  harnessLintCommon = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs;
+  harnessLintScan = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/harness_lint/scan.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  eventOrderTest = builtins.readFile ../../crates/crucible/tests/scheduler_event_order.rs;
+  canonical = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
+  eventOrderTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_event_order.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   orderingPathSources = [
     {
-      label = "crates/crucible/src/scheduler.rs";
+      label = "crates/crucible/crucible-engine/src/scheduler.rs";
       content = scheduler;
     }
     {
-      label = "crates/crucible/src/model.rs";
+      label = "crates/crucible/crucible-engine/src/model.rs";
       content = model;
     }
     {
-      label = "crates/crucible/src/model/canonical.rs";
+      label = "crates/crucible/crucible-engine/src/model/canonical.rs";
       content = canonical;
     }
   ];
@@ -103,7 +103,7 @@
         needle = "default hash seeding is not a stable identity hash";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/common.rs" harnessLintCommon [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs" harnessLintCommon [
       {
         label = "DefaultHasher clippy mirror";
         needle = "std::collections::hash_map::DefaultHasher";
@@ -121,7 +121,7 @@
         needle = "HASH_ITERATION_METHODS";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/harness_lint/scan.rs" harnessLintScan [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/support/harness_lint/scan.rs" harnessLintScan [
       {
         label = "scan bans DefaultHasher and RandomState";
         needle = "\"DefaultHasher\" | \"RandomState\"";
@@ -147,7 +147,7 @@
         needle = "for_loop_hash_iteration_failure";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/harness_lint.rs" harnessLintMain [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/harness_lint.rs" harnessLintMain [
       {
         label = "DefaultHasher scan regression";
         needle = "std::collections::hash_map::DefaultHasher::new()";
@@ -169,7 +169,7 @@
         needle = "assert_contains(&findings, \"unordered hash-container iteration\")";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/harness_lint_annotations.rs" harnessLintAnnotations [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/harness_lint_annotations.rs" harnessLintAnnotations [
       {
         label = "annotated default hasher exception";
         needle = "allow default-random-hasher";
@@ -179,7 +179,7 @@
         needle = "std::collections::hash_map::DefaultHasher::new()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduled event total-order key";
         needle = "pub struct ScheduledEventKey";
@@ -197,7 +197,7 @@
         needle = "event_sequences: EventSequenceState";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" canonical [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/canonical.rs" canonical [
       {
         label = "ordered scheduler state map";
         needle = "use std::collections::BTreeMap";
@@ -211,7 +211,7 @@
         needle = "for (key, next) in &state.next";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_event_order.rs" eventOrderTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_event_order.rs" eventOrderTest [
       {
         label = "event key total order regression";
         needle = "scheduled_event_keys_order_by_virtual_consumer_producer_sequence";
@@ -235,7 +235,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-ordering-lint";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -247,27 +250,27 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test harness_lint \
               harness_lint_rejects_banned_code_patterns \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test harness_lint \
               harness_lint_rejects_spaced_paths_and_grouped_imports \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test harness_lint \
               harness_lint_rejects_custom_static_analysis_drift \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test harness_lint_annotations \
               harness_lint_enforces_annotated_exceptions \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_event_order \
               -- --test-threads=1
           '';
@@ -285,7 +288,7 @@ in
             component=crucible-scheduler
             ordering_path=no-unordered-map-set-default-random-hasher
             custom_static_tier=hash-iteration,default-random-hasher
-            rust_tests=crucible-harness::harness_lint-focused,crucible::scheduler_event_order
+            rust_tests=crucible_test_support::harness_lint-focused,crucible_engine::scheduler_event_order
             RESULT
           '';
         }

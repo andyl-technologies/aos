@@ -12,11 +12,11 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   inspectionTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_read_only_debug_inspection.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -49,7 +49,7 @@
         needle = "attach/inspect/detach are recorded only as observational entries";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "read-only inspection request";
         needle = "pub struct DebugReadOnlyInspectionRequest";
@@ -127,7 +127,7 @@
         needle = "let observation_time = footprint_before.virtual_time;";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "inspection request export";
         needle = "DebugReadOnlyInspectionRequest";
@@ -149,7 +149,7 @@
         needle = "DebugReadOnlyCheckpointFootprint";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_read_only_debug_inspection.rs" inspectionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs" inspectionTest [
       {
         label = "read-only debug gate";
         needle = "debug_read_only_inspection_preserves_causal_log_and_virtual_time";
@@ -229,7 +229,7 @@
         needle = "phase6.debugAttach";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_read_only_debug_inspection.rs" inspectionTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs" inspectionTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -250,7 +250,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-read-only-debug-inspection";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -263,7 +266,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_read_only_debug_inspection \
               -- --test-threads=1
           '';

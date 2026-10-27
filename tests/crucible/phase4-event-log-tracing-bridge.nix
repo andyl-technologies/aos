@@ -6,18 +6,18 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  manifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/crucible-engine/src/event_catalog.rs;
   };
-  bridge = builtins.readFile ../../crates/crucible/src/tracing_bridge.rs;
-  bridgeTest = builtins.readFile ../../crates/crucible/tests/event_log_tracing_bridge.rs;
+  bridge = builtins.readFile ../../crates/crucible/crucible-engine/src/tracing_bridge.rs;
+  bridgeTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_tracing_bridge.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -35,13 +35,13 @@
         needle = "filtering subscriber modes";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" manifest [
+    ++ failuresFor "crates/crucible/crucible-engine/Cargo.toml" manifest [
       {
         label = "crucible tracing dependency";
         needle = "tracing = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "tracing bridge module";
         needle = "pub mod tracing_bridge;";
@@ -55,7 +55,7 @@
         needle = "TracingBridgeConfig";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       # The `diagnostic` entry constructor was originally pub(crate) but was widened to
       # `pub` (f7ea2fca0 "Implement CLI run workflow gate") for legitimate crucible-cli
       # and crucible-api callers. Enforcement downgraded from crate-boundary to
@@ -73,16 +73,16 @@
         needle = "SchedulerEventLogPayload::Diagnostic(diagnostic)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
+    ++ failuresFor "crates/crucible/crucible-engine/src/event_catalog.rs" eventCatalog [
       {
         label = "diagnostic kind is fixed observational in the event-kind catalog";
         needle = "kind: \"diagnostic\",\n        class: SchedulerEventLogClass::Observational,";
       }
     ]
     ++ lib.optionals (hasInfix "tracing::" scheduler) [
-      "crates/crucible/src/scheduler.rs: tracing bridge must stay off scheduler ordering paths"
+      "crates/crucible/crucible-engine/src/scheduler.rs: tracing bridge must stay off scheduler ordering paths"
     ]
-    ++ failuresFor "crates/crucible/src/tracing_bridge.rs" bridge [
+    ++ failuresFor "crates/crucible/crucible-engine/src/tracing_bridge.rs" bridge [
       {
         label = "bridge config type";
         needle = "pub struct TracingBridgeConfig";
@@ -128,7 +128,7 @@
         needle = "never reads subscriber state";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_tracing_bridge.rs" bridgeTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_tracing_bridge.rs" bridgeTest [
       {
         label = "default-off test";
         needle = "tracing_bridge_is_disabled_by_default";
@@ -195,7 +195,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-log-tracing-bridge";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -207,7 +210,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_tracing_bridge \
               -- --test-threads=1
           '';

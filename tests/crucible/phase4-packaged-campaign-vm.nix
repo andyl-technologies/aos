@@ -420,7 +420,7 @@ assert !interruptedTransfer
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optionals (tierMaintenance || packedMaintenance || maintenanceTransfer || interruptedTransfer) [maintenanceStageRunner pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
-      ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null) selectedChoiceInitramfs);
+      ++ (lib.optional (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) selectedChoiceInitramfs);
     testScript = ''
       set -eu
       ${lib.optionalString (envoyProduct || storageRecovery || packedMaintenance || tierMaintenance || interruptedTransfer || twoNodeHttp || guestChoice) ''

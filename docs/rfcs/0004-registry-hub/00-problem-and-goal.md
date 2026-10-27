@@ -11,7 +11,7 @@ standard Nix binary cache (`nix-cache-info`, `*.narinfo`,
 `nar/*.nar.zst`). Trust is entirely client-side: SSH-format Ed25519
 signatures on tags and commits, in-band roster rotation, anti-rollback
 floors, and staleness windows
-(`crates/aos-package/src/registry/verify.rs`,
+(`crates/registry/aos-registry-client/src/registry/verify.rs`,
 `docs/registry/signing-and-trust.md`).
 
 This design deliberately requires no server to consume — and today it
@@ -21,10 +21,10 @@ goes through the CLIs:
 - **Producers** (registry maintainers) drive the whole publish pipeline
   with `apr`: `publish`, `tag`, `channel advance`, `keys
   add`/`retire`, `cache generate`, `origin upload`, or the `apr
-  release` orchestrator (`crates/aos-package/src/registry_ops.rs`).
+  release` orchestrator (`crates/registry/aos-registry-authoring/src/registry_ops.rs`).
 - **Consumers** (AOS host operators) configure and sync with `apm`:
   `registries.d/<name>.toml`, `apm update`, `apm install`/`upgrade`
-  (`crates/aos-package/src/types.rs`).
+  (`crates/packages/aos-package-manager/src/types.rs`).
 
 What is missing:
 
@@ -40,7 +40,7 @@ What is missing:
   maintainers share a roster; multiple teams must run disjoint
   registries with hand-managed credentials.
 - **No managed write path.** Producers need direct S3 credentials (or
-  an `aos-server` provisioning token) plus local signing keys; there is
+  an `aos-build-server` provisioning token) plus local signing keys; there is
   no way to grant a teammate "may publish to this registry" without
   handing over bucket access.
 - **No operational visibility.** Channel rollout state (which of the
@@ -51,12 +51,12 @@ What is missing:
   `apr validate` against a local clone.
 
 Meanwhile the building blocks for a server-side surface already exist:
-`aos-server` speaks ConnectRPC (`aos.{cache,build,gc,auth}.v1` in
-`crates/aos-proto/`), has a proven two-tier token model (long-lived
+`aos-build-server` speaks ConnectRPC (`aos.{cache,build,gc,auth}.v1` in
+`crates/packages/aos-build-api/`), has a proven two-tier token model (long-lived
 hashed provisioning tokens exchanged at `/oauth2/token` for short-lived
-JWTs — `crates/aos-server/src/tokens.rs`, `auth.rs`), and
-`aos-cache`'s HTTP backend already knows how to authenticate and batch
-uploads against that surface (`crates/aos-cache/src/backend/http.rs`).
+JWTs — `crates/packages/aos-build-server/src/tokens.rs`, `auth.rs`), and
+`aos-nix-cache`'s HTTP backend already knows how to authenticate and batch
+uploads against that surface (`crates/packages/aos-nix-cache/src/backend/http.rs`).
 
 ## Goal
 

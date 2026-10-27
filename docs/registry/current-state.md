@@ -1,8 +1,9 @@
 # AOS Registry — Current State
 
 > **Status:** Reference / as-built. This document describes the registry
-> behavior implemented in `crates/aos-package` after the git-native registry
-> cutover work. For target intent, see
+> behavior implemented by `aos-registry-client`, `aos-registry-authoring`, and
+> `aos-registry-format`, with installation in `aos-package-manager`, after the
+> git-native registry cutover work. For target intent, see
 > [`architecture.md`](architecture.md), [`http-layout.md`](http-layout.md),
 > [`versioning-and-channels.md`](versioning-and-channels.md),
 > [`packs-and-deltas.md`](packs-and-deltas.md), and
@@ -44,7 +45,7 @@ Consumer registry configuration is available below `apm registry`; producer
 operations are available only through `apr`. `aos` has no package subcommand,
 and private on-host lifecycle operations run through `aos-package-runtime`.
 Registry producer implementations are in
-`crates/aos-package/src/registry_ops/`. AOS-specific release planning and
+`crates/registry/aos-registry-authoring/src/registry_ops/`. AOS-specific release planning and
 qualification run through `aos maintain release`, using shared libraries;
 `aos release` has no compatibility alias.
 
@@ -100,7 +101,7 @@ Implemented producer behavior:
   store path: `nix-cache-info`, `<storehash>.narinfo`, and `nar/*.nar.zst`.
   It fails closed when a listed store path is absent from the local Nix store,
   can upload the generated files to one or more repeatable `--upload-url`
-  destinations through `aos-cache` backends while preserving the generated
+  destinations through `aos-nix-cache` backends while preserving the generated
   `nix-cache-info` body, can read producer upload defaults (destinations and
   auth, persisted by `apr origin config`) from `[registry.upload_auth]` in the
   selected `registries.d/<name>.toml` with env/CLI overrides, and can update
@@ -274,9 +275,9 @@ The `apm` NAR downloader is narinfo-driven today:
 - It verifies the compressed file against `FileHash` when present, falling back
   to `NarHash` for uncompressed NARs.
 
-Shared formatting and signing logic now lives in `aos-core::nar::cache`:
+Shared formatting and signing logic now lives in `aos_nar::cache`:
 `render_static_narinfo`, `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
-`aos-server` calls that shared library for its live cache responses, while
+`aos-build-server` calls that shared library for its live cache responses, while
 `apr cache generate` calls the same library offline to write the static cache.
 
 The generated narinfo layout is covered by round-trip tests and a stock-Nix

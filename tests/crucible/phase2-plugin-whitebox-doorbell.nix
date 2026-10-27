@@ -7,9 +7,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -41,7 +41,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginWhiteboxDoorbell) [
-          "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in white-box doorbell path: `${api}`"
+          "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs: forbidden host-time, entropy, or lock API in white-box doorbell path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
@@ -57,7 +57,7 @@
         needle = "route white-box inputs through the injection contract";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "white-box doorbell module exported";
         needle = "pub mod whitebox_doorbell;";
@@ -95,7 +95,7 @@
         needle = "handle_whitebox_guest_input_callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "white-box state";
         needle = "pub struct PluginWhiteboxDoorbell";
@@ -217,7 +217,7 @@
         needle = "pub fn handle_whitebox_guest_input_callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
       {
         label = "off-mode test";
         needle = "whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box";
@@ -259,7 +259,7 @@
         needle = "whitebox_guest_input_requires_qemu_guest_memory_write_capability";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "shared max frame payload bound";
         needle = "pub const MAX_FRAME_DATA";

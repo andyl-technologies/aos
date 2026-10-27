@@ -8,9 +8,9 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
-  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
-  coverageTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
+  planTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -27,7 +27,7 @@
         needle = "`checks.crucible.phase1.spatialLayerOrthogonality`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario builder type";
         needle = "pub struct ScenarioBuilder";
@@ -117,7 +117,7 @@
         needle = "properties_ref={}";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "boot event folding API";
         needle = "boot_event";
@@ -132,7 +132,7 @@
         needle = "entrypoint(";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_graph_serialization.rs" planTest [
       {
         label = "focused plan orthogonality test";
         needle = "fn graph_plan_is_the_scenario_plan_component()";
@@ -150,7 +150,7 @@
         needle = "changed_world_plan.content_hash(), plan.content_hash()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "focused property orthogonality test";
         needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
@@ -160,13 +160,13 @@
         needle = "assert_same_run_components(&removed, &declared);";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "test rejects assertion-declared topology";
         needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "test rejects link-declared missing node";
         needle = "Err(EngineError::WorldLinkUnknownNode";
@@ -185,7 +185,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-layer-orthogonality";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -196,12 +199,12 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test property_fingerprint_neutrality \
               property_changes_move_scenario_identity_without_moving_run_material \

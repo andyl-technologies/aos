@@ -7,9 +7,9 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible/tests/event_log_reproduction_artifact.rs;
-  contentAddressTest = builtins.readFile ../../crates/crucible/tests/event_log_content_address.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs;
+  contentAddressTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_content_address.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -27,7 +27,7 @@
         needle = "event-log metadata records the fork-point index and causal-subsequence digest";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "event-log artifact type";
         needle = "pub struct ReproductionEventLogArtifact";
@@ -89,7 +89,7 @@
         needle = "self.expected_causal_subsequence == self.reproduced_causal_subsequence";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "event-log artifact export";
         needle = "ReproductionEventLogArtifact";
@@ -99,7 +99,7 @@
         needle = "ReproductionEventLogReplay";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_reproduction_artifact.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs" reproductionTest [
       {
         label = "byte-identical causal replay test";
         needle = "reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_metadata";
@@ -133,7 +133,7 @@
         needle = "from_components_with_event_log_segments";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_content_address.rs" contentAddressTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_content_address.rs" contentAddressTest [
       {
         label = "shared event-log segment store baseline";
         needle = "scheduler_writes_event_log_segments_to_shared_store";
@@ -160,7 +160,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-log-reproduction-artifact";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -172,7 +175,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_reproduction_artifact \
               -- --test-threads=1
           '';

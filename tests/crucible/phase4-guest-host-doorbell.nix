@@ -7,11 +7,11 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginWhiteboxDoorbellWithTests =
     pluginWhiteboxDoorbell
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+    + builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -33,7 +33,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "payload source export";
         needle = "WhiteboxDoorbellPayloadSource";
@@ -47,7 +47,7 @@
         needle = "WhiteboxDoorbellTrapEvent";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs and tests.rs" pluginWhiteboxDoorbellWithTests [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs and tests.rs" pluginWhiteboxDoorbellWithTests [
       {
         label = "white-box state";
         needle = "pub struct PluginWhiteboxDoorbell";
@@ -163,7 +163,7 @@
         needle = "taskIds = [\"T-GHC-4\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "virtio serial channel";
         needle = "VirtioSerial";

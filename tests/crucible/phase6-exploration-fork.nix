@@ -9,7 +9,7 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  forkGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
+  forkGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -70,7 +70,7 @@
         needle = "Completed by `checks.crucible.phase6.explorationFork`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "session fork mailbox capacity";
         needle = "pub const SESSION_FORK_MAILBOX_CAPACITY";
@@ -100,7 +100,7 @@
         needle = ''operation: "fork_child"'';
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "detached live debug mode";
         needle = "detached_live_debug_mode";
@@ -110,7 +110,7 @@
         needle = "live-non-deterministic";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
       {
         label = "non-tip child fork test";
         needle = "fork_child_uses_temporal_graph_fork_and_independent_child_actor";
@@ -140,7 +140,7 @@
         needle = "fork.child_actor.run()";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -207,7 +207,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-exploration-fork";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];

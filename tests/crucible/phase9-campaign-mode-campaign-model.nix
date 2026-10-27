@@ -13,7 +13,7 @@
     executables = {
       campaign-lib = "test --release -p crucible-campaign --lib";
       gate-campaign-model = "test --release -p crucible-campaign --test gate_campaign_model";
-      crucible-lib = "test --release -p crucible --features test-support --lib";
+      crucible-lib = "test --release -p crucible-engine --features test-support --lib";
       daemon-lib = "test --release -p crucible-daemon --lib";
     };
   };

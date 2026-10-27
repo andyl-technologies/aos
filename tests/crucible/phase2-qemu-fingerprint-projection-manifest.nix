@@ -57,7 +57,7 @@ in
           name = "verify-launch-derived-catalog";
           script = ''
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               fingerprint_projection \
               -- --test-threads=1

@@ -18,7 +18,7 @@ assert !runtimeDiagnostics || profile == "linux"; let
     dontStrip = true;
     dontPatchELF = true;
     executables = {
-      crucible-qemu-whitebox-out-resume = "build --release -p crucible-qemu --example crucible-qemu-whitebox-out-resume";
+      crucible-qemu-whitebox-out-resume = "build --release -p crucible-qemu-host --example crucible-qemu-whitebox-out-resume";
     };
   };
   romGuest = pkgs.mkDerivation {

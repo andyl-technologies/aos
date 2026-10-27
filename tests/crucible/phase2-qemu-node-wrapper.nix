@@ -6,10 +6,10 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/crucible-qemu-host/src/node.rs;
     siblingTests = true;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -42,7 +42,7 @@
         needle = "concrete per-quantum shmem implementation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "node module";
         needle = "mod node;";
@@ -72,7 +72,7 @@
         needle = "QemuQmpMachineControlChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "native QMP save failure reaps the indeterminate process";
         needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
@@ -202,7 +202,7 @@
         needle = "QemuNodeChannelPlane::QmpMachineControl";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "clone implementation for node wrapper";
         needle = "impl<C> Clone for QemuNode";
@@ -232,7 +232,7 @@
         needle = "QemuShmemHotPathChannel for" + " QemuQmpMachineControlChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "one child three channel role test";
         needle = "qemu_node_owns_one_child_and_exactly_three_channel_roles";
@@ -299,7 +299,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase2-qemu-node-wrapper";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -310,7 +313,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               node::tests \
               -- --test-threads=1
@@ -327,7 +330,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:scheduler-liveness,gate:control-responsive,gate:abi-conformance,gate:layer1-injection
-            rust_test=crucible-qemu::node
+            rust_test=crucible_qemu_host::node
             owner=one-child-qemu-node-wrapper
             channels=plugin-ipc-control,shmem-hot-path,qmp-machine-control
             hot_path=shared-memory-only

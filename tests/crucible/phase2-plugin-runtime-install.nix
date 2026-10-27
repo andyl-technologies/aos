@@ -7,15 +7,15 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginCargo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/Cargo.toml;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/abi.rs;
   };
   pluginAbiTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/abi/tests.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -26,7 +26,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu-plugin/Cargo.toml" pluginCargo [
+    failuresFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
         label = "exact cdylib crate type";
         needle = "crate-type = [\"cdylib\"]";
@@ -46,7 +46,7 @@
         needle = "device-callback pointers fixed once at";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "ABI module exported";
         needle = "pub mod abi;";
@@ -64,7 +64,7 @@
         needle = "qemu_plugin_version";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "plugin API version constant";
         needle = "pub const QEMU_PLUGIN_API_VERSION: c_int = 7;";
@@ -122,7 +122,7 @@
         needle = "pub const OWNED_DEVICE_CALLBACK_KINDS";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "supports N vCPUs under RR";
         needle = "multi-vCPU RR-TCG should validate";
@@ -153,7 +153,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-runtime-install";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.binutils
         pkgs.grep
         pkgs.qemu-crucible

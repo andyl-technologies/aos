@@ -24,7 +24,7 @@
         needle = "`checks.crucible.phase1.spatialNodeLaunchInputs`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "VM architecture enum";
         needle = "pub enum VmArchitecture";
@@ -130,7 +130,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "VM architecture re-export";
         needle = "VmArchitecture";
@@ -185,7 +185,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-node-launch-inputs";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -196,7 +199,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_node_launch_inputs_are_portable_and_identity_bearing \
               -- --test-threads=1

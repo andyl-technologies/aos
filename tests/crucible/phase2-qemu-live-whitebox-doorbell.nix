@@ -183,8 +183,8 @@
     pname = "crucible-live-whitebox-doorbell-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-live-plugin-install = "build --release -p crucible-qemu --example crucible-qemu-live-plugin-install";
-      crucible-qemu-whitebox-map-validate = "build --release -p crucible-qemu --example crucible-qemu-whitebox-map-validate";
+      crucible-qemu-live-plugin-install = "build --release -p crucible-qemu-host --example crucible-qemu-live-plugin-install";
+      crucible-qemu-whitebox-map-validate = "build --release -p crucible-qemu-host --example crucible-qemu-whitebox-map-validate";
     };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};

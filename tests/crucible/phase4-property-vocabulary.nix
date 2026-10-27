@@ -6,12 +6,12 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  crucibleSourceRoot = ../../crates/crucible/src;
+  crucibleSourceRoot = ../../crates/crucible/crucible-engine/src;
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  propertyTest = builtins.readFile ../../crates/crucible/tests/property_vocabulary.rs;
-  conditionTest = builtins.readFile ../../crates/crucible/tests/condition_vocabulary_shared.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  propertyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_vocabulary.rs;
+  conditionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -32,7 +32,7 @@
         else if lib.hasSuffix ".rs" name
         then [
           {
-            label = "crates/crucible/src/${relative}";
+            label = "crates/crucible/crucible-engine/src/${relative}";
             content = builtins.readFile path;
           }
         ]
@@ -64,7 +64,7 @@
         needle = "Completed by `checks.crucible.phase4.propertyVocabulary`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "property schema version";
         needle = "pub const PROPERTY_SCHEMA_VERSION: u32 = 1;";
@@ -166,13 +166,13 @@
         needle = "invalid property tag";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "single condition alias";
         needle = "pub type Condition = Predicate;";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "property kind export";
         needle = "PropertyKind";
@@ -190,7 +190,7 @@
         needle = "Condition, ConditionEvaluation";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_vocabulary.rs" propertyTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_vocabulary.rs" propertyTest [
       {
         label = "closed versioned vocabulary test";
         needle = "property_vocabulary_is_closed_and_versioned";
@@ -224,7 +224,7 @@
         needle = "ReachabilityExpectation::Unreachable";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/condition_vocabulary_shared.rs" conditionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs" conditionTest [
       {
         label = "existing assertion trigger shared type test";
         needle = "predicate_used_by_assertion_is_the_trigger_condition_type";
@@ -278,7 +278,7 @@
         needle = "FormalSpecEvaluator";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/property_vocabulary.rs" propertyTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/property_vocabulary.rs" propertyTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -299,7 +299,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-property-vocabulary";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -311,7 +314,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test property_vocabulary \
               --test condition_vocabulary_shared \
               -- --test-threads=1

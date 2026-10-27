@@ -9,7 +9,7 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  strategyGateTest = builtins.readFile ../../crates/crucible/tests/gate_search_strategies.rs;
+  strategyGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -70,7 +70,7 @@
         needle = "Completed by `checks.crucible.phase6.searchStrategies`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "search strategy enum";
         needle = "pub enum SearchStrategy";
@@ -156,7 +156,7 @@
         needle = "pub exhausted: bool";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_search_strategies.rs" strategyGateTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_search_strategies.rs" strategyGateTest [
       {
         label = "reproducibility gate";
         needle = "gate_search_strategies_are_reproducible_for_identical_inputs";
@@ -226,7 +226,7 @@
         needle = "SearchFailureOracle::none().with_failure";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_search_strategies.rs" strategyGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_search_strategies.rs" strategyGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -293,7 +293,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-search-strategies";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -306,7 +309,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_search_strategies \
               -- --test-threads=1
           '';
@@ -322,7 +325,7 @@ in
             tasks=${taskList}
             gate=gate:search-strategies
             strategy=bfs,dfs,priority,coverage-guided
-            rust_test=crucible::gate_search_strategies
+            rust_test=crucible_engine::gate_search_strategies
             RESULT
           '';
         }

@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  deviceSubnode = builtins.readFile ../../crates/crucible/src/device_subnode.rs;
-  worldDevices = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
+  deviceSubnode = builtins.readFile ../../crates/crucible/crucible-engine/src/device_subnode.rs;
+  worldDevices = builtins.readFile ../../crates/crucible/crucible-engine/tests/world_devices.rs;
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   shmemRoot = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -27,7 +27,7 @@
         needle = "vary real shmem layout and host\n    memory geometry";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world shape";
         needle = "pub struct World";
@@ -61,7 +61,7 @@
         needle = "fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> String";
       }
     ]
-    ++ failuresFor "crates/crucible/src/device_subnode.rs" deviceSubnode [
+    ++ failuresFor "crates/crucible/crucible-engine/src/device_subnode.rs" deviceSubnode [
       {
         label = "instantiation-time physical layout policy";
         needle = "pub struct WorldIoLayoutPolicy";
@@ -83,7 +83,7 @@
         needle = "pub outbox_capacity: u64";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/world_devices.rs" worldDevices [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/world_devices.rs" worldDevices [
       {
         label = "physical layout identity regression";
         needle = "transport_layout_is_derived_and_cannot_change_world_or_device_identity";
@@ -101,7 +101,7 @@
         needle = "assert!(!toml.contains(\"outbox_capacity\"))";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "shared-memory region config in engine model";
         needle = "RegionConfig";
@@ -135,18 +135,18 @@
         needle = "ring_count";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "logical topology physical-layout invariance test";
         needle = "world_logical_topology_ignores_physical_transport_layout";
       }
       {
         label = "test uses actual shmem region config";
-        needle = "crucible_shmem::RegionConfig::new";
+        needle = "crucible_qemu_shmem::RegionConfig::new";
       }
       {
         label = "test uses actual shmem region layout";
-        needle = "crucible_shmem::RegionLayout::for_config";
+        needle = "crucible_qemu_shmem::RegionLayout::for_config";
       }
       {
         label = "test poisons world id with physical layout";
@@ -165,7 +165,7 @@
         needle = "assert_eq!(compact_baked.checkpoint.id, expanded_baked.checkpoint.id);";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemRoot [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmemRoot [
       {
         label = "physical layout isolated in shmem crate";
         needle = "pub struct RegionLayout";
@@ -192,7 +192,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-logical-topology";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -204,13 +207,13 @@ in
             set -eu
             crucible-cargo test \
               --features test-double \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_logical_topology \
               -- --test-threads=1
             crucible-cargo test \
               --features test-double \
-              -p crucible \
+              -p crucible-engine \
               --test world_devices \
               transport_layout_is_derived_and_cannot_change_world_or_device_identity \
               -- --exact --test-threads=1

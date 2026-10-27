@@ -33,7 +33,7 @@ in
             -- --list)
           printf '%s\n' "$component_listing" | grep -Fqx "$component_test: test"
           crucible-cargo test \
-            -p crucible-cas \
+            -p crucible-store \
             --test gate_campaign_store_composition \
             -- --test-threads=1
           crucible-cargo test \
@@ -113,7 +113,7 @@ in
             content_store::packed::tests::interrupted_or_superseded_legacy_migration_converges_and_corruption_fails_closed \
             content_store::s3::tests::behavior::graph_binds_exact_endpoint_capability_and_canonical_configuration
           do
-            run_exact_lib_test crucible-cas "$cas_test"
+            run_exact_lib_test crucible-store "$cas_test"
           done
 
           # Fault-hook tests are compiled only with the explicit recovery
@@ -126,11 +126,11 @@ in
             content_store::packed::tests::interrupted_migration_keeps_the_legacy_index_authoritative
           do
             recovery_listing=$(crucible-cargo test \
-              -p crucible-cas --features destructive-recovery-faults \
+              -p crucible-store --features destructive-recovery-faults \
               --lib "$recovery_test" -- --list)
             printf '%s\n' "$recovery_listing" | grep -Fqx "$recovery_test: test"
             crucible-cargo test \
-              -p crucible-cas --features destructive-recovery-faults \
+              -p crucible-store --features destructive-recovery-faults \
               --lib "$recovery_test" -- --exact --test-threads=1
           done
 

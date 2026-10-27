@@ -9,7 +9,7 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -36,7 +36,7 @@
         needle = "idle nodes do not constrain peers";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "quiescence evidence type";
         needle = "pub struct SchedulerQuiescence";
@@ -118,7 +118,7 @@
         needle = "scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "quiescence evidence exported";
         needle = "SchedulerQuiescence";
@@ -134,7 +134,7 @@
         needle = "schedulerQuiescence = import ./phase3-scheduler-quiescence.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "host time API";
         needle = "std::time";
@@ -163,7 +163,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-quiescence";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -175,12 +178,12 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               scheduler_quiescence \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

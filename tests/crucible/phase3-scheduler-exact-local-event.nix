@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  exactLocalTest = builtins.readFile ../../crates/crucible/tests/scheduler_exact_local_event.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  exactLocalTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerExactLocalEvent`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "I/O exact local variant";
         needle = "IoCompletion";
@@ -60,7 +60,7 @@
         needle = "SchedulerHorizonSource::SignalFaultEvaluation";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "I/O exact local export";
         needle = "exact_local_event_from_io_completion";
@@ -74,7 +74,7 @@
         needle = "next_exact_local_event";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_exact_local_event.rs" exactLocalTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
       {
         label = "earliest timer/I/O test";
         needle = "next_exact_local_event_selects_earliest_timer_or_io";
@@ -104,7 +104,7 @@
         needle = "horizon_uses_io_completion_as_exact_local_source";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_exact_local_event.rs" exactLocalTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -123,7 +123,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-exact-local-event";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -135,7 +138,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_exact_local_event \
               -- --test-threads=1
           '';

@@ -71,19 +71,19 @@
         script = ''
           set -eu
           test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
+            crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
           crucible-cargo test \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             ${testSupportFlag} \
             --example crucible-qemu-production-plugin-flight
           crucible-cargo test \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
           crucible-cargo test \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             runtime_trace_budget_rejects_unbounded_or_empty_admission
           crucible-cargo test \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             supervision::runtime_determinism_trace::tests
           mkdir -p "$out"
           printf 'PASS\n' > "$out/result"
@@ -95,7 +95,7 @@
     pname = "crucible-production-rust-plugin-flight-binaries";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-production-plugin-flight = "build --release -p crucible-qemu ${testSupportFlag} --example crucible-qemu-production-plugin-flight";
+      crucible-qemu-production-plugin-flight = "build --release -p crucible-qemu-host ${testSupportFlag} --example crucible-qemu-production-plugin-flight";
       crucible-daemon-host-parallel-flight = "test --release -p crucible-daemon --lib";
     };
   };

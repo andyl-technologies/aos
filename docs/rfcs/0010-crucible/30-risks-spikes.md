@@ -438,7 +438,7 @@ guest wrote, reproducibly across runs ([GHC-32], [GHC-33]).
 
 With white-box mode enabled, have a tiny guest emitter write a known payload to a
 buffer at a known virtual address and ring the doorbell with that virtual address
-in the register pair ([GHC-11](b)). In the plugin trap handler, read the payload
+in the register pair ([GHC-11] part (b)). In the plugin trap handler, read the payload
 via the virtual-address path of the guest-memory API and compare the bytes to the
 known payload. Repeat with the buffer placed so it (a) is fully resident, (b)
 spans a page boundary, and (c) is in a region subject to the guest's normal paging.
@@ -468,20 +468,20 @@ reproducible (e.g. a not-present page at the trap).
   reproducibly ([GHC-33]), including page-spanning and paged buffers, with the read
   side-effect-free with respect to `T` ([GHC-30], [GHC-32]). Until S5 is green, the
   channel MUST default to the conservative **physical / identity-mapped pinned
-  shared page** ([GHC-11](a), [GHC-33]). S5 gates only the white-box channel, which
+  shared page** ([GHC-11] part (a), [GHC-33]). S5 gates only the white-box channel, which
   is itself opt-in ([GHC-2]); it MUST NOT block the black-box foundation. *Gate:*
   `gate:single-vm-fingerprint`, `gate:abi-conformance`. *Spec:* §30.6; satisfies
   [GHC-33]; back-ref §16.7.
 
 ### What it could invalidate
 
-The virtual-address payload form of the doorbell ([GHC-11](b)) only. The white-box
+The virtual-address payload form of the doorbell ([GHC-11] part (b)) only. The white-box
 channel itself is opt-in ([GHC-2]) and the physical/pinned-page form is always
 available, so no core capability is at risk.
 
 ### Fallback
 
-The conservative physical / identity-mapped pinned shared page ([GHC-11](a),
+The conservative physical / identity-mapped pinned shared page ([GHC-11] part (a),
 [GHC-33]): the host and guest agree on a fixed shared page at setup, the guest
 writes the payload there, and the plugin reads a known physical address — no page
 walk, always resident, trivially reproducible. The emitter's API hides which form
@@ -792,7 +792,7 @@ payload, so multi-arch support is real from day one rather than aspirational.
 
 On aarch64, the chosen reserved-immediate trap instruction ([GHC-16]) is
 intercepted by the plugin **synchronously at the exact retirement icount**, the
-payload pointer/length in the fixed register pair ([GHC-11](b)) is readable at the
+payload pointer/length in the fixed register pair ([GHC-11] part (b)) is readable at the
 trap, and the doorbell is **inert** when white-box mode is disabled ([GHC-17],
 [GHC-34]) — identical channel semantics to x86_64 above the instruction.
 
@@ -827,7 +827,7 @@ disabled.
 
 - **[RISK-17]** Spike **S10** MUST verify the aarch64 doorbell ([GHC-16]) traps
   **synchronously at the exact retirement icount**, carries its payload via the
-  fixed register pair ([GHC-11](b)), produces a reproducible marker icount
+  fixed register pair ([GHC-11] part (b)), produces a reproducible marker icount
   ([GHC-13]), and is **inert when white-box mode is disabled** ([GHC-17], [GHC-34])
   — matching the x86_64 channel semantics above the instruction. S10 gates aarch64
   white-box support only; aarch64 black-box determinism is covered by S1 run on an
@@ -1254,7 +1254,7 @@ view from the Rust `#[repr(C)]` layout, checks bilateral static assertions, and
 requires the current golden vector to round-trip identically in both languages.
 `golden_vector_drifted_c_matches_generated=1`, and `drifted_header_size=256`.
 This is a throwaway Phase-0 proof of the fail-closed ABI-drift defenses; the row
-remains listed as a regression risk until the production `crucible-shmem` crate
+remains listed as a regression risk until the production `crucible-qemu-shmem` crate
 and full `gate:abi-conformance` wiring land.
 
 **RISK-19** is retired by `T-RISK-12`:
@@ -1633,7 +1633,7 @@ last-writer-wins race resolves to different observable outcomes under different
 commanded `Decision::Preemption` values (the race manifests under one choice,
 is absent under another), and a single-vCPU interrupt-timing variation yields
 distinct replayable schedules. The model witness is
-`crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
+`crates/crucible/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
 and the production command-application witness is
 `gate:single-vm-fingerprint`. Together they demonstrate that the discriminating
 model decisions map to exact, acknowledged live vCPU-switch and interrupt

@@ -11,7 +11,7 @@
     pname = "crucible-rom-clamp-stress-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-rom-clamp-stress = "build --release -p crucible-qemu ${lib.optionalString ackPollExperiment "--features test-support"} --example crucible-qemu-rom-clamp-stress";
+      crucible-qemu-rom-clamp-stress = "build --release -p crucible-qemu-host ${lib.optionalString ackPollExperiment "--features test-support"} --example crucible-qemu-rom-clamp-stress";
     };
   };
   comparison = import ./phase2-qemu-rom-clamp-ack-poll.nix {inherit pkgs flight firmwareGuest;};

@@ -10,11 +10,11 @@
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
   atomicPatchEvidence = import ./phase2-patch-microtests.nix {inherit pkgs lib;};
 
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  qemuLaunch = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs;
   qemuTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
-  pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
+  pluginRoot = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -22,7 +22,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
+    failuresFor "crates/crucible/crucible-qemu-host/src/launch.rs" qemuLaunch [
       {
         label = "guest-visible time source policy material";
         needle = "\"guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections\".to_owned(),";
@@ -52,7 +52,7 @@
         needle = "\"realtime_deadline_in_precise_budget=false\".to_owned(),";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" qemuTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs" qemuTest [
       {
         label = "launch material guest time assertion";
         needle = "guest_time_sources=rtc,tsc,timer-devices:logical-picosecond-virtual-time-with-ns-projections";
@@ -66,7 +66,7 @@
         needle = "realtime_deadline_in_precise_budget=false";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginRoot [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginRoot [
       {
         label = "plugin time-control module";
         needle = "pub mod time_control;";
@@ -76,7 +76,7 @@
         needle = "TimeControlRegistrationPlan";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "canonical registration order";
         needle = "pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER";
@@ -137,7 +137,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-time-no-realtime-warp";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.grep
         pkgs.sed
@@ -150,7 +153,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               launch_hash_material_records_every_determinism_field \
               -- --test-threads=1

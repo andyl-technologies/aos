@@ -39,13 +39,14 @@ instruction.
                                          ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  CONTROL PLANE  (L4)                                                       │
-  │    crucible-cli ─► crucible-api ─► crucible-daemon ─► crucible-session     │
+  │    crucible-cli ─► crucible-control-client ─► crucible-daemon              │
+  │      └─► crucible-control-server ─► crucible-session                       │
   │    Session is an actor: owns one live run, yields between quanta (INV-8).  │
   └─────────────────────────────────────┬────────────────────────────────────┘
                                          │  instantiate(Configuration)
                                          ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
-  │  ENGINE  (L3)  crucible                                                    │
+  │  ENGINE  (L3)  crucible-engine                                                    │
   │    ┌───────────────┐   reduce(ScenarioDef, Schedule)                       │
   │    │  Scheduler    │── single authoritative source of virtual time ───────│
   │    │  (the one     │   pick min-horizon node ─ run a quantum ─ deliver     │
@@ -57,8 +58,8 @@ instruction.
        ▼                                  ▼  fault activation) — total order
   ┌─────────────────────────┐     ┌──────────────────────────────────────────┐
   │  QEMU INTEGRATION (L2)   │     │  CO-SIM TRANSPORT (L1)                    │
-  │  crucible-qemu (host)    │◄───►│  crucible-shmem (ABI)                     │
-  │  crucible-qemu-plugin    │     │  crucible-protocol                        │
+  │  crucible-qemu-host (host)    │◄───►│  crucible-qemu-shmem (ABI)                     │
+  │  crucible-qemu-plugin    │     │  crucible-qemu-protocol                        │
   │    (in-VM cdylib)        │     │  crucible-device (disk / 9p / net         │
   │  crucible-guest (opt.)   │     │    I/O sub-nodes)                         │
   └───────────┬─────────────┘     └──────────────────────────────────────────┘
@@ -228,27 +229,28 @@ dependency rules are in [`27-crate-structure.md`](27-crate-structure.md); this i
 the orientation.
 
 ```text
-  L4  control plane     crucible-session (actor) · crucible-api · crucible-daemon · crucible-cli
+  L4  control plane     crucible-session (actor) · crucible-control-api/client/server
+                        crucible-daemon · crucible-cli
        owns: turning user intent into Configurations; live control; reproduction artifacts
        determinism concern: control operations land at well-defined quanta, never mid-quantum
 
-  L3  engine            crucible
+  L3  engine            crucible-engine
        owns: scenario model, the single scheduler, faults, assertions, temporal graph, event log
        determinism concern: harness determinism (INV-9) — pure reduction, ordered iteration,
                             deterministic select, no host RNG/wall-clock in the engine
 
-  L2  QEMU integration  crucible-qemu (host) · crucible-qemu-plugin (in-VM cdylib) · crucible-guest
+  L2  QEMU integration  crucible-qemu-host (host) · crucible-qemu-plugin (in-VM cdylib) · crucible-guest
        owns: launching/controlling QEMU; the plugin that owns virtual-time control and callbacks
        determinism concern: intra-VM hermeticity (Contract A) — seal every entropy source so one
                             VM is bit-identical for fixed inputs (INV-4)
 
-  L1  co-sim transport  crucible-shmem (ABI) · crucible-protocol · crucible-device (disk/9p/net)
+  L1  co-sim transport  crucible-qemu-shmem (ABI) · crucible-qemu-protocol · crucible-device (disk/9p/net)
        owns: the shared-memory layout, IPC protocol, and I/O sub-nodes
        determinism concern: injection determinism (Contract B) — the icount at which any external
                             input is delivered is a pure function of virtual time (INV-3)
 
-  L0  deterministic core crucible-sim (runtime/scheduler primitives) · crucible-assert
-       owns: the deterministic-execution primitives and the assertion vocabulary types
+  L0  deterministic core crucible-determinism (runtime/scheduler primitives)
+       owns: deterministic-execution primitives; assertions are owned by the engine
        determinism concern: the determinism substrate itself — seeded decision source, ordered
                             collections, the building blocks every higher layer must use
 ```
@@ -504,9 +506,10 @@ reading order is in the [`README.md`](README.md).
 > per-subsystem tasks in later files have a frame to land in.
 
 - [x] **T-ARCH-1** Create the Cargo workspace skeleton with the L0–L4 crates
-  (`crucible-sim`, `crucible-assert`; `crucible-shmem`, `crucible-protocol`,
-  `crucible-device`; `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`;
-  `crucible`; `crucible-session`, `crucible-api`, `crucible-daemon`,
+  (`crucible-determinism`; `crucible-qemu-shmem`, `crucible-qemu-protocol`,
+  `crucible-device`; `crucible-qemu-host`, `crucible-qemu-plugin`, `crucible-guest`;
+  `crucible-engine`; `crucible-session`, `crucible-control-api`,
+  `crucible-control-client`, `crucible-control-server`, `crucible-daemon`,
   `crucible-cli`) as empty, compiling crates with their `//!` crate docs. —
   satisfies [ARCH-3]; spec §4,
   [`27-crate-structure.md`](27-crate-structure.md).

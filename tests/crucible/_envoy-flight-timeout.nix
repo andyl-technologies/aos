@@ -9,7 +9,7 @@
 # checks therefore report a failure before this timeout fires.
 {lib}: let
   limits = builtins.fromTOML (
-    builtins.readFile ../../crates/crucible-cli/tests/support/campaign_packaged_process/envoy_network/flight_limits.toml
+    builtins.readFile ../../crates/crucible/crucible-cli/tests/support/campaign_packaged_process/envoy_network/flight_limits.toml
   );
 
   positive = name: value:

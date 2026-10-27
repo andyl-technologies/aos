@@ -9,14 +9,14 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   qemuQuantum = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    entry = ../../crates/crucible/crucible-qemu-host/src/quantum.rs;
   };
-  topologyChangeTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_change.rs;
+  topologyChangeTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_topology_change.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -46,7 +46,7 @@
         needle = "SimDouble and QEMU outbound emission paths require an explicit scheduler send authorizer";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "topology change trigger";
         needle = "pub enum SchedulerTopologyChangeTrigger";
@@ -92,7 +92,7 @@
         needle = "if scheduler.last_topology_recompute";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "topology change export";
         needle = "SchedulerTopologyChange";
@@ -110,7 +110,7 @@
         needle = "SchedulerSendAuthorizer";
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "sim quantum requires authorizer";
         needle = "send_authorizer: &dyn SchedulerSendAuthorizer,";
@@ -128,7 +128,7 @@
         needle = "sim_double_outbound_enqueue_uses_scheduler_send_authorizer";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "optional sim send authorizer";
         needle = "Option<&dyn SchedulerSendAuthorizer>";
@@ -138,7 +138,7 @@
         needle = "advance_scripted_quantum_with_send_authorizer";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" qemuQuantum [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/quantum.rs" qemuQuantum [
       {
         label = "qemu stores mandatory send authorizer";
         needle = "send_authorizer: &'a dyn SchedulerSendAuthorizer";
@@ -172,7 +172,7 @@
         needle = "qemu_quantum_outbound_dequeue_uses_scheduler_send_authorizer";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" qemuQuantum [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-host/src/quantum.rs" qemuQuantum [
       {
         label = "optional qemu send authorizer";
         needle = "send_authorizer: Option<&'a dyn SchedulerSendAuthorizer>";
@@ -182,7 +182,7 @@
         needle = "pub fn with_send_authorizer";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_topology_change.rs" topologyChangeTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_topology_change.rs" topologyChangeTest [
       {
         label = "runtime queue test";
         needle = "runtime_topology_change_queue_recomputes_before_next_pick";
@@ -212,7 +212,7 @@
         needle = "finite_lookahead(5)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_topology_change.rs" topologyChangeTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_topology_change.rs" topologyChangeTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -235,7 +235,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-topology-change";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -247,16 +250,16 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_topology_change \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               sim_double_outbound_enqueue_uses_scheduler_send_authorizer \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               qemu_quantum_outbound \
               -- --test-threads=1
           '';

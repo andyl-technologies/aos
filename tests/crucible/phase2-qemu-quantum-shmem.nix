@@ -6,10 +6,10 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
   quantumLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    entry = ../../crates/crucible/crucible-qemu-host/src/quantum.rs;
     siblingTests = true;
   };
   # Production-only slice (everything before the `#[cfg(test)]` module): the
@@ -45,7 +45,7 @@
         needle = "real-time async wait remains tracked by";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "quantum module";
         needle = "mod quantum;";
@@ -63,7 +63,7 @@
         needle = "assert_qemu_quantum_hot_path_is_shmem_only";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/quantum.rs" quantumLib [
       {
         label = "module docs";
         needle = "QEMU per-quantum shared-memory hot path";
@@ -197,7 +197,7 @@
         needle = "qemu_quantum_implements_existing_shmem_hot_path_trait";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-host/src/quantum.rs" quantumProd [
       {
         label = "production unwrap";
         needle = ".unwrap()";
@@ -224,6 +224,8 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase2-qemu-quantum-shmem";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
         pkgs.sed
       ];
@@ -234,7 +236,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               quantum::tests \
               -- --test-threads=1
@@ -256,7 +258,7 @@ in
             qmp_per_quantum=forbidden
             plugin_ipc_per_quantum=forbidden
             exact_injection_contract=qemu-level
-            rust_tests=crucible-qemu::quantum::tests
+            rust_tests=crucible_qemu_host::quantum::tests
             RESULT
           '';
         }

@@ -25,10 +25,10 @@
     set -eu
     exact_test=${lib.escapeShellArg exactTest}
 
-    listing=$(crucible-cargo test -p crucible-qemu --lib "$exact_test" \
+    listing=$(crucible-cargo test -p crucible-qemu-host --lib "$exact_test" \
       -- --list)
     test "$(printf '%s\n' "$listing" | grep -Fxc "$exact_test: test")" -eq 1
-    crucible-cargo test -p crucible-qemu --lib "$exact_test" \
+    crucible-cargo test -p crucible-qemu-host --lib "$exact_test" \
       -- --exact --nocapture
 
     mkdir -p "$out"

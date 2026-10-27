@@ -7,9 +7,9 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   sessionSource = import ./_crucible-session-source.nix {inherit lib;};
-  emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
+  emitStepTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -73,7 +73,7 @@
         needle = "advance the frontier, then **yield**";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "event-log entry type";
         needle = "pub struct SchedulerEventLogEntry";
@@ -135,13 +135,13 @@
         needle = "self.step_quantum(&decisions)";
       }
     ]
-    ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ orderedNeedlesFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "post-STEP yield";
         needle = "STEP yield phase";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionSource [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionSource [
       {
         label = "session consumes emitted event-log offset";
         needle = "outcome.event_log_offset.events";
@@ -163,7 +163,7 @@
         needle = "engine_rejects_event_log_offset_regression";
       }
     ]
-    ++ orderedNeedlesFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ orderedNeedlesFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "boundary admission";
         needle = "self.admit_control_at_boundary(request.control)";
@@ -189,7 +189,7 @@
         needle = "// STEP phase";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "event-log entry export";
         needle = "SchedulerEventLogEntry";
@@ -203,7 +203,7 @@
         needle = "SchedulerEventLogAppend";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "entry order test";
         needle = "emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes";
@@ -243,7 +243,7 @@
         needle = "schedulerEmitStep = import ./phase3-scheduler-emit-step.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_emit_step.rs" emitStepTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" emitStepTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -268,7 +268,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-emit-step";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -280,15 +283,15 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_emit_step \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_quantum_loop \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_resolve \
               -- --test-threads=1
             crucible-cargo test \

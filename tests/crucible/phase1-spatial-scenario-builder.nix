@@ -7,7 +7,7 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -24,7 +24,7 @@
         needle = "`checks.crucible.phase1.spatialScenarioBuilder`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "node template type";
         needle = "pub struct NodeTemplate";
@@ -78,13 +78,13 @@
         needle = "ScenarioBuilderUnknownNodeTemplate";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "boot event authoring entry point";
         needle = "boot_event";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_parameterization.rs" workloadTest [
       {
         label = "builder produces validated concrete scenario values";
         needle = "fn scenario_def_with_template(";
@@ -95,7 +95,7 @@
       }
       {
         label = "test builds through ScenarioBuilder";
-        needle = "crucible::ScenarioBuilder::new()";
+        needle = "crucible_engine::ScenarioBuilder::new()";
       }
       {
         label = "builder output changes with template material";
@@ -115,7 +115,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-scenario-builder";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -126,7 +129,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test workload_parameterization \
               config_tree_change_changes_scenario_id_and_reproduces \
               -- --test-threads=1

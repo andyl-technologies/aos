@@ -12,16 +12,22 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  gatewayLib = builtins.readFile ../../crates/crucible-debug-gateway/src/lib.rs;
-  gatewayMain = builtins.readFile ../../crates/crucible-debug-gateway/src/main.rs;
-  gatewayTest = builtins.readFile ../../crates/crucible-debug-gateway/src/main/tests.rs;
-  relayPolicy = builtins.readFile ../../crates/crucible-api/src/debug_relay.rs;
-  relayTest = builtins.readFile ../../crates/crucible-api/src/debug_relay/tests.rs;
+  gatewayLib = builtins.readFile ../../crates/crucible/crucible-qemu-debug-gateway/src/lib.rs;
+  gatewayMain = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/crucible-qemu-debug-gateway/src/main.rs;
+  };
+  gatewayTest = builtins.readFile ../../crates/crucible/crucible-qemu-debug-gateway/src/main/tests.rs;
+  relayPolicy = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "debug_relay";
+  };
+  relayTest = builtins.readFile ../../crates/crucible/crucible-control-server/src/debug_relay/tests.rs;
   breakpointTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_canonical_debug_breakpoint.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -54,7 +60,7 @@
         needle = "--allow-mutate";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "canonical breakpoint API";
         needle = "pub fn canonical_debug_breakpoint";
@@ -116,7 +122,7 @@
         needle = "transparently_satisfies_software_request";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "breakpoint request export";
         needle = "DebugBreakpointRequest";
@@ -134,7 +140,7 @@
         needle = "DebugBreakpointTarget";
       }
     ]
-    ++ failuresFor "crates/crucible-debug-gateway/src/lib.rs" gatewayLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-debug-gateway/src/lib.rs" gatewayLib [
       {
         label = "canonical software breakpoint admission";
         needle = "packet.starts_with(b\"Z0,\")";
@@ -148,7 +154,7 @@
         needle = "RspDisposition::RejectReadOnly";
       }
     ]
-    ++ failuresFor "crates/crucible-debug-gateway/src/main.rs" gatewayMain [
+    ++ failuresFor "crates/crucible/crucible-qemu-debug-gateway/src/main.rs" gatewayMain [
       {
         label = "software breakpoint hardware translation";
         needle = "fn canonical_breakpoint_packet";
@@ -162,19 +168,19 @@
         needle = "b\"z1,\".as_slice()";
       }
     ]
-    ++ failuresFor "crates/crucible-debug-gateway/src/main/tests.rs" gatewayTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-debug-gateway/src/main/tests.rs" gatewayTest [
       {
         label = "QEMU receives hardware breakpoint only";
         needle = "canonical_software_breakpoint_reaches_qemu_only_as_hardware";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/debug_relay.rs" relayPolicy [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/debug_relay.rs" relayPolicy [
       {
         label = "read-only relay admits canonical software requests";
         needle = "payload.starts_with(b\"Z0,\")";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/debug_relay/tests.rs" relayTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/debug_relay/tests.rs" relayTest [
       {
         label = "read-only relay breakpoint admission test";
         needle = "read_only_relay_allows_queries_breakpoints_and_transport_acknowledgements";
@@ -184,7 +190,7 @@
         needle = "read_only_relay_rejects_every_state_changing_command_family";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_canonical_debug_breakpoint.rs" breakpointTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs" breakpointTest [
       {
         label = "canonical out-of-band gate";
         needle = "canonical_debug_breakpoint_uses_out_of_band_mechanisms";
@@ -232,7 +238,7 @@
         needle = "phase6.readOnlyDebugInspection";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_canonical_debug_breakpoint.rs" breakpointTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs" breakpointTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -246,7 +252,7 @@
         needle = "memory_patch_used: true";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "caller-asserted mechanism set";
         needle = "available_mechanisms";
@@ -272,15 +278,15 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_canonical_debug_breakpoint \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-debug-gateway \
+              -p crucible-qemu-debug-gateway \
               canonical_software_breakpoint_reaches_qemu_only_as_hardware \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-api \
+              -p crucible-control-api \
               --lib \
               debug_relay::tests \
               -- --test-threads=1

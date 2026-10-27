@@ -8,7 +8,7 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -34,7 +34,7 @@
         needle = "guest retires its first architecturally-visible instruction";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "registration module exported";
         needle = "pub mod registration;";
@@ -48,7 +48,7 @@
         needle = "PluginRegistrationSequenceError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "canonical order constant";
         needle = "CANONICAL_TIME_CONTROL_REGISTRATION_ORDER";
@@ -78,7 +78,7 @@
         needle = "PluginRegistrationStep::FirstVisibleInstruction";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration sequence type";
         needle = "pub struct PluginRegistrationSequence";
@@ -168,6 +168,8 @@ in
   else
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-registration-order";
+
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sed

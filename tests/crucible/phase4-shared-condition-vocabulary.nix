@@ -8,8 +8,8 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  sharedTest = builtins.readFile ../../crates/crucible/tests/condition_vocabulary_shared.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  sharedTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -34,7 +34,7 @@
         needle = "The **predicate** here is not a second vocabulary";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "trigger Condition aliases Predicate";
         needle = "pub type Condition = Predicate";
@@ -64,7 +64,7 @@
         needle = "Shared predicate vocabulary used by both assertions and event triggers.";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "shared predicate doc";
         needle = "The shared declarative predicate vocabulary used by properties and triggers.";
@@ -110,7 +110,7 @@
         needle = "trigger: Predicate";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "Predicate export";
         needle = "Predicate";
@@ -120,7 +120,7 @@
         needle = "Condition";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/condition_vocabulary_shared.rs" sharedTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs" sharedTest [
       {
         label = "assertion predicate usable as trigger test";
         needle = "predicate_used_by_assertion_is_the_trigger_condition_type";
@@ -168,13 +168,13 @@
         needle = "sharedConditionVocabulary = import ./phase4-shared-condition-vocabulary.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "separate trigger-only Condition enum";
         needle = "pub enum Condition {";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/condition_vocabulary_shared.rs" sharedTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs" sharedTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -199,7 +199,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-shared-condition-vocabulary";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -211,7 +214,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test condition_vocabulary_shared \
               -- --test-threads=1
           '';
@@ -226,8 +229,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-trigger
-            shared_type=crucible::Predicate
-            trigger_alias=crucible::Condition
+            shared_type=crucible_engine::Predicate
+            trigger_alias=crucible_engine::Condition
             consumers=assertion,trigger
             RESULT
           '';

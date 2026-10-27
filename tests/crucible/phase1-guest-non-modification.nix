@@ -7,13 +7,13 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   qemuLaunch =
-    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/modes.rs;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qemuValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/modes.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
+  qemuValidation = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/validation.rs;
   qemuTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -23,7 +23,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
+    failuresFor "crates/crucible/crucible-qemu-host/src/launch.rs" qemuLaunch [
       {
         label = "disk image mode contract";
         needle = "pub enum DiskImageMode";
@@ -134,7 +134,7 @@
         needle = "format!(\"guest_core_content={}\", self.guest_core_content),";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "guest core content public export";
         needle = "GuestCoreContentMode";
@@ -144,7 +144,7 @@
         needle = "GuestBackingStateMode";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/validation.rs" qemuValidation [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/launch/validation.rs" qemuValidation [
       {
         label = "writable backing rejection error";
         needle = "DiskImageMutatesBacking";
@@ -158,7 +158,7 @@
         needle = "GuestCoreContentRequired";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" qemuTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs" qemuTest [
       {
         label = "guest non-modification regression test";
         needle = "launch_profile_enforces_guest_non_modification";
@@ -277,7 +277,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               launch_profile_enforces_guest_non_modification \
               -- --test-threads=1
@@ -294,7 +294,7 @@ in
             gate=gate:replay-oracle
             required_gates=gate:any-guest,gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-qemu::deterministic_launch::launch_profile_enforces_guest_non_modification
+            rust_test=crucible_qemu_host::deterministic_launch::launch_profile_enforces_guest_non_modification
             scope=launch-contract-gate
             guest_writes=copy-on-write-overlay
             guest_backing_state=byte-identical-genesis

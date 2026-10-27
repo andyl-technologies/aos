@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  hostSideAssertionsTest = builtins.readFile ../../crates/crucible/tests/host_side_assertions.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  hostSideAssertionsTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/host_side_assertions.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -30,7 +30,7 @@
         needle = "Completed by `checks.crucible.phase4.hostSideAssertions`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "host assertion oracle trait";
         needle = "pub trait HostAssertionOracle";
@@ -104,7 +104,7 @@
         needle = "AssertionRunVerdict::failed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "black-box oracle export";
         needle = "BlackBoxHostOracle";
@@ -130,7 +130,7 @@
         needle = "HostAssertionReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/host_side_assertions.rs" hostSideAssertionsTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/host_side_assertions.rs" hostSideAssertionsTest [
       {
         label = "black-box all quantifiers test";
         needle = "host_side_assertions_grade_all_five_quantifiers_in_black_box_mode";
@@ -190,7 +190,7 @@
         needle = "attrPath = \"checks.crucible.phase4.hostSideAssertions\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" (scrubCommentsAndStrings trigger) [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
       {
         label = "host wall-clock dependency";
         needle = "SystemTime";
@@ -220,7 +220,7 @@
         needle = "rand::";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/host_side_assertions.rs" hostSideAssertionsTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/host_side_assertions.rs" hostSideAssertionsTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -241,7 +241,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-host-side-assertions";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -253,7 +256,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test host_side_assertions \
               --test observed_state_materialization \
               --test observable_condition_leaves \

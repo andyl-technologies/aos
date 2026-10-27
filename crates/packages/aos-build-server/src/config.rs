@@ -1,0 +1,412 @@
+//! Server configuration, parsed from a TOML file.
+//!
+//! [`load_config`] reads the file at the given path into a [`ServerConfig`];
+//! when the file is absent, built-in defaults apply (listen on
+//! `127.0.0.1:5000`, zstd level 3 compression, and a single anonymous-read
+//! `default` view with a 7-day binary TTL and 90-day source TTL).
+//!
+//! Each struct mirrors one TOML section:
+//!
+//! ```text
+//! listen = "0.0.0.0:5000"
+//!
+//! [build]            # BuildConfig — nix-store --realise knobs
+//! [signing]          # SigningConfig — narinfo re-signing key
+//! [compression]      # CompressionConfig — NAR response compression
+//! [uploads]          # UploadConfig — inbound upload resource limits
+//! [[views]]          # ViewConfig — one table per view
+//! [oauth2]           # OAuth2Config — JWT TTL and secret file
+//! [bootstrap]        # BootstrapConfig — admin Unix socket
+//! [tls]              # TlsConfig — HTTPS settings
+//! ```
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+fn default_listen() -> SocketAddr {
+    "127.0.0.1:5000".parse().unwrap()
+}
+
+fn default_max_jobs() -> u32 {
+    4
+}
+
+fn default_compression_algorithm() -> String {
+    "zstd".to_string()
+}
+
+fn default_compression_level() -> i32 {
+    3
+}
+
+fn default_max_materialized_nar_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
+
+fn default_max_concurrent_nar_materializations() -> usize {
+    4
+}
+
+fn default_max_concurrent_builds() -> u32 {
+    4
+}
+
+fn default_source_mirror() -> bool {
+    true
+}
+
+fn default_access_token_ttl() -> u64 {
+    3600
+}
+
+fn default_max_upload_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
+
+fn default_max_upload_chunk_bytes() -> u64 {
+    2 * 1024 * 1024
+}
+
+fn default_max_concurrent_uploads() -> usize {
+    4
+}
+
+fn default_max_pack_entries() -> usize {
+    100_000
+}
+
+fn default_upload_timeout_seconds() -> u64 {
+    15 * 60
+}
+
+fn default_bootstrap_socket() -> PathBuf {
+    PathBuf::from("/run/aos/bootstrap.sock")
+}
+
+fn default_bootstrap_group() -> String {
+    "aos-admins".to_string()
+}
+
+/// Top-level server configuration (parsed from TOML).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    /// `[server]` section (flattened — `listen` is top-level for simplicity).
+    #[serde(default = "default_listen")]
+    pub listen: SocketAddr,
+
+    /// `[build]` section.
+    #[serde(default)]
+    pub build: BuildConfig,
+
+    /// `[signing]` section.
+    #[serde(default)]
+    pub signing: SigningConfig,
+
+    /// `[compression]` section.
+    #[serde(default)]
+    pub compression: CompressionConfig,
+
+    /// `[uploads]` section.
+    #[serde(default)]
+    pub uploads: UploadConfig,
+
+    /// `[[views]]` — one or more view definitions.
+    #[serde(default)]
+    pub views: Vec<ViewConfig>,
+
+    /// `[oauth2]` section.
+    #[serde(default)]
+    pub oauth2: OAuth2Config,
+
+    /// `[bootstrap]` section.
+    #[serde(default)]
+    pub bootstrap: BootstrapConfig,
+
+    /// `[tls]` section.
+    #[serde(default)]
+    pub tls: TlsConfig,
+}
+
+/// Build-related settings — controls `nix-store --realise` behaviour.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BuildConfig {
+    /// Parallel build jobs (`--max-jobs`).
+    #[serde(default = "default_max_jobs")]
+    pub max_jobs: u32,
+
+    /// Cores per build (0 = all available).
+    #[serde(default)]
+    pub cores_per_build: u32,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            max_jobs: default_max_jobs(),
+            cores_per_build: 0,
+        }
+    }
+}
+
+/// Narinfo signing configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SigningConfig {
+    /// Path to an ed25519 secret key for re-signing narinfo.
+    /// If unset, narinfo is served with the daemon's signatures as-is.
+    pub secret_key_file: Option<PathBuf>,
+}
+
+/// Default compression for NAR responses.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompressionConfig {
+    /// Algorithm: "zstd", "xz", or "none".
+    #[serde(default = "default_compression_algorithm")]
+    pub algorithm: String,
+
+    /// Compression level (meaning depends on algorithm).
+    #[serde(default = "default_compression_level")]
+    pub level: i32,
+
+    /// Maximum compressed bytes produced while measuring or serving a range.
+    #[serde(default = "default_max_materialized_nar_bytes")]
+    pub max_materialized_bytes: u64,
+
+    /// Maximum concurrent NAR measurement and range materialization jobs.
+    #[serde(default = "default_max_concurrent_nar_materializations")]
+    pub max_concurrent_materializations: usize,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            algorithm: default_compression_algorithm(),
+            level: default_compression_level(),
+            max_materialized_bytes: default_max_materialized_nar_bytes(),
+            max_concurrent_materializations: default_max_concurrent_nar_materializations(),
+        }
+    }
+}
+
+/// Resource limits for inbound uploads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadConfig {
+    /// Maximum aggregate bytes accepted for one upload.
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_bytes: u64,
+
+    /// Maximum data bytes accepted in one streamed RPC message.
+    #[serde(default = "default_max_upload_chunk_bytes")]
+    pub max_chunk_bytes: u64,
+
+    /// Maximum uploads admitted concurrently across RPC upload methods.
+    #[serde(default = "default_max_concurrent_uploads")]
+    pub max_concurrent: usize,
+
+    /// Maximum entries accepted in one AOSP pack.
+    #[serde(default = "default_max_pack_entries")]
+    pub max_pack_entries: usize,
+
+    /// Maximum duration of an RPC upload, including import processing.
+    #[serde(default = "default_upload_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for UploadConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: default_max_upload_bytes(),
+            max_chunk_bytes: default_max_upload_chunk_bytes(),
+            max_concurrent: default_max_concurrent_uploads(),
+            max_pack_entries: default_max_pack_entries(),
+            timeout_seconds: default_upload_timeout_seconds(),
+        }
+    }
+}
+
+/// Per-view configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ViewConfig {
+    /// View name (used in URL path: `/{name}/...`).
+    pub name: String,
+
+    /// Binary output TTL. `None` means "keep forever".
+    #[serde(default, with = "humantime_serde")]
+    pub ttl: Option<Duration>,
+
+    /// Source tarball TTL. `None` means "keep forever".
+    #[serde(default, with = "humantime_serde")]
+    pub source_ttl: Option<Duration>,
+
+    /// Whether to retain source inputs alongside build outputs.
+    #[serde(default = "default_source_mirror")]
+    pub source_mirror: bool,
+
+    /// Allow unauthenticated read access to this view.
+    #[serde(default)]
+    pub anonymous_read: bool,
+
+    /// Maximum concurrent builds for this view.
+    #[serde(default = "default_max_concurrent_builds")]
+    pub max_concurrent_builds: u32,
+
+    /// Maximum total store size for this view (e.g., "200G").
+    /// Parsed as a human-readable byte size string.
+    pub max_store_size: Option<String>,
+
+    /// Maximum number of GC-rooted paths in this view.
+    pub max_paths: Option<u64>,
+}
+
+/// OAuth2 / JWT configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OAuth2Config {
+    /// JWT access token lifetime in seconds.
+    #[serde(default = "default_access_token_ttl")]
+    pub access_token_ttl: u64,
+
+    /// Path to the file containing the HMAC-SHA256 secret for JWTs.
+    pub jwt_secret_file: Option<PathBuf>,
+}
+
+impl Default for OAuth2Config {
+    fn default() -> Self {
+        Self {
+            access_token_ttl: default_access_token_ttl(),
+            jwt_secret_file: None,
+        }
+    }
+}
+
+/// Bootstrap socket configuration for token provisioning.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BootstrapConfig {
+    /// Path to the Unix domain socket.
+    #[serde(default = "default_bootstrap_socket")]
+    pub socket: PathBuf,
+
+    /// Unix group allowed to connect and create tokens.
+    #[serde(default = "default_bootstrap_group")]
+    pub socket_group: String,
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self {
+            socket: default_bootstrap_socket(),
+            socket_group: default_bootstrap_group(),
+        }
+    }
+}
+
+/// TLS / HTTPS configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// Enable HTTPS. When `true`, the server listens with TLS.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to PEM-encoded certificate chain. If absent when `enabled` is
+    /// `true`, a self-signed certificate is generated automatically.
+    pub cert_file: Option<PathBuf>,
+
+    /// Path to PEM-encoded private key.
+    pub key_file: Option<PathBuf>,
+
+    /// Subject Alternative Names for the self-signed certificate.
+    /// Defaults to `["localhost", "127.0.0.1", "::1"]`.
+    #[serde(default)]
+    pub san: Vec<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_file: None,
+            key_file: None,
+            san: Vec::new(),
+        }
+    }
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_listen(),
+            build: BuildConfig::default(),
+            signing: SigningConfig::default(),
+            compression: CompressionConfig::default(),
+            uploads: UploadConfig::default(),
+            views: vec![ViewConfig {
+                name: "default".to_string(),
+                ttl: Some(Duration::from_secs(7 * 24 * 3600)),
+                source_ttl: Some(Duration::from_secs(90 * 24 * 3600)),
+                source_mirror: true,
+                anonymous_read: true,
+                max_concurrent_builds: default_max_concurrent_builds(),
+                max_store_size: None,
+                max_paths: None,
+            }],
+            oauth2: OAuth2Config::default(),
+            bootstrap: BootstrapConfig::default(),
+            tls: TlsConfig::default(),
+        }
+    }
+}
+
+/// Loads the server configuration from a TOML file.
+///
+/// If `path` does not exist, the built-in [`ServerConfig::default`] is
+/// returned instead of an error, so a freshly installed server runs with
+/// sensible defaults.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read, if its contents are
+/// not valid TOML for [`ServerConfig`], or if a NAR materialization limit is
+/// zero.
+pub fn load_config(path: &Path) -> Result<ServerConfig> {
+    let config = if path.exists() {
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("reading config file {}", path.display()))?;
+        toml::from_str(&contents)
+            .with_context(|| format!("parsing config file {}", path.display()))?
+    } else {
+        ServerConfig::default()
+    };
+
+    anyhow::ensure!(
+        config.compression.max_materialized_bytes > 0,
+        "compression.max_materialized_bytes must be positive"
+    );
+    anyhow::ensure!(
+        config.compression.max_concurrent_materializations > 0,
+        "compression.max_concurrent_materializations must be positive"
+    );
+
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_config;
+
+    #[test]
+    fn nar_materialization_limits_must_be_positive() {
+        for setting in [
+            "max_materialized_bytes = 0",
+            "max_concurrent_materializations = 0",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("server.toml");
+            std::fs::write(&path, format!("[compression]\n{setting}\n")).unwrap();
+
+            let error = load_config(&path).unwrap_err();
+            assert!(error.to_string().contains("must be positive"));
+        }
+    }
+}

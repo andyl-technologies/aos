@@ -6,12 +6,12 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  protocolCargo = builtins.readFile ../../crates/crucible-protocol/Cargo.toml;
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  descriptorTest = builtins.readFile ../../crates/crucible-protocol/tests/descriptor_handover.rs;
+  protocolCargo = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/Cargo.toml;
+  protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  descriptorTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   crateSpec = builtins.readFile ../../docs/rfcs/0010-crucible/27-crate-structure.md;
-  unsafeFenceRust = builtins.readFile ../../crates/crucible-harness/tests/crate_unsafe_fence.rs;
+  unsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
   unsafeFenceNix = builtins.readFile ./phase1-crate-unsafe-fence.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -20,13 +20,13 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/Cargo.toml" protocolCargo [
+    failuresFor "crates/crucible/crucible-qemu-protocol/Cargo.toml" protocolCargo [
       {
         label = "libc workspace dependency";
         needle = "libc = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "unsafe-boundary fence";
         needle = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -112,7 +112,7 @@
         needle = "OwnedFd::from_raw_fd";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/descriptor_handover.rs" descriptorTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs" descriptorTest [
       {
         label = "fixed-order transfer test";
         needle = "setup_handover_transfers_three_descriptors_in_fixed_order";
@@ -147,22 +147,21 @@
     ++ failuresFor "docs/rfcs/0010-crucible/27-crate-structure.md" crateSpec [
       {
         label = "protocol unsafe crate table entry";
-        needle = "| `crucible-protocol` | **UNSAFE**";
+        needle = "| `crucible-qemu-protocol` | **UNSAFE**";
       }
       {
-        label = "five unsafe crate count";
-        needle = "six UNSAFE crates";
+        label = "unsafe crate ownership review";
+        needle = "A new unsafe boundary requires an explicit ownership review";
       }
       {
-        # crucible-cas registered as the ninth safe crate.
-        label = "nine safe crate count";
-        needle = "twelve SAFE crates";
+        label = "safe engine and control plane";
+        needle = "The engine and control plane remain safe.";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/crate_unsafe_fence.rs" unsafeFenceRust [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs" unsafeFenceRust [
       {
         label = "Rust unsafe-fence protocol spec";
-        needle = "package: \"crucible-protocol\"";
+        needle = "package: \"crucible-qemu-protocol\"";
       }
       {
         label = "Rust unsafe-fence protocol boundary";
@@ -176,20 +175,19 @@
     ++ failuresFor "tests/crucible/phase1-crate-unsafe-fence.nix" unsafeFenceNix [
       {
         label = "Nix unsafe-fence protocol spec";
-        needle = "package = \"crucible-protocol\";";
+        needle = "package = \"crucible-qemu-protocol\";";
       }
       {
         label = "Nix unsafe-fence protocol boundary";
         needle = "unsafeBoundary = true;";
       }
       {
-        # crucible-cas registered as the ninth safe crate.
-        label = "Nix unsafe-fence safe count";
-        needle = "runtime_safe_crates=9";
+        label = "Nix unsafe-fence declared package inventory";
+        needle = "packageSetFailures";
       }
       {
-        label = "Nix unsafe-fence unsafe count";
-        needle = "runtime_unsafe_boundary_crates=5";
+        label = "Nix unsafe-fence enumerated boundary";
+        needle = "enumerated-unsafe-boundary";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -224,7 +222,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test descriptor_handover \
               -- --test-threads=1
           '';
@@ -239,7 +237,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::descriptor_handover
+            rust_tests=crucible_qemu_protocol::descriptor_handover
             descriptor_handover=SCM_RIGHTS
             setup_fds=shmem_fd,wake_fd
             setup_fd_count=exactly-two

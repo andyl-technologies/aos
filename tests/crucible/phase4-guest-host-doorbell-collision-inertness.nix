@@ -7,10 +7,10 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  qemuWhiteboxSetup = builtins.readFile ../../crates/crucible-qemu/src/launch/whitebox_setup.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  qemuWhiteboxSetup = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/whitebox_setup.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -33,7 +33,7 @@
         needle = "disabled doorbell remains uninstalled and inert";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "collision type exported";
         needle = "WhiteboxDoorbellCollision";
@@ -51,7 +51,7 @@
         needle = "WhiteboxDoorbellSetupValidation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "setup resources type";
         needle = "pub struct WhiteboxDoorbellSetupResources";
@@ -121,7 +121,7 @@
         needle = "WhiteboxDoorbellRegistrationPlan::Disabled";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
       {
         label = "resource-backed setup validation";
         needle = "WhiteboxDoorbellSetupValidation::validate";
@@ -147,7 +147,7 @@
         needle = "whitebox_registration_off_mode_bypasses_whitebox_payload_validation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/whitebox_setup.rs" qemuWhiteboxSetup [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/launch/whitebox_setup.rs" qemuWhiteboxSetup [
       {
         label = "aarch64 retained-guest ABI validation";
         needle = "InstructionAbiMismatch";
@@ -171,7 +171,7 @@
         needle = "taskIds = [\"T-GHC-6\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "public self-attested collision-free validation";
         needle = "pub const fn collision_free";

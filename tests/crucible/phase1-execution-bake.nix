@@ -8,8 +8,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  bakedGenesis = builtins.readFile ../../crates/crucible-daemon/src/qemu_baked_genesis.rs;
-  freshGenesisCapture = builtins.readFile ../../crates/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs;
+  bakedGenesis = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
+  freshGenesisCapture = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
@@ -20,14 +20,14 @@
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-8 completion note";
-        needle = "Completed by `crates/crucible/src/model.rs`: `bake`";
+        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `bake`";
       }
       {
         label = "T-EXEC-8 cold boot lint note";
         needle = "production cold-boot lint";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world scenario bridge";
         needle = "pub fn scenario_def(&self) -> ScenarioDef";
@@ -69,13 +69,13 @@
         needle = "fn content_hash_hex(hash: ContentHash) -> String";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "bake placeholder";
         needle = "operation: \"bake\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "bake deterministic sharing test";
         needle = "bake_content_addresses_world_as_shared_fat_genesis_checkpoint";
@@ -89,7 +89,7 @@
         needle = "fn generated_world(seed: u64) -> World";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
       {
         label = "production baked-genesis capture entry point";
         needle = "pub(crate) fn capture_production_baked_genesis<F>(";
@@ -99,7 +99,7 @@
         needle = "capture_fresh_genesis_checkpoint_candidate(factory, source, context)?;";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs" freshGenesisCapture [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle/genesis_checkpoint.rs" freshGenesisCapture [
       {
         label = "fresh genesis capture lifecycle entry point";
         needle = "pub(crate) fn capture_fresh_genesis_checkpoint_candidate<F>(";
@@ -155,7 +155,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               bake \
               -- --test-threads=1

@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  schedulerLookaheadTest = builtins.readFile ../../crates/crucible/tests/scheduler_lookahead.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  schedulerLookaheadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_lookahead.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerLookahead`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "network lookahead value";
         needle = "pub enum NetworkLookahead";
@@ -60,7 +60,7 @@
         needle = ".min()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "network lookahead export";
         needle = "NetworkLookahead";
@@ -78,7 +78,7 @@
         needle = "lookahead_for_node";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_lookahead.rs" schedulerLookaheadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_lookahead.rs" schedulerLookaheadTest [
       {
         label = "minimum inbound latency test";
         needle = "scheduler_lookahead_uses_minimum_inbound_latency";
@@ -117,7 +117,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-lookahead";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -129,7 +132,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_lookahead \
               -- --test-threads=1
           '';

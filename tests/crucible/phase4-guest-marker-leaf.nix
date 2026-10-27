@@ -8,7 +8,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  guestMarkerTest = builtins.readFile ../../crates/crucible/tests/guest_marker_condition_leaf.rs;
+  guestMarkerTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_marker_condition_leaf.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -26,7 +26,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "MarkerId type";
         needle = "pub struct MarkerId";
@@ -52,7 +52,7 @@
         needle = "predicate=guest-marker";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "guest marker observable constructor";
         needle = "pub fn guest_marker(";
@@ -106,13 +106,13 @@
         needle = "GuestMarkerWithoutWhiteBoxOptIn";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "guest marker property validation error";
         needle = "PropertyPredicateGuestMarkerRequiresWhiteBoxOptIn";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_marker_condition_leaf.rs" guestMarkerTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/guest_marker_condition_leaf.rs" guestMarkerTest [
       {
         label = "enabled doorbell marker test";
         needle = "guest_marker_observes_enabled_doorbell_marker_at_retirement_icount";
@@ -172,7 +172,7 @@
         needle = "guestMarkerLeaf = import ./phase4-guest-marker-leaf.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "guest marker oracle fallback";
         needle = "evaluator.leaf_is_true(ConditionLeaf::GuestMarker";
@@ -186,7 +186,7 @@
         needle = "pub fn new_with_assertions_and_world";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_marker_condition_leaf.rs" guestMarkerTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_marker_condition_leaf.rs" guestMarkerTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -207,7 +207,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-guest-marker-leaf";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -219,7 +222,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test guest_marker_condition_leaf \
               -- --test-threads=1
           '';

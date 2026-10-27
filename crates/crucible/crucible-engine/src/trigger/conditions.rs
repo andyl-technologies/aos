@@ -1,0 +1,1634 @@
+//! Observable events, condition leaves, checked log prefixes, and state facts.
+
+use super::*;
+
+mod append;
+mod console_folds;
+mod host_oracle;
+mod point_index;
+
+pub(crate) use append::AppendedEntryCheck;
+pub(crate) use console_folds::{ConsoleMatchFolds, ConsoleMatchStateWire};
+pub use console_folds::{
+    UndeclaredConsoleMatcher, event_graph_console_patterns, predicate_console_patterns,
+};
+
+pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
+#[cfg(any(debug_assertions, feature = "test-support"))]
+pub(crate) use host_oracle::unchecked_host_assertion_oracle_for_test;
+pub use host_oracle::*;
+pub(crate) use point_index::{PointObservationIndex, coverage_seen_before, observable_events_at};
+
+/// One observable event visible to condition evaluation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ObservableEvent {
+    pub(super) at: VirtualTime,
+    pub(super) payload: ObservableEventPayload,
+}
+
+impl ObservableEvent {
+    /// Builds a delivered-network-frame observation.
+    #[must_use]
+    pub fn network_delivered(
+        at: VirtualTime,
+        link: Option<LinkId>,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::NetworkDelivered {
+                link,
+                payload: payload.into(),
+            },
+        }
+    }
+
+    /// Builds a console-output observation.
+    #[must_use]
+    pub fn console_output(at: VirtualTime, node: NodeId, bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::ConsoleOutput {
+                node,
+                bytes: bytes.into(),
+            },
+        }
+    }
+
+    /// Builds one native byte at an explicitly projected evaluation coordinate.
+    ///
+    /// The origin keeps its original emission time. This coordinate is supplied
+    /// by the original scheduler admission owner, never derived from a socket
+    /// read or an implicit backend poll floor. Construction validates shape,
+    /// not native operation custody or deterministic evaluation projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::NativeConsoleOriginError`] for a malformed origin.
+    pub fn native_console_byte(
+        evaluation_at: VirtualTime,
+        node: NodeId,
+        origin: crate::NativeConsoleByteOrigin,
+    ) -> Result<Self, crate::NativeConsoleOriginError> {
+        origin.validate()?;
+        Ok(Self {
+            at: evaluation_at,
+            payload: ObservableEventPayload::NativeConsoleByte { node, origin },
+        })
+    }
+
+    /// Returns the byte view used by console conditions without erasing origin.
+    #[must_use]
+    pub fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        self.payload.console_bytes()
+    }
+
+    /// Builds a TCG-exec basic-block coverage observation.
+    #[must_use]
+    pub fn coverage_block(
+        execution_icount: Icount,
+        node: NodeId,
+        guest_pc: u64,
+        block_len: u32,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: execution_icount.retired,
+            },
+            payload: ObservableEventPayload::CoverageBlock {
+                execution_icount,
+                node,
+                guest_pc,
+                block_len,
+            },
+        }
+    }
+
+    /// Builds a white-box named coverage-marker observation.
+    #[must_use]
+    pub fn coverage_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::CoverageMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
+    /// Builds an assertion-proximity steering observation.
+    #[must_use]
+    pub fn assertion_proximity(
+        at: VirtualTime,
+        assertion: AssertionId,
+        quantifier: AssertionQuantifierKind,
+        distance: u128,
+        node: Option<NodeId>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionProximity {
+                assertion,
+                quantifier,
+                distance,
+                node,
+            },
+        }
+    }
+
+    /// Builds a deterministic memory/register sample observation.
+    #[must_use]
+    pub fn memory_sample(
+        at: VirtualTime,
+        sample_icount: Icount,
+        node: NodeId,
+        place: ResolvedMemPlace,
+        value: u64,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::MemorySample {
+                sample_icount,
+                node,
+                place,
+                value,
+            },
+        }
+    }
+
+    /// Builds a deterministic I/O completion observation.
+    #[must_use]
+    pub fn io_completion(
+        at: VirtualTime,
+        node: NodeId,
+        kind: IoEventKind,
+        payload: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::IoCompletion {
+                node,
+                kind,
+                payload: payload.into(),
+            },
+        }
+    }
+
+    /// Builds a node-lifecycle observation.
+    #[must_use]
+    pub fn node_state(at: VirtualTime, node: NodeId, state: NodeLifecycle) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::NodeState { node, state },
+        }
+    }
+
+    /// Builds a causal assertion-state-change observation.
+    #[must_use]
+    pub fn assertion_state_changed(
+        at: VirtualTime,
+        name: AssertionId,
+        state: AssertionPhase,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionStateChanged { name, state },
+        }
+    }
+
+    /// Builds a causal assertion-evaluation observation.
+    #[must_use]
+    pub fn assertion_evaluated(
+        at: VirtualTime,
+        name: AssertionId,
+        flavor: AssertionQuantifierKind,
+        condition: bool,
+        message: impl Into<String>,
+        details: Vec<GuestAssertionDetail>,
+    ) -> Self {
+        Self {
+            at,
+            payload: ObservableEventPayload::AssertionEvaluated {
+                name,
+                flavor,
+                condition,
+                message: message.into(),
+                details,
+            },
+        }
+    }
+
+    /// Builds an optional white-box guest-marker observation.
+    #[must_use]
+    pub fn guest_marker(retired_icount: Icount, node: NodeId, marker: MarkerId) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
+    /// Builds one typed white-box guest-measurement observation.
+    #[must_use]
+    pub fn guest_measurement(
+        retired_icount: Icount,
+        node: NodeId,
+        event: GuestMeasurementEvent,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestMeasurement {
+                retired_icount,
+                node,
+                event,
+            },
+        }
+    }
+
+    /// Builds one typed white-box guest semantic-marker observation.
+    #[must_use]
+    pub fn guest_semantic_marker(
+        retired_icount: Icount,
+        node: NodeId,
+        marker: impl Into<String>,
+        instance: impl Into<String>,
+        details: Vec<GuestSemanticMarkerDetail>,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestSemanticMarker {
+                retired_icount,
+                node,
+                marker: marker.into(),
+                instance: instance.into(),
+                details,
+            },
+        }
+    }
+
+    /// Builds an optional white-box assertion-marker observation.
+    #[must_use]
+    pub fn guest_assertion_marker(
+        retired_icount: Icount,
+        node: NodeId,
+        marker: GuestAssertionMarker,
+    ) -> Self {
+        Self {
+            at: VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            payload: ObservableEventPayload::GuestAssertionMarker {
+                retired_icount,
+                node,
+                marker,
+            },
+        }
+    }
+
+    /// Returns the condition-evaluation coordinate of the observation.
+    ///
+    /// A native console byte retains its distinct original emission coordinate
+    /// in the logical origin; this value is its explicit scheduler placement.
+    #[must_use]
+    pub fn at(&self) -> VirtualTime {
+        self.at
+    }
+
+    /// Returns the VM node that supplied this backend observation, when any.
+    pub(crate) fn backend_node(&self) -> Option<&NodeId> {
+        match &self.payload {
+            ObservableEventPayload::ConsoleOutput { node, .. }
+            | ObservableEventPayload::NativeConsoleByte { node, .. }
+            | ObservableEventPayload::CoverageBlock { node, .. }
+            | ObservableEventPayload::CoverageMarker { node, .. }
+            | ObservableEventPayload::MemorySample { node, .. }
+            | ObservableEventPayload::IoCompletion { node, .. }
+            | ObservableEventPayload::NodeState { node, .. }
+            | ObservableEventPayload::GuestMarker { node, .. }
+            | ObservableEventPayload::GuestMeasurement { node, .. }
+            | ObservableEventPayload::GuestSemanticMarker { node, .. }
+            | ObservableEventPayload::GuestAssertionMarker { node, .. } => Some(node),
+            ObservableEventPayload::AssertionProximity { node, .. } => node.as_ref(),
+            ObservableEventPayload::NetworkDelivered { .. }
+            | ObservableEventPayload::AssertionStateChanged { .. }
+            | ObservableEventPayload::AssertionEvaluated { .. } => None,
+        }
+    }
+
+    /// Replaces the scheduler-time coordinate after physical-counter projection.
+    pub(crate) fn with_scheduler_time(mut self, at: VirtualTime) -> Self {
+        self.at = at;
+        self
+    }
+
+    /// Stamps a polled guest observation at the boundary where it becomes visible.
+    ///
+    /// The payload retains its physical instruction count. The event time is the
+    /// condition-evaluation coordinate, so a pulse cannot fall behind a later
+    /// scheduler boundary while backend evidence is being committed. Resolved
+    /// I/O completions and scheduler-owned node states keep their exact event
+    /// coordinates; they do not originate from this backend poll.
+    pub(crate) fn normalize_backend_poll_boundary(mut self, boundary: VirtualTime) -> Self {
+        if matches!(
+            &self.payload,
+            ObservableEventPayload::ConsoleOutput { .. }
+                | ObservableEventPayload::CoverageBlock { .. }
+                | ObservableEventPayload::CoverageMarker { .. }
+                | ObservableEventPayload::MemorySample { .. }
+                | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestMeasurement { .. }
+                | ObservableEventPayload::GuestSemanticMarker { .. }
+                | ObservableEventPayload::GuestAssertionMarker { .. }
+        ) {
+            self.at = self.at.max(boundary);
+        }
+        self
+    }
+
+    /// Returns the typed observable payload.
+    #[must_use]
+    pub fn payload(&self) -> &ObservableEventPayload {
+        &self.payload
+    }
+
+    /// Returns the required black-box surface category for this event, if any.
+    #[must_use]
+    pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
+        self.payload.black_box_observation_kind()
+    }
+
+    /// Returns the OS-agnostic black-box contract for this event, if any.
+    #[must_use]
+    pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
+        self.payload.black_box_observation_contract()
+    }
+}
+
+/// One canonical reduced rational retained from a guest metric message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestMeasurementRational {
+    /// Whether the nonzero numerator is negative.
+    pub negative: bool,
+    /// Unsigned numerator magnitude.
+    pub numerator: u128,
+    /// Positive denominator.
+    pub denominator: u128,
+}
+
+/// One bounded typed value retained from the white-box guest protocol.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementValue {
+    /// Signed 64-bit integer.
+    Signed(i64),
+    /// Unsigned 64-bit integer.
+    Unsigned(u64),
+    /// Canonical reduced rational.
+    Rational(GuestMeasurementRational),
+    /// Boolean value.
+    Boolean(bool),
+    /// Canonical enumerated identifier.
+    Enumerated(String),
+    /// Bounded signed integer vector.
+    SignedVector(Vec<i64>),
+    /// Bounded unsigned integer vector.
+    UnsignedVector(Vec<u64>),
+}
+
+/// One white-box measurement protocol event.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum GuestMeasurementEvent {
+    /// A semantic measurement instance began.
+    Begin {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+    /// One typed metric sample was observed.
+    Sample {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Scenario-declared metric identity.
+        metric: String,
+        /// Exact typed sample value.
+        value: GuestMeasurementValue,
+    },
+    /// A semantic measurement instance ended.
+    End {
+        /// Scenario-declared measurement identity.
+        measurement: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+    },
+}
+
+/// One canonical typed detail retained by a semantic marker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestSemanticMarkerDetail {
+    /// Canonical detail key.
+    pub key: String,
+    /// Exact typed detail value.
+    pub value: GuestMeasurementValue,
+}
+
+/// Typed observable event payloads used by condition leaves.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ObservableEventPayload {
+    /// A network frame was delivered at RESOLVE.
+    NetworkDelivered {
+        /// Link where the frame was delivered, when known.
+        link: Option<LinkId>,
+        /// Delivered frame payload bytes.
+        payload: Vec<u8>,
+    },
+    /// Console or serial bytes were captured for a node.
+    ConsoleOutput {
+        /// Node whose console stream produced the bytes.
+        node: NodeId,
+        /// Captured console bytes.
+        bytes: Vec<u8>,
+    },
+    /// One authenticated native architectural byte became evaluable.
+    ///
+    /// Its complete logical origin is distinct from the event's explicitly
+    /// projected condition-evaluation coordinate. Physical transport and
+    /// accepted clamp identities are not canonical payload fields.
+    NativeConsoleByte {
+        /// Stable logical node owning the admitted stream.
+        node: NodeId,
+        /// Original logical byte origin, including its unchanged raw prefix.
+        origin: crate::NativeConsoleByteOrigin,
+    },
+    /// A TCG-exec basic-block coverage observation became visible.
+    CoverageBlock {
+        /// Exact guest instruction count at which the block executed.
+        execution_icount: Icount,
+        /// Node that executed the block.
+        node: NodeId,
+        /// Guest program counter for the block.
+        guest_pc: u64,
+        /// Translated block length supplied by QEMU.
+        block_len: u32,
+    },
+    /// A white-box named coverage marker became visible.
+    CoverageMarker {
+        /// Exact guest instruction count where the marker retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Stable marker identity carried by the doorbell payload.
+        marker: MarkerId,
+    },
+    /// An assertion-proximity distance became visible as steering-only feedback.
+    AssertionProximity {
+        /// Assertion whose predicate produced this distance.
+        assertion: AssertionId,
+        /// Assertion quantifier that owns the steering obligation.
+        quantifier: AssertionQuantifierKind,
+        /// Non-negative structural distance; zero means satisfied.
+        distance: u128,
+        /// Optional node associated with the distance.
+        node: Option<NodeId>,
+    },
+    /// A deterministic guest memory or register sample became visible.
+    MemorySample {
+        /// Exact guest instruction count at which the sample was taken.
+        sample_icount: Icount,
+        /// Node whose memory/register was sampled.
+        node: NodeId,
+        /// Host-resolved place that was sampled.
+        place: ResolvedMemPlace,
+        /// Unsigned sampled value.
+        value: u64,
+    },
+    /// A deterministic device I/O completion became visible.
+    IoCompletion {
+        /// Node that observes the completion.
+        node: NodeId,
+        /// Completion class.
+        kind: IoEventKind,
+        /// Completion payload bytes.
+        payload: Vec<u8>,
+    },
+    /// A node entered a lifecycle state.
+    NodeState {
+        /// Node whose lifecycle changed.
+        node: NodeId,
+        /// Lifecycle state entered by the node.
+        state: NodeLifecycle,
+    },
+    /// A named assertion entered a terminal state.
+    AssertionStateChanged {
+        /// Assertion whose state changed.
+        name: AssertionId,
+        /// Terminal assertion state entered at this log point.
+        state: AssertionPhase,
+    },
+    /// A named assertion was evaluated at this log point.
+    AssertionEvaluated {
+        /// Assertion whose predicate was evaluated.
+        name: AssertionId,
+        /// Assertion quantifier or marker flavor evaluated.
+        flavor: AssertionQuantifierKind,
+        /// Boolean condition value observed by the assertion fold.
+        condition: bool,
+        /// Human-readable assertion message.
+        message: String,
+        /// Structured assertion details retained for projections.
+        details: Vec<GuestAssertionDetail>,
+    },
+    /// An optional white-box doorbell marker was observed.
+    GuestMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Stable marker identity carried by the doorbell payload.
+        marker: MarkerId,
+    },
+    /// A typed guest measurement-protocol message was observed.
+    GuestMeasurement {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the message.
+        node: NodeId,
+        /// Exact bounded measurement message.
+        event: GuestMeasurementEvent,
+    },
+    /// A typed semantic marker with an exact instance key was observed.
+    GuestSemanticMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Scenario-declared marker identity.
+        marker: String,
+        /// Guest-supplied semantic instance key.
+        instance: String,
+        /// Strictly ordered bounded typed details.
+        details: Vec<GuestSemanticMarkerDetail>,
+    },
+    /// An optional white-box assertion marker was observed.
+    GuestAssertionMarker {
+        /// Exact guest instruction count where the doorbell retired.
+        retired_icount: Icount,
+        /// Node that emitted the marker.
+        node: NodeId,
+        /// Assertion marker payload carried by the doorbell.
+        marker: GuestAssertionMarker,
+    },
+}
+
+impl ObservableEventPayload {
+    /// Returns the node and bytes of a console payload without erasing origin.
+    pub(crate) fn console_bytes(&self) -> Option<(&NodeId, &[u8])> {
+        match self {
+            Self::ConsoleOutput { node, bytes } => Some((node, bytes)),
+            Self::NativeConsoleByte { node, origin } => {
+                Some((node, std::slice::from_ref(&origin.byte)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the required black-box surface category for this payload, if any.
+    #[must_use]
+    pub fn black_box_observation_kind(&self) -> Option<BlackBoxObservationKind> {
+        match self {
+            Self::NetworkDelivered { .. } => Some(BlackBoxObservationKind::NetworkTraffic),
+            Self::ConsoleOutput { .. } | Self::NativeConsoleByte { .. } => {
+                Some(BlackBoxObservationKind::ConsoleSerialOutput)
+            }
+            Self::CoverageBlock { .. } => Some(BlackBoxObservationKind::BasicBlockCoverage),
+            Self::MemorySample { .. } => Some(BlackBoxObservationKind::ArchitecturalStateSample),
+            Self::IoCompletion {
+                kind:
+                    IoEventKind::BlockRead
+                    | IoEventKind::BlockWrite
+                    | IoEventKind::Fsync
+                    | IoEventKind::NineP,
+                ..
+            } => Some(BlackBoxObservationKind::DiskOrNinePIo),
+            Self::IoCompletion {
+                kind: IoEventKind::Network,
+                ..
+            } => Some(BlackBoxObservationKind::NetworkTraffic),
+            Self::NodeState {
+                state: NodeLifecycle::Started | NodeLifecycle::Exited,
+                ..
+            } => Some(BlackBoxObservationKind::RunOutcome),
+            Self::NodeState {
+                state: NodeLifecycle::Crashed | NodeLifecycle::Hung,
+                ..
+            } => Some(BlackBoxObservationKind::CrashOrHangDetection),
+            Self::CoverageMarker { .. }
+            | Self::AssertionProximity { .. }
+            | Self::AssertionStateChanged { .. }
+            | Self::AssertionEvaluated { .. }
+            | Self::IoCompletion {
+                kind: IoEventKind::Any,
+                ..
+            }
+            | Self::GuestMarker { .. }
+            | Self::GuestMeasurement { .. }
+            | Self::GuestSemanticMarker { .. }
+            | Self::GuestAssertionMarker { .. } => None,
+        }
+    }
+
+    /// Returns the OS-agnostic black-box contract for this payload, if any.
+    #[must_use]
+    pub fn black_box_observation_contract(&self) -> Option<BlackBoxObservationContract> {
+        self.black_box_observation_kind()
+            .map(BlackBoxObservationKind::contract)
+    }
+}
+
+/// Assertion flavor carried by a white-box doorbell assertion marker.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum GuestAssertionKind {
+    /// Invariant marker; any false observation violates the assertion.
+    Always,
+    /// Liveness marker; at least one true observation is required.
+    Sometimes,
+    /// Coverage marker; true observation satisfies reachability.
+    Reachable,
+    /// Unreachable dual; any true observation violates the assertion.
+    Unreachable,
+}
+
+/// One structured key/value detail carried by a guest assertion marker.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct GuestAssertionDetail {
+    /// Stable detail key.
+    pub key: String,
+    /// Stable detail value.
+    pub value: String,
+}
+
+impl GuestAssertionDetail {
+    /// Builds one guest assertion detail field.
+    #[must_use]
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
+/// Assertion payload carried by a white-box doorbell marker.
+///
+/// The payload is observational: it is stored in the event log and can drive
+/// assertion finalization, but it does not feed scheduler decisions or node
+/// fingerprints.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GuestAssertionMarker {
+    /// Stable assertion id in the marker/assertion namespace.
+    pub id: AssertionId,
+    /// Human-readable assertion message.
+    pub message: String,
+    /// Quantifier flavor declared by the marker payload.
+    pub kind: GuestAssertionKind,
+    /// Boolean truth value observed at the doorbell retirement point.
+    pub condition: bool,
+    /// Whether this marker is catalog-declared and must be hit to avoid failure.
+    pub must_hit: bool,
+    /// Structured marker details for later violation records.
+    pub details: Vec<GuestAssertionDetail>,
+    /// Source location supplied by the guest emitter.
+    pub location: String,
+}
+
+impl GuestAssertionMarker {
+    /// Builds a white-box assertion marker payload.
+    #[must_use]
+    pub fn new(
+        id: AssertionId,
+        message: impl Into<String>,
+        kind: GuestAssertionKind,
+        condition: bool,
+        must_hit: bool,
+        details: Vec<GuestAssertionDetail>,
+        location: impl Into<String>,
+    ) -> Self {
+        Self {
+            id,
+            message: message.into(),
+            kind,
+            condition,
+            must_hit,
+            details,
+            location: location.into(),
+        }
+    }
+}
+
+/// Converts a decoded white-box doorbell marker payload into engine event-log semantics.
+///
+/// Assertion payloads become [`ObservableEvent::guest_assertion_marker`] events,
+/// so the existing host assertion finalizer consumes the shared marker fields.
+/// Coverage payloads become named coverage-marker observations. Diagnostic
+/// event and lifecycle payloads become observational guest-marker identities, so
+/// they do not masquerade as black-box node lifecycle observations. Measurement
+/// and semantic-marker payloads retain their bounded typed fields in dedicated
+/// observational variants for scenario-aware campaign validation. The in-band
+/// random-request kind returns [`None`] because it is handled by the app-random
+/// decision path instead of the observational marker path.
+#[must_use]
+pub fn observable_event_from_whitebox_marker_payload(
+    retired_icount: Icount,
+    node: NodeId,
+    payload: &crucible_qemu_protocol::WhiteboxMarkerPayload,
+) -> Option<ObservableEvent> {
+    match payload {
+        crucible_qemu_protocol::WhiteboxMarkerPayload::Assertion(assertion) => {
+            Some(ObservableEvent::guest_assertion_marker(
+                retired_icount,
+                node,
+                guest_assertion_marker_from_whitebox_body(assertion),
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::Lifecycle(event) => {
+            Some(ObservableEvent::guest_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(format!("lifecycle.{}", event.semantic_label())),
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::Event(event) => {
+            Some(ObservableEvent::guest_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(event.name.clone()),
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::Coverage(coverage) => {
+            Some(ObservableEvent::coverage_marker(
+                retired_icount,
+                node,
+                MarkerId::from_name(coverage.point.clone()),
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::MeasurementBegin(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Begin {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::MetricSample(sample) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::Sample {
+                    measurement: sample.measurement.clone(),
+                    instance: sample.instance.clone(),
+                    metric: sample.metric.clone(),
+                    value: guest_measurement_value_from_whitebox(&sample.value),
+                },
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::MeasurementEnd(boundary) => {
+            Some(ObservableEvent::guest_measurement(
+                retired_icount,
+                node,
+                GuestMeasurementEvent::End {
+                    measurement: boundary.measurement.clone(),
+                    instance: boundary.instance.clone(),
+                },
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::SemanticMarker(marker) => {
+            Some(ObservableEvent::guest_semantic_marker(
+                retired_icount,
+                node,
+                marker.marker.clone(),
+                marker.instance.clone(),
+                marker
+                    .details
+                    .iter()
+                    .map(|detail| GuestSemanticMarkerDetail {
+                        key: detail.key.clone(),
+                        value: guest_measurement_value_from_whitebox(&detail.value),
+                    })
+                    .collect(),
+            ))
+        }
+        crucible_qemu_protocol::WhiteboxMarkerPayload::RandomRequest(_) => None,
+    }
+}
+
+fn guest_measurement_value_from_whitebox(
+    value: &crucible_qemu_protocol::WhiteboxMeasurementValue,
+) -> GuestMeasurementValue {
+    match value {
+        crucible_qemu_protocol::WhiteboxMeasurementValue::Signed(value) => {
+            GuestMeasurementValue::Signed(*value)
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::Unsigned(value) => {
+            GuestMeasurementValue::Unsigned(*value)
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::Rational(value) => {
+            GuestMeasurementValue::Rational(GuestMeasurementRational {
+                negative: value.negative,
+                numerator: value.numerator,
+                denominator: value.denominator,
+            })
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::Boolean(value) => {
+            GuestMeasurementValue::Boolean(*value)
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::Enumerated(value) => {
+            GuestMeasurementValue::Enumerated(value.clone())
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::SignedVector(value) => {
+            GuestMeasurementValue::SignedVector(value.clone())
+        }
+        crucible_qemu_protocol::WhiteboxMeasurementValue::UnsignedVector(value) => {
+            GuestMeasurementValue::UnsignedVector(value.clone())
+        }
+    }
+}
+
+pub(crate) fn guest_assertion_marker_from_whitebox_body(
+    body: &crucible_qemu_protocol::WhiteboxAssertionMarkerBody,
+) -> GuestAssertionMarker {
+    GuestAssertionMarker::new(
+        AssertionId::from_name(body.id.clone()),
+        body.message.clone(),
+        guest_assertion_kind_from_whitebox_flavor(body.flavor),
+        body.condition,
+        body.must_hit,
+        body.details
+            .iter()
+            .map(|detail| GuestAssertionDetail::new(detail.key.clone(), detail.value.clone()))
+            .collect(),
+        body.location.clone(),
+    )
+}
+
+pub(super) fn guest_assertion_kind_from_whitebox_flavor(
+    flavor: crucible_qemu_protocol::WhiteboxAssertionMarkerFlavor,
+) -> GuestAssertionKind {
+    match flavor {
+        crucible_qemu_protocol::WhiteboxAssertionMarkerFlavor::Always => GuestAssertionKind::Always,
+        crucible_qemu_protocol::WhiteboxAssertionMarkerFlavor::Sometimes => {
+            GuestAssertionKind::Sometimes
+        }
+        crucible_qemu_protocol::WhiteboxAssertionMarkerFlavor::Reachable => {
+            GuestAssertionKind::Reachable
+        }
+        crucible_qemu_protocol::WhiteboxAssertionMarkerFlavor::Unreachable => {
+            GuestAssertionKind::Unreachable
+        }
+    }
+}
+
+/// One leaf predicate request made by the shared condition evaluator.
+///
+/// The shared evaluator centralizes leaf dispatch so assertions and triggers
+/// cannot use different boolean composition code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConditionLeaf<'a> {
+    /// A named host-side predicate resolved over the current event-log point.
+    Named {
+        /// Stable predicate name.
+        name: &'a str,
+        /// Declared nodes referenced by the predicate.
+        nodes: &'a [NodeId],
+    },
+    /// A named white-box marker resolved over the current event-log point.
+    GuestMarker {
+        /// Stable marker identity.
+        marker: &'a MarkerId,
+    },
+}
+
+/// Oracle for condition leaves at one deterministic evaluation point.
+pub trait ConditionLeafOracle {
+    /// Returns whether one leaf predicate is true.
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
+}
+
+impl<F> ConditionLeafOracle for F
+where
+    F: for<'leaf> FnMut(ConditionLeaf<'leaf>) -> bool,
+{
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
+        self(leaf)
+    }
+}
+
+/// Shared evaluator used by both assertion and trigger consumers.
+pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
+    /// Returns the deterministic point where this evaluator observes the log.
+    fn evaluation_point(&self) -> EventEvaluationPoint;
+
+    /// Returns the event-log prefix identity observed by this evaluator.
+    fn event_log_offset(&self) -> EventLogOffset;
+
+    /// Resolves a leaf predicate at [`Self::evaluation_point`].
+    fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool;
+
+    /// Returns the most recent firing time for an event, when known.
+    fn last_event_firing(&self, event: &EventId) -> Option<VirtualTime> {
+        let _ = event;
+        None
+    }
+
+    /// Returns the virtual time where a timer fires, when armed and known.
+    fn timer_fire_time(&self, timer: &TimerId) -> Option<VirtualTime> {
+        let _ = timer;
+        None
+    }
+
+    /// Returns the complete timer-fire map visible to `Timer` leaves.
+    fn timer_fires(&self) -> BTreeMap<TimerId, VirtualTime> {
+        BTreeMap::new()
+    }
+
+    /// Answers `console_match(node, pattern)` from a declared streaming matcher.
+    ///
+    /// Implementations never rescan console history. An implementation whose
+    /// matcher is undeclared answers `false` and records the miss so its
+    /// caller fails closed.
+    fn console_match(&mut self, node: &NodeId, pattern: &str) -> bool;
+
+    /// Returns the observable events at the evaluation point's virtual time.
+    ///
+    /// Evaluators backed by a condition prefix answer from its point index,
+    /// so the cost does not grow with the attempt's history.
+    fn observable_events_at_point(&self) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        let at = self.evaluation_point().at();
+        Box::new(
+            self.observable_events()
+                .iter()
+                .filter(move |event| event.at() == at),
+        )
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before the
+    /// evaluation point's virtual time.
+    fn coverage_seen_before(&self, node: &NodeId, address: u64) -> bool {
+        let at = self.evaluation_point().at();
+        self.observable_events().iter().any(|event| {
+            event.at() < at
+                && coverage_event_matches(
+                    event.payload(),
+                    node,
+                    ResolvedCodePoint::guest_address(address),
+                )
+        })
+    }
+
+    /// Returns observable event-log entries visible at the evaluation point.
+    fn observable_events(&self) -> &crate::History<ObservableEvent> {
+        static NONE: std::sync::LazyLock<crate::History<ObservableEvent>> =
+            std::sync::LazyLock::new(crate::History::new);
+        &NONE
+    }
+
+    /// Returns scheduler-owned quiescence evidence for the evaluation point.
+    fn scheduler_quiescence(&self) -> Option<&SchedulerQuiescence> {
+        None
+    }
+
+    /// Returns the authoritative white-box opt-in policy for a node.
+    fn white_box_policy_for_node(&self, node: &NodeId) -> Option<WhiteBoxPolicy> {
+        let _ = node;
+        None
+    }
+
+    /// Returns whether a `Once` predicate has already latched true.
+    fn once_condition_is_latched(&self, condition: &Condition) -> bool;
+
+    /// Records that a `Once` predicate has latched true.
+    fn latch_once_condition(&mut self, condition: &Condition);
+
+    /// Resolves an authored code point using host-side symbol metadata.
+    fn resolve_code_point(&self, _node: &NodeId, point: &CodePoint) -> Option<ResolvedCodePoint> {
+        match point {
+            CodePoint::GuestAddress { address } => Some(ResolvedCodePoint::guest_address(*address)),
+            CodePoint::Symbol { .. } => None,
+        }
+    }
+
+    /// Resolves an authored memory place using host-side symbol metadata.
+    fn resolve_mem_place(&self, _node: &NodeId, place: &MemPlace) -> Option<ResolvedMemPlace> {
+        match place {
+            MemPlace::PhysicalAddress { address, width } => {
+                Some(ResolvedMemPlace::physical_address(*address, width.bytes()))
+            }
+            MemPlace::Register { name, width } => {
+                Some(ResolvedMemPlace::register(name.clone(), width.bytes()))
+            }
+            MemPlace::VirtualAddress { .. } | MemPlace::Symbol { .. } => None,
+        }
+    }
+}
+
+pub(super) mod condition_evaluator_sealed {
+    pub trait Sealed {}
+}
+
+/// Error returned when constructing a deterministic condition-evaluation prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConditionEvaluationError {
+    /// A scheduler event-log prefix contained no entries.
+    EmptyEventLogPrefix,
+    /// A scheduler event-log entry does not continue the dense prefix sequence.
+    NonPrefixEventLogSequence {
+        /// Sequence number expected at this prefix offset.
+        expected: u64,
+        /// Sequence number carried by the entry.
+        actual: u64,
+    },
+    /// A scheduler event-log entry's content hash does not match its material.
+    InvalidEventLogEntryHash {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+    },
+    /// A required black-box observation regressed relative to the previous one.
+    OutOfOrderEventLogEntry {
+        /// Sequence number carried by the previous black-box observation entry.
+        previous_sequence: u64,
+        /// Time of the previous black-box observation entry.
+        previous_at: VirtualTime,
+        /// Sequence number carried by the out-of-order black-box observation.
+        sequence: u64,
+        /// Time of the out-of-order black-box observation.
+        event_at: VirtualTime,
+    },
+    /// An event-log entry occurs after the derived evaluation point.
+    FutureEventLogEntry {
+        /// Deterministic evaluation point.
+        point: VirtualTime,
+        /// Sequence number carried by the future entry.
+        sequence: u64,
+        /// Time of the future event-log entry.
+        event_at: VirtualTime,
+    },
+    /// A required black-box observation was not logged as observational.
+    InvalidBlackBoxObservationClass {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+        /// Required black-box surface kind reconstructed from the payload.
+        kind: BlackBoxObservationKind,
+        /// Class recorded by the event-log entry.
+        class: SchedulerEventLogClass,
+    },
+    /// A required black-box observation's icount stamp does not match its payload.
+    InvalidBlackBoxObservationStamp {
+        /// Sequence number carried by the invalid entry.
+        sequence: u64,
+        /// Required black-box surface kind reconstructed from the payload.
+        kind: BlackBoxObservationKind,
+        /// Expected icount stamp for the payload at this event-log time.
+        expected: EventLogTickStamp,
+        /// Icount stamp recorded by the event-log entry.
+        actual: EventLogTickStamp,
+    },
+}
+
+impl fmt::Display for ConditionEvaluationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyEventLogPrefix => write!(
+                formatter,
+                "scheduler event-log prefix must contain at least one entry"
+            ),
+            Self::NonPrefixEventLogSequence { expected, actual } => write!(
+                formatter,
+                "scheduler event-log prefix expected sequence {expected}, found {actual}"
+            ),
+            Self::InvalidEventLogEntryHash { sequence } => write!(
+                formatter,
+                "scheduler event-log entry {sequence} has an invalid content hash"
+            ),
+            Self::OutOfOrderEventLogEntry {
+                previous_sequence,
+                previous_at,
+                sequence,
+                event_at,
+            } => write!(
+                formatter,
+                "black-box observation entry {sequence} at {} is before entry {previous_sequence} at {}",
+                event_at.ticks, previous_at.ticks
+            ),
+            Self::FutureEventLogEntry {
+                point,
+                sequence,
+                event_at,
+            } => write!(
+                formatter,
+                "event-log entry {sequence} at {} is after evaluation point {}",
+                event_at.ticks, point.ticks
+            ),
+            Self::InvalidBlackBoxObservationClass {
+                sequence,
+                kind,
+                class,
+            } => write!(
+                formatter,
+                "black-box observation {kind:?} at event-log entry {sequence} has class {class:?}"
+            ),
+            Self::InvalidBlackBoxObservationStamp {
+                sequence,
+                kind,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "black-box observation {kind:?} at event-log entry {sequence} has icount stamp {actual:?}, expected {expected:?}"
+            ),
+        }
+    }
+}
+
+impl Error for ConditionEvaluationError {}
+
+/// Observable event-log prefix visible at one deterministic evaluation point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionEventLogPrefix {
+    pub(super) point: EventEvaluationPoint,
+    pub(super) base_sequence: u64,
+    pub(super) event_log_offset: EventLogOffset,
+    pub(super) prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
+    pub(super) scheduler_entries: crate::History<SchedulerEventLogEntry>,
+    last_black_box_observation: Option<(u64, VirtualTime)>,
+    pub(super) observable_events: crate::History<ObservableEvent>,
+    pub(super) point_events: PointObservationIndex,
+    pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
+    pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
+    pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
+    pub(super) ordering_facts: crate::History<ObservedOrderingFact>,
+    pub(super) console_folds: ConsoleMatchFolds,
+}
+
+impl ConditionEventLogPrefix {
+    /// Builds the run-start genesis prefix.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            point: EventEvaluationPoint::genesis(),
+            base_sequence: 0,
+            event_log_offset: EventLogOffset::default(),
+            prefix_offsets: std::sync::Arc::default(),
+            scheduler_entries: crate::History::new(),
+            last_black_box_observation: None,
+            observable_events: crate::History::new(),
+            point_events: PointObservationIndex::default(),
+            black_box_observation_kinds: BTreeSet::new(),
+            event_firings: BTreeMap::new(),
+            timer_fires: BTreeMap::new(),
+            ordering_facts: crate::History::new(),
+            console_folds: ConsoleMatchFolds::default(),
+        }
+    }
+
+    /// Builds a checked condition prefix from scheduler event-log entries.
+    ///
+    /// The evaluation point is derived from the final log entry: explicit
+    /// scheduler evaluation-boundary payloads produce quantum or rendezvous
+    /// points, while all other entries produce event-log-entry points. The
+    /// observable prefix is likewise derived from `Observable` payloads rather
+    /// than supplied by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError::EmptyEventLogPrefix`] when no
+    /// scheduler entries are supplied,
+    /// [`ConditionEvaluationError::NonPrefixEventLogSequence`] when the entries
+    /// are not a dense prefix starting at zero,
+    /// [`ConditionEvaluationError::InvalidEventLogEntryHash`] when any entry's
+    /// content hash does not match its canonical material,
+    /// [`ConditionEvaluationError::OutOfOrderEventLogEntry`] when required
+    /// black-box observations are not ordered by event-log time,
+    /// [`ConditionEvaluationError::FutureEventLogEntry`] when an entry occurs
+    /// after the derived evaluation point, or a black-box observation error
+    /// when a required surface observation is not observational or carries an
+    /// invalid icount stamp.
+    pub fn from_scheduler_event_log_entries(
+        entries: Vec<SchedulerEventLogEntry>,
+    ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(entries, 0)
+    }
+
+    /// Builds a checked condition prefix from a scheduler event-log segment.
+    ///
+    /// This is the same validation path as
+    /// [`Self::from_scheduler_event_log_entries`], but the dense sequence check
+    /// starts at `base_sequence`. It is intended for live consumers that hold the
+    /// prefix length separately and evaluate a newly emitted segment at its
+    /// deterministic boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as
+    /// [`Self::from_scheduler_event_log_entries`], with sequence-prefix checks
+    /// relative to `base_sequence`.
+    pub fn from_scheduler_event_log_entries_with_base_sequence(
+        entries: Vec<SchedulerEventLogEntry>,
+        base_sequence: u64,
+    ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(entries, base_sequence)
+    }
+
+    /// Builds a checked condition prefix with an in-memory evaluation boundary.
+    ///
+    /// The supplied entries are treated as the canonical event-log prefix and the
+    /// synthesized boundary is appended only for this evaluation pass. This lets
+    /// live consumers evaluate scheduler-owned evidence for no-entry boundaries
+    /// without mutating the canonical log.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as
+    /// [`Self::from_scheduler_event_log_entries`] after appending the synthesized
+    /// boundary entry.
+    pub fn from_scheduler_event_log_entries_with_evaluation_boundary(
+        mut entries: Vec<SchedulerEventLogEntry>,
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<Self, ConditionEvaluationError> {
+        entries.push(SchedulerEventLogEntry::evaluation_boundary(
+            sequence, at, kind,
+        ));
+        Self::from_scheduler_event_log_entries_with_base(entries, 0).map(|prefix| {
+            prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence))
+        })
+    }
+
+    /// Builds an in-memory evaluation-boundary prefix.
+    ///
+    /// This creates a checked boundary point for consumers that need to evaluate
+    /// scheduler-owned evidence, such as quiescence, even when the scheduler did
+    /// not append a canonical event-log entry at that boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionEvaluationError`] if the synthesized boundary entry is
+    /// not a valid dense prefix at `sequence`.
+    pub fn from_evaluation_boundary(
+        sequence: u64,
+        at: VirtualTime,
+        kind: SchedulerEvaluationBoundaryKind,
+    ) -> Result<Self, ConditionEvaluationError> {
+        Self::from_scheduler_event_log_entries_with_base(
+            vec![SchedulerEventLogEntry::evaluation_boundary(
+                sequence, at, kind,
+            )],
+            sequence,
+        )
+        .map(|prefix| {
+            prefix.with_event_log_offset(EventLogOffset::new(ContentHash::default(), 0, sequence))
+        })
+    }
+
+    pub(crate) fn from_scheduler_event_log_entries_with_base(
+        entries: Vec<SchedulerEventLogEntry>,
+        base_sequence: u64,
+    ) -> Result<Self, ConditionEvaluationError> {
+        let mut prefix = Self::genesis().with_base_sequence(base_sequence);
+        prefix.append_scheduler_entries(entries)?;
+        Ok(prefix)
+    }
+
+    pub(crate) fn with_event_log_offset(mut self, event_log_offset: EventLogOffset) -> Self {
+        self.event_log_offset = event_log_offset;
+        self
+    }
+
+    pub(crate) fn with_base_sequence(mut self, base_sequence: u64) -> Self {
+        self.base_sequence = base_sequence;
+        self
+    }
+
+    pub(crate) fn with_prefix_offsets(
+        mut self,
+        prefix_offsets: std::sync::Arc<BTreeMap<u64, EventLogOffset>>,
+    ) -> Self {
+        self.prefix_offsets = prefix_offsets;
+        self
+    }
+
+    pub(crate) fn with_point(mut self, point: EventEvaluationPoint) -> Self {
+        self.point = point;
+        self
+    }
+
+    /// Rebuilds the facts visible at `point`, which precedes this prefix's end.
+    ///
+    /// The result holds the longest run of leading entries at or before
+    /// `point` and is evaluated at `point`. When `observed` is an earlier
+    /// prefix of this same log whose entries all precede `point`, only the
+    /// entries after it are appended to a copy of it (RFC-0020 CMEAS-15);
+    /// otherwise the facts are rebuilt from the retained history.
+    ///
+    /// Returns `None` when a recorded log has no offset for the rebuilt length.
+    pub(crate) fn with_facts_through_point_after(
+        &self,
+        observed: Option<&Self>,
+        point: EventEvaluationPoint,
+    ) -> Option<Self> {
+        match observed.and_then(|observed| self.observed_prefix_through(observed, point)) {
+            Some(prefix) => prefix,
+            None => self.with_facts_through_point(point),
+        }
+    }
+
+    /// Extends `observed` with this prefix's entries through `point`.
+    ///
+    /// The outer `None` means `observed` cannot serve as the base: it is not
+    /// an earlier prefix of this log, it holds an entry after `point`, or it
+    /// declares different console matchers. The inner value is the rebuilt
+    /// prefix, as for [`Self::with_facts_through_point`].
+    fn observed_prefix_through(
+        &self,
+        observed: &Self,
+        point: EventEvaluationPoint,
+    ) -> Option<Option<Self>> {
+        let through = point.at().ticks;
+        let start = observed.scheduler_entries.len();
+        let extends = observed.base_sequence == self.base_sequence
+            && start <= self.scheduler_entries.len()
+            && start.checked_sub(1).is_none_or(|last| {
+                self.scheduler_entries.get(last) == observed.scheduler_entries.last()
+            })
+            && observed
+                .scheduler_entries
+                .last()
+                .is_none_or(|last| last.at().ticks <= through)
+            && observed
+                .console_folds
+                .declares_same_patterns(&self.console_folds);
+        if !extends {
+            return None;
+        }
+
+        // Every observed entry is at or before `point`, so the leading run of
+        // entries through `point` is the observed prefix plus the entries
+        // after it up to the first one past `point`.
+        let tail = self
+            .scheduler_entries
+            .iter_from(start)
+            .take_while(|entry| entry.at().ticks <= through)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut prefix = observed.clone();
+        if !tail.is_empty() {
+            prefix.append_scheduler_entries(tail).ok()?;
+        }
+
+        // Match the offsets a whole rebuild assigns: the recorded offset for
+        // the rebuilt length, else the synthetic offset of a rebuilt prefix.
+        let length = u64::try_from(prefix.scheduler_entries.len()).ok()?;
+        let prefix_events = self.base_sequence.checked_add(length)?;
+        let offset = if !self.prefix_offsets.is_empty() {
+            match self.prefix_offsets.get(&prefix_events) {
+                Some(offset) => *offset,
+                None => return Some(None),
+            }
+        } else if length == 0 {
+            EventLogOffset::default()
+        } else {
+            EventLogOffset::new(ContentHash::default(), 0, prefix_events)
+        };
+        Some(Some(
+            prefix
+                .with_event_log_offset(offset)
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
+                .with_point(point),
+        ))
+    }
+
+    pub(crate) fn with_facts_through_point(&self, point: EventEvaluationPoint) -> Option<Self> {
+        let through = point.at().ticks;
+        let entries = self
+            .scheduler_entries
+            .iter()
+            .take_while(|entry| entry.at().ticks <= through)
+            .cloned()
+            .collect::<Vec<_>>();
+        let prefix_len = u64::try_from(entries.len()).ok()?;
+        if entries.is_empty() {
+            let mut prefix = Self::genesis();
+            if !self.prefix_offsets.is_empty() {
+                let prefix_events = self.base_sequence.checked_add(prefix_len)?;
+                prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
+            }
+            prefix.console_folds = self.console_folds.refold(std::iter::empty());
+            return Some(
+                prefix
+                    .with_base_sequence(self.base_sequence)
+                    .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
+                    .with_point(point),
+            );
+        }
+        let prefix_events = self.base_sequence.checked_add(prefix_len)?;
+        let mut prefix =
+            Self::from_scheduler_event_log_entries_with_base(entries, self.base_sequence).ok()?;
+        prefix.console_folds = self.console_folds.refold(prefix.scheduler_entries.iter());
+        if !self.prefix_offsets.is_empty() {
+            prefix = prefix.with_event_log_offset(*self.prefix_offsets.get(&prefix_events)?);
+        }
+        Some(
+            prefix
+                .with_prefix_offsets(std::sync::Arc::clone(&self.prefix_offsets))
+                .with_point(point),
+        )
+    }
+
+    /// Returns the deterministic evaluation point this prefix is visible at.
+    #[must_use]
+    pub fn point(&self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Returns the event-log prefix identity this condition prefix was derived from.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns observable event-log entries visible at [`Self::point`].
+    #[must_use]
+    pub fn observable_events(&self) -> &crate::History<ObservableEvent> {
+        &self.observable_events
+    }
+
+    /// Returns the observable events at [`Self::point`]'s virtual time.
+    pub(crate) fn observable_events_at_point(
+        &self,
+    ) -> Box<dyn Iterator<Item = &ObservableEvent> + '_> {
+        observable_events_at(&self.point_events, &self.observable_events, self.point.at())
+    }
+
+    /// Returns the required black-box observation categories present in this prefix.
+    #[must_use]
+    pub fn black_box_observation_kinds(&self) -> &BTreeSet<BlackBoxObservationKind> {
+        &self.black_box_observation_kinds
+    }
+
+    /// Returns cross-node ordering facts visible at [`Self::point`].
+    #[must_use]
+    pub fn ordering_facts(&self) -> &crate::History<ObservedOrderingFact> {
+        &self.ordering_facts
+    }
+
+    /// Returns a read-only observed-state view materialized from this checked prefix.
+    #[must_use]
+    pub fn observed_state(&self) -> ObservedState<'_> {
+        ObservedState {
+            point: self.point,
+            event_log_offset: self.event_log_offset,
+            observable_events: &self.observable_events,
+            point_events: &self.point_events,
+            ordering_facts: &self.ordering_facts,
+        }
+    }
+
+    /// Replaces this prefix's console matchers with `matchers` refolded over
+    /// its console bytes and evaluation boundaries.
+    ///
+    /// The compiled automata are shared, never recompiled. Used where a
+    /// prefix is rebuilt from scratch anyway, so the refold adds no pass over
+    /// history the rebuild did not already make.
+    pub(crate) fn with_console_matchers(mut self, matchers: &ConsoleMatchFolds) -> Self {
+        self.console_folds = matchers.refold(self.scheduler_entries.iter());
+        self
+    }
+
+    /// Declares one console pattern so `console_match` folds it as bytes arrive.
+    ///
+    /// Console bytes and evaluation boundaries already in the prefix are
+    /// folded immediately, so the matcher reaches the state it would have
+    /// reached had it been declared at genesis. Declaring the same node and
+    /// pattern again is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConsolePatternError`] when the pattern cannot become a
+    /// streaming automaton.
+    pub fn declare_console_pattern(
+        &mut self,
+        node: &NodeId,
+        pattern: &str,
+    ) -> Result<(), crate::ConsolePatternError> {
+        self.console_folds
+            .declare(node, pattern, self.scheduler_entries.iter())
+    }
+}
+
+/// Read-only observable run state at one deterministic evaluation point.
+///
+/// The view is derived only from a checked scheduler event-log prefix. It
+/// exposes black-box observable events plus explicit ordering facts;
+/// raw scheduler entries, RNG draws, app-random draws, host-worker state, and
+/// wall-clock data are not part of this API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObservedState<'log> {
+    pub(super) point: EventEvaluationPoint,
+    pub(super) event_log_offset: EventLogOffset,
+    pub(super) observable_events: &'log crate::History<ObservableEvent>,
+    pub(super) point_events: &'log PointObservationIndex,
+    pub(super) ordering_facts: &'log crate::History<ObservedOrderingFact>,
+}
+
+impl<'log> ObservedState<'log> {
+    /// Returns the deterministic evaluation point for this view.
+    #[must_use]
+    pub fn point(self) -> EventEvaluationPoint {
+        self.point
+    }
+
+    /// Returns the virtual time where this view is evaluated.
+    #[must_use]
+    pub fn at(self) -> VirtualTime {
+        self.point.at()
+    }
+
+    /// Returns the event-log prefix identity backing this view.
+    #[must_use]
+    pub fn event_log_offset(self) -> EventLogOffset {
+        self.event_log_offset
+    }
+
+    /// Returns black-box observable events in deterministic log order.
+    #[must_use]
+    pub fn observable_events(self) -> &'log crate::History<ObservableEvent> {
+        self.observable_events
+    }
+
+    /// Returns scheduler ordering facts in deterministic log order.
+    #[must_use]
+    pub fn ordering_facts(self) -> &'log crate::History<ObservedOrderingFact> {
+        self.ordering_facts
+    }
+
+    /// Returns the observable events at this view's virtual time.
+    pub(crate) fn observable_events_at_point(
+        self,
+    ) -> Box<dyn Iterator<Item = &'log ObservableEvent> + 'log> {
+        observable_events_at(self.point_events, self.observable_events, self.at())
+    }
+
+    /// Reports whether a block covering `address` on `node` ran before this point.
+    pub(crate) fn coverage_seen_before(self, node: &NodeId, address: u64) -> bool {
+        coverage_seen_before(
+            self.point_events,
+            self.observable_events,
+            node,
+            address,
+            self.at(),
+        )
+    }
+}
+
+/// Cross-node ordering information exposed to property predicates.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ObservedOrderingFact {
+    /// A scheduled event was resolved at this prefix position.
+    ResolvedHappening {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Deterministic scheduler key for the resolved event.
+        key: ScheduledEventKey,
+        /// Resolve class without payload-specific data.
+        class: ScheduledEventResolveClass,
+    },
+    /// A total delivery order was chosen for one virtual time.
+    DeliveryOrder {
+        /// Dense event-log sequence where the fact was recorded.
+        sequence: u64,
+        /// Virtual time of the event-log entry.
+        at: VirtualTime,
+        /// Ordered event keys recorded by the delivery decision.
+        order: Vec<EventKey>,
+    },
+}

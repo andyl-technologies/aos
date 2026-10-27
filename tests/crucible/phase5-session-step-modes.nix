@@ -29,7 +29,7 @@
         needle = "`T-SESS-5` is green through `checks.crucible.phase5.sessionStepModes`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "duration step mode";
         needle = "Duration(SimDuration)";
@@ -88,8 +88,11 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase5-session-step-modes";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.sed
         ]

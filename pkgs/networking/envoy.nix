@@ -134,10 +134,15 @@
     if isCross
     then buildPackages.cmake
     else cmake;
+  # Ninja otherwise launches commands through the absent host /bin/sh.
+  # Scope the compatibility tool to Envoy so compiler identities stay stable.
   buildNinja =
-    if isCross
-    then buildPackages.ninja
-    else ninja;
+    (
+      if isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildBash;
   buildGrep =
     if isCross
     then buildPackages.grep

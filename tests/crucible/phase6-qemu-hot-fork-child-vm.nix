@@ -15,7 +15,7 @@
     pname = "crucible-qemu-live-hot-fork-child";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-live-hot-fork-child = "build --release -p crucible-qemu --example crucible-qemu-live-hot-fork-child";
+      crucible-qemu-live-hot-fork-child = "build --release -p crucible-qemu-host --example crucible-qemu-live-hot-fork-child";
     };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};

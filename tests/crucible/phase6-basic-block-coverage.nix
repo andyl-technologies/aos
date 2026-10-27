@@ -17,10 +17,10 @@ in
         script = ''
           set -eu
           crucible-cargo test \
-            -p crucible \
+            -p crucible-engine \
             --test gate_basic_block_coverage -- --test-threads=1
           crucible-cargo test \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             mapped_quantum::coverage_tests --lib -- --test-threads=1
           crucible-cargo test \
             -p crucible-qemu-plugin \

@@ -1,0 +1,130 @@
+//! Bounded private-child evidence captured before failed admission quarantine.
+//!
+//! These observations explain transport failures; they never authenticate a
+//! child, change reconciliation, release resources, or supply a waitpid result.
+
+use std::fmt;
+use std::os::unix::ffi::OsStrExt;
+
+use super::*;
+
+const MAX_REPORTED_STDERR_BYTES: usize = 16 * 1024;
+const MAX_REPORTED_ERROR_BYTES: usize = 512;
+const MAX_REPORTED_EXECUTABLE_BYTES: usize = 4096;
+
+/// Advisory evidence retained alongside the original child-admission error.
+#[derive(Debug)]
+pub struct ChildAdmissionFailureReport {
+    basis: QemuHotForkChildProcessBasis,
+    identity: QemuProcessIdentity,
+    descriptor_name: crucible_qemu_host::QmpDescriptorName,
+    socket_cookie: u64,
+    template_generation: u64,
+    stderr_bytes: u64,
+    stderr_tail: Vec<u8>,
+    drain: Result<crucible_qemu_host::QemuHotForkChildDiagnosticDrain, BoundedErrorText>,
+    terminal_readiness: Result<bool, BoundedErrorText>,
+}
+
+impl fmt::Display for ChildAdmissionFailureReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "source_pid={} child_pid={} process_start_ticks={} request={:?} \
+             descriptor={:?} socket_cookie={} template_generation={} \
+             pidfd_terminal_readiness={:?} exit_code=unobserved drain={:?} \
+             stderr_bytes={} omitted_prefix_bytes={} executable=\"",
+            self.basis.source_process_id(),
+            self.basis.child_process_id(),
+            self.identity.start_time_ticks,
+            self.basis.request(),
+            self.descriptor_name,
+            self.socket_cookie,
+            self.template_generation,
+            self.terminal_readiness,
+            self.drain,
+            self.stderr_bytes,
+            self.stderr_bytes
+                .saturating_sub(u64::try_from(self.stderr_tail.len()).unwrap_or(u64::MAX)),
+        )?;
+        let executable = self.identity.executable.as_os_str().as_bytes();
+        write_escaped(
+            formatter,
+            &executable[..executable.len().min(MAX_REPORTED_EXECUTABLE_BYTES)],
+        )?;
+        write!(
+            formatter,
+            "\" executable_omitted_bytes={} private_stderr_tail=\"",
+            executable
+                .len()
+                .saturating_sub(MAX_REPORTED_EXECUTABLE_BYTES),
+        )?;
+        write_escaped(formatter, &self.stderr_tail)?;
+        formatter.write_str("\"")
+    }
+}
+
+fn write_escaped(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for byte in bytes {
+        for escaped in std::ascii::escape_default(*byte) {
+            write!(formatter, "{}", char::from(escaped))?;
+        }
+    }
+    Ok(())
+}
+
+/// An observation error rendered to bounded text for the advisory report.
+///
+/// The report outlives the borrowed consumer and must not retain the original
+/// error, so only its display form is kept. `Debug` matches a plain string so
+/// the report text is unchanged.
+struct BoundedErrorText(String);
+
+impl fmt::Debug for BoundedErrorText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, formatter)
+    }
+}
+
+fn bounded_error(error: impl fmt::Display) -> BoundedErrorText {
+    let error = error.to_string();
+    if error.len() <= MAX_REPORTED_ERROR_BYTES {
+        return BoundedErrorText(error);
+    }
+    let mut end = MAX_REPORTED_ERROR_BYTES;
+    while !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    BoundedErrorText(format!(
+        "{} [omitted {} bytes]",
+        &error[..end],
+        error.len() - end
+    ))
+}
+
+pub(super) fn capture(
+    consumer: &mut QemuHotForkChildDiagnosticConsumer,
+    basis: QemuHotForkChildProcessBasis,
+    identity: &QemuProcessIdentity,
+    observe_terminal: impl FnOnce() -> Result<bool, QemuVmRealizationError>,
+) -> ChildAdmissionFailureReport {
+    // A drain error remains visible while the bytes already retained stay
+    // owned by the consumer. No finalization or EOF wait is attempted.
+    let drain = consumer.drain_available().map_err(bounded_error);
+    let bytes = consumer.retained_tail();
+    let tail_start = bytes.len().saturating_sub(MAX_REPORTED_STDERR_BYTES);
+    ChildAdmissionFailureReport {
+        basis,
+        identity: identity.clone(),
+        descriptor_name: consumer.descriptor_name().clone(),
+        socket_cookie: consumer.socket_cookie(),
+        template_generation: consumer.template_generation(),
+        stderr_bytes: consumer.stream_bytes(),
+        stderr_tail: bytes[tail_start..].to_vec(),
+        drain,
+        terminal_readiness: observe_terminal().map_err(bounded_error),
+    }
+}
+
+#[cfg(test)]
+mod tests;

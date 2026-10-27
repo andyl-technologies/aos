@@ -31,7 +31,7 @@
         needle = "Typed signal coordinates prevent negative time";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "typed unsigned virtual time";
         needle = "pub struct VirtualTime";
@@ -69,7 +69,7 @@
         needle = ".validate_for_world(world)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "focused duplicate and graph-count admission test";
         needle = "fn one_plan_level_graph_is_required_and_duplicates_fail_closed()";
@@ -104,7 +104,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-plan-validation";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -115,7 +118,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               fault_signal::plan_test \
               -- --test-threads=1

@@ -9,18 +9,27 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  eventLogStream = builtins.readFile ../../crates/crucible-api/src/event_log_stream.rs;
-  streaming = import ./_rust-module-source.nix {
+  apiLib = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/streaming.rs;
+    component = "exports";
   };
-  client = builtins.readFile ../../crates/crucible-api/src/client.rs;
+  eventLogStream = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "event_log_stream";
+  };
+  streaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
+  client = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   session = import ./_crucible-session-source.nix {inherit lib;};
-  streamingCursorTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_cursor.rs;
+  streamingCursorTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_streaming_cursor.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -45,7 +54,7 @@
         needle = "`T-API-6` is green through `checks.crucible.phase5.apiStreamingCursor`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "attach snapshot re-exported";
         needle = "AttachSnapshot";
@@ -59,7 +68,7 @@
         needle = "SessionEventLogSnapshot";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/event_log_stream.rs" eventLogStream [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/event_log_stream.rs" eventLogStream [
       {
         label = "attach-tail subscription";
         needle = "subscribe_with_replay_tail";
@@ -69,7 +78,7 @@
         needle = "snapshot_through";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "snapshot-on-attach capability";
         needle = "snapshot_on_attach";
@@ -95,7 +104,7 @@
         needle = "EventStreamLagged";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" client [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" client [
       {
         label = "ControlClient attach returns a stream handle";
         needle = "ClientControlStream";
@@ -121,7 +130,7 @@
         needle = ''"snapshot="'';
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "session event-log snapshot";
         needle = "pub struct SessionEventLogSnapshot";
@@ -139,7 +148,7 @@
         needle = "append_event_log_entries_for_test";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_streaming_cursor.rs" streamingCursorTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_streaming_cursor.rs" streamingCursorTest [
       {
         label = "replay/live-tail test";
         needle = "streaming_cursor_replays_then_live_tails_api_events";
@@ -157,7 +166,7 @@
         needle = "attach beyond current length should skip historical replay";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control event receive coverage";
         needle = "recv_rpc_control_event";
@@ -215,7 +224,7 @@ in
 
           cd crates
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_streaming_cursor \
             -- --test-threads=1
         '';

@@ -7,20 +7,20 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   shmemContract = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/lib.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+      entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
     })
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/layout.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/runtime.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region/layout.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/layout.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/runtime.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/region/layout.rs)
   ];
-  generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
-  multiVcpuTest = builtins.readFile ../../crates/crucible-shmem/tests/multi_vcpu_node_slot.rs;
-  deadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  fingerprintObservation = builtins.readFile ../../crates/crucible-harness/src/fingerprint/observation.rs;
+  generatedHeader = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
+  multiVcpuTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs;
+  deadline = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/deadline.rs;
+  fingerprintObservation = builtins.readFile ../../crates/crucible/crucible-test-support/src/fingerprint/observation.rs;
   timeGate = builtins.readFile ./phase1-time-multi-vcpu-aggregate-clock.nix;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
@@ -59,7 +59,7 @@
   ];
 
   failures =
-    failuresFor "crates/crucible-shmem source modules" shmemContract [
+    failuresFor "crates/crucible/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
         needle = "pub const ABI_VERSION: u32 = 32;";
@@ -101,8 +101,8 @@
         needle = "pub fn publish_idle(";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem source modules" shmemContract perVcpuShmemForbidden
-    ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem source modules" shmemContract perVcpuShmemForbidden
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h" generatedHeader [
       {
         label = "C node slot declaration";
         needle = "crucible_shmem_node_slot";
@@ -124,8 +124,8 @@
         needle = "CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET 38u";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader perVcpuShmemForbidden
-    ++ failuresFor "crates/crucible-shmem/tests/multi_vcpu_node_slot.rs" multiVcpuTest [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h" generatedHeader perVcpuShmemForbidden
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs" multiVcpuTest [
       {
         label = "multi-vCPU shape invariance test";
         needle = "multi_vcpu_count_does_not_change_region_shape_or_abi_version";
@@ -147,7 +147,7 @@
         needle = "per_vcpu_deadlines.iter().min()";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/multi_vcpu_node_slot.rs" multiVcpuTest [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs" multiVcpuTest [
       {
         label = "ignored multi-vCPU shmem ABI test";
         needle = "#[ignore";
@@ -157,7 +157,7 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" deadline [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/deadline.rs" deadline [
       {
         label = "multi-vCPU deadline reducer";
         needle = "pub fn aggregate_multi_vcpu_deadline";
@@ -171,7 +171,7 @@
         needle = "pub struct PerVcpuDeadlineReport";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/fingerprint/observation.rs" fingerprintObservation [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/fingerprint/observation.rs" fingerprintObservation [
       {
         label = "per-vCPU register state is fingerprint observation";
         needle = "pub struct VcpuRegisterDigest";
@@ -250,7 +250,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test multi_vcpu_node_slot \
               -- --test-threads=1
           '';

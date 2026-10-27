@@ -11,19 +11,19 @@
   blockModule =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-device/src/block.rs;
+      entry = ../../crates/crucible/crucible-device/src/block.rs;
       siblingTests = true;
     }
-    + builtins.readFile ../../crates/crucible-device/src/block_overlay_codec_test.rs
-    + builtins.readFile ../../crates/crucible-device/src/block_snapshot_array_test.rs;
-  overlay = builtins.readFile ../../crates/crucible-device/src/block/overlay.rs;
-  overlayImage = builtins.readFile ../../crates/crucible-device/src/block/overlay_image.rs;
+    + builtins.readFile ../../crates/crucible/crucible-device/src/block_overlay_codec_test.rs
+    + builtins.readFile ../../crates/crucible/crucible-device/src/block_snapshot_array_test.rs;
+  overlay = builtins.readFile ../../crates/crucible/crucible-device/src/block/overlay.rs;
+  overlayImage = builtins.readFile ../../crates/crucible/crucible-device/src/block/overlay_image.rs;
   device =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-device/src/block/device.rs;
+      entry = ../../crates/crucible/crucible-device/src/block/device.rs;
     }
-    + builtins.readFile ../../crates/crucible-device/src/block/device/snapshot.rs;
+    + builtins.readFile ../../crates/crucible/crucible-device/src/block/device/snapshot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -90,7 +90,7 @@
         needle = "Dirty tracking records only the dirty pages since the last checkpoint boundary";
       }
     ]
-    ++ failuresFor "crates/crucible-device/src/block/overlay.rs" overlay [
+    ++ failuresFor "crates/crucible/crucible-device/src/block/overlay.rs" overlay [
       {
         label = "base image type";
         needle = "pub struct BaseImage";
@@ -160,7 +160,7 @@
         needle = "None => page[..span].copy_from_slice(&base.read_page(page_base)[..span]),";
       }
     ]
-    ++ forbiddenFor "crates/crucible-device/src/block/overlay.rs" overlay [
+    ++ forbiddenFor "crates/crucible/crucible-device/src/block/overlay.rs" overlay [
       {
         label = "unordered overlay map";
         needle = "HashMap";
@@ -174,7 +174,7 @@
         needle = "bytes_mut";
       }
     ]
-    ++ failuresFor "crates/crucible-device/src/block/overlay_image.rs" overlayImage [
+    ++ failuresFor "crates/crucible/crucible-device/src/block/overlay_image.rs" overlayImage [
       {
         label = "chunked overlay image type";
         needle = "pub struct BlockOverlayImage";
@@ -200,7 +200,7 @@
         needle = "dirty.insert(*index, chunk.dirty);";
       }
     ]
-    ++ forbiddenFor "crates/crucible-device/src/block/overlay_image.rs" overlayImage [
+    ++ forbiddenFor "crates/crucible/crucible-device/src/block/overlay_image.rs" overlayImage [
       {
         label = "unordered image chunk map";
         needle = "HashMap";
@@ -210,7 +210,7 @@
         needle = "HashSet";
       }
     ]
-    ++ failuresFor "crates/crucible-device/src/block/device.rs" device [
+    ++ failuresFor "crates/crucible/crucible-device/src/block/device.rs" device [
       {
         label = "block snapshot type";
         needle = "pub struct BlockSnapshot";
@@ -244,7 +244,7 @@
         needle = "self.overlay.materialize_to(&self.base, output)";
       }
     ]
-    ++ failuresFor "crates/crucible-device/src/block.rs" blockModule [
+    ++ failuresFor "crates/crucible/crucible-device/src/block.rs" blockModule [
       {
         label = "fall-through read test";
         needle = "read_falls_through_to_base_when_overlay_empty";

@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  schedulerActorTest = builtins.readFile ../../crates/crucible/tests/scheduler_actor.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  schedulerActorTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_actor.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerActor`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler actor";
         needle = "pub struct SchedulerActor";
@@ -88,7 +88,7 @@
         needle = "scheduler lock spans node advance";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "scheduler actor export";
         needle = "SchedulerActor";
@@ -98,7 +98,7 @@
         needle = "SchedulerActorStateSnapshot";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_actor.rs" schedulerActorTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_actor.rs" schedulerActorTest [
       {
         label = "control inbox boundary test";
         needle = "scheduler_actor_drains_message_control_inbox_at_quantum_boundary";
@@ -133,7 +133,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-actor";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -145,7 +148,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_actor \
               -- --test-threads=1
           '';

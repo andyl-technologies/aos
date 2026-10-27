@@ -8,8 +8,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  rrSubdivisionTest = builtins.readFile ../../crates/crucible/tests/scheduler_rr_subdivision.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  rrSubdivisionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -39,7 +39,7 @@
         needle = "single-vCPU";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "RR subdivision policy";
         needle = "pub struct SchedulerRunSubdivisionPolicy";
@@ -85,7 +85,7 @@
         needle = "self.scheduler.publish_run_ceiling(";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "policy exported";
         needle = "SchedulerRunSubdivisionPolicy";
@@ -103,7 +103,7 @@
         needle = "scheduler_rr_run_subdivision";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
       {
         label = "focused scheduler RR subdivision test";
         needle = "scheduler RR subdivision inside RUN";
@@ -145,7 +145,7 @@
         needle = "assert_eq!(&record.ceiling, ceiling)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -168,7 +168,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-rr-subdivision";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -180,7 +183,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_rr_subdivision \
               -- --test-threads=1
           '';

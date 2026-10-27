@@ -7,15 +7,15 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginBootBarrier = builtins.readFile ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
+  pluginBootBarrier = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/boot_barrier.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+      entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
     };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
@@ -41,7 +41,7 @@
   ];
 
   failures =
-    forbiddenFor "crates/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier
+    forbiddenFor "crates/crucible/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier
     (map (needle: {
         label = "host wall-clock or sleep fallback";
         inherit needle;
@@ -75,7 +75,7 @@
         needle = "read-counter / re-check / wait idiom";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "zero initial ceiling";
         needle = "max_advance_icount: AtomicU64::new(0)";
@@ -93,7 +93,7 @@
         needle = "pub fn load_scheduler_advance";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "boot barrier module";
         needle = "pub mod boot_barrier;";
@@ -111,7 +111,7 @@
         needle = "PluginReadySetupAck";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier [
       {
         label = "first guest icount constant";
         needle = "pub const BOOT_BARRIER_FIRST_GUEST_ICOUNT: u64 = 1;";
@@ -165,7 +165,7 @@
         needle = "boot_barrier_prepares_futex_wait_with_initial_ceiling_zero";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration wait method";
         needle = "pub fn wait_boot_barrier";
@@ -207,7 +207,7 @@
         needle = "registration_order_waits_boot_barrier_before_first_instruction";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "boot barrier before first instruction in canonical order";
         needle = "PluginRegistrationStep::WaitBootBarrier,\n    PluginRegistrationStep::FirstVisibleInstruction";
@@ -225,6 +225,8 @@ in
   else
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-boot-barrier";
+
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sed

@@ -30,7 +30,7 @@ in
           set -eu
 
           crucible-cargo test \
-            -p crucible-cas \
+            -p crucible-store \
             --features test-support \
             --test gate_campaign_store_equivalence \
             -- --test-threads=1
@@ -38,7 +38,7 @@ in
           # The fake service is the deterministic emulator for multipart,
           # pagination, versioned ref CAS, failure, and cleanup semantics.
           s3_listing=$(crucible-cargo test \
-            -p crucible-cas \
+            -p crucible-store \
             --lib content_store::s3 \
             -- --list)
           for expected_test in \
@@ -48,7 +48,7 @@ in
             printf '%s\n' "$s3_listing" | grep -Fqx "$expected_test: test"
           done
           crucible-cargo test \
-            -p crucible-cas \
+            -p crucible-store \
             --lib content_store::s3 \
             -- --test-threads=1
 
@@ -143,7 +143,7 @@ in
           export CRUCIBLE_S3_TEST_BUCKET=crucible-conformance
           export CRUCIBLE_S3_TEST_PREFIX=phase5-equivalence
           crucible-cargo test \
-            -p crucible-s3-store \
+            -p crucible-store-s3 \
             --test live_conformance \
             -- --ignored --test-threads=1
 

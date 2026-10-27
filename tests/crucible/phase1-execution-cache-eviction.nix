@@ -13,7 +13,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-session/src/lib.rs" session [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "runtime cache field";
         needle = "runtime: Option<RuntimeState>";
@@ -84,7 +84,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-16 completion note";
-        needle = "Completed by `crates/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`";
+        needle = "Completed by `crates/crucible/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`";
       }
     ];
 in
@@ -97,6 +97,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.sed
+        pkgs.sqlite
       ];
 
       phases = [

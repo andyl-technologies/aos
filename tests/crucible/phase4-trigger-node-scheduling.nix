@@ -8,7 +8,7 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  nodeSchedulingTest = builtins.readFile ../../crates/crucible/tests/trigger_node_scheduling.rs;
+  nodeSchedulingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/trigger_node_scheduling.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scenario carries trigger static topology";
         needle = "pub trigger_static_topology: Option<WorldStaticTopology>";
@@ -69,7 +69,7 @@
         needle = "self.trigger_static_topology.as_ref()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "graph validation can inspect world static topology";
         needle = "WorldStaticTopology";
@@ -111,7 +111,7 @@
         needle = "UnbakedNodeScheduleTarget";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/trigger_node_scheduling.rs" nodeSchedulingTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/trigger_node_scheduling.rs" nodeSchedulingTest [
       {
         label = "valid node scheduling topology test";
         needle = "start_stop_schedule_declared_baked_nodes_without_topology_mutation";
@@ -212,7 +212,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-trigger-node-scheduling";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -222,7 +225,7 @@ in
           name = "run-trigger-node-scheduling";
           script = ''
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test trigger_node_scheduling \
               -- --test-threads=1
           '';

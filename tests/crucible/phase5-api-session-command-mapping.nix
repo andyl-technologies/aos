@@ -9,9 +9,12 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  sessionMapping = builtins.readFile ../../crates/crucible-api/src/session_mapping.rs;
-  sessionMappingTest = builtins.readFile ../../crates/crucible-api/tests/gate_session_mapping.rs;
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  sessionMapping = builtins.readFile ../../crates/crucible/crucible-control-api/src/session_mapping.rs;
+  sessionMappingTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_session_mapping.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -31,7 +34,7 @@
         needle = "`T-API-2` is green through `checks.crucible.phase5.apiSessionCommandMapping`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "session mapping module exported";
         needle = "pub mod session_mapping";
@@ -41,7 +44,7 @@
         needle = "validate_thin_api_mapping";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/session_mapping.rs" sessionMapping [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/session_mapping.rs" sessionMapping [
       {
         label = "API method enum";
         needle = "pub enum ApiMethod";
@@ -91,7 +94,7 @@
         needle = "pub fn validate_thin_api_mapping";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_session_mapping.rs" sessionMappingTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_session_mapping.rs" sessionMappingTest [
       {
         label = "thin wrapper validation test";
         needle = "api_session_mapping_validates_thin_wrapper_contract";
@@ -149,7 +152,7 @@ in
 
           cd crates
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-api \
             --test gate_session_mapping \
             -- --test-threads=1
         '';

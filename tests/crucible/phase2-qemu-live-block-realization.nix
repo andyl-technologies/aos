@@ -14,12 +14,13 @@
   probe = mkCrucibleBinaries {
     pname = "crucible-qemu-live-block-realization";
     builds = [workspaceTests.apacheTests];
-    executables.crucible-qemu-live-block-realization = "build -p crucible-qemu --example crucible-qemu-live-block-realization";
+    executables.crucible-qemu-live-block-realization = "build -p crucible-qemu-host --example crucible-qemu-live-block-realization";
   };
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   runtimeInputs = [
+    pkgs.sqlite
     pkgs.coreutils
     pkgs.grep
     pkgs.qemu-crucible

@@ -11,9 +11,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  minimizationTest = builtins.readFile ../../crates/crucible/tests/gate_minimization.rs;
+  minimizationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_minimization.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -44,7 +44,7 @@
         needle = "candidate-shrink order MUST\n  be a seeded, content-address-tie-broken function";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "minimization config";
         needle = "pub struct MinimizationConfig";
@@ -82,7 +82,7 @@
         needle = "FindingReproductionArtifact::capture";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libRs [
       {
         label = "minimization config export";
         needle = "MinimizationConfig";
@@ -96,7 +96,7 @@
         needle = "MinimizationRun";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_minimization.rs" minimizationTest [
       {
         label = "deterministic shrink gate";
         needle = "gate_minimization_shrinks_schedule_and_rng_decisions_deterministically";
@@ -168,7 +168,7 @@
         needle = "phase6.reproductionArtifacts";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_minimization.rs" minimizationTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -185,7 +185,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-minimization";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -198,7 +201,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_minimization \
               -- --test-threads=1
           '';

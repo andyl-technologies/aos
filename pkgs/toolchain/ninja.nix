@@ -4,15 +4,77 @@
   mkDerivation,
   fetchurl,
   gnumake,
-  bash,
+  commandShell ? null,
 }: let
   version = "1.13.2";
+
+  # Exercises dispatch through the declared shell: pipelines, redirection,
+  # incremental no-work runs, and failed-command propagation.
+  shellDispatchCheck = {
+    name = "check";
+    script = ''
+      mkdir shell-dispatch-check
+      cd shell-dispatch-check
+
+      cat > build.ninja <<'EOF'
+      rule declared_shell
+        command = printf '%s\n' 'hermetic shell dispatch' | tr 'a-z' 'A-Z' > "$out"
+      build success: declared_shell
+      default success
+      EOF
+
+      ../ninja -v
+      test "$(cat success)" = 'HERMETIC SHELL DISPATCH'
+      ../ninja -v > incremental.log
+      grep -F 'ninja: no work to do.' incremental.log
+
+      cat > failure.ninja <<'EOF'
+      rule refused
+        command = exit 7
+      build refused: refused
+      EOF
+
+      if ../ninja -f failure.ninja > failure.log 2>&1; then
+        cat failure.log
+        exit 1
+      fi
+      grep -F 'FAILED: [code=7] refused' failure.log
+      cd ..
+    '';
+  };
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       role = "public-package";
     };
     pname = "ninja";
@@ -73,7 +135,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [bash];
+    runtimeDeps = lib.optional (commandShell != null) commandShell;
     propagatedDeps = [];
 
     phases = [
@@ -86,15 +148,16 @@ in
       }
       {
         name = "configure";
-        script = ''
-          # Retain sh/POSIX invocation semantics without a host shell path.
-          test "$(grep -F -c 'const char* spawned_args[] = { "/bin/sh", "-c", command.c_str(), NULL };' src/subprocess-posix.cc)" -eq 1
-          test "$(grep -F -c 'err = posix_spawn(&pid_, "/bin/sh", &action, &attr,' src/subprocess-posix.cc)" -eq 1
-          sed -i \
-            -e 's|{ "/bin/sh", "-c", command.c_str(), NULL }|{ "sh", "-c", command.c_str(), NULL }|' \
-            -e 's|posix_spawn(&pid_, "/bin/sh",|posix_spawn(\&pid_, "${bash}/bin/bash",|' \
-            src/subprocess-posix.cc
-        '';
+        script =
+          ''
+            # No configure step — ninja is bootstrapped directly from C++ sources
+            true
+          ''
+          + lib.optionalString (commandShell != null) ''
+            # Some source builders execute shell commands in a sandbox without
+            # host /bin/sh. Opt in without changing ordinary toolchain identities.
+            sed -i 's|/bin/sh|${commandShell}/bin/bash|g' src/subprocess-posix.cc
+          '';
       }
       {
         name = "build";
@@ -119,38 +182,9 @@ in
           $CXX ''${CXXFLAGS:-} -Isrc -o ninja $srcs -lpthread
         '';
       }
-      {
-        name = "check";
-        script = ''
-          mkdir shell-dispatch-check
-          cd shell-dispatch-check
-
-          cat > build.ninja <<'EOF'
-          rule posix_shell
-            command = test "$$0" = sh && case ":$$SHELLOPTS:" in *:posix:*) ;; *) exit 1 ;; esac && printf '%s\n' 'hermetic shell dispatch' | tr 'a-z' 'A-Z' > "$out"
-          build success: posix_shell
-          default success
-          EOF
-
-          ../ninja -v
-          test "$(cat success)" = 'HERMETIC SHELL DISPATCH'
-          ../ninja -v > incremental.log
-          grep -F 'ninja: no work to do.' incremental.log
-
-          cat > failure.ninja <<'EOF'
-          rule refused
-            command = exit 7
-          build refused: refused
-          EOF
-
-          if ../ninja -f failure.ninja > failure.log 2>&1; then
-            cat failure.log
-            exit 1
-          fi
-          grep -F 'FAILED: [code=7] refused' failure.log
-          cd ..
-        '';
-      }
+    ]
+    ++ lib.optional (commandShell != null) shellDispatchCheck
+    ++ [
       {
         name = "install";
         script = ''
@@ -159,6 +193,14 @@ in
         '';
       }
     ];
+
+    # mkDerivation.override changes final attributes rather than package inputs.
+    # Keep this factory explicit so the source patch and runtime closure agree.
+    passthru.withCommandShell = shell:
+      import ./ninja.nix {
+        inherit lib mkDerivation fetchurl gnumake;
+        commandShell = shell;
+      };
 
     meta = {
       description = "Small build system with a focus on speed";

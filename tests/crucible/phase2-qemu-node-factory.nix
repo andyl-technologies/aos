@@ -6,16 +6,16 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  nodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
-  restorePlan = builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs;
-  realization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
-  bakedReplay = builtins.readFile ../../crates/crucible-daemon/src/qemu_baked_genesis.rs;
+  nodeFactory = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_factory.rs;
+  restorePlan = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_factory/restore_plan.rs;
+  realization = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/realization.rs;
+  bakedReplay = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   currentSources = nodeFactory + restorePlan + realization + bakedReplay;
   failures =
-    failuresFor "crates/crucible-qemu/src/node_factory/restore_plan.rs" restorePlan [
+    failuresFor "crates/crucible/crucible-qemu-host/src/node_factory/restore_plan.rs" restorePlan [
       {
         label = "complete exact restore plan";
         needle = "pub(crate) struct QemuNodeRestorePlan<'a>";
@@ -45,7 +45,7 @@
         needle = "fn descriptor_validation_rejects_unsealed_device_state()";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node_factory.rs" nodeFactory [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node_factory.rs" nodeFactory [
       {
         label = "restored checkpoint factory";
         needle = "pub(crate) fn build_qemu_node_from_restored_checkpoint<";
@@ -59,7 +59,7 @@
         needle = ".restore_exact_checkpoint(exact_checkpoint.request)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" realization [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/realization.rs" realization [
       {
         label = "crate-private baked admission";
         needle = "pub(crate) struct QemuBakedGenesisRestoreAdmission<'a>";
@@ -69,7 +69,7 @@
         needle = "validate_baked_genesis_snapshot(snapshot, world)?;";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_baked_genesis.rs" bakedReplay [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs" bakedReplay [
       {
         label = "operation-specific baked replay catalog";
         needle = "pub struct ProductionBakedGenesisReplayCatalogFactory<R>";
@@ -114,7 +114,7 @@ in
           name = "run-node-factory-tests";
           script = ''
             crucible-cargo test \
-              -p crucible-qemu --lib node_factory -- --test-threads=1
+              -p crucible-qemu-host --lib node_factory -- --test-threads=1
           '';
         }
         {

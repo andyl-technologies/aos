@@ -8,8 +8,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
-  coverageTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -30,7 +30,7 @@
         needle = "`checks.crucible.phase1.spatialPropertiesComponent`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "properties type";
         needle = "pub struct Properties";
@@ -110,9 +110,9 @@
         pub id: ContentHash,
       ''
       model) [
-      "crates/crucible/src/model.rs: properties identity field must not be public"
+      "crates/crucible/crucible-engine/src/model.rs: properties identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "properties content-address test";
         needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
@@ -134,7 +134,7 @@
         needle = "assert_scenario_material_points_at_properties(&amended);";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "test rejects undeclared property predicate node";
         needle = "Err(EngineError::PropertyPredicateUnknownNode";
@@ -153,7 +153,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-properties-component";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -164,13 +167,13 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test property_fingerprint_neutrality \
               property_changes_move_scenario_identity_without_moving_run_material \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test coverage_condition_leaf \
               coverage_point_properties_validate_referenced_nodes \
               -- --test-threads=1

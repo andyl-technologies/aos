@@ -1,5 +1,11 @@
 # 18 — Assertions and properties
 
+Runtime assertion semantics and evaluation are owned by `crucible-engine`.
+The small digest/order/decision-stream vocabulary used by determinism gates is
+owned by `crucible_test_support::assertion`; it is test support rather than a
+separate runtime assertion library. Its historical `crucible-assert.v1` report
+identifier remains stable despite the package consolidation.
+
 This file specifies how Crucible *checks* a run: the vocabulary of temporal
 properties an author declares over a scenario, where those properties draw their
 truth from, when and in what order they are evaluated, what a violation carries,

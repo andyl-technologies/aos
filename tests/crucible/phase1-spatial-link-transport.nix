@@ -24,7 +24,7 @@
         needle = "`LinkLossProbability` stores loss as fixed-point millionths";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "minimum link latency";
         needle = "pub const MIN_LINK_LATENCY: SimDuration";
@@ -102,7 +102,7 @@
         needle = "link_bandwidth_bps={}";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "loss type exported";
         needle = "LinkLossProbability";
@@ -133,7 +133,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-link-transport";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -144,7 +147,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_link_transport \
               -- --test-threads=1

@@ -8,8 +8,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
-  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
+  planTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -30,7 +30,7 @@
         needle = "`checks.crucible.phase1.spatialScenarioDefValue`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "executable scenario handle";
         needle = "pub struct ScenarioDef";
@@ -128,7 +128,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "public scenario id field";
         needle = "pub id: ContentHash,\n    /// The root entropy carried by this scenario definition.";
@@ -154,7 +154,7 @@
         needle = "UNIX_EPOCH";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_graph_serialization.rs" planTest [
       {
         label = "focused scenario component value test";
         needle = "fn graph_plan_is_the_scenario_plan_component()";
@@ -176,7 +176,7 @@
         needle = "assert_ne!(changed_world_form.id(), changed_properties_form.id())";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "test proves properties identity sensitivity";
         needle = "property amendment must move the scenario hash";
@@ -186,7 +186,7 @@
         needle = "assert_same_run_components(&removed, &declared);";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "test rejects host image path";
         needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/kernel\")";
@@ -205,7 +205,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-scenario-def-value";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -216,12 +219,12 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test property_fingerprint_neutrality \
               property_changes_move_scenario_identity_without_moving_run_material \

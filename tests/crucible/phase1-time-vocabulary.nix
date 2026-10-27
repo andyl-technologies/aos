@@ -13,7 +13,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "icount type";
         needle = "pub struct Icount";
@@ -83,7 +83,7 @@
         needle = "pub enum TimeConversionError";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "point plus point implementation";
         needle = "impl ops::Add<VirtualInstant> for VirtualInstant";
@@ -101,7 +101,7 @@
         needle = "f32";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "SimDuration export";
         needle = "SimDuration,";
@@ -140,7 +140,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-time-vocabulary";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -152,7 +155,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --test-threads=1
           '';

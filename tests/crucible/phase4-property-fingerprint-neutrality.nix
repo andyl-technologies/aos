@@ -7,7 +7,7 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  neutralityTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
+  neutralityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,7 +21,7 @@
         needle = "Completed by `checks.crucible.phase4.propertyFingerprintNeutrality`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario material helper";
         needle = "fn scenario_world_plan_properties_seed_material";
@@ -47,7 +47,7 @@
         needle = "pub fn seed(&self) -> Seed";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" neutralityTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
       {
         label = "identity and neutrality test";
         needle = "property_changes_move_scenario_identity_without_moving_run_material";
@@ -123,7 +123,7 @@
         needle = "attrPath = \"checks.crucible.phase4.propertyFingerprintNeutrality\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/property_fingerprint_neutrality.rs" neutralityTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -144,7 +144,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-property-fingerprint-neutrality";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -157,7 +160,7 @@ in
             cd crates
             crucible-cargo test \
               --features test-double \
-              -p crucible \
+              -p crucible-engine \
               --test property_fingerprint_neutrality \
               -- --test-threads=1
           '';

@@ -7,8 +7,8 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  proximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
-  evaluationOrderTest = builtins.readFile ../../crates/crucible/tests/assertion_evaluation_order.rs;
+  proximityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs;
+  evaluationOrderTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_evaluation_order.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
@@ -48,7 +48,7 @@
         needle = "AssertionProximity— the distance-to-assertion metric defined in 18";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "proximity report type";
         needle = "pub struct HostAssertionProximity";
@@ -90,7 +90,7 @@
         needle = "fn property_proximity_is_reportable";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_proximity_gradient.rs" proximityTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs" proximityTest [
       {
         label = "T-ASRT-18 regression module";
         needle = "Checks T-ASRT-18 assertion proximity gradient reporting.";
@@ -124,7 +124,7 @@
         needle = "assert_eq!(proximity.distance, 3);";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_evaluation_order.rs" evaluationOrderTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_evaluation_order.rs" evaluationOrderTest [
       {
         label = "proximity does not re-enter named leaves";
         needle = "eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point";
@@ -140,7 +140,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionProximityGradient\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_proximity_gradient.rs" proximityTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs" proximityTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -161,7 +161,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-proximity-gradient";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -173,7 +176,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test assertion_proximity_gradient \
               --test assertion_evaluation_order \

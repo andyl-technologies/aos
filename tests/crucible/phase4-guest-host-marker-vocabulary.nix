@@ -8,40 +8,40 @@
 
   protocolLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/lib.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   };
   protocolMarker = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/doorbell_marker.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs;
   };
   protocolGateAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   };
   protocolGoldenTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/golden_vectors.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
   };
   protocolCodecTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/codec.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/codec.rs;
   };
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   engineTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
   engineGateAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/gate_abi_conformance.rs;
   };
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   };
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   appRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   abiConformanceGate = builtins.readFile ./phase2-abi-conformance.nix;
@@ -60,10 +60,10 @@
       }
       {
         label = "marker module implementation note";
-        needle = "`crucible-protocol::doorbell_marker`";
+        needle = "`crucible_qemu_protocol::doorbell_marker`";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "doorbell marker module";
         needle = "mod doorbell_marker;";
@@ -81,7 +81,7 @@
         needle = "encode_whitebox_marker_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/doorbell_marker.rs" protocolMarker [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs" protocolMarker [
       {
         label = "assertion marker kind";
         needle = "pub const WHITEBOX_DOORBELL_KIND_ASSERTION";
@@ -179,7 +179,7 @@
         needle = "!matches!(self, Self::RandomRequest)";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolGateAbi [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolGateAbi [
       {
         label = "ABI gate marker vector test";
         needle = "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes";
@@ -197,7 +197,7 @@
         needle = "GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" protocolGoldenTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
         label = "golden marker vector test";
         needle = "marker_payload_golden_vectors_match_canonical_codec_bytes";
@@ -207,7 +207,7 @@
         needle = "GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/codec.rs" protocolCodecTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/codec.rs" protocolCodecTest [
       {
         label = "typed marker shape error test";
         needle = "marker_payload_decoder_reports_typed_shape_errors";
@@ -217,13 +217,13 @@
         needle = "InvalidRandomWidth";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "engine exports marker semantic mapping";
         needle = "observable_event_from_whitebox_marker_payload";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" engineTrigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" engineTrigger [
       {
         label = "engine marker semantic mapping";
         needle = "pub fn observable_event_from_whitebox_marker_payload";
@@ -241,7 +241,7 @@
         needle = "WhiteboxMarkerPayload::RandomRequest(_) => None";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_abi_conformance.rs" engineGateAbi [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_abi_conformance.rs" engineGateAbi [
       {
         label = "engine marker semantic mapping test";
         needle = "whitebox_marker_payloads_map_to_engine_event_semantics";
@@ -255,7 +255,7 @@
         needle = "ObservableEventPayload::GuestAssertionMarker";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "plugin marker kind export";
         needle = "WhiteboxDoorbellMarkerKind";
@@ -273,7 +273,7 @@
         needle = "GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "plugin decodes marker payloads";
         needle = "decode_whitebox_marker_payload(&frame)";
@@ -339,7 +339,7 @@
         needle = "taskIds = [\"T-GHC-8\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "plugin-local marker payload owner";
         needle = "pub enum WhiteboxMarkerPayload";
@@ -362,27 +362,27 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_subvocabularies_are_closed_and_versioned \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test golden_vectors \
               marker_payload_golden_vectors_match_canonical_codec_bytes \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec \
               marker_payload_decoder_reports_typed_shape_errors \
               -- --test-threads=1
@@ -391,7 +391,7 @@ in
               --lib whitebox_doorbell_rejects_random_request_on_observational_marker_path \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_abi_conformance \
               whitebox_marker_payloads_map_to_engine_event_semantics \

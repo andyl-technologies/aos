@@ -5,7 +5,7 @@
   root = ../..;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  coverageRust = builtins.readFile ../../crates/crucible-harness/tests/determinism_core_coverage.rs;
+  coverageRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/determinism_core_coverage.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
@@ -56,7 +56,10 @@
     version = "0";
     src = crucibleSrc;
 
+    runtimeDeps = [pkgs.sqlite];
+
     buildDeps = [
+      pkgs.sqlite
       pkgs.coreutils
       pkgs.findutils
       pkgs.gawk
@@ -113,7 +116,7 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-harness \
+            -p crucible-test-support \
             --lib \
             --test determinism_core_coverage \
             -- --test-threads=1
@@ -121,7 +124,7 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible \
+            -p crucible-engine \
             --lib \
             --features test-double \
             -- --test-threads=1
@@ -129,14 +132,14 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-sim \
+            -p crucible-determinism \
             --lib \
             -- --test-threads=1
           cargo test \
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-shmem \
+            -p crucible-qemu-shmem \
             --test gate_layer1_injection \
             -- --test-threads=1
 
@@ -290,183 +293,183 @@
           }
 
           require_line_marker \
-            "crucible/src/model/configuration.rs" \
-            "crucible/src/model/configuration.rs" \
+            "crucible/crucible-engine/src/model/configuration.rs" \
+            "crucible/crucible-engine/src/model/configuration.rs" \
             1 \
             "return Err(ScheduleError::PrefixTooLong {" \
             "schedule prefix error branch"
           require_line_marker_after \
-            "crucible/src/model/configuration.rs" \
-            "crucible/src/model/configuration.rs" \
+            "crucible/crucible-engine/src/model/configuration.rs" \
+            "crucible/crucible-engine/src/model/configuration.rs" \
             1 \
             "impl fmt::Display for ScheduleError" \
             "requested," \
             "schedule error display variant"
           require_line_marker_after \
-            "crucible/src/model/engine.rs" \
-            "crucible/src/model/engine.rs" \
+            "crucible/crucible-engine/src/model/engine.rs" \
+            "crucible/crucible-engine/src/model/engine.rs" \
             1 \
             "impl fmt::Display for EngineError" \
             "Self::NotImplemented { operation } => {" \
             "engine error display variant"
           require_line_marker \
-            "crucible/src/model/runtime.rs" \
-            "crucible/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
             1 \
             "return load_snapshot(config, snapshot);" \
             "instantiate exact snapshot branch"
           require_line_marker \
-            "crucible/src/model/runtime.rs" \
-            "crucible/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
             1 \
             "let ancestor_runtime = instantiate(graph, &ancestor)?;" \
             "instantiate ancestor replay branch"
           require_line_marker \
-            "crucible/src/model/runtime.rs" \
-            "crucible/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
             1 \
             "let genesis_runtime = instantiate(graph, &genesis)?;" \
             "instantiate genesis replay branch"
           require_line_marker \
-            "crucible/src/model/engine.rs" \
-            "crucible/src/model/engine.rs" \
+            "crucible/crucible-engine/src/model/engine.rs" \
+            "crucible/crucible-engine/src/model/engine.rs" \
             1 \
             "for decision in suffix.decisions() {" \
             "instantiate suffix replay loop"
           require_line_marker_after \
-            "crucible/src/model/temporal_graph/core.rs" \
-            "crucible/src/model/temporal_graph/core.rs" \
+            "crucible/crucible-engine/src/model/temporal_graph/core.rs" \
+            "crucible/crucible-engine/src/model/temporal_graph/core.rs" \
             1 \
             "pub fn cache_snapshot" \
             "return Err(EngineError::GenesisSnapshotMustBeBaked {" \
             "plain cached genesis rejection branch"
           require_line_marker_after \
-            "crucible/src/model/runtime.rs" \
-            "crucible/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
+            "crucible/crucible-engine/src/model/runtime.rs" \
             1 \
             "if config.is_genesis() {" \
             "EngineError::MissingBakedGenesis" \
             "instantiate missing baked genesis branch"
           require_line_marker_after \
-            "crucible/src/backend/error.rs" \
-            "crucible/src/backend/error.rs" \
+            "crucible/crucible-engine/src/backend/error.rs" \
+            "crucible/crucible-engine/src/backend/error.rs" \
             1 \
             "impl fmt::Display for BackendError" \
             "Self::NotImplemented { operation } => {" \
             "backend not-implemented display variant"
           require_line_marker \
-            "crucible/src/backend/error.rs" \
-            "crucible/src/backend/error.rs" \
+            "crucible/crucible-engine/src/backend/error.rs" \
+            "crucible/crucible-engine/src/backend/error.rs" \
             1 \
             "Self::Rejected { message } => f.write_str(message)," \
             "backend rejected display variant"
           require_line_marker_after \
-            "crucible/src/scheduler/liveness.rs" \
-            "crucible/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
             1 \
             "impl fmt::Display for SchedulerError" \
             "Self::NotImplemented { operation } => {" \
             "scheduler not-implemented display variant"
           require_line_marker \
-            "crucible/src/scheduler/liveness.rs" \
-            "crucible/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
             1 \
             "backend failed under scheduler control: {error}" \
             "scheduler backend display variant"
           require_line_marker \
-            "crucible/src/scheduler/liveness.rs" \
-            "crucible/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
+            "crucible/crucible-engine/src/scheduler/liveness.rs" \
             1 \
             "Self::BoundaryViolation { message } => f.write_str(message)," \
             "scheduler boundary display variant"
           require_line_marker_after \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "pub fn draw_u64" \
             "Decision::RngDraw" \
             "decision recorder raw draw decision"
           require_line_marker_after \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "BackendRngEvidence" \
             "decision recorder app-random decision"
           require_line_marker \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "hydrate_streams(&rng, configuration.schedule.decisions());" \
             "decision recorder resumes existing RNG stream positions"
           require_line_marker \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "decision recorder invalid app-random width branch"
           require_line_marker_after \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "BackendRngEvidence" \
             "decision recorder app-random override decision"
           require_line_marker_after \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "pub fn record_preemption_override" \
             "Decision::Preemption" \
             "decision recorder preemption override decision"
           require_line_marker \
-            "crucible/src/decision.rs" \
-            "crucible/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
+            "crucible/crucible-engine/src/decision.rs" \
             1 \
             "pub fn default_rr_preemption" \
             "decision recorder default preemption derivation"
           require_line_marker \
-            "crucible/src/local_backend.rs" \
-            "crucible/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
             2 \
             "sim backend is shut down; cannot {operation}" \
             "sim backend shutdown rejection branches"
           require_line_marker \
-            "crucible/src/local_backend.rs" \
-            "crucible/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
             1 \
             "sim backend cannot advance backwards from {} to {} retired instructions" \
             "sim backend backward advance branch"
           require_line_marker \
-            "crucible/src/local_backend.rs" \
-            "crucible/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
+            "crucible/crucible-engine/src/local_backend.rs" \
             1 \
             "sim backend cannot restore unknown checkpoint" \
             "sim backend restore error branch"
           require_line_marker \
-            "crucible-sim/src/lib.rs" \
-            "crucible-sim/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
             2 \
             "self.write_u64(u64::from(value));" \
             "stable hasher bool branch inputs"
           require_line_marker \
-            "crucible-sim/src/lib.rs" \
-            "crucible-sim/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
             1 \
             "for word in chunks {" \
             "stable hasher full chunk branch"
           require_line_marker \
-            "crucible-sim/src/lib.rs" \
-            "crucible-sim/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
+            "crucible/crucible-determinism/src/lib.rs" \
             1 \
             "for (index, byte) in remainder.iter().enumerate() {" \
             "stable hasher remainder branch"
           require_line_marker \
-            "crucible-harness/src/replay_oracle.rs" \
-            "crucible-harness/src/replay_oracle.rs" \
+            "crucible/crucible-test-support/src/replay_oracle.rs" \
+            "crucible/crucible-test-support/src/replay_oracle.rs" \
             1 \
             "checkpoint_id: checkpoint_id.to_owned()," \
             "replay oracle mismatch branch"
           require_line_marker \
-            "crucible-harness/src/replay_oracle.rs" \
-            "crucible-harness/src/replay_oracle.rs" \
+            "crucible/crucible-test-support/src/replay_oracle.rs" \
+            "crucible/crucible-test-support/src/replay_oracle.rs" \
             1 \
             "Ok(())" \
             "replay oracle match branch"
@@ -501,8 +504,8 @@
   activeSurfaces = [
     {
       id = "scheduler-quantum-loop";
-      sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler";
+      sourcePath = "crates/crucible/crucible-engine/src/scheduler.rs";
+      testPath = "crates/crucible/crucible-engine/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -515,8 +518,8 @@
     }
     {
       id = "scheduler-ordering-keys";
-      sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler";
+      sourcePath = "crates/crucible/crucible-engine/src/scheduler.rs";
+      testPath = "crates/crucible/crucible-engine/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -528,8 +531,8 @@
     }
     {
       id = "error-variant-floor";
-      sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/tests";
+      sourcePath = "crates/crucible/crucible-engine/src/model.rs";
+      testPath = "crates/crucible/crucible-engine/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -541,8 +544,8 @@
     }
     {
       id = "instantiate-recursion";
-      sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/tests";
+      sourcePath = "crates/crucible/crucible-engine/src/model.rs";
+      testPath = "crates/crucible/crucible-engine/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -560,8 +563,8 @@
     }
     {
       id = "sim-backend-error-variants";
-      sourcePath = "crates/crucible/src/sim_backend.rs";
-      testPath = "crates/crucible/src/sim_backend.rs";
+      sourcePath = "crates/crucible/crucible-engine/src/sim_backend.rs";
+      testPath = "crates/crucible/crucible-engine/src/sim_backend.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -573,8 +576,8 @@
     }
     {
       id = "decision-rng-and-forking";
-      sourcePath = "crates/crucible/src/decision.rs";
-      testPath = "crates/crucible/src/decision.rs";
+      sourcePath = "crates/crucible/crucible-engine/src/decision.rs";
+      testPath = "crates/crucible/crucible-engine/src/decision.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -588,8 +591,8 @@
     }
     {
       id = "content-addressed-digest";
-      sourcePath = "crates/crucible-sim/src/lib.rs";
-      testPath = "crates/crucible-sim/src/lib.rs";
+      sourcePath = "crates/crucible/crucible-determinism/src/lib.rs";
+      testPath = "crates/crucible/crucible-determinism/src/lib.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -602,8 +605,8 @@
     }
     {
       id = "replay-oracle-path";
-      sourcePath = "crates/crucible-harness/src/replay_oracle.rs";
-      testPath = "crates/crucible-harness/src/replay_oracle.rs";
+      sourcePath = "crates/crucible/crucible-test-support/src/replay_oracle.rs";
+      testPath = "crates/crucible/crucible-test-support/src/replay_oracle.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -615,8 +618,8 @@
     }
     {
       id = "spsc-ring";
-      sourcePath = "crates/crucible-shmem/src/lib.rs";
-      testPath = "crates/crucible-shmem/tests/gate_layer1_injection.rs";
+      sourcePath = "crates/crucible/crucible-qemu-shmem/src/lib.rs";
+      testPath = "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -628,8 +631,8 @@
     }
     {
       id = "protocol-codec";
-      sourcePath = "crates/crucible-protocol/src/lib.rs";
-      testPath = "crates/crucible-protocol/tests/gate_abi_conformance.rs";
+      sourcePath = "crates/crucible/crucible-qemu-protocol/src/lib.rs";
+      testPath = "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -641,8 +644,8 @@
     }
     {
       id = "reproduction-artifact-serializer";
-      sourcePath = "crates/crucible/src/lib.rs";
-      testPath = "crates/crucible/tests/gate_replay_oracle.rs";
+      sourcePath = "crates/crucible/crucible-engine/src/lib.rs";
+      testPath = "crates/crucible/crucible-engine/tests/gate_replay_oracle.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -845,7 +848,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required coverageRust)) [
-          "crates/crucible-harness/tests/determinism_core_coverage.rs: missing coverage-floor wiring `${required}`"
+          "crates/crucible/crucible-test-support/tests/determinism_core_coverage.rs: missing coverage-floor wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -853,7 +856,7 @@
   regressionFailures = let
     syntheticDigestSurface = {
       id = "content-addressed-digest";
-      sourcePath = "crates/crucible-sim/src/lib.rs";
+      sourcePath = "crates/crucible/crucible-determinism/src/lib.rs";
       testPath = "synthetic.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";

@@ -44,8 +44,8 @@
     [
       "crates/Cargo.toml"
       # These explicit path/include inputs are compiled outside the src roots.
-      "crates/crucible-daemon/tests/support/campaign_queue_scan.rs"
-      "crates/crucible-shmem/tests/fixtures/fault_register_manifest_v1.hex"
+      "crates/crucible/crucible-daemon/tests/support/campaign_queue_scan.rs"
+      "crates/crucible/crucible-qemu-shmem/tests/fixtures/fault_register_manifest_v1.hex"
       "docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
       "docs/rfcs/0020-crucible-campaigns/11-implementation-plan.md"
       "tests/crucible/fixtures/e2e-determinism.scenario.toml"
@@ -92,7 +92,7 @@
     host_configuration = builtins.hashFile "sha256" ./fixtures/campaign-performance-reference-host-v1.env;
     cache_configuration = hashJson "fresh-original-performance-storage-and-protected-worker";
     measurement_fixture = hashJson {
-      work = builtins.hashFile "sha256" ../../crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence/performance_work.rs;
+      work = builtins.hashFile "sha256" ../../crates/crucible/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence/performance_work.rs;
       comparison = builtins.hashFile "sha256" ./campaign-performance-comparison.py;
     };
   };

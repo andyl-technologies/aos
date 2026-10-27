@@ -5,7 +5,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   glib,
   pkg-config,
   qemu-crucible,
@@ -13,12 +13,8 @@
 }: let
   version = "0.1.0";
   src = import ../tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ../tools/crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};
   cargoArtifactContract = {
     family = "crucible-gpl-qemu-plugin-release-and-test";
     nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
@@ -27,7 +23,7 @@
   cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-qemu-plugin-artifacts";
-    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-qemu-plugin-dummy-source";
@@ -44,8 +40,19 @@
 in
   mkCargoPackage {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -102,7 +109,7 @@ in
 
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit cargoDeps cargoWorkspaceMembers cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -135,7 +142,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crucible-qemu-plugin/src/abi.rs
+      done < crucible/crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -146,20 +153,20 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crucible-shmem/src/lib.rs
+      done < crucible/crucible-qemu-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       # The native-console cutover is one exact process-protocol family.
       test "$shmem_abi_version" -eq 33
-      test "$(cat crucible-protocol/src/control_protocol_version.in)" -eq 4
+      test "$(cat crucible/crucible-qemu-protocol/src/control_protocol_version.in)" -eq 4
       grep -Fxq 'pub const PLUGIN_SETUP_PLAN_VERSION: u32 = 3;' \
-        crucible-protocol/src/plugin_setup_plan.rs
+        crucible/crucible-qemu-protocol/src/plugin_setup_plan.rs
 
       native_console_header="${qemu-crucible}/include/crucible_native_console_draft.h"
-      cmp "$native_console_header" crucible-shmem/include/crucible_native_console_draft.h
+      cmp "$native_console_header" crucible/crucible-qemu-shmem/include/crucible_native_console_draft.h
 
       shmem_header="${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h"
-      cmp "$shmem_header" crucible-shmem/include/crucible_shmem_abi.h
+      cmp "$shmem_header" crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h
       test -f "$shmem_header"
       grep -q "#define CRUCIBLE_SHMEM_ABI_VERSION ''${shmem_abi_version}u" \
         "$shmem_header"
@@ -230,7 +237,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crucible-qemu-plugin/src/abi.rs
+      done < crucible/crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -241,7 +248,7 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crucible-shmem/src/lib.rs
+      done < crucible/crucible-qemu-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       mkdir -p "$out/nix-support"
@@ -258,7 +265,7 @@ in
               stopped_restore_ack_version_count=$((stopped_restore_ack_version_count + 1))
               ;;
           esac
-        done < crucible-qemu-plugin/src/shmem_ordering.rs
+        done < crucible/crucible-qemu-plugin/src/shmem_ordering.rs
         test "$stopped_restore_ack_version_count" -eq 1
         test "$stopped_restore_ack_version" = 1
       ''}
@@ -296,7 +303,7 @@ in
       cat > "$out/share/licenses/crucible-qemu-plugin/COMPONENT" <<'LICENSE_SCOPE'
       crucible-qemu-plugin is an in-process QEMU adapter.
       SPDX-License-Identifier: GPL-2.0-only
-      crucible-protocol and crucible-shmem are used under their MIT option.
+      crucible-qemu-protocol and crucible-qemu-shmem are used under their MIT option.
       LICENSE_SCOPE
     '';
 

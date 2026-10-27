@@ -27,7 +27,7 @@
         needle = "divergence-bisection";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "built-in scenario resolver";
         needle = "fn resolve_builtin_example_scenario";
@@ -38,7 +38,7 @@
       }
       {
         label = "fault campaign built-in verify sample";
-        needle = "crucible::FAULT_CAMPAIGN_FAMILY_NAME";
+        needle = "crucible_engine::FAULT_CAMPAIGN_FAMILY_NAME";
       }
       {
         label = "loaded single-core hostile profile";

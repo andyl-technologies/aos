@@ -7,7 +7,7 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  violationTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_records.rs;
+  violationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_violation_records.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,7 +21,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionViolationRecords`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "violation record type";
         needle = "pub struct HostAssertionViolation";
@@ -55,7 +55,7 @@
         needle = "evidence: Option<HostAssertionViolationEvidence>";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_records.rs" violationTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_violation_records.rs" violationTest [
       {
         label = "violation record test";
         needle = "violation_records_are_derived_from_retained_log_and_reproduction_artifact";
@@ -103,7 +103,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionViolationRecords\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_violation_records.rs" violationTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_violation_records.rs" violationTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -125,7 +125,7 @@
         needle = ".with_reproduction_artifact(";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "artifact override helper";
         needle = ".with_reproduction_artifact(";
@@ -146,7 +146,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-violation-records";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -158,7 +161,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_violation_records \
               --test offline_assertion_checker \
               -- --test-threads=1

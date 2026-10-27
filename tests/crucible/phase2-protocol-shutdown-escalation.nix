@@ -6,10 +6,10 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  shutdownLib = builtins.readFile ../../crates/crucible-qemu/src/shutdown.rs;
-  shutdownTest = builtins.readFile ../../crates/crucible-qemu/tests/shutdown.rs;
+  qemuCargo = builtins.readFile ../../crates/crucible/crucible-qemu-host/Cargo.toml;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
+  shutdownLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/shutdown.rs;
+  shutdownTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/shutdown.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
   controlResponsiveGate = import ./phase5-control-responsive.nix {
@@ -23,17 +23,17 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+    failuresFor "crates/crucible/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "Unix signal dependency";
         needle = "libc = { workspace = true }";
       }
       {
         label = "protocol Quit dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../crucible-qemu-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "shutdown module";
         needle = "mod shutdown;";
@@ -43,7 +43,7 @@
         needle = "shutdown_qemu_child";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/shutdown.rs" shutdownLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/shutdown.rs" shutdownLib [
       {
         label = "shutdown rung enum";
         needle = "pub enum QemuShutdownRung";
@@ -161,7 +161,7 @@
         needle = "let mut waited = Duration::ZERO;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/shutdown.rs" shutdownTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/shutdown.rs" shutdownTest [
       {
         label = "unresponsive child escalates to SIGKILL";
         needle = "shutdown_escalates_to_sigkill_and_reaps_unresponsive_child";
@@ -230,7 +230,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase2-protocol-shutdown-escalation";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         controlResponsiveGate
         pkgs.coreutils
         pkgs.grep
@@ -246,7 +249,7 @@ in
             grep -q 'gate=gate:control-responsive' "${controlResponsiveGate}/result"
             CRUCIBLE_QEMU_SHUTDOWN_TEST_BINARY="${pkgs.qemu-crucible}/bin/qemu-system-x86_64" \
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test shutdown \
               -- --test-threads=1
           '';
@@ -261,8 +264,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:control-responsive
-            rust_test=crucible-qemu::shutdown
-            real_qemu_proof=crucible-qemu::shutdown::unix_adapter_reaps_real_qemu_child_when_polite_channels_fail
+            rust_test=crucible_qemu_host::shutdown
+            real_qemu_proof=crucible_qemu_host::shutdown::unix_adapter_reaps_real_qemu_child_when_polite_channels_fail
             order=Quit,QMP-quit,SIGTERM,SIGKILL,reap
             no_leak=real-qemu-child-reaped
             RESULT

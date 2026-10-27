@@ -8,7 +8,7 @@
     pname = "crucible-qemu-host-owner-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-qemu-host-owner-flight = "build --release -p crucible-qemu --example crucible-qemu-host-owner-flight";
+      crucible-qemu-host-owner-flight = "build --release -p crucible-qemu-host --example crucible-qemu-host-owner-flight";
     };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};

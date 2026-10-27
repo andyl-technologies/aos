@@ -8,7 +8,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  familyTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_guided_fuzzing.rs;
+  familyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_coverage_guided_fuzzing.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -25,7 +25,7 @@
         needle = "`checks.crucible.phase1.spatialScenarioFamily`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario family type";
         needle = "pub struct ScenarioFamily";
@@ -91,7 +91,7 @@
         needle = "crucible.model.scenario-family.random-topology.v1";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "ScenarioFamily re-export";
         needle = "ScenarioFamily";
@@ -105,7 +105,7 @@
         needle = "PinnedConfiguration";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_coverage_guided_fuzzing.rs" familyTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_coverage_guided_fuzzing.rs" familyTest [
       {
         label = "focused scenario family reproducibility test";
         needle = "fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible()";
@@ -140,7 +140,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-scenario-family";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -151,7 +154,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_coverage_guided_fuzzing \
               gate_coverage_guided_fuzzing_is_seeded_and_reproducible \
               -- --test-threads=1

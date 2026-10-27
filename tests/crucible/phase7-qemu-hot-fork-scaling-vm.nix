@@ -50,9 +50,9 @@
     pname = "crucible-qemu-hot-fork-scaling-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      crucible-daemon-scaling = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-daemon";
-      crucible_api-clone-cost = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-api";
-      crucible_qemu-clone-cost = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-qemu";
+      crucible-daemon-scaling = "test --release -p crucible-qemu-host -p crucible-daemon --lib --select-package crucible-daemon";
+      crucible_daemon-clone-cost = "test --release -p crucible-qemu-host -p crucible-daemon --lib --select-package crucible-daemon";
+      crucible_qemu_host-clone-cost = "test --release -p crucible-qemu-host -p crucible-daemon --lib --select-package crucible-qemu-host";
     };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};
@@ -320,7 +320,7 @@ in
         else "false"
       }; then
       run_host_clone_test \
-        crucible_api \
+        crucible_daemon \
         vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings \
         /tmp/host-clone-cost-result
       require_exact_test_marker host_continuation_siblings=64 /tmp/host-clone-cost-result
@@ -328,7 +328,7 @@ in
       ${pkgs.grep}/bin/grep -Fxq 'host_shared_backing_copies=1' /tmp/host-clone-cost-result
       ${pkgs.grep}/bin/grep -Fxq 'host_clone_private_growth_limit_kib=65536' /tmp/host-clone-cost-result
       run_host_clone_test \
-        crucible_qemu \
+        crucible_qemu_host \
         production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private \
         /tmp/fault-clone-cost-result
       require_exact_test_marker fault_checkpoint_siblings=64 /tmp/fault-clone-cost-result

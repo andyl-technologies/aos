@@ -7,12 +7,12 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
-  contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
-  deadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  contractA = builtins.readFile ../../crates/crucible/crucible-determinism/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible/crucible-determinism/tests/contract_a.rs;
+  deadline = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/deadline.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  harnessObservation = builtins.readFile ../../crates/crucible-harness/src/fingerprint/observation.rs;
+  harnessObservation = builtins.readFile ../../crates/crucible/crucible-test-support/src/fingerprint/observation.rs;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
@@ -21,7 +21,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
+    failuresFor "crates/crucible/crucible-determinism/src/contract_a.rs" contractA [
       {
         label = "retired-instruction RR quantum getter";
         needle = "pub fn rr_switch_quantum(&self) -> u64";
@@ -51,7 +51,7 @@
         needle = "pub time_trajectory: Vec<TimeTrajectorySample>";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/contract_a.rs" contractATests [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/contract_a.rs" contractATests [
       {
         label = "single aggregate time axis test";
         needle = "contract_a_multi_vcpu_uses_single_aggregate_time_axis";
@@ -69,7 +69,7 @@
         needle = "vec![0, 0, 0, 1, 1, 1, 2]";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" deadline [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/deadline.rs" deadline [
       {
         label = "per-vCPU deadline report";
         needle = "pub struct PerVcpuDeadlineReport";
@@ -135,7 +135,7 @@
         needle = "multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "deadline reducer exported";
         needle = "aggregate_multi_vcpu_deadline";
@@ -145,7 +145,7 @@
         needle = "PerVcpuDeadlineReport";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/fingerprint/observation.rs" harnessObservation [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/fingerprint/observation.rs" harnessObservation [
       {
         label = "per-vCPU retired counts restricted to fingerprint observation";
         needle = "pub struct VcpuRetiredCount";
@@ -215,7 +215,7 @@
         needle = "timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "per-vCPU shared-memory field";
         needle = "per_vcpu";
@@ -244,7 +244,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-time-multi-vcpu-aggregate-clock";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -256,7 +259,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test contract_a \
               -- --test-threads=1
             crucible-cargo test \

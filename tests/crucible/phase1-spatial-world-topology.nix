@@ -24,7 +24,7 @@
         needle = "endpoint order and rejects self-loops";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world link accessor";
         needle = "pub fn links(&self) -> &[LinkDef]";
@@ -78,7 +78,7 @@
         needle = "DuplicateWorldLink";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "Icount exported";
         needle = "Icount,";
@@ -117,7 +117,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-world-topology";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -128,7 +131,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_topology \
               -- --test-threads=1

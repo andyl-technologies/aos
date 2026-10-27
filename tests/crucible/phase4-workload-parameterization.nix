@@ -8,8 +8,8 @@
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  parameterizationTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
+  engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  parameterizationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -38,7 +38,7 @@
         needle = "Workload-parameter delivery MUST be **read-only**";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "config-tree scenario parameter";
         needle = "pub const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER: &str = \"wcfg\";";
@@ -128,14 +128,14 @@
         needle = "mount.contains(',')";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host-side or mutable workload parameter delivery";
         inherit needle;
       })
       forbiddenHostDeliveryNeedles
     )
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "parameter key re-export";
         needle = "GuestWorkloadParameterKey";
@@ -165,7 +165,7 @@
         needle = "WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" parameterizationTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_parameterization.rs" parameterizationTest [
       {
         label = "scalar cmdline test";
         needle = "scalar_workload_parameters_are_cmdline_scenario_config";
@@ -258,7 +258,7 @@ in
               fi
             }
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test workload_parameterization \
               -- --list > "$TMPDIR/workload-parameterization-tests"
             require_listed \
@@ -280,7 +280,7 @@ in
               "$TMPDIR/workload-parameterization-tests" \
               "workload_parameterization_rejects_malformed_toml_and_binary_forms"
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test workload_parameterization \
               -- --test-threads=1
           '';

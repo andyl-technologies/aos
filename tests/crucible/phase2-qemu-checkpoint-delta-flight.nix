@@ -91,7 +91,7 @@
     [ "$(wc -c < direct-reset.bin)" -eq 65536 ]
 
     crucible-cargo test \
-      -p crucible-qemu \
+      -p crucible-qemu-host \
       --lib \
       --no-run
   '';
@@ -191,7 +191,7 @@
       AOS_CHECKPOINT_DELTA_QMP="$qmp_socket" \
       AOS_CHECKPOINT_DELTA_QTEST="$qtest_socket" \
         timeout -k 10 300 crucible-cargo test \
-          -p crucible-qemu \
+          -p crucible-qemu-host \
           --lib \
           "qmp::checkpoint_delta_flight_tests::$test_name" \
           -- --ignored --exact --nocapture > "$log" 2>&1

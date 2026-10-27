@@ -49,7 +49,7 @@ written down:
   provider-version references but never private key bytes.
 - **Quotas and limits.** Per-org quotas on hub-managed storage (bytes
   and object count — enforced at the upload facade with
-  `507 Insufficient Storage`, the same contract as `aos-server`'s
+  `507 Insufficient Storage`, the same contract as `aos-build-server`'s
   `max_paths`), registries, members, and active tokens. Per-endpoint
   rate limits by class: anonymous browse/search (per-IP),
   device-authorization and magic-link issuance (per-target *and*

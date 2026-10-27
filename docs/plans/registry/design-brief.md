@@ -1,5 +1,15 @@
 # AOS Registry — Design Brief & Decision Log
 
+> **Historical source snapshot:** "CURRENT" and crate names in this planning
+> record describe the git-native registry cutover before the workspace
+> reorganization. Current NAR format/signing code belongs to `aos-nar`;
+> verified registry reads to `aos-registry-client`; producer/signing operations
+> to `aos-registry-authoring`; installation to `aos-package-manager`; and cache
+> transport to `aos-nix-cache`. The live build server is `aos-build-server`.
+> Use the [as-built registry reference](../../registry/current-state.md) and
+> [crate rename map](../../architecture/crate-renames.md) for current ownership.
+
+
 > The original transport decision log predates explicit unpublished release
 > stages. [Release stages](../../registry/release-stages.md) records the current
 > candidate/revision, workspace, discovery, retention, and shared orchestration
@@ -37,7 +47,7 @@
 
 - **AOS / `apm` / `apr`** — ANDYL OS; the package-management CLI (`apm` ⇒ implicit
   `package`); the registry CLI (`apr` ⇒ implicit `package registry`). Same binary,
-  argv[0] dispatch (`crates/aos/src/main.rs`).
+  argv[0] dispatch (`crates/cli/aos-cli/src/main.rs`).
 - **Registry (target)** — a **bare git repository, sha256 object format, served as
   static files over dumb HTTP**. The package metadata *is* the git tree content.
 - **Channel** — a named release line (e.g. `stable`, `testing`). Modeled as a git
@@ -75,7 +85,7 @@ as-built status, use
 [`TODO.md`](./TODO.md). At the time this brief was written:
 
 - A registry is a git repo of **nested** package TOMLs (`PackageToml` in
-  `crates/aos-package/src/registry/parse.rs:14-70`, written by `build_package_toml`
+  `crates/registry/aos-registry-client/src/registry/parse.rs:14-70`, written by `build_package_toml`
   `registry_ops.rs:595-781`) plus `closures/<hash>` adjacency files;
   `PackageMeta` (`types.rs:43-77`) is the flattened in-memory projection.
 - Distribution is via **git bundles** + a `bundle-list.toml` manifest the *consumer*

@@ -9,7 +9,7 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  lifecycleGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_lifecycle.rs;
+  lifecycleGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -32,7 +32,7 @@
         needle = "Completed by `checks.crucible.phase6.explorationLifecycle`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "exploration lifecycle driver";
         needle = "pub struct ExplorationLifecycleDriver";
@@ -82,13 +82,13 @@
         needle = "LiveStateKind::Stopped";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "wall-clock lifecycle timeout type";
         needle = "LifecycleWallClockTimeout";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [
       {
         label = "session command route test";
         needle = "exploration_lifecycle_driver_routes_pause_resume_stop_as_session_commands";
@@ -126,7 +126,7 @@
         needle = "stop.requested_event_log_len, stop.acknowledged_event_log_len";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs" lifecycleGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -177,7 +177,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-exploration-lifecycle";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];

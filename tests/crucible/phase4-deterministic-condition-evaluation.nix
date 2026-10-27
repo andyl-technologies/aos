@@ -8,10 +8,10 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  deterministicTest = builtins.readFile ../../crates/crucible/tests/deterministic_condition_evaluation.rs;
-  schedulerEmitTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
-  observableTest = builtins.readFile ../../crates/crucible/tests/observable_condition_leaves.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  deterministicTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs;
+  schedulerEmitTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
+  observableTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/observable_condition_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -36,7 +36,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "checked event-log prefix type";
         needle = "pub struct ConditionEventLogPrefix";
@@ -142,7 +142,7 @@
         needle = "pub(crate) fn evaluate_condition";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "crate-local scheduler observable event-log entry constructor";
         needle = "pub(crate) fn observable(";
@@ -208,7 +208,7 @@
         needle = "emit_boundary: bool";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "condition evaluation error export";
         needle = "ConditionEvaluationError";
@@ -226,7 +226,7 @@
         needle = "SchedulerEvaluationBoundaryKind";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/deterministic_condition_evaluation.rs" deterministicTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs" deterministicTest [
       {
         label = "deterministic boundary source test";
         needle = "evaluation_points_name_deterministic_boundary_sources";
@@ -244,13 +244,13 @@
         needle = "condition_evaluation_uses_checked_prefix_events_only";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/observable_condition_leaves.rs" observableTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/observable_condition_leaves.rs" observableTest [
       {
         label = "future scheduler event-log entry negative path";
         needle = "ConditionEvaluationError::FutureEventLogEntry";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_emit_step.rs" schedulerEmitTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs" schedulerEmitTest [
       {
         label = "no-progress polling boundary regression";
         needle = "no_progress_quantum_does_not_append_polling_boundary_entries";
@@ -365,7 +365,7 @@
         needle = "std::time::SystemTime";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/deterministic_condition_evaluation.rs" deterministicTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs" deterministicTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -386,7 +386,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-deterministic-condition-evaluation";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -398,7 +401,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test deterministic_condition_evaluation \
               -- --test-threads=1
           '';

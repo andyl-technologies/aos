@@ -9,10 +9,10 @@
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionGate = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/crucible-session/tests/gate_control_responsive.rs;
   };
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
-  gateTargetRust = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  gateTargetRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
@@ -30,7 +30,7 @@
     forbidden;
 
   failures =
-    failuresFor "crates/crucible-session/src/lib.rs" session [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "live state kind";
         needle = "pub enum LiveStateKind";
@@ -88,7 +88,7 @@
         needle = "session_actor_live_snapshot_publishes_monotone_progress";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGate [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_control_responsive.rs" sessionGate [
       {
         label = "implemented control-responsive latency test";
         needle = "gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip";
@@ -134,7 +134,7 @@
         needle = "resolved_events.push(resolved_control_event(self.quanta))";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGate [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-session/tests/gate_control_responsive.rs" sessionGate [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -154,7 +154,7 @@
         needle = ''testTarget = "gate_control_responsive";'';
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargetRust [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargetRust [
       {
         label = "harness session control-responsive target package";
         needle = ''package: "crucible-session",'';
@@ -173,7 +173,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-15 completion note";
-        needle = "Completed by `crates/crucible-session/src/lib.rs`: `LiveSnapshot`";
+        needle = "Completed by `crates/crucible/crucible-session/src/lib.rs`: `LiveSnapshot`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
@@ -207,7 +207,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-execution-live-snapshot";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];

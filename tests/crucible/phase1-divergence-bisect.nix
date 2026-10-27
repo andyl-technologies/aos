@@ -6,13 +6,13 @@
   dependencies ? [],
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
-  divergenceHarness = builtins.readFile ../../crates/crucible-harness/src/divergence.rs;
-  divergenceTypes = builtins.readFile ../../crates/crucible-harness/src/divergence/types.rs;
-  replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
-  divergenceGate = builtins.readFile ../../crates/crucible-harness/tests/gate_divergence_bisect.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  divergenceHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/divergence.rs;
+  divergenceTypes = builtins.readFile ../../crates/crucible/crucible-test-support/src/divergence/types.rs;
+  replayOracleHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/replay_oracle.rs;
+  divergenceGate = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_divergence_bisect.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -22,7 +22,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-harness/src/divergence/types.rs" divergenceTypes [
+    failuresFor "crates/crucible/crucible-test-support/src/divergence/types.rs" divergenceTypes [
       {
         label = "full bisection report";
         needle = "pub struct DivergenceBisectionReport";
@@ -76,7 +76,7 @@
         needle = "MalformedStateDump";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/divergence.rs" divergenceHarness [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/divergence.rs" divergenceHarness [
       {
         label = "types submodule";
         needle = "mod types;";
@@ -98,7 +98,7 @@
         needle = "pub fn bisect_icount_window";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/replay_oracle.rs" replayOracleHarness [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/replay_oracle.rs" replayOracleHarness [
       {
         label = "replay-oracle localized mismatch type";
         needle = "pub struct ReplayOracleLocalizedMismatch";
@@ -140,7 +140,7 @@
         needle = "Self::Divergence";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_divergence_bisect.rs" divergenceGate [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_divergence_bisect.rs" divergenceGate [
       {
         label = "seeded exact localization test";
         needle = "gate_divergence_bisect_localizes_seeded_fault_to_exact_node_and_icount";
@@ -210,7 +210,7 @@
         needle = "fn state_dump(side: DivergenceSide, icount: u64) -> DivergenceStateDump";
       }
     ]
-    ++ forbiddenFor "crates/crucible-harness/tests/gate_divergence_bisect.rs" divergenceGate [
+    ++ forbiddenFor "crates/crucible/crucible-test-support/tests/gate_divergence_bisect.rs" divergenceGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -220,19 +220,19 @@
         needle = "implementation is pending T-HARN-10";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented divergence-bisect target";
-        needle = "gate: \"gate:divergence-bisect\",\n        package: \"crucible-harness\",\n        test_target: \"gate_divergence_bisect\",\n        required_features: &[],";
+        needle = "gate: \"gate:divergence-bisect\",\n        package: \"crucible-test-support\",\n        test_target: \"gate_divergence_bisect\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented divergence-bisect catalog status";
-        needle = "name: \"gate:divergence-bisect\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:divergence-bisect\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "divergence-bisect implemented status assertion";
         needle = "find_gate(\"gate:divergence-bisect\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
@@ -241,7 +241,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented divergence-bisect mapping target";
-        needle = "gate = \"gate:divergence-bisect\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_divergence_bisect\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:divergence-bisect\";\n      package = \"crucible-test-support\";\n      testTarget = \"gate_divergence_bisect\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -317,7 +317,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test gate_divergence_bisect \
               -- --test-threads=1
           '';
@@ -332,7 +332,7 @@ in
             check=${attrPath}
             gate=gate:divergence-bisect
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-harness::gate_divergence_bisect
+            rust_test=crucible_test_support::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
             oracle_failure_localization=fat-thin-divergence-bisection
             replay_oracle_search_bisection=sampled-mismatch-localized

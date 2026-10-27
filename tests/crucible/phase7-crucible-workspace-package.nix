@@ -11,14 +11,20 @@
   packageSetNix = builtins.readFile ../../pkgs/default.nix;
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
-  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
+  cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix {cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;};
+  expectedCargoDepsHash = pkgs.crucible-controller.passthru.cargoDeps.passthru.aos.fixedOutput.hash;
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
 
-  workspaceMembers = workspaceManifest.workspace.members;
-  crucibleWorkspaceMembers = builtins.filter (member: lib.hasPrefix "crucible" member) workspaceMembers;
+  workspaceMemberPaths = workspaceManifest.workspace.members;
+  workspaceMembers =
+    map (
+      member:
+        (builtins.fromTOML (builtins.readFile (../../crates + "/${member}/Cargo.toml"))).package.name
+    )
+    workspaceMemberPaths;
+  crucibleWorkspaceMembers = builtins.filter (member: lib.hasPrefix "crucible" member || member == "aos-linux-project-quota") workspaceMembers;
   missingInventoryMembers =
     builtins.filter (member: !(builtins.elem member packageInventory)) crucibleWorkspaceMembers;
   extraInventoryMembers =
@@ -66,23 +72,23 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "central vendored dependency hash binding";
-        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix;";
+        needle = "cargoDepsHash = import ./_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
-        needle = "hash = cargoDepsHash;";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "non-Crucible workspace excludes";
-        needle = "nonCrucibleWorkspacePackages = builtins.filter";
+        needle = "controllerPackages = builtins.filter";
       }
       {
         label = "workspace membership comes from Cargo metadata";
-        needle = "workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
+        needle = "cargoWorkspaceMembers = import ./_workspace.nix {inherit lib;};";
       }
       {
         label = "workspace cargo flags";
@@ -154,7 +160,7 @@
       }
       {
         label = "suite build info names the MIT boundary crates";
-        needle = "boundary_crates=crucible-protocol,crucible-shmem";
+        needle = "boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem";
       }
       {
         label = "suite metadata inventories every project component license";

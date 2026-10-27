@@ -8,7 +8,7 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  cliTerminalObservation = builtins.readFile ../../crates/crucible-cli/src/cli/control/streaming_events.rs;
+  cliTerminalObservation = builtins.readFile ../../crates/crucible/crucible-cli/src/cli/control/streaming_events.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -38,7 +38,7 @@
         needle = "`T-SESS-3` is green through `checks.crucible.phase5.sessionLifecycle`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "closed lifecycle state kind";
         needle = "pub enum LifecycleStateKind";
@@ -168,7 +168,7 @@
         needle = "ExhaustBudget";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/control/streaming_events.rs" cliTerminalObservation [
+    ++ failuresFor "crates/crucible/crucible-cli/src/cli/control/streaming_events.rs" cliTerminalObservation [
       {
         label = "CLI projects the engine outcome";
         needle = "status_from_outcome(observation.outcome)";
@@ -183,7 +183,7 @@
       }
     ]
     ++ lib.optionals (hasInfix "&& matches!(observation.outcome, Some(OutcomeKind::Passed) | None)" cliTerminalObservation) [
-      "crates/crucible-cli/src/cli/control/streaming_events.rs: CLI still synthesizes a failed status from a passing engine outcome"
+      "crates/crucible/crucible-cli/src/cli/control/streaming_events.rs: CLI still synthesizes a failed status from a passing engine outcome"
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -198,8 +198,11 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase5-session-lifecycle";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.sed
         ]

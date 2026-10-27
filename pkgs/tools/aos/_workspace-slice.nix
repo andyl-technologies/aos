@@ -9,6 +9,10 @@
   workspaceRoot = ../../../crates;
   workspaceManifest = builtins.fromTOML (builtins.readFile (workspaceRoot + "/Cargo.toml"));
   lockfile = builtins.fromTOML (builtins.readFile (workspaceRoot + "/Cargo.lock"));
+  cratesIoPatches = workspaceManifest.patch."crates-io" or {};
+  patchedCrates = builtins.filter (path: path != null) (
+    lib.mapAttrsToList (_: patch: patch.path or null) cratesIoPatches
+  );
 
   members = builtins.listToAttrs (
     map
@@ -54,9 +58,20 @@
           operator = item: map (key: {inherit key;}) (dependenciesOf item.key);
         })
       );
-  selectedCrates = map (name: members.${name}.path) selectedPackages;
+  # Cargo resolves workspace-level patches even when the selected roots do not
+  # depend on them directly. Retain every local patch in reduced source slices.
+  selectedCrates = lib.unique ((map (name: members.${name}.path) selectedPackages) ++ patchedCrates);
+  includesTests =
+    includeIntegrationInputs
+    || cargoTestFlags != ""
+    || builtins.any (command: lib.hasInfix " test " " ${command} " || lib.hasInfix "--tests" command || lib.hasInfix "--all-targets" command) cargoBuildCommands;
   extraPaths = lib.unique (builtins.concatLists (
-    map (name: members.${name}.manifest.package.metadata.aos.source_inputs or []) selectedPackages
+    map (name: let
+      metadata = members.${name}.manifest.package.metadata.aos or {};
+    in
+      (metadata.source_inputs or [])
+      ++ lib.optionals includesTests (metadata.test_source_inputs or []))
+    selectedPackages
   ));
 in {
   src = import ./_workspace-source.nix {

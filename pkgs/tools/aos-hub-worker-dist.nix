@@ -1,7 +1,7 @@
 ##! aos-hub-worker-dist — the deployable Cloudflare Worker artifact, built
 ##! hermetically from source (RFC-0004).
 ##!
-##! Compiles `crates/aos-hub-worker` to `wasm32-unknown-unknown` and emits
+##! Compiles `crates/hub/aos-hub-worker` to `wasm32-unknown-unknown` and emits
 ##! the `build/worker/` bundle (the `shim.mjs` ES-module entry plus the
 ##! `index.wasm` binary) that `wrangler deploy` uploads. The sibling
 ##! `aos-hub-worker-do-e2e` package boots this artifact under workerd with the
@@ -56,8 +56,8 @@
 ##! *before* invoking the Worker, so `GET /_assets/*` is answered from the CDN
 ##! edge with no wasm instantiation — eliminating the per-request Worker spin-up
 ##! that an embedded-bytes handler would pay. The same bytes are embedded in the
-##! native hub via `aos_hub_core::web::assets`, so the files in
-##! `crates/aos-hub-core/src/web/static_assets/` are the single source of truth;
+##! native hub via `aos_hub_service::web::assets`, so the files in
+##! `crates/hub/aos-hub-service/src/web/static_assets/` are the single source of truth;
 ##! only the delivery differs (the native hub has no CDN and serves them itself).
 {
   lib,
@@ -302,9 +302,9 @@ in
         name = "build-wasm";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
-          # aos-proto-types' build script runs protoc to generate the
+          # aos-hub-api's build script runs protoc to generate the
           # aos.hub.v1 message structs (the worker depends on it via
-          # aos-hub-core), so point prost-build at the hermetic protoc.
+          # aos-hub-service), so point prost-build at the hermetic protoc.
           export PROTOC="${buildProtobuf}/bin/protoc"
           export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
           export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"
@@ -523,17 +523,17 @@ in
           # file gives stable browse assets a bounded lifetime and the generated,
           # content-addressed console bundle an immutable lifetime.
           mkdir -p "$out/assets/_assets"
-          cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
-          cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
-          cp aos-hub-core/src/web/static_assets/theme.js  "$out/assets/_assets/theme.js"
-          cp aos-hub-core/src/web/static_assets/Geist-Variable.woff2 \
+          cp hub/aos-hub-service/src/web/static_assets/style.css "$out/assets/_assets/style.css"
+          cp hub/aos-hub-service/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
+          cp hub/aos-hub-service/src/web/static_assets/theme.js  "$out/assets/_assets/theme.js"
+          cp hub/aos-hub-service/src/web/static_assets/Geist-Variable.woff2 \
             "$out/assets/_assets/geist-sans-variable.woff2"
-          cp aos-hub-core/src/web/static_assets/GeistMono-Variable.woff2 \
+          cp hub/aos-hub-service/src/web/static_assets/GeistMono-Variable.woff2 \
             "$out/assets/_assets/geist-mono-variable.woff2"
-          cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
-          cat aos-hub-core/src/web/static_assets/style.css \
-            aos-hub-core/src/web/static_assets/app.js \
-            aos-hub-core/src/web/static_assets/theme.js \
+          cp hub/aos-hub-service/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
+          cat hub/aos-hub-service/src/web/static_assets/style.css \
+            hub/aos-hub-service/src/web/static_assets/app.js \
+            hub/aos-hub-service/src/web/static_assets/theme.js \
             ${buildConsoleDist}/hub-console.js \
             ${buildConsoleDist}/hub-console_bg.wasm \
             ${buildConsoleDist}/hub-console.css \

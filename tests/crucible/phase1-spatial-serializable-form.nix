@@ -8,9 +8,9 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
-  devicesTest = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
-  cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
+  devicesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/world_devices.rs;
+  cargoManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   cargoLock = builtins.readFile ../../crates/Cargo.lock;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
@@ -28,7 +28,7 @@
         needle = "`checks.crucible.phase1.spatialSerializableForm`";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
+    ++ failuresFor "crates/crucible/crucible-engine/Cargo.toml" cargoManifest [
       {
         label = "serde dependency";
         needle = "serde = { workspace = true }";
@@ -48,7 +48,7 @@
         needle = " \"toml 0.8.23\",";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "content-addressed blob ref type";
         needle = "pub struct ContentAddressedBlobRef";
@@ -130,7 +130,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "form re-export";
         needle = "ScenarioDefForm";
@@ -152,7 +152,7 @@
         needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/kernel\")";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_parameterization.rs" workloadTest [
       {
         label = "scenario TOML round trip";
         needle = "ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?";
@@ -166,7 +166,7 @@
         needle = "assert_eq!(form.id(), binary.id());";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/world_devices.rs" devicesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/world_devices.rs" devicesTest [
       {
         label = "current heterogeneous scenario form round trip";
         needle = "fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable()";
@@ -193,7 +193,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-serializable-form";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -204,17 +207,17 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_node_launch_inputs_are_portable_and_identity_bearing \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test workload_parameterization \
               scalar_parameter_change_changes_scenario_id_and_reproduces \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test world_devices \
               heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable \
               -- --test-threads=1

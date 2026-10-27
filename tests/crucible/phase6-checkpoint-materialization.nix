@@ -7,12 +7,12 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
-  gateTest = builtins.readFile ../../crates/crucible/tests/gate_checkpoint_materialization.rs;
+  gateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures =
-    failuresFor "crates/crucible model" graphSource [
+    failuresFor "crates/crucible/crucible-engine model" graphSource [
       {
         label = "ordinary materialization policy";
         needle = "pub struct MaterializationPolicy";
@@ -26,7 +26,7 @@
         needle = "pub fn record_thin_checkpoint(";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_checkpoint_materialization.rs" gateTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_checkpoint_materialization.rs" gateTest [
       {
         label = "fat persistence gate";
         needle = "gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuration";
@@ -60,7 +60,7 @@ in
           script = ''
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_checkpoint_materialization -- --test-threads=1
           '';
         }

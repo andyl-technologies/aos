@@ -7,6 +7,7 @@
   aos-configuration-provider,
   aos-host-policy,
   mkDerivation,
+  buildPackages,
   stdenv,
   fetchurl,
   gnumake,
@@ -66,6 +67,19 @@
   nix,
   pe-tools,
 }: let
+  buildShell =
+    if stdenv.isCross
+    then buildPackages.bash
+    else bash;
+  # Current Ninja launches commands through /bin/sh. Use the source-built
+  # shell for this builder without changing the compiler toolchain graph.
+  buildNinja =
+    (
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildShell;
   identityShells = import ./_systemd-abilities/identity-shells.nix {inherit bash util-linux;};
 
   version = "261.2";
@@ -252,7 +266,7 @@ in
       gawk
       perl
       meson
-      ninja
+      buildNinja
       python3
       gperf
       getent

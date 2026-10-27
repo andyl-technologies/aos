@@ -1,0 +1,1565 @@
+//! Exercises the loaded Rust plugin through the guarded production node boundary.
+//!
+//! The flight launches the same four-vCPU diskless guest under reference and
+//! host-preempted conditions. It requests fingerprints at exact scheduler
+//! boundaries, applies typed scheduler preemptions, and crosses an all-vCPU
+//! idle timer wake. A separate real block recovery subflight proves the causal
+//! recovery transition, exact settled write, and hot-fork preparation.
+//! Successful runs emit only typed shared-memory and node-level evidence.
+//! Native traces are validated through pinned files after clean reap; the
+//! exported summary contains their full-file hashes and bounded row context.
+//! Setting `CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1` runs the
+//! block-recovery subflight alone for focused failure diagnosis.
+//! Setting `CRUCIBLE_PHASE4_PARTITION_PROBE=1` compares five post-selection
+//! ceiling schedules across an exact virtual-timer wake; bounded ceilings must
+//! leave the guest in the same state whatever their frequency.
+//!
+//! ```text
+//! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT
+//! ```
+
+#![forbid(unsafe_code)]
+
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::Duration;
+
+use crucible_engine::{
+    AdvanceOutcome, BackendEffect, ExecutionFingerprint, Icount, IrqVector, NodeId,
+    ObservableEvent, ObservableEventPayload, PreemptionDecision, PreemptionKind, SimulationBackend,
+    VcpuId, VirtualTime,
+};
+use crucible_qemu_host::{
+    BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
+    QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration, QemuNode,
+    QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
+    QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
+};
+use crucible_qemu_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
+    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
+};
+use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
+use crucible_qemu_shmem::FingerprintSample;
+
+#[path = "crucible-qemu-production-plugin-flight/block_recovery_hot_fork.rs"]
+mod block_recovery_hot_fork;
+
+#[path = "crucible-qemu-production-plugin-flight/runtime_trace.rs"]
+mod runtime_trace;
+
+#[path = "crucible-qemu-production-plugin-flight/partition_probe.rs"]
+mod partition_probe;
+
+#[path = "crucible-qemu-production-plugin-flight/time_ownership.rs"]
+mod time_ownership;
+
+#[path = "crucible-qemu-production-plugin-flight/guest_clock_reads.rs"]
+mod guest_clock_reads;
+
+#[cfg(feature = "test-support")]
+#[path = "crucible-qemu-production-plugin-flight/linux_ack_poll.rs"]
+mod linux_ack_poll;
+
+const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+const DISK_BYTES: u64 = 1024 * 1024 * 1024;
+const RR_SWITCH_QUANTUM: u64 = 4096;
+const FLIGHT_TICKS_PER_INSTRUCTION: u64 = crucible_engine::SIM_TICKS_PER_INSTRUCTION;
+const FRACTIONAL_PHASE_LOWER_TARGET: u64 = 2_000_000;
+const INSTRUCTION_EXACT_LOWER_TARGET: u64 = FRACTIONAL_PHASE_LOWER_TARGET + 1;
+const INSTRUCTION_EXACT_UPPER_TARGET: u64 =
+    INSTRUCTION_EXACT_LOWER_TARGET + FLIGHT_TICKS_PER_INSTRUCTION;
+const TARGETS: [u64; 5] = [
+    FRACTIONAL_PHASE_LOWER_TARGET,
+    INSTRUCTION_EXACT_LOWER_TARGET,
+    INSTRUCTION_EXACT_UPPER_TARGET,
+    4_000_000,
+    8_000_000,
+];
+// The selectable request is the authenticated readiness boundary. Give QEMU's
+// signed virtual-picosecond API its full positive domain so a machine-specific
+// boot instruction count cannot become a second readiness condition; the
+// production host supervision deadline remains the fail-closed liveness bound.
+const READINESS_ADMISSION_CEILING: u64 = i64::MAX.unsigned_abs();
+const READINESS_SELECTABLE_ID: &str = "flight.ready";
+const READINESS_INSTANCE_KEY: &str = "boot";
+const READINESS_REQUEST_SEQUENCE: u64 = 2;
+const READINESS_VCPU_INDEX: u32 = 0;
+const READINESS_REPLY_CAPACITY: usize = 128;
+const FLIGHT_NODE_ID: &str = "plugin-flight-node";
+const SETUP_COMPLETE_MARKER: &str = "lifecycle.setup_complete";
+const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+// The readiness flight produced a 95.6-million-byte trace through idle wake.
+// Reserve a finite product-only ceiling and validate through a pinned stream.
+const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
+const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
+    "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
+const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
+const TIME_OWNERSHIP_ENVIRONMENT: &str = "CRUCIBLE_TIME_OWNERSHIP_WITNESS";
+const LINUX_ACK_PAIR_ENVIRONMENT: &str = "CRUCIBLE_LINUX_BOOT_ACK_POLL_PAIR";
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("crucible-qemu-production-plugin-flight: {error}");
+            let mut source = error.source();
+            while let Some(cause) = source {
+                eprintln!("caused by: {cause}");
+                source = cause.source();
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
+    let arguments = std::env::args_os()
+        .skip(1)
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let [
+        qemu,
+        plugin,
+        kernel,
+        idle_initrd,
+        block_initrd,
+        firmware,
+        cgroup_root,
+        run_root,
+        reference_trace_output,
+    ] = arguments.as_slice()
+    else {
+        return Err(
+            "expected QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT".into(),
+        );
+    };
+    let host = LinuxQemuAttemptHostConfig::new(
+        cgroup_root,
+        run_root,
+        "production-plugin-flight",
+        21000,
+        1,
+        65534,
+        65534,
+        64,
+        RR_SWITCH_QUANTUM,
+        Duration::from_secs(30),
+    )?;
+    let mut factory = LinuxQemuAttemptHostFactory::open(host)?;
+    if block_recovery_only_requested()? {
+        let evidence = block_recovery_hot_fork::run(
+            &mut factory,
+            qemu,
+            plugin,
+            kernel,
+            block_initrd,
+            firmware,
+            run_root,
+            true,
+        )?;
+
+        println!("PASS");
+        println!("diagnostic_mode=block-recovery-only");
+        print_block_recovery_evidence(evidence);
+        return Ok(());
+    }
+
+    let clock_read_flight = guest_clock_reads::requested()?;
+    let selectable_catalog_plan = guest_clock_reads::selectable_catalog_plan(clock_read_flight)?;
+    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
+        .with_initrd(idle_initrd)
+        .with_vm_shape(128, 4)
+        .with_rr_switch_quantum(RR_SWITCH_QUANTUM)
+        .with_whitebox(crucible_qemu_host::QemuLaunchPluginSwitch::On)
+        .with_selectable_catalog_plan(selectable_catalog_plan)
+        .with_fingerprint(crucible_qemu_host::QemuLaunchPluginSwitch::On)
+        // Full hot-fork preparation stages a connected child console.
+        .with_console_capture()
+        .with_runtime_determinism_trace()
+        .with_runtime_determinism_trace_budget(PRODUCTION_RUNTIME_TRACE_BYTES)?
+        // The exact four-vCPU guest authenticated readiness after about 110
+        // host seconds. Keep a finite per-advance guard with measured headroom.
+        .with_completion_timeout(Duration::from_secs(300));
+
+    #[cfg(not(feature = "test-support"))]
+    if std::env::var_os(LINUX_ACK_PAIR_ENVIRONMENT).is_some() {
+        return Err("Linux ACK polling comparison requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    if linux_ack_poll::requested()? {
+        return Ok(linux_ack_poll::run(&mut factory, &config, qemu)?);
+    }
+
+    if clock_read_flight {
+        return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
+    }
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        let reference = run_once(&mut factory, &config, qemu, false, None)?;
+        let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+        compare_boundaries(
+            "clock ownership restart",
+            &reference.boundaries,
+            &hostile.boundaries,
+        )?;
+        if !idle_evidence_matches_across_runs(&reference.idle, &hostile.idle) {
+            return Err("clock ownership idle/wake evidence changed across runs".into());
+        }
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        println!("PASS");
+        println!("diagnostic_mode=time-ownership");
+        println!("loaded_production_plugin=true");
+        println!("idle_hold_clock_unchanged=true");
+        println!("authorized_exact_timer_wake_raw_unchanged=true");
+        return Ok(());
+    }
+
+    if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
+        // Each schedule boots the same guest; the first is the reference.
+        let mut runs = Vec::with_capacity(partition_probe::PartitionSchedule::ALL.len());
+        for schedule in partition_probe::PartitionSchedule::ALL {
+            runs.push(run_once(
+                &mut factory,
+                &config,
+                qemu,
+                false,
+                Some(schedule),
+            )?);
+        }
+        let (reference, candidates) = runs
+            .split_first()
+            .ok_or("partition probe ran no schedules")?;
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        for candidate in candidates {
+            compare_boundaries(
+                "partitioned replay",
+                &reference.boundaries,
+                &candidate.boundaries,
+            )?;
+            if !idle_evidence_matches_across_runs(&reference.idle, &candidate.idle) {
+                return Err(format!(
+                    "partitioned replay did not start from the same authenticated timer wake: reference={:?} candidate={:?}",
+                    reference.idle, candidate.idle,
+                )
+                .into());
+            }
+        }
+        let probes = runs
+            .into_iter()
+            .map(|run| run.partition_probe.ok_or("missing partition probe"))
+            .collect::<Result<Vec<_>, _>>()?;
+        partition_probe::compare(&probes)?;
+        println!("PASS");
+        println!("diagnostic_mode=phase4-partition-probe");
+        return Ok(());
+    }
+
+    let reference = run_once(&mut factory, &config, qemu, false, None)?;
+    let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+    fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+    compare_boundaries(
+        "host-preempted restart",
+        &reference.boundaries,
+        &hostile.boundaries,
+    )?;
+    let instruction_exact = &reference.instruction_exact;
+    if instruction_exact != &hostile.instruction_exact {
+        return Err("instruction-exact evidence changed across flight variants".into());
+    }
+    if !idle_evidence_matches_across_runs(&reference.idle, &hostile.idle) {
+        let localization = compare_runtime_determinism_diagnostics([
+            ("reference", &reference.diagnostics),
+            ("hostile", &hostile.diagnostics),
+        ]);
+        return Err(format!(
+            "loaded-plugin idle/wake evidence changed across flight variants: \
+             reference={:?}; hostile={:?}; \
+             runtime_determinism_localization={localization}",
+            reference.idle, hostile.idle,
+        )
+        .into());
+    }
+    if !reference.shutdown.reaped || reference.shutdown.leaked {
+        return Err("reference QEMU did not shut down cleanly".into());
+    }
+    if !hostile.shutdown.reaped || hostile.shutdown.leaked {
+        return Err("hostile QEMU did not shut down cleanly".into());
+    }
+    let production_variants = [&reference, &hostile];
+    let on_demand_acknowledgements = production_variants
+        .iter()
+        .map(|run| run.on_demand_acknowledgements)
+        .sum::<usize>();
+    let expected_acknowledgements = production_variants.len() * (TARGETS.len() + 2);
+    if on_demand_acknowledgements != expected_acknowledgements {
+        return Err(format!(
+            "production variants authenticated {on_demand_acknowledgements} on-demand fingerprint acknowledgements instead of {expected_acknowledgements}"
+        )
+        .into());
+    }
+
+    // Keep the validated, bounded evidence visible if the independent block
+    // recovery subflight fails before the normal result file is emitted.
+    eprintln!(
+        "PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_BEGIN\n{}\
+         PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_END",
+        reference.diagnostics.trace.report()
+    );
+    eprintln!(
+        "PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_BEGIN\n{}\
+         PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_END",
+        hostile.diagnostics.trace.report()
+    );
+    eprintln!(
+        "production_runtime_trace_comparison={}",
+        runtime_trace::compare(
+            "reference",
+            &reference.diagnostics.trace,
+            "hostile",
+            &hostile.diagnostics.trace,
+        )?
+    );
+
+    let block_recovery_hot_fork = block_recovery_hot_fork::run(
+        &mut factory,
+        qemu,
+        plugin,
+        kernel,
+        block_initrd,
+        firmware,
+        run_root,
+        false,
+    )?;
+
+    println!("PASS");
+    println!("gate=gate:production-rust-plugin-flight");
+    println!("rust_plugin_loaded=true");
+    println!("diskless_multiboot_runs={}", production_variants.len());
+    println!("fingerprint_flight_variants=reference,host-preempted");
+    println!("vcpu_count=4");
+    println!("rr_switch_quantum={RR_SWITCH_QUANTUM}");
+    println!("sample_count={}", reference.boundaries.len());
+    println!("sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000");
+    println!("sample_stream_restart_identical=true");
+    println!("on_demand_worker_acknowledgements={on_demand_acknowledgements}");
+    println!("on_demand_boundary_stream_bit_identical=true");
+    println!(
+        "instruction_exact_window_lower_picoseconds={}",
+        instruction_exact.lower_target
+    );
+    println!(
+        "instruction_exact_window_upper_picoseconds={}",
+        instruction_exact.upper_target
+    );
+    println!("instruction_exact_window_width_picoseconds={FLIGHT_TICKS_PER_INSTRUCTION}");
+    println!("fractional_phase_window_lower_picoseconds={FRACTIONAL_PHASE_LOWER_TARGET}");
+    println!("fractional_phase_window_upper_picoseconds={INSTRUCTION_EXACT_LOWER_TARGET}");
+    println!("fractional_phase_clock_not_credited=true");
+    println!(
+        "fractional_phase_retirements={}",
+        instruction_exact.fractional_phase_retirements
+    );
+    println!("instruction_exact_raw_retirement_successor=true");
+    println!(
+        "instruction_exact_lower_rr_vcpu={}",
+        instruction_exact.lower_rr_vcpu
+    );
+    println!(
+        "instruction_exact_upper_rr_vcpu={}",
+        instruction_exact.upper_rr_vcpu
+    );
+    println!(
+        "instruction_exact_lower_rr_position={}",
+        instruction_exact.lower_rr_position
+    );
+    println!(
+        "instruction_exact_upper_rr_position={}",
+        instruction_exact.upper_rr_position
+    );
+    println!("instruction_exact_rr_successor=true");
+    println!(
+        "instruction_exact_changed_components={}",
+        instruction_exact.changed_components.join(",")
+    );
+    println!(
+        "instruction_exact_first_differing_state_component={}",
+        instruction_exact.first_differing_state_component
+    );
+    println!(
+        "instruction_exact_owning_vcpu_state_projection={}",
+        instruction_exact.owning_vcpu_state_projection
+    );
+    println!("instruction_exact_state_projection_changed=true");
+    println!("instruction_exact_fingerprint_changed=true");
+    println!("instruction_exact_localization=one-instruction-window");
+    println!("bounded_scheduler_preemption_applied=true");
+    println!("pending_quantum_preemption_certified=true");
+    println!("scheduler_preemption_mailbox_decisions=2");
+    println!("scheduler_vcpu_switch_applied=true");
+    println!("scheduler_interrupt_applied=true");
+    println!("readiness_setup_marker_authenticated=true");
+    println!(
+        "readiness_setup_marker_icount={}",
+        reference.idle.setup_marker_icount
+    );
+    println!("all_vcpus_halted_observed=true");
+    println!("exact_timer_deadline_observed=true");
+    println!("queued_idle_wake_reached_exact_deadline=true");
+    println!("actual_virtual_timer_fire_authenticated=true");
+    println!(
+        "timer_witness_generation={}",
+        reference.idle.timer_fire.generation
+    );
+    println!(
+        "timer_witness_armed_deadline_ps={}",
+        reference.idle.timer_fire.armed_deadline_ps
+    );
+    println!(
+        "timer_witness_armed_deadline_tick={}",
+        reference.idle.timer_fire.armed_deadline_tick
+    );
+    println!("timer_witness_ticks_per_instruction={FLIGHT_TICKS_PER_INSTRUCTION}");
+    println!(
+        "timer_witness_retirement_step_ps={}",
+        reference.idle.timer_fire.retirement_step_ps
+    );
+    println!(
+        "timer_witness_armed_raw_icount={}",
+        reference.idle.timer_fire.armed_raw_icount
+    );
+    println!(
+        "timer_witness_fired_expire_ps={}",
+        reference.idle.timer_fire.fired_expire_ps
+    );
+    println!(
+        "timer_witness_fired_virtual_ps={}",
+        reference.idle.timer_fire.fired_virtual_ps
+    );
+    println!(
+        "timer_witness_fired_raw_icount={}",
+        reference.idle.timer_fire.fired_raw_icount
+    );
+    println!(
+        "timer_witness_published_wake_tick={}",
+        reference.idle.timer_fire.published_wake_tick
+    );
+    println!(
+        "timer_witness_post_wake_tick={}",
+        reference.idle.timer_fire.post_wake_tick
+    );
+    println!(
+        "timer_witness_completed={}",
+        reference.idle.timer_fire.completed
+    );
+    println!(
+        "timer_witness_reserved={}",
+        reference.idle.timer_fire.reserved
+    );
+    println!("idle_wake_stream_restart_identical=true");
+    print_block_recovery_evidence(block_recovery_hot_fork);
+    println!("component_failures=0");
+    println!("per_vcpu_register_files_present=true");
+    println!("sample_logical_picoseconds_settle_target=true");
+    Ok(())
+}
+
+fn block_recovery_only_requested() -> Result<bool, Box<dyn Error>> {
+    let value = std::env::var_os(BLOCK_RECOVERY_ONLY_ENVIRONMENT);
+    parse_block_recovery_only(value.as_deref())
+}
+
+fn parse_block_recovery_only(value: Option<&std::ffi::OsStr>) -> Result<bool, Box<dyn Error>> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(value) => Err(format!(
+            "{BLOCK_RECOVERY_ONLY_ENVIRONMENT} must be unset or exactly 1, got {value:?}"
+        )
+        .into()),
+    }
+}
+
+fn print_block_recovery_evidence(hot_fork: block_recovery_hot_fork::BlockRecoveryHotForkEvidence) {
+    println!("block_recovery_hot_fork_subflight=true");
+    println!(
+        "block_recovery_start_tick={}",
+        hot_fork.recovery_started_tick
+    );
+    println!("block_recovery_nanos={}", hot_fork.recovery_nanos);
+    println!("block_recovery_write_completed=true");
+    println!(
+        "block_recovery_pause_logical_icount={}",
+        hot_fork.pause_logical_icount
+    );
+    println!(
+        "block_recovery_pause_raw_icount={}",
+        hot_fork.pause_raw_icount
+    );
+    println!(
+        "hot_fork_template_generation={}",
+        hot_fork.template_generation
+    );
+    println!("hot_fork_template_draining=true");
+    println!("hot_fork_template_prepared=true");
+    println!("hot_fork_preparation_order=block-recovery-settled,draining,prepared");
+}
+
+struct FlightRun {
+    boundaries: Vec<BoundaryEvidence>,
+    instruction_exact: InstructionExactEvidence,
+    idle: IdleEvidence,
+    partition_probe: Option<partition_probe::PartitionProbe>,
+    on_demand_acknowledgements: usize,
+    shutdown: QemuShutdownReport,
+    diagnostics: RuntimeDeterminismDiagnostics,
+    #[cfg(feature = "test-support")]
+    boot_probe: Option<linux_ack_poll::BootProbe>,
+}
+
+#[derive(Debug)]
+struct RuntimeDeterminismDiagnostics {
+    baseline: RuntimeDeterminismBaseline,
+    trace: runtime_trace::RuntimeTraceSummary,
+}
+
+#[derive(Debug)]
+struct RuntimeDeterminismBaseline {
+    calibration: Result<QemuLogicalTimeCalibration, String>,
+    idle_state: Result<QemuNodeIdleState, String>,
+    timer_witness: Result<Option<QemuVirtualTimerFireWitness>, String>,
+    rr_current_vcpu: u32,
+    rr_position_in_quantum: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BoundaryEvidence {
+    target: u64,
+    outcome: AdvanceOutcome,
+    fingerprint: ExecutionFingerprint,
+    sample: FingerprintSample,
+    calibration: QemuLogicalTimeCalibration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InstructionExactEvidence {
+    fractional_phase_retirements: u64,
+    lower_target: u64,
+    upper_target: u64,
+    lower_rr_vcpu: u32,
+    upper_rr_vcpu: u32,
+    lower_rr_position: u64,
+    upper_rr_position: u64,
+    first_differing_state_component: String,
+    owning_vcpu_state_projection: String,
+    changed_components: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IdleEvidence {
+    setup_marker_icount: u64,
+    halted_at: u64,
+    deadline: u64,
+    halted_fingerprint: ExecutionFingerprint,
+    halted_sample: FingerprintSample,
+    wake_outcome: AdvanceOutcome,
+    wake_fingerprint: ExecutionFingerprint,
+    wake_sample: FingerprintSample,
+    timer_fire: VirtualTimerFireEvidence,
+    on_demand_acknowledgements: usize,
+}
+
+/// Numeric certificate for the plugin-validated native timer callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VirtualTimerFireEvidence {
+    generation: u64,
+    armed_deadline_ps: u64,
+    armed_deadline_tick: u64,
+    retirement_step_ps: u64,
+    armed_raw_icount: u64,
+    fired_expire_ps: u64,
+    fired_virtual_ps: u64,
+    fired_raw_icount: u64,
+    published_wake_tick: u64,
+    post_wake_tick: u64,
+    completed: u32,
+    reserved: u32,
+}
+
+fn idle_evidence_matches_across_runs(reference: &IdleEvidence, candidate: &IdleEvidence) -> bool {
+    let mut normalized_reference = reference.clone();
+
+    // Generation identifies one process-local publication, not guest state.
+    normalized_reference.timer_fire.generation = candidate.timer_fire.generation;
+    normalized_reference == *candidate
+}
+
+fn compare_boundaries(
+    variant: &str,
+    reference: &[BoundaryEvidence],
+    candidate: &[BoundaryEvidence],
+) -> Result<(), String> {
+    if reference.len() != candidate.len() {
+        return Err(format!(
+            "{variant}: boundary count differs: {} != {}",
+            reference.len(),
+            candidate.len()
+        ));
+    }
+    for (index, (left, right)) in reference.iter().zip(candidate).enumerate() {
+        let lower_bound = index
+            .checked_sub(1)
+            .and_then(|previous| reference.get(previous))
+            .map_or(0, |boundary| boundary.target);
+        if left.target != right.target {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: target differs",
+                left.target
+            ));
+        }
+        if left.outcome != right.outcome {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: outcome differs",
+                left.target
+            ));
+        }
+        if left.fingerprint != right.fingerprint {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: execution_fingerprint differs",
+                left.target
+            ));
+        }
+        if let Some(component) = first_sample_difference(&left.sample, &right.sample) {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: {component} differs",
+                left.target
+            ));
+        }
+        if left.calibration != right.calibration {
+            return Err(format!(
+                "{variant}: boundary {index} window ({lower_bound},{}]: logical/raw calibration differs",
+                left.target
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn instruction_exact_evidence(
+    boundaries: &[BoundaryEvidence],
+) -> Result<InstructionExactEvidence, String> {
+    let lower = boundaries
+        .iter()
+        .find(|boundary| boundary.target == INSTRUCTION_EXACT_LOWER_TARGET)
+        .ok_or_else(|| String::from("instruction-exact lower boundary is absent"))?;
+    let upper = boundaries
+        .iter()
+        .find(|boundary| boundary.target == INSTRUCTION_EXACT_UPPER_TARGET)
+        .ok_or_else(|| String::from("instruction-exact upper boundary is absent"))?;
+    let fractional_lower = boundaries
+        .iter()
+        .find(|boundary| boundary.target == FRACTIONAL_PHASE_LOWER_TARGET)
+        .ok_or_else(|| String::from("fractional-phase lower boundary is absent"))?;
+
+    let stops_at_its_sample = |boundary: &BoundaryEvidence| {
+        boundary.sample.sample_icount == boundary.calibration.logical_icount
+            && settles_target(boundary.calibration.logical_icount, boundary.target)
+    };
+    if upper.target != lower.target + FLIGHT_TICKS_PER_INSTRUCTION
+        || lower.target != fractional_lower.target + 1
+        || !stops_at_its_sample(lower)
+        || !stops_at_its_sample(upper)
+        || !stops_at_its_sample(fractional_lower)
+    {
+        return Err(format!(
+            "instruction-exact samples do not settle adjacent requested coordinates: lower={lower:?}, upper={upper:?}"
+        ));
+    }
+    let fractional_phase_retirements = fractional_phase_retirements(fractional_lower, lower)?;
+    if Some(upper.calibration.raw_icount) != lower.calibration.raw_icount.checked_add(1) {
+        return Err(format!(
+            "instruction-exact samples do not advance raw retirement by one: lower={lower:?}, upper={upper:?}"
+        ));
+    }
+    if lower.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
+        || upper.sample.rr_switch_quantum != RR_SWITCH_QUANTUM
+        || !is_exact_rr_successor(&lower.sample, &upper.sample)
+    {
+        return Err(format!(
+            "instruction-exact samples do not describe one exact RR successor: lower={lower:?}, upper={upper:?}"
+        ));
+    }
+    if lower.fingerprint == upper.fingerprint {
+        return Err(
+            "adjacent instruction coordinates produced the same execution fingerprint".into(),
+        );
+    }
+    let changed_components = sample_differences(&lower.sample, &upper.sample);
+    let first_differing_state_component = changed_components
+        .iter()
+        .find(|component| {
+            !matches!(
+                component.as_str(),
+                "sample_icount" | "rr_current_vcpu" | "rr_position_in_quantum"
+            )
+        })
+        .cloned()
+        .ok_or_else(|| {
+            String::from("adjacent instruction samples have no differing state component")
+        })?;
+    let owner_index = usize::try_from(lower.sample.rr_current_vcpu)
+        .map_err(|_| String::from("instruction-exact owner index does not fit usize"))?;
+    let expected_register_projection =
+        format!("vcpu[{}].register_digest", lower.sample.rr_current_vcpu);
+    let lower_owner = lower
+        .sample
+        .vcpus
+        .get(owner_index)
+        .ok_or_else(|| format!("instruction-exact owner vCPU {owner_index} is absent"))?;
+    let upper_owner = upper
+        .sample
+        .vcpus
+        .get(owner_index)
+        .ok_or_else(|| format!("instruction-exact owner vCPU {owner_index} is absent"))?;
+    if lower_owner.register_digest == upper_owner.register_digest {
+        return Err(format!(
+            "adjacent instruction samples did not change the owning {expected_register_projection}"
+        ));
+    }
+    validate_instruction_exact_shape_stability(&lower.sample, &upper.sample, owner_index)?;
+    let owning_vcpu_state_projection = expected_register_projection;
+
+    Ok(InstructionExactEvidence {
+        fractional_phase_retirements,
+        lower_target: lower.target,
+        upper_target: upper.target,
+        lower_rr_vcpu: lower.sample.rr_current_vcpu,
+        upper_rr_vcpu: upper.sample.rr_current_vcpu,
+        lower_rr_position: lower.sample.rr_position_in_quantum,
+        upper_rr_position: upper.sample.rr_position_in_quantum,
+        first_differing_state_component,
+        owning_vcpu_state_projection,
+        changed_components,
+    })
+}
+
+/// Classifies the one-picosecond step between two busy targets.
+///
+/// A ceiling is never credited to the guest, so the later target either admits
+/// no retirement, leaving the stop bit-identical, or admits exactly the one
+/// retirement that ends on it.
+fn fractional_phase_retirements(
+    fractional_lower: &BoundaryEvidence,
+    lower: &BoundaryEvidence,
+) -> Result<u64, String> {
+    let fractional_raw = fractional_lower.calibration.raw_icount;
+    let lower_raw = lower.calibration.raw_icount;
+    if lower_raw == fractional_raw
+        && lower.calibration == fractional_lower.calibration
+        && lower.sample == fractional_lower.sample
+        && lower.fingerprint == fractional_lower.fingerprint
+    {
+        return Ok(0);
+    }
+    if Some(lower_raw) == fractional_raw.checked_add(1)
+        && lower.calibration.logical_icount == lower.target
+        && lower.fingerprint != fractional_lower.fingerprint
+    {
+        return Ok(1);
+    }
+    Err(format!(
+        "fractional-phase step credited the clock or retired more than one instruction: lower={fractional_lower:?}, upper={lower:?}"
+    ))
+}
+
+fn validate_instruction_exact_shape_stability(
+    lower: &FingerprintSample,
+    upper: &FingerprintSample,
+    owner_index: usize,
+) -> Result<(), String> {
+    if lower.vcpu_count != upper.vcpu_count
+        || lower.component_failures != upper.component_failures
+        || lower.ram_bytes != upper.ram_bytes
+        || lower.device_state_bytes != upper.device_state_bytes
+        || lower.device_state_sections != upper.device_state_sections
+        || lower.device_state_schema_digest != upper.device_state_schema_digest
+    {
+        return Err(format!(
+            "adjacent instruction samples changed invariant fingerprint shape: {:?}",
+            sample_differences(lower, upper)
+        ));
+    }
+
+    for (index, (lower_vcpu, upper_vcpu)) in lower.vcpus.iter().zip(&upper.vcpus).enumerate() {
+        if lower_vcpu.register_file_bytes != upper_vcpu.register_file_bytes
+            || lower_vcpu.retired_instruction_count != upper_vcpu.retired_instruction_count
+            || (index != owner_index && lower_vcpu.register_digest != upper_vcpu.register_digest)
+        {
+            return Err(format!(
+                "adjacent instruction samples changed invariant vCPU {index} state"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_exact_rr_successor(lower: &FingerprintSample, upper: &FingerprintSample) -> bool {
+    let quantum = lower.rr_switch_quantum;
+    if quantum == 0
+        || upper.rr_switch_quantum != quantum
+        || lower.vcpu_count == 0
+        || upper.vcpu_count != lower.vcpu_count
+        || lower.rr_current_vcpu >= lower.vcpu_count
+        || upper.rr_current_vcpu >= upper.vcpu_count
+        || lower.rr_position_in_quantum >= quantum
+        || upper.rr_position_in_quantum >= quantum
+    {
+        return false;
+    }
+
+    if lower.rr_position_in_quantum + 1 < quantum {
+        upper.rr_current_vcpu == lower.rr_current_vcpu
+            && upper.rr_position_in_quantum == lower.rr_position_in_quantum + 1
+    } else {
+        upper.rr_current_vcpu == (lower.rr_current_vcpu + 1) % lower.vcpu_count
+            && upper.rr_position_in_quantum == 0
+    }
+}
+
+fn first_sample_difference(left: &FingerprintSample, right: &FingerprintSample) -> Option<String> {
+    sample_differences(left, right).into_iter().next()
+}
+
+fn sample_differences(left: &FingerprintSample, right: &FingerprintSample) -> Vec<String> {
+    let scalar_components = [
+        ("sample_icount", left.sample_icount != right.sample_icount),
+        ("vcpu_count", left.vcpu_count != right.vcpu_count),
+        (
+            "rr_current_vcpu",
+            left.rr_current_vcpu != right.rr_current_vcpu,
+        ),
+        (
+            "rr_position_in_quantum",
+            left.rr_position_in_quantum != right.rr_position_in_quantum,
+        ),
+        (
+            "rr_switch_quantum",
+            left.rr_switch_quantum != right.rr_switch_quantum,
+        ),
+        (
+            "component_failures",
+            left.component_failures != right.component_failures,
+        ),
+        ("ram_bytes", left.ram_bytes != right.ram_bytes),
+        ("ram_digest", left.ram_digest != right.ram_digest),
+        (
+            "device_state_bytes",
+            left.device_state_bytes != right.device_state_bytes,
+        ),
+        (
+            "device_state_sections",
+            left.device_state_sections != right.device_state_sections,
+        ),
+        (
+            "device_state_digest",
+            left.device_state_digest != right.device_state_digest,
+        ),
+        (
+            "device_state_schema_digest",
+            left.device_state_schema_digest != right.device_state_schema_digest,
+        ),
+    ];
+    let mut differences = scalar_components
+        .into_iter()
+        .filter(|(_, differs)| *differs)
+        .map(|(name, _)| String::from(name))
+        .collect::<Vec<_>>();
+    for (index, (left, right)) in left.vcpus.iter().zip(&right.vcpus).enumerate() {
+        if left.register_digest != right.register_digest {
+            differences.push(format!("vcpu[{index}].register_digest"));
+        }
+        if left.register_file_bytes != right.register_file_bytes {
+            differences.push(format!("vcpu[{index}].register_file_bytes"));
+        }
+        if left.retired_instruction_count != right.retired_instruction_count {
+            differences.push(format!("vcpu[{index}].retired_instruction_count"));
+        }
+    }
+    differences
+}
+
+fn compare_runtime_determinism_diagnostics(
+    variants: [(&str, &RuntimeDeterminismDiagnostics); 2],
+) -> String {
+    let baselines = variants
+        .iter()
+        .map(|(name, diagnostics)| {
+            format!(
+                "{name}={}",
+                describe_runtime_baseline(&diagnostics.baseline)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let [(reference_name, reference), (candidate_name, candidate)] = variants;
+    format!(
+        "baselines=[{baselines}]; {}",
+        runtime_trace::compare(
+            reference_name,
+            &reference.trace,
+            candidate_name,
+            &candidate.trace,
+        )
+        .unwrap_or_else(|error| format!("runtime_trace_comparison_error={error}"))
+    )
+}
+
+fn describe_runtime_baseline(baseline: &RuntimeDeterminismBaseline) -> String {
+    format!(
+        "calibration={:?},idle_state={:?},timer_witness={:?},rr_current_vcpu={},rr_position_in_quantum={}",
+        baseline.calibration,
+        baseline.idle_state,
+        baseline.timer_witness,
+        baseline.rr_current_vcpu,
+        baseline.rr_position_in_quantum,
+    )
+}
+
+fn final_busy_raw_boundary(baseline: &RuntimeDeterminismBaseline) -> Result<u64, String> {
+    let calibration = baseline
+        .calibration
+        .as_ref()
+        .map_err(|error| format!("boundary_calibration_error={error}"))?;
+    if !settles_target(calibration.logical_icount, TARGETS[TARGETS.len() - 1]) {
+        return Err(format!(
+            "boundary_logical_picoseconds={} settles={}",
+            calibration.logical_icount,
+            TARGETS[TARGETS.len() - 1]
+        ));
+    }
+    Ok(calibration.raw_icount)
+}
+
+fn run_once(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_schedule: Option<partition_probe::PartitionSchedule>,
+) -> Result<FlightRun, Box<dyn Error>> {
+    run_once_with_boot_probe(factory, config, qemu, hostile, partition_schedule, false)
+}
+
+fn run_once_with_boot_probe(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_schedule: Option<partition_probe::PartitionSchedule>,
+    boot_probe_enabled: bool,
+) -> Result<FlightRun, Box<dyn Error>> {
+    let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
+    let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
+    directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
+    let launch = config.clone().with_run_directory(directory.path());
+    let mut node = launch_qemu_production_fresh_node(
+        &launch,
+        QemuProductionFreshLaunchAdmission::admit(
+            &launch,
+            &directory,
+            owner.process_contract()?,
+            QemuLiveNodeIdentity::new(
+                "plugin-flight-node",
+                "plugin-flight-router",
+                "plugin-flight-crash",
+            ),
+        )?,
+    )?;
+    let preemption = hostile.then(BoundedSchedulerPreemptionEvidence::default);
+    let mut boundaries = Vec::with_capacity(TARGETS.len());
+
+    for (index, target) in TARGETS.into_iter().enumerate() {
+        if target == 4_000_000
+            && let Some(evidence) = &preemption
+        {
+            node.enable_bounded_scheduler_preemption(evidence.claim()?);
+        }
+        if target == 4_000_000 {
+            let at = aligned_preemption_tick(&mut node, 3_000_000, target)?;
+            install_preemption(
+                &mut node,
+                PreemptionKind::VcpuSwitch {
+                    from_vcpu: VcpuId { index: 0 },
+                    to_vcpu: VcpuId { index: 1 },
+                },
+                at,
+            )?;
+        } else if target == 8_000_000 {
+            let at = aligned_preemption_tick(&mut node, 6_000_000, target)?;
+            install_preemption(
+                &mut node,
+                PreemptionKind::InterruptAt {
+                    target_vcpu: VcpuId { index: 2 },
+                    irq: IrqVector { vector: 32 },
+                },
+                at,
+            )?;
+        }
+        let observation = match SimulationBackend::step_to(&mut node, VirtualTime { ticks: target })
+        {
+            Ok(observation) => observation,
+            Err(source) => {
+                return Err(node_state_failure(
+                    &mut node,
+                    &format!("busy target index {index} ({target})"),
+                    source,
+                ));
+            }
+        };
+        let outcome = observation.outcome;
+        // Each target is a bound (RFC-0010 SCHED-12): the busy guest stops at
+        // its last retirement at or below it and is settled through it.
+        if observation.requested_ceiling.ticks != target
+            || observation.settled_through.ticks != target
+            || !settles_target(observation.reached.ticks, target)
+        {
+            return Err(
+                format!("scheduler backend returned invalid boundary: {observation:?}").into(),
+            );
+        }
+        match outcome {
+            AdvanceOutcome::ReachedHorizon => {}
+            AdvanceOutcome::Paused { at } => {
+                return Err(
+                    format!("guest paused at {} before busy target {target}", at.retired).into(),
+                );
+            }
+        }
+        // This call requests a capture and waits for the exact generation ACK.
+        // Only the production plugin's digest worker publishes that ACK.
+        let fingerprint = node.execution_fingerprint()?;
+        let sample = node.fingerprint_sample()?;
+        validate_sample(sample, target)?;
+        let calibration = node.logical_time_calibration()?;
+        if calibration.logical_icount != observation.reached.ticks {
+            return Err(format!(
+                "logical/raw calibration did not bind the stop below busy target {target}: \
+                 {calibration:?}"
+            )
+            .into());
+        }
+        boundaries.push(BoundaryEvidence {
+            target,
+            outcome,
+            fingerprint,
+            sample,
+            calibration,
+        });
+    }
+    if let Some(evidence) = preemption {
+        let report = evidence
+            .snapshot()
+            .ok_or("bounded preemption did not publish evidence")?;
+        if !report.applied || !report.pending_quantum_certified || report.perturbations == 0 {
+            return Err("bounded preemption did not overlap the live quantum".into());
+        }
+    }
+    let instruction_exact = instruction_exact_evidence(&boundaries)?;
+    let final_busy_sample = boundaries
+        .last()
+        .ok_or("production flight omitted its final busy boundary")?
+        .sample;
+    // These are passive shared-memory reads at the already-established 8M
+    // boundary. In particular, localization does not issue a QMP query or add
+    // another scheduler step that could perturb the ordering under inspection.
+    let runtime_baseline = RuntimeDeterminismBaseline {
+        calibration: node
+            .logical_time_calibration()
+            .map_err(|error| error.to_string()),
+        idle_state: node.idle_state().map_err(|error| error.to_string()),
+        timer_witness: node
+            .virtual_timer_fire_witness()
+            .map_err(|error| error.to_string()),
+        rr_current_vcpu: final_busy_sample.rr_current_vcpu,
+        rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
+    };
+
+    #[cfg(not(feature = "test-support"))]
+    if boot_probe_enabled {
+        return Err("Linux boot segment requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    let boot_probe = if boot_probe_enabled {
+        Some(linux_ack_poll::probe(&mut node)?)
+    } else {
+        None
+    };
+
+    let idle = match probe_idle_wake(&mut node) {
+        Ok(idle) => idle,
+        Err(source) => {
+            let shutdown = node.shutdown_child();
+            drop(node);
+            let trace = match &shutdown {
+                Ok(report) if report.reaped && !report.leaked => directory
+                    .retain_runtime_liveness_trace_tail_after_reap()
+                    .map_err(|error| error.to_string()),
+                _ => Err(String::from(
+                    "trace unavailable because clean QEMU reap was not proven",
+                )),
+            };
+            drop(directory);
+            let finish = owner.finish();
+
+            return Err(format!(
+                "idle probe failed: hostile={hostile}; {source}; \
+                 diagnostic_shutdown={shutdown:?}; diagnostic_finish={finish:?}; \
+                 retained_native_rr_trace={trace:?}"
+            )
+            .into());
+        }
+    };
+
+    let partition_probe = match partition_schedule
+        .map(|schedule| partition_probe::run(&mut node, idle.deadline, schedule))
+        .transpose()
+    {
+        Ok(probe) => probe,
+        Err(error) => {
+            let shutdown = node.shutdown_child();
+            drop(node);
+            drop(directory);
+            let finish = owner.finish();
+            return Err(format!(
+                "post-selection partition probe failed: {error}; shutdown={shutdown:?}; finish={finish:?}"
+            )
+            .into());
+        }
+    };
+
+    let shutdown = node.shutdown_child()?;
+    drop(node);
+    if !shutdown.reaped || shutdown.leaked {
+        return Err(format!(
+            "QEMU did not cleanly reap after authenticated idle wake: {shutdown:?}"
+        )
+        .into());
+    }
+    let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
+    let trace_result = directory
+        .inspect_runtime_determinism_trace_after_reap(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
+            runtime_trace::summarize(reader, raw_boundary, TARGETS[TARGETS.len() - 1] as i64)
+        });
+    drop(directory);
+    let finish_result = owner.finish();
+    let trace = match (trace_result, finish_result) {
+        (Ok(trace), Ok(())) => trace,
+        (Err(error), finish) => {
+            return Err(format!(
+                "runtime trace validation failed after authenticated idle wake: \
+                 error={error}; idle={idle:?}; shutdown={shutdown:?}; finish={finish:?}"
+            )
+            .into());
+        }
+        (Ok(_), Err(error)) => return Err(error.into()),
+    };
+    Ok(FlightRun {
+        on_demand_acknowledgements: boundaries.len()
+            + idle.on_demand_acknowledgements
+            + if boot_probe_enabled { 2 } else { 0 },
+        boundaries,
+        instruction_exact,
+        idle,
+        partition_probe,
+        #[cfg(feature = "test-support")]
+        boot_probe,
+        shutdown,
+        diagnostics: RuntimeDeterminismDiagnostics {
+            baseline: runtime_baseline,
+            trace,
+        },
+    })
+}
+
+fn prepare_live_hot_fork_template(node: &mut QemuNode) -> Result<u64, Box<dyn Error>> {
+    node.pause_at_exact_checkpoint_boundary()?;
+
+    let draining = node.prepare_hot_fork_template(&[])?;
+    if draining.outcome() != QmpHotForkTemplateOutcome::Draining
+        || !draining.transaction_active()
+        || draining.ready()
+    {
+        return Err(format!("hot-fork template did not enter draining: {draining:?}").into());
+    }
+
+    let barriers = node.prepare_hot_fork_template_barriers(&[])?;
+    if barriers.generation() != draining.generation()
+        || barriers.outcome() != QmpHotForkTemplateOutcome::Draining
+        || !barriers.transaction_active()
+        || barriers.ready()
+    {
+        return Err(format!("hot-fork barriers did not retain draining: {barriers:?}").into());
+    }
+
+    let resources = node.prepare_hot_fork_child_resources(MAXIMUM_HOT_FORK_RING_IMAGE_BYTES)?;
+    let prepared = resources.template();
+    if prepared.generation() != draining.generation()
+        || prepared.outcome() != QmpHotForkTemplateOutcome::Prepared
+        || !prepared.transaction_active()
+        || !prepared.ready()
+        || prepared.missing_proofs() != 0
+    {
+        return Err(format!("hot-fork template did not become prepared: {prepared:?}").into());
+    }
+
+    Ok(prepared.generation())
+}
+
+fn node_state_failure(
+    node: &mut QemuNode,
+    phase: &str,
+    source: impl std::fmt::Display,
+) -> Box<dyn Error> {
+    let idle_state = node.idle_state().map_err(|error| error.to_string());
+    let calibration = node
+        .logical_time_calibration()
+        .map_err(|error| error.to_string());
+    let timer_witness = node
+        .virtual_timer_fire_witness()
+        .map_err(|error| error.to_string());
+    format!(
+        "production flight failed during {phase}: source={source}; \
+         idle_state={idle_state:?}; calibration={calibration:?}; \
+         timer_witness={timer_witness:?}"
+    )
+    .into()
+}
+
+/// Retains the original wake inputs separately from post-shutdown observations.
+fn idle_wake_failure_context(
+    halted_at: Icount,
+    deadline: Icount,
+    armed: QemuLogicalTimeCalibration,
+    prior_timer_generation: Option<u64>,
+    source: impl std::fmt::Display,
+) -> String {
+    format!(
+        "halted_at_ps={}; requested_deadline_ps={}; armed_logical_ps={}; \
+         armed_raw_instructions={}; prior_timer_generation={prior_timer_generation:?}; {source}",
+        halted_at.retired, deadline.retired, armed.logical_icount, armed.raw_icount,
+    )
+}
+
+fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> {
+    let readiness = match SimulationBackend::step_to(
+        node,
+        VirtualTime {
+            ticks: READINESS_ADMISSION_CEILING,
+        },
+    ) {
+        Ok(observation) => observation,
+        Err(source) => return Err(node_state_failure(node, "readiness admission", source)),
+    };
+    let AdvanceOutcome::Paused { at: readiness_at } = readiness.outcome else {
+        return Err(format!(
+            "diskless guest did not publish its authenticated readiness request: {readiness:?}"
+        )
+        .into());
+    };
+    let readiness_events = SimulationBackend::drain_observable_events(node)?;
+    let setup_marker_icount = authenticate_readiness_marker(&readiness_events, readiness_at)?;
+
+    let pending_requests = node.drain_pending_selectable_requests()?;
+    let [pending] = pending_requests.as_slice() else {
+        return Err(format!(
+            "readiness boundary carried {} pending selectable requests instead of one",
+            pending_requests.len()
+        )
+        .into());
+    };
+    let request = pending.request();
+    let expected_boundary = pending
+        .trap_tick_ps()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+        .ok_or("readiness boundary overflowed")?;
+    if readiness.reached.ticks != readiness_at.retired
+        || readiness_at.retired != expected_boundary
+        || pending.vcpu_index() != READINESS_VCPU_INDEX
+        || request.sequence() != READINESS_REQUEST_SEQUENCE
+        || request.selectable_id() != READINESS_SELECTABLE_ID
+        || request.instance_key() != READINESS_INSTANCE_KEY
+        || request.narrowed_domain().is_some()
+        || request.reply_capacity() != READINESS_REPLY_CAPACITY
+    {
+        return Err(format!(
+            "readiness boundary did not match the launch-authenticated request: \
+             observation={readiness:?}, pending={pending:?}"
+        )
+        .into());
+    }
+
+    let reply = SelectionReply::rejected(
+        READINESS_REQUEST_SEQUENCE,
+        SelectionReplyStatus::Unavailable,
+        [0; 32],
+        [0; 32],
+    )?;
+    node.enqueue_selectable_reply(pending, &reply)?;
+
+    let halted = match node.advance_to_next_idle(Icount {
+        retired: READINESS_ADMISSION_CEILING,
+    }) {
+        Ok(outcome) => outcome,
+        Err(source) => {
+            return Err(node_state_failure(
+                node,
+                "readiness reply completion",
+                source,
+            ));
+        }
+    };
+    let AdvanceOutcome::Paused { at } = halted else {
+        return Err(
+            "diskless guest reached the readiness liveness ceiling before all-vCPU idle".into(),
+        );
+    };
+    let completion_events = SimulationBackend::drain_observable_events(node)?;
+    if !completion_events.is_empty() {
+        return Err(format!(
+            "readiness reply completion carried unexpected observable events: \
+             {completion_events:?}"
+        )
+        .into());
+    }
+    if !node.selectable_reply_is_checkpoint_quiescent() {
+        return Err("guest readiness reply was not consumed before idle".into());
+    }
+    let state = node.idle_state()?;
+    let deadline = state
+        .next_deadline
+        .ok_or("all-vCPU idle boundary did not publish an exact timer deadline")?;
+    if state.current_icount != at || deadline <= at {
+        return Err(format!("invalid all-vCPU idle state: {state:?}").into());
+    }
+    let halted_fingerprint = node.execution_fingerprint()?;
+    let halted_sample = node.fingerprint_sample()?;
+    validate_sample(halted_sample, at.retired)?;
+    let armed_calibration = node.logical_time_calibration()?;
+    if armed_calibration.logical_icount != at.retired {
+        return Err(format!(
+            "idle witness armed at incoherent logical/raw calibration: {armed_calibration:?}"
+        )
+        .into());
+    }
+    let prior_timer_witness = node.virtual_timer_fire_witness()?;
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        time_ownership::hold(node, armed_calibration)?;
+    }
+
+    let wake = match SimulationBackend::step_to(
+        node,
+        VirtualTime {
+            ticks: deadline.retired,
+        },
+    ) {
+        Ok(observation) => observation,
+        Err(source) => {
+            let context = idle_wake_failure_context(
+                at,
+                deadline,
+                armed_calibration,
+                prior_timer_witness.map(|witness| witness.generation),
+                source,
+            );
+            return Err(node_state_failure(node, "virtual-timer wake", context));
+        }
+    };
+    if wake.reached.ticks != deadline.retired {
+        return Err(format!("idle wake missed exact deadline: {wake:?}").into());
+    }
+    let wake_fingerprint = node.execution_fingerprint()?;
+    let wake_sample = node.fingerprint_sample()?;
+    validate_sample(wake_sample, deadline.retired)?;
+    let post_wake_calibration = node.logical_time_calibration()?;
+    if post_wake_calibration.logical_icount != deadline.retired
+        || post_wake_calibration.raw_icount != armed_calibration.raw_icount
+    {
+        return Err(format!(
+            "actual timer callback did not preserve raw icount while publishing the exact logical wake: armed={armed_calibration:?}, post={post_wake_calibration:?}"
+        )
+        .into());
+    }
+    let target_virtual_ps = deadline.retired;
+    let retirement_step_ps = FLIGHT_TICKS_PER_INSTRUCTION;
+    let native_witness = node
+        .virtual_timer_fire_witness()?
+        .ok_or("timer wake did not publish an actual callback witness")?;
+    if prior_timer_witness.is_some_and(|prior| prior.generation == native_witness.generation)
+        || native_witness.completed != 1
+        || native_witness.reserved != 0
+        || native_witness.deadline_tick != deadline.retired
+        || native_witness.armed_raw_icount != armed_calibration.raw_icount
+        || native_witness.fired_expire_ps != native_witness.deadline_ps
+        || native_witness.fired_virtual_ps != target_virtual_ps
+        || native_witness.deadline_ps > native_witness.fired_virtual_ps
+        || native_witness.fired_virtual_ps - native_witness.deadline_ps >= retirement_step_ps
+        || native_witness.fired_raw_icount != native_witness.armed_raw_icount
+        || native_witness.fired_raw_icount != post_wake_calibration.raw_icount
+    {
+        return Err(format!(
+            "published virtual-timer witness did not authenticate this exact idle wake: prior={prior_timer_witness:?}, native={native_witness:?}, armed={armed_calibration:?}, post={post_wake_calibration:?}, deadline={deadline:?}, target_virtual_ps={target_virtual_ps}, step_ps={retirement_step_ps}"
+        )
+        .into());
+    }
+    let timer_fire = VirtualTimerFireEvidence {
+        generation: native_witness.generation,
+        armed_deadline_ps: native_witness.deadline_ps,
+        armed_deadline_tick: native_witness.deadline_tick,
+        retirement_step_ps,
+        armed_raw_icount: native_witness.armed_raw_icount,
+        fired_expire_ps: native_witness.fired_expire_ps,
+        fired_virtual_ps: native_witness.fired_virtual_ps,
+        fired_raw_icount: native_witness.fired_raw_icount,
+        published_wake_tick: deadline.retired,
+        post_wake_tick: post_wake_calibration.logical_icount,
+        completed: native_witness.completed,
+        reserved: native_witness.reserved,
+    };
+
+    Ok(IdleEvidence {
+        setup_marker_icount,
+        halted_at: at.retired,
+        deadline: deadline.retired,
+        halted_fingerprint,
+        halted_sample,
+        wake_outcome: wake.outcome,
+        wake_fingerprint,
+        wake_sample,
+        timer_fire,
+        on_demand_acknowledgements: 2,
+    })
+}
+
+fn authenticate_readiness_marker(
+    events: &[ObservableEvent],
+    readiness_at: Icount,
+) -> Result<u64, String> {
+    let [event] = events else {
+        return Err(format!(
+            "readiness boundary carried {} observable events instead of one setup marker",
+            events.len()
+        ));
+    };
+    let ObservableEventPayload::GuestMarker {
+        retired_icount,
+        node,
+        marker,
+    } = event.payload()
+    else {
+        return Err(format!(
+            "readiness boundary carried a non-marker observable event: {event:?}"
+        ));
+    };
+    if node.name != FLIGHT_NODE_ID
+        || marker.name != SETUP_COMPLETE_MARKER
+        || event.at().ticks != retired_icount.retired
+        || retired_icount.retired > readiness_at.retired
+    {
+        return Err(format!(
+            "readiness boundary carried an unauthenticated setup marker: event={event:?}, paused={readiness_at:?}"
+        ));
+    }
+    Ok(retired_icount.retired)
+}
+
+fn install_preemption(
+    node: &mut QemuNode,
+    kind: PreemptionKind,
+    at: u64,
+) -> Result<(), Box<dyn Error>> {
+    let current = SimulationBackend::now(node);
+    SimulationBackend::apply(
+        node,
+        &BackendEffect::Preemption(PreemptionDecision {
+            node: NodeId {
+                name: String::from("plugin-flight-node"),
+            },
+            at: crucible_engine::SimInstant { ticks: at },
+            kind,
+        }),
+        current,
+    )?;
+    Ok(())
+}
+
+fn aligned_preemption_tick(
+    node: &mut QemuNode,
+    requested: u64,
+    horizon: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let calibration = node.logical_time_calibration()?;
+    align_preemption_tick(calibration, requested, horizon)
+}
+
+fn align_preemption_tick(
+    calibration: QemuLogicalTimeCalibration,
+    requested: u64,
+    horizon: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let raw_ticks = calibration
+        .raw_icount
+        .checked_mul(FLIGHT_TICKS_PER_INSTRUCTION)
+        .ok_or("raw preemption calibration overflowed")?;
+    let offset = calibration
+        .logical_icount
+        .checked_sub(raw_ticks)
+        .ok_or("raw preemption calibration exceeded logical time")?;
+    let raw_at = requested
+        .checked_sub(offset)
+        .ok_or("preemption target precedes the raw origin")?
+        .div_ceil(FLIGHT_TICKS_PER_INSTRUCTION);
+    let at = raw_at
+        .checked_mul(FLIGHT_TICKS_PER_INSTRUCTION)
+        .and_then(|raw_ticks| raw_ticks.checked_add(offset))
+        .ok_or("aligned preemption tick overflowed")?;
+
+    // QEMU can preempt only at a retired instruction. Keep the request inside
+    // its scheduler RUN while choosing the first retirement at or after it.
+    if at > horizon {
+        return Err(format!("aligned preemption tick {at} exceeds horizon {horizon}").into());
+    }
+    Ok(at)
+}
+
+/// Returns whether a busy stop at `logical` settles `target`: the clock is at
+/// most the target and the next retirement would end past it.
+fn settles_target(logical: u64, target: u64) -> bool {
+    logical <= target && target - logical < FLIGHT_TICKS_PER_INSTRUCTION
+}
+
+fn validate_sample(sample: FingerprintSample, target: u64) -> Result<(), Box<dyn Error>> {
+    if !settles_target(sample.sample_icount, target)
+        || sample.vcpu_count != 4
+        || sample.rr_current_vcpu >= sample.vcpu_count
+        || sample.rr_switch_quantum != RR_SWITCH_QUANTUM
+        || sample.component_failures != 0
+        || sample.ram_bytes == 0
+        || sample.device_state_bytes == 0
+    {
+        return Err(format!("invalid fingerprint sample at target {target}: {sample:?}").into());
+    }
+    if sample.vcpus[..sample.vcpu_count as usize]
+        .iter()
+        .any(|vcpu| vcpu.register_file_bytes == 0 || vcpu.register_digest == [0; 32])
+    {
+        return Err(format!("fingerprint sample lacks vCPU register state: {sample:?}").into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "crucible-qemu-production-plugin-flight/tests.rs"]
+mod tests;

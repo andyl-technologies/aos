@@ -24,7 +24,7 @@ in
             -p crucible-device \
             -- --test-threads=1
           crucible-cargo test \
-            -p crucible \
+            -p crucible-engine \
             --lib \
             device \
             -- --test-threads=1

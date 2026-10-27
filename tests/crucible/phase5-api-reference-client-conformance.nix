@@ -9,17 +9,20 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
+  apiCargo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/crucible-control-client/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/crucible-control-server/Cargo.toml)
+  ];
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
-  abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
+  abiTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
   qemuNode = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+      entry = ../../crates/crucible/crucible-qemu-host/src/node_tests.rs;
     })
   ];
   defaultChecks = builtins.readFile ./default.nix;
@@ -41,13 +44,13 @@
         needle = "`T-API-13` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible-api/Cargo.toml" apiCargo [
+    ++ failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
       {
-        label = "QEMU backend contract dev dependency";
-        needle = ''crucible-qemu = { path = "../crucible-qemu" }'';
+        label = "versioned process-protocol dependency";
+        needle = ''crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "reference client conformance test";
         needle = "reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend";
@@ -83,14 +86,6 @@
       {
         label = "SimDouble backend stepping";
         needle = "SimulationBackend::step_to(&mut self.backend";
-      }
-      {
-        label = "QEMU backend trait assertion";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
-      }
-      {
-        label = "QemuNode implements SimulationBackend";
-        needle = "assert_qemu_node_implements_simulation_backend_contract";
       }
       {
         label = "scenario-ref create session";
@@ -197,7 +192,7 @@
         needle = "rpc-error";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
       {
         label = "contract snapshot covers HelloRequest";
         needle = "saw_hello_request";
@@ -239,7 +234,7 @@
         needle = "saw_event";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "QemuNode SimulationBackend focused test";
         needle = "qemu_node_satisfies_simulation_backend_trait";
@@ -302,7 +297,7 @@ in
 
           cd crates
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             -- --list \
             > "$TMPDIR/reference-client-tests.list"
@@ -310,12 +305,12 @@ in
             'contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend: test' \
             "$TMPDIR/reference-client-tests.list"
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend \
             -- --exact --test-threads=1
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             -- --list \
             > "$TMPDIR/reference-client-tests.list"
@@ -323,12 +318,12 @@ in
             'contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants: test' \
             "$TMPDIR/reference-client-tests.list"
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
             -- --exact --test-threads=1
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-api \
             --test gate_abi_conformance \
             -- --list \
             > "$TMPDIR/abi-conformance-tests.list"
@@ -336,12 +331,12 @@ in
             'rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds: test' \
             "$TMPDIR/abi-conformance-tests.list"
           crucible-cargo test \
-            -p crucible-api \
+            -p crucible-control-api \
             --test gate_abi_conformance \
             rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds \
             -- --exact --test-threads=1
           crucible-cargo test \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             --lib \
             -- --list \
             > "$TMPDIR/qemu-library-tests.list"
@@ -349,7 +344,7 @@ in
             'node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait: test' \
             "$TMPDIR/qemu-library-tests.list"
           crucible-cargo test \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait \
             -- --exact --test-threads=1
         '';

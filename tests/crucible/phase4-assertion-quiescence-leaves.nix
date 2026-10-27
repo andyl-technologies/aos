@@ -10,9 +10,9 @@
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  assertionTest = builtins.readFile ../../crates/crucible/tests/assertion_quiescence_leaves.rs;
+  assertionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -30,7 +30,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "AssertionPhase type";
         needle = "pub enum AssertionPhase";
@@ -92,7 +92,7 @@
         needle = "predicate=quiescent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "assertion observable constructor";
         needle = "pub fn assertion_state_changed";
@@ -138,7 +138,7 @@
         needle = "self.inner.scheduler_quiescence()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "AssertionPhase export";
         needle = "AssertionPhase";
@@ -152,7 +152,7 @@
         needle = "SchedulerQuiescenceBlocker";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_quiescence_leaves.rs" assertionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs" assertionTest [
       {
         label = "current assertion event test";
         needle = "assertion_state_observes_current_causal_entry";
@@ -212,7 +212,7 @@
         needle = "assertionQuiescenceLeaves = import ./phase4-assertion-quiescence-leaves.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_quiescence_leaves.rs" assertionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs" assertionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -233,7 +233,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-quiescence-leaves";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -245,7 +248,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_quiescence_leaves \
               -- --test-threads=1
           '';

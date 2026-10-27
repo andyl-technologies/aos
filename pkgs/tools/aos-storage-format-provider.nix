@@ -46,8 +46,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider --bin aos-storage-format-provider"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-block-storage-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage --bin aos-storage-format-provider"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -80,8 +80,8 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-block-storage-provider --bin aos-storage-format-provider";
-    cargoTestFlags = "-p aos-block-storage-provider";
+    cargoFlags = "-p aos-activation-storage --bin aos-storage-format-provider";
+    cargoTestFlags = "-p aos-activation-storage";
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [util-linux];

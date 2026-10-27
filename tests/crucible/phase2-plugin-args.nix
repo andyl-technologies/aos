@@ -8,11 +8,11 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   };
   pluginArgs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/args.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/args.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -36,7 +36,7 @@
         needle = "total, fail-closed parser";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "args module exported";
         needle = "pub mod args;";
@@ -50,7 +50,7 @@
         needle = "PluginArgsParseError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/args.rs" pluginArgs [
       {
         label = "parser type";
         needle = "pub struct PluginArgs";
@@ -168,6 +168,8 @@ in
   else
     mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-args";
+
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.sed

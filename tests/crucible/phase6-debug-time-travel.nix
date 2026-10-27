@@ -12,10 +12,10 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  timeTravelTest = builtins.readFile ../../crates/crucible/tests/gate_debug_time_travel.rs;
+  timeTravelTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -56,7 +56,7 @@
         needle = "`T-DBG-4` is green through `checks.crucible.phase6.debugTimeTravel`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "debug goto API";
         needle = "pub fn debug_goto";
@@ -142,7 +142,7 @@
         needle = "fn debug_replay_oracle_bisection";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "debug coordinate export";
         needle = "DebugCoordinate";
@@ -168,7 +168,7 @@
         needle = "DebugReverseContinueRequest";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "duration step mode";
         needle = "Duration(SimDuration)";
@@ -199,10 +199,10 @@
       }
       {
         label = "forward-only duration step";
-        needle = "Duration(SimDuration { nanos: 10 }).reverse_grain()";
+        needle = "Duration(SimDuration { ticks: 10 }).reverse_grain()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "nearest checkpoint gate";
         needle = "debug_goto_uses_nearest_checkpoint_then_replay_to_exact_coordinate";
@@ -270,7 +270,7 @@
         needle = "phase6.canonicalDebugBreakpoint";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -287,7 +287,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase6-debug-time-travel";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -300,7 +303,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test gate_debug_time_travel \
               -- --test-threads=1
             crucible-cargo test \

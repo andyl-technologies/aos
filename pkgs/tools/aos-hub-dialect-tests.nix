@@ -82,7 +82,7 @@ in
 
     inherit version;
 
-    cargoFlags = "-p aos-hub --features postgres,mysql,required-live-dialects --test dialect";
+    cargoFlags = "-p aos-hub-native --features postgres,mysql,required-live-dialects --test dialect";
     cargoRoot = "crates";
     cargoDeps = aosWorkspaceVendor;
 

@@ -9,7 +9,7 @@
     pname = "crucible-project-quota-flight";
     builds = [workspaceTests.apacheRelease];
     executables = {
-      project-quota-flight = "build --release -p crucible-linux-resource --example project-quota-flight";
+      project-quota-flight = "build --release -p aos-linux-project-quota --example project-quota-flight";
     };
   };
   quotaKernel = pkgs.linux.override {

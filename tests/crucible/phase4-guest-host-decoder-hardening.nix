@@ -8,19 +8,19 @@
 
   protocolFrame = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/doorbell_frame.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs;
   };
   protocolCodecTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/codec.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/codec.rs;
   };
   protocolAbiTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   };
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -43,7 +43,7 @@
         needle = "wrong-kind/unknown-kind cases";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/doorbell_frame.rs" protocolFrame [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs" protocolFrame [
       {
         label = "bounded frame decode API";
         needle = "pub fn decode_bounded";
@@ -57,7 +57,7 @@
         needle = "PayloadLengthExceedsBound";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/codec.rs" protocolCodecTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/codec.rs" protocolCodecTest [
       {
         label = "typed doorbell frame shape test";
         needle = "doorbell_frame_decoder_reports_typed_shape_errors";
@@ -67,7 +67,7 @@
         needle = "WhiteboxDoorbellFrame::decode_bounded(&oversized_declared, 8)";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolAbiTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiTest [
       {
         label = "doorbell fuzz corpus gate";
         needle = "protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded";
@@ -85,7 +85,7 @@
         needle = "declared-length-exceeds-bound";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "marker path uses bounded decoder";
         needle = "WhiteboxDoorbellFrame::decode_bounded(&payload, self.max_payload_len())";
@@ -141,7 +141,7 @@
         needle = "taskIds = [\"T-GHC-14\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "unfinished todo";
         needle = "todo!";
@@ -176,14 +176,14 @@ in
               fi
             }
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec \
               -- --list > "$TMPDIR/protocol-codec-tests"
             require_listed \
               "$TMPDIR/protocol-codec-tests" \
               "doorbell_frame_decoder_reports_typed_shape_errors"
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               -- --list > "$TMPDIR/protocol-abi-tests"
             require_listed \
@@ -203,12 +203,12 @@ in
               "$TMPDIR/plugin-tests" \
               "whitebox_doorbell::tests::whitebox_doorbell_records_unknown_kind_decode_diagnostic_without_marker"
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec \
               doorbell_frame_decoder_reports_typed_shape_errors \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded \
               -- --test-threads=1

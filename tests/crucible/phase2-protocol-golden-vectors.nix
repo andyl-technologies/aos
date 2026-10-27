@@ -6,9 +6,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  goldenLib = builtins.readFile ../../crates/crucible-protocol/src/golden_vectors.rs;
-  goldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
+  goldenLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs;
+  goldenTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -17,7 +17,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "golden vector module";
         needle = "mod golden_vectors;";
@@ -27,7 +27,7 @@
         needle = "GOLDEN_CONTROL_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/golden_vectors.rs" goldenLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs" goldenLib [
       {
         label = "literal frozen protocol version";
         needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 3;";
@@ -85,7 +85,7 @@
         needle = "frame: &[0, 0, 0, 1, 0x12]";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" goldenTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs" goldenTest [
       {
         label = "version bump regeneration test";
         needle = "golden_vector_protocol_version_matches_current_protocol_version";
@@ -156,7 +156,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test golden_vectors \
               -- --test-threads=1
           '';
@@ -171,7 +171,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_test=crucible-protocol::golden_vectors
+            rust_test=crucible_qemu_protocol::golden_vectors
             corpus=hello,hello-ack,setup-payload,setup-ack,quit
             version_bump_rule=GOLDEN_VECTOR_PROTOCOL_VERSION==CONTROL_PROTOCOL_VERSION
             RESULT

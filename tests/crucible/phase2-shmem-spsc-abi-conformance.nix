@@ -6,7 +6,7 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
+  shmemGate = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -15,7 +15,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    failuresFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "SPSC exhaustive ordering model";
         needle = "assert_spsc_ring_exhaustive_ordering_model(";
@@ -105,7 +105,7 @@
         needle = "if live_count(head, tail, capacity)? == 0";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "ignored SPSC ABI conformance test";
         needle = "#[ignore";
@@ -142,7 +142,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test gate_layer1_injection \
               -- --test-threads=1
           '';
@@ -157,7 +157,7 @@ in
             check=${attrPath}
             gate=gate:abi-conformance
             tasks=${taskList}
-            rust_tests=crucible-shmem::gate_layer1_injection
+            rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
             model=source-guarded-exhaustive-memory-order-interleavings

@@ -8,8 +8,8 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  serializationTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
+  libRs = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  serializationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -41,7 +41,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "event graph builder type";
         needle = "pub struct EventGraphBuilder";
@@ -75,7 +75,7 @@
         needle = "fn graph_static_evaluation_times";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "Plan has one graph-native representation";
         needle = "pub struct Plan";
@@ -133,7 +133,7 @@
         needle = "fn read_action_binary";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libRs [
       {
         label = "EventGraphBuilder exported";
         needle = "EventGraphBuilder";
@@ -143,7 +143,7 @@
         needle = "EventGraphEventBuilder";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" serializationTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_graph_serialization.rs" serializationTest [
       {
         label = "builder validates before hashing test";
         needle = "event_graph_builder_validates_before_plan_hashing";
@@ -222,7 +222,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-event-graph-serialization";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -234,7 +237,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               -- --test-threads=1
           '';

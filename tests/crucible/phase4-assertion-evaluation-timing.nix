@@ -7,7 +7,7 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  timingTest = builtins.readFile ../../crates/crucible/tests/assertion_evaluation_timing.rs;
+  timingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_evaluation_timing.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,7 +21,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionEvaluationTiming`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "previous real prefix tracking";
         needle = "last_prefix: Option<ConditionEventLogPrefix>";
@@ -51,7 +51,7 @@
         needle = "Property::AfterQuiescence { predicate }";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_evaluation_timing.rs" timingTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_evaluation_timing.rs" timingTest [
       {
         label = "synthetic deadline point test";
         needle = "eventually_evaluates_deadline_point_between_recorded_prefixes";
@@ -83,7 +83,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionEvaluationTiming\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_evaluation_timing.rs" timingTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_evaluation_timing.rs" timingTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -104,7 +104,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-assertion-evaluation-timing";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -116,7 +119,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_evaluation_timing \
               --test host_side_assertions \
               --test assertion_log_fold \

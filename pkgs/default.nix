@@ -9,6 +9,7 @@
   firmwarePackages ? null,
   targetPackages ? null,
   releasePlatforms ? [stdenv.hostPlatform],
+  sharedImageCacheDir ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -1016,6 +1017,18 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       == null
       || !(inheritedArtifacts ? passthru.cargoArtifactContract)
       || inheritedArtifacts.passthru.cargoArtifactContract == cargoArtifactContract;
+    incompatibleArtifactFields =
+      if inheritedArtifacts == null || !(inheritedArtifacts ? passthru.cargoArtifactContract)
+      then []
+      else let
+        inheritedContract = inheritedArtifacts.passthru.cargoArtifactContract;
+        fields = lib.unique (builtins.attrNames inheritedContract ++ builtins.attrNames cargoArtifactContract);
+      in
+        builtins.filter (field:
+          !(builtins.hasAttr field inheritedContract)
+          || !(builtins.hasAttr field cargoArtifactContract)
+          || inheritedContract.${field} != cargoArtifactContract.${field})
+        fields;
     # Extract cargo-specific attrs for the phase generator
     cargoArgs =
       builtins.intersectAttrs (builtins.listToAttrs (
@@ -1039,7 +1052,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     restArgs = removeAttrs args cargoSpecificAttrs;
   in
     if !artifactsCompatible
-    then throw "mkCargoPackage (${args.pname or args.name or "unnamed"}): cargoArtifacts compatibility contract does not match the consumer"
+    then throw "mkCargoPackage (${args.pname or args.name or "unnamed"}): cargoArtifacts compatibility contract does not match the consumer (differing fields: ${builtins.concatStringsSep ", " incompatibleArtifactFields})"
     else
       addBuilderOverrides mkCargoPackage args (
         mkDerivation (
@@ -1374,7 +1387,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-45PgjMuU6Rex0FxTQYU/jqvqGGPMjjPsdYsfw/jgoak=";
+    hash = "sha256-0AGsSmmxR5ED9d+EXSKSSBxF4tm8f+iqbfRVvvQNVhk=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -1820,6 +1833,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   self =
     {
+      inherit sharedImageCacheDir;
+
       # --- Plumbing ---
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;

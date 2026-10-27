@@ -160,6 +160,15 @@
     if stdenv.isCross
     then buildPackages.bash
     else bash;
+  # Ninja otherwise launches commands through the absent host /bin/sh.
+  # Scope the compatibility tool to QEMU so compiler identities stay stable.
+  buildNinja =
+    (
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildBash;
   buildPerl =
     if stdenv.isCross
     then buildPackages.perl
@@ -248,11 +257,11 @@
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
   );
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemLib = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
-  nativeConsoleGeneratedHeader = ../../crates/crucible-shmem/include/crucible_native_console_draft.h;
+  nativeConsoleGeneratedHeader = ../../crates/crucible/crucible-qemu-shmem/include/crucible_native_console_draft.h;
   nativeConsoleHeaderInstallPath = "include/crucible_native_console_draft.h";
   nativeConsoleHeaderHash = builtins.hashFile "sha256" nativeConsoleGeneratedHeader;
   qemuSimCapability =
@@ -542,79 +551,118 @@ in
       platformSupport =
         if pname == "qemu"
         then {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
-        role = "public-package";
-      }
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        }
         else {
-        build = [{abi = ["gnu"]; os = ["linux"];}];
-        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
-        target = [];
-        role = "build-input";
-      };
-    qualification.packageProbe =
-      if qualification != null
-      then qualification.packageProbe
-      else lib.qualification.commandProbe {
-      "primary" = {
-        "artifacts" = [];
-        "expected" = "qemu-img reports the two images as identical.";
-        "files" = {
-          "left.raw" = "AOS raw image payload\n";
-          "right.raw" = "AOS raw image payload\n";
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+          ];
+          target = [];
+          role = "build-input";
         };
-        "input" = "Two raw disk-image byte streams with identical contents.";
-        "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 0;
-            "stderr" = {
-              "exact" = "";
+      qualification.packageProbe =
+        if qualification != null
+        then qualification.packageProbe
+        else
+          lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "qemu-img reports the two images as identical.";
+              "files" = {
+                "left.raw" = "AOS raw image payload\n";
+                "right.raw" = "AOS raw image payload\n";
+              };
+              "input" = "Two raw disk-image byte streams with identical contents.";
+              "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "Images are identical.\n";
+                  };
+                }
+              ];
             };
-            "stdout" = {
-              "exact" = "Images are identical.\n";
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+              "files" = {
+                "left.raw" = "answer=41\n";
+                "right.raw" = "answer=42\n";
+              };
+              "input" = "Two raw disk-image byte streams that differ in one value.";
+              "operation" = "Compare the mismatched images through qemu-img.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                }
+              ];
             };
-          }
-        ];
-      };
-      "badInput" = {
-        "artifacts" = [];
-        "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
-        "files" = {
-          "left.raw" = "answer=41\n";
-          "right.raw" = "answer=42\n";
-        };
-        "input" = "Two raw disk-image byte streams that differ in one value.";
-        "operation" = "Compare the mismatched images through qemu-img.";
-        "steps" = [
-          {
-            "argv" = [
-              "@out@/bin/qemu-img"
-              "compare"
-              "-f"
-              "raw"
-              "-F"
-              "raw"
-              "left.raw"
-              "right.raw"
-            ];
-            "exit_code" = 1;
-            "observes_rejection" = true;
-          }
-        ];
-      };
-    };
+          };
 
       inherit pname;
       # QEMU permits deprecated interface removal without a major-version bump.
@@ -638,7 +686,7 @@ in
             buildPackages.gnumake
             buildPackages.pkg-config
             buildMeson
-            buildPackages.ninja
+            buildNinja
             buildBinutils
             buildPython
             buildSetuptools
@@ -653,7 +701,7 @@ in
             gnumake
             pkg-config
             meson
-            ninja
+            buildNinja
             buildBinutils
             python3
             setuptools
@@ -784,6 +832,13 @@ in
                 sed -i "1s|#!/usr/bin/python3|#!${buildPython}/bin/python3|" "$f"
               fi
             done
+            # Meson executes these generators directly, so their interpreters
+            # must also be available without host /bin paths.
+            find scripts -type f -exec sed -i \
+              -e "1s|^#![[:space:]]*/bin/sh\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/bin/bash\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/usr/bin/env sh\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/usr/bin/env bash\(.*\)|#!${buildBash}/bin/bash\1|" {} +
             # Rewriting the generator's shebang makes it newer than the
             # release tarball's matching generated option table. Make would
             # otherwise rerun Meson introspection without configure's feature
@@ -836,7 +891,9 @@ in
               else ""
             }
 
-            ./configure \
+            # configure re-executes itself after entering build/.
+            sed -i "1s|^#!.*|#!$CONFIG_SHELL|" configure
+            "$CONFIG_SHELL" ./configure \
               --prefix=$out \
               --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_ATOMIC_PATCH_HASH="${atomicPatchHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
               ${qemuConfigureFlagsScript}
@@ -872,7 +929,7 @@ in
               then clockUnitQualification.buildScript
               else if focusedUpstreamTest != null
               then ''
-                ${ninja}/bin/ninja -C build -j$NIX_BUILD_CORES \
+                ${buildNinja}/bin/ninja -C build -j$NIX_BUILD_CORES \
                   qemu-img qemu-io qemu-nbd \
                   storage-daemon/qemu-storage-daemon qemu-system-x86_64
                 make -C build Makefile.mtest
@@ -1701,7 +1758,7 @@ in
                 import re
                 import subprocess
 
-                plugin_source = Path("${../../crates/crucible-qemu-plugin/src/runtime/installed_console.rs}")
+                plugin_source = Path("${../../crates/crucible/crucible-qemu-plugin/src/runtime/installed_console.rs}")
                 required = re.findall(
                     r'symbol!\(\s*"(qemu_plugin_crucible_console_\w+)"',
                     plugin_source.read_text(),

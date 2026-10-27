@@ -24,7 +24,7 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
         pkgs.python3
         "${./phase7-time-ownership-receipts.py}"
         "${./phase7-guest-clock-read-receipts.py}"
-        "${../../crates/crucible-qemu/src/launch.rs}"
+        "${../../crates/crucible/crucible-qemu-host/src/launch.rs}"
       ]
       ++ (
         if runtimeAnchor
@@ -77,7 +77,7 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
       done
       if ${pkgs.python3}/bin/python3 ${./phase7-guest-clock-read-receipts.py} \
         "$evidence" "$capture" ${./phase7-time-ownership-receipts.py} \
-        ${../../crates/crucible-qemu/src/launch.rs}${
+        ${../../crates/crucible/crucible-qemu-host/src/launch.rs}${
         if runtimeAnchor
         then " --runtime-anchor ${./phase7-clock-vvar-receipts.py}"
         else ""

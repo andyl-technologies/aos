@@ -8,8 +8,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  artifactTest = builtins.readFile ../../crates/crucible/tests/event_log_reproduction_artifact.rs;
-  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
+  artifactTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -26,7 +26,7 @@
         needle = "`checks.crucible.phase1.spatialReproductionArtifact`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "reproduction artifact type";
         needle = "pub struct ReproductionArtifact";
@@ -92,7 +92,7 @@
         needle = "ReproductionArtifactReplayMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "crate exports reproduction artifact";
         needle = "ReproductionArtifact";
@@ -102,7 +102,7 @@
         needle = "ReproductionReplay";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_reproduction_artifact.rs" artifactTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs" artifactTest [
       {
         label = "focused artifact replay test";
         needle = "fn reproduction_artifact_replay_reconstructs_byte_identical_causal_log_from_metadata()";
@@ -120,7 +120,7 @@
         needle = "fn reproduction_artifact_replay_rejects_causal_log_drift_without_original_full_log()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_parameterization.rs" workloadTest [
       {
         label = "scenario form TOML round trip precedes capture";
         needle = "ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?";
@@ -147,7 +147,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-reproduction-artifact";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -158,12 +161,12 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_reproduction_artifact \
               reproduction_artifact_replay \
               -- --test-threads=1
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test workload_parameterization \
               reproduces \
               -- --test-threads=1

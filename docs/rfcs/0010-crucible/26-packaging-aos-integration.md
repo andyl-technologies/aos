@@ -30,6 +30,16 @@ The five canonical gates this file wires and refers to are, per
 `gate:qemu-inert`, `gate:patch-microtests`, `gate:e2e-determinism`, and
 `gate:abi-conformance`, and `gate:license-boundary`.
 
+Cargo dependencies are pinned once by the monorepo's `Cargo.lock` and shared
+`aosWorkspaceVendor`. Crucible does not maintain a second external-dependency
+pin. Its controller, guest, QEMU plugin, debugger gateway, fleet store, and
+reusable dependency artifacts resolve the same closed member list from
+`pkgs/tools/crucible/_workspace.nix`. Package selection excludes GPL components
+from the Apache controller's build roots while retaining the versioned protocol
+crates and the shared Linux quota library. Architectural tests and corresponding
+source retain their repository evidence; those files do not become additional
+Cargo workspace members in the packaged builds.
+
 ## 26.1 AOS build principles Crucible inherits (non-negotiable)
 
 Crucible is an AOS package set; it is bound by the same build principles as every
@@ -62,7 +72,7 @@ unambiguous.
   Nix file taking `{ mkDerivation | mkCargoPackage, fetchurl, ... }` and returning
   a derivation, with version, mirror URLs, and source hash colocated inline, and
   with `buildDeps` / `runtimeDeps` / `propagatedDeps` classified per `CLAUDE.md`.
-  The Rust crates use AOS's `mkCargoPackage` / `fetchCargoDeps` (the same path
+  The Rust crates use AOS's `mkCargoPackage` / `fetchCargoVendor` (the same path
   `pkgs.aos` uses), not a bespoke builder. *Spec:* §26.1; satisfies [G-7].
 
 - **[PKG-5]** Package **completeness** is mandatory: Crucible MUST NOT remove a
@@ -203,7 +213,7 @@ into QEMU via `-plugin`; it owns virtual time and the device/channel callbacks. 
 is the *only* thing that activates sim mode ([PATCH-1]).
 
 - **[PKG-17]** `crucible-qemu-plugin` MUST be built as an AOS `mkCargoPackage`
-  Rust `cdylib` from the `crates/crucible-qemu-plugin` crate ([PKG-4]), linking
+  Rust `cdylib` from the `crates/crucible/crucible-qemu-plugin` crate ([PKG-4]), linking
   only AOS-built dependencies. It MUST be built against the **same pinned QEMU
   plugin-API headers** as `qemu-crucible` so the plugin ABI version it advertises
   matches the patched binary's exported surface ([PATCH-40], §11.5–§11.6). *Gate:*
@@ -235,8 +245,8 @@ crates plus the `crucible` CLI binary — builds with AOS's cargo packaging, exa
 as `pkgs.aos` does.
 
 - **[PKG-19]** The `crucible` package MUST build the `crucible-*` workspace with
-  `mkCargoPackage` + `fetchCargoDeps` ([PKG-4]), vendoring all crate dependencies
-  through `fetchCargoDeps` (no network at build time), and MUST run the
+  `mkCargoPackage` + `fetchCargoVendor` ([PKG-4]), vendoring all crate dependencies
+  through `fetchCargoVendor` (no network at build time), and MUST run the
   workspace-scoped Cargo test suite (`doCheck = true`, Cargo flags rooted at
   `--workspace` with the non-Crucible AOS CLI crates explicitly excluded) — which
   includes the L0/L1 determinism unit tests and the in-process QEMU double tests
@@ -459,14 +469,14 @@ cheap and the present ships standalone.
   store** (`hash(content) → bytes`, dedup, integrity-checked) and a
   **dependency-gated invalidation primitive** (a node is invalid iff an input's
   content hash changed) — MUST be implemented as a small, **self-contained
-  Crucible-owned crate** (e.g. `crucible-cas`), vendored/reimplemented inside the
+  Crucible-owned crate** (e.g. `crucible-store`), vendored/reimplemented inside the
   workspace, depending on nothing from RFC-0007. It MUST be the minimum Crucible's
   temporal graph and content addressing ([INV-6]) require, not a general-purpose
   store. *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:* §26.9;
   satisfies [NG-7], [INV-6].
 
 - **[PKG-34]** The seam MUST carry an explicit **merge marker**: the
-  `crucible-cas` crate's module docs MUST name RFC-0007 as the future home of a
+  `crucible-store` crate's module docs MUST name RFC-0007 as the future home of a
   shared substrate, MUST enumerate the **narrow interface** (the trait/signature
   surface: `put`/`get`/`has` by content hash, and the invalidation query) that a
   future common crate would implement, and MUST state the conformance bar a shared
@@ -478,11 +488,11 @@ cheap and the present ships standalone.
 - **[PKG-45]** The ratchet seam MUST be **the same seam** for the standalone
   single-host store and the **fleet-visible content-addressed `DagStore` backend**
   of [PKG-43]: the fleet store and its dependency-gated invalidation
-  ([PKG-33]) MUST sit **behind `crucible-cas`'s unchanged narrow interface**
+  ([PKG-33]) MUST sit **behind `crucible-store`'s unchanged narrow interface**
   ([PKG-34]), so that a future RFC-0007 ratchet shared substrate slots in at the
   identical seam whether Crucible runs on one host or a fleet
-  ([`35-distributed-exploration.md`](35-distributed-exploration.md)). The
-  `crucible-cas` module docs MUST name the fleet-visible store and the
+  ([`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md)). The
+  `crucible-store` module docs MUST name the fleet-visible store and the
   dependency-gated invalidation as that shared seam, and MUST state the same merge
   bar: a shared implementation replaces it only if it passes
   `gate:content-address`, `gate:replay-oracle`, and `gate:e2e-determinism`
@@ -493,12 +503,12 @@ cheap and the present ships standalone.
   [NG-7], [INV-6].
 
 - **[PKG-35]** The **future-merge plan** MUST be: when RFC-0007 lands a stable
-  content-addressed-store + invalidation crate, replace `crucible-cas`'s internals
+  content-addressed-store + invalidation crate, replace `crucible-store`'s internals
   with a thin adapter over it **behind the unchanged interface of [PKG-34]**,
   gated by re-running `gate:content-address`, `gate:replay-oracle`, and
   `gate:e2e-determinism` with no behavioral change. The merge MUST NOT alter
   Crucible's ABIs ([PKG-21]) or determinism contract; if the shared crate cannot
-  pass these gates, Crucible keeps `crucible-cas` and the merge does not happen.
+  pass these gates, Crucible keeps `crucible-store` and the merge does not happen.
   Until then, no RFC-0007 dependency exists ([NG-7]). *Gate:* `gate:content-address`,
   `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §26.9; satisfies [NG-7],
   [INV-2], [INV-6].
@@ -531,7 +541,7 @@ cheap and the present ships standalone.
 
 ## 26.11 Distributed exploration: the fleet store and campaign provenance
 
-Distributed/continuous exploration ([`35-distributed-exploration.md`](35-distributed-exploration.md))
+Distributed/continuous exploration ([`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 needs two packaging-level commitments beyond the single-host build: a
 fleet-visible content-addressed store the explorer hosts share, built from source
 as an AOS component; and a **provenance-keyed campaign** so that a corpus never
@@ -539,7 +549,7 @@ carries findings across an incompatible build.
 
 - **[PKG-43]** The **fleet-visible content-addressed `DagStore` backend** (the
   store explorer hosts share to publish and fetch checkpoints/ancestors, 07,
-  [`35-distributed-exploration.md`](35-distributed-exploration.md)) MUST be an
+  [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md)) MUST be an
   **AOS-built from-source component** ([PKG-1]) — no upstream binary, no host
   tool, no nixpkgs — and the distributed-search / continuous-campaign capability
   MUST be wired as an **AOS VM/fleet check** in the `lib/testing` VM/fleet harness
@@ -642,7 +652,7 @@ carries findings across an incompatible build.
   [PKG-18]; spec §26.4.
   - Completed by `checks.crucible.phase7.crucibleQemuPluginPackage`: the phase7
     gate statically verifies that `pkgs.crucible-qemu-plugin` is defined with
-    AOS `mkCargoPackage`/`fetchCargoDeps`, builds the `crucible-qemu-plugin`
+    AOS `mkCargoPackage`/`fetchCargoVendor`, builds the `crucible-qemu-plugin`
     cdylib against `qemu-crucible`, probes the matched `qemu-plugin.h` header
     and QEMU plugin API version during the package build, installs both the
     canonical library and QEMU plugin search-path entry, and emits
@@ -653,10 +663,10 @@ carries findings across an incompatible build.
     `checks.crucible.phase1.aosWorkspaceBuild` is the package-output smoke
     verifier for the built `.so`, QEMU plugin path, and ABI metadata.
 - [x] **T-PKG-8** Package the `crucible` workspace + CLI with `mkCargoPackage` /
-  `fetchCargoDeps`, vendored deps, `--workspace` tests (L0/L1 + double tests). —
+  `fetchCargoVendor`, vendored deps, scoped workspace tests (L0/L1 + double tests). —
   satisfies [PKG-19]; spec §26.5.
   - Completed by `checks.crucible.phase7.crucibleWorkspacePackage`: the
-    `pkgs.crucible` package uses AOS `mkCargoPackage` + `fetchCargoDeps` with a
+    `pkgs.crucible` package uses AOS `mkCargoPackage` + `fetchCargoVendor` with a
     fixed vendored dependency hash, builds and tests the Crucible member inventory
     through workspace-scoped Cargo flags rooted at `--workspace`, excludes the
     non-Crucible AOS CLI crates that share `crates/Cargo.toml`, keeps package
@@ -793,10 +803,10 @@ carries findings across an incompatible build.
     `checks.crucible.phase2.gates.patchMicrotests`, keeping the catalog audit
     attached to the package patch build/test gate without pulling unrelated
     green-before-advance wrappers into instantiation.
-- [x] **T-PKG-17** Implement the `crucible-cas` self-contained content-addressed
+- [x] **T-PKG-17** Implement the `crucible-store` self-contained content-addressed
   store + dependency-gated invalidation crate, depending on nothing from RFC-0007.
   — satisfies [PKG-32], [PKG-33]; spec §26.9.
-  - Completed by `checks.crucible.phase7.crucibleCas`: `crucible-cas` is a
+  - Completed by `checks.crucible.phase7.crucibleCas`: `crucible-store` is a
     standalone Crucible-owned workspace crate and package-inventory member with
     no RFC-0007/ratchet dependency. It provides BLAKE3 `ContentHash` keys,
     `DagStore` `put`/`get`/`has` operations, in-memory and two-level local
@@ -808,7 +818,7 @@ carries findings across an incompatible build.
   the unchanged interface, gate-gated), keeping Crucible standalone with no
   RFC-0007 dependency. — satisfies [PKG-34], [PKG-35], [NG-7]; spec §26.9.
   - Completed by `checks.crucible.phase7.crucibleCasRatchetSeam`: the
-    `crucible-cas` module docs name RFC-0007 as the future home, enumerate the
+    `crucible-store` module docs name RFC-0007 as the future home, enumerate the
     narrow `put`/`get`/`has` plus invalidation-query interface, record the thin
     adapter merge plan behind that unchanged interface, and state the required
     gate bar (`gate:content-address`, `gate:replay-oracle`, and
@@ -825,7 +835,7 @@ carries findings across an incompatible build.
     identity/atomic-patch hash, and the shmem, guest-host channel, and RPC ABI
     versions. The gate compares those values to Rust constants and QEMU passthru
     metadata, verifies the installed manifest files, verifies pinned
-    `fetchCargoDeps` and QEMU source/patch hashes, confirms the source filter
+    `fetchCargoVendor` and QEMU source/patch hashes, confirms the source filter
     excludes `.git`, `target`, and `result`, rejects wall-clock timestamp
     emitters in the package metadata paths, and is a dependency of
     `checks.crucible.phase7.gates.e2eDeterminism`.
@@ -852,14 +862,14 @@ carries findings across an incompatible build.
   an AOS from-source component and wire the distributed-search / continuous-campaign
   capability as a TCG-only AOS VM/fleet check (no `kvm` feature), building the
   fleet-store + explorer closure hermetically. — satisfies [PKG-43]; spec §26.11;
-  cross-ref [`35-distributed-exploration.md`](35-distributed-exploration.md).
-  - Completed by `checks.crucible.phase7.crucibleFleetStore`: `crucible-cas`
+  cross-ref [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md).
+  - Completed by `checks.crucible.phase7.crucibleFleetStore`: `crucible-store`
     now exports the fleet-visible `SharedDagStore` behind the existing
     `DagStore::put`/`DagStore::get`/`DagStore::has` interface with
     location-independent identities, exclusive temp creation, and idempotent
     concurrent publish tests.
     `pkgs.crucible-fleet-store` builds the probe binary from source with
-    `mkCargoPackage`/`fetchCargoDeps`, records `fleet_visible=true` and
+    `mkCargoPackage`/`fetchCargoVendor`, records `fleet_visible=true` and
     `aos_from_source=true` in package metadata, and exercises the shared store in
     `postInstall`. `checks.fleet.crucible-distributed-continuous-exploration`
     builds both `pkgs.crucible-fleet-store` and the `pkgs.crucible` explorer
@@ -872,7 +882,7 @@ carries findings across an incompatible build.
   recorded as a baseline event), loudly rather than silently merging. — satisfies
   [PKG-44]; spec §26.11; cross-ref [PERF-28].
   - Completed by `checks.crucible.phase7.crucibleCampaignProvenance`:
-    `crucible-harness` now exposes `campaign_provenance_key` and
+    `crucible-test-support` now exposes `campaign_provenance_key` and
     `evaluate_campaign_corpus_reuse` over the same pinned build identity carried
     by reproduction artifacts. A prior corpus with the same provenance key seeds
     the existing lineage; a QEMU atomic-patch or ABI mismatch returns
@@ -882,13 +892,13 @@ carries findings across an incompatible build.
     makes `checks.crucible.phase7.gates.campaignContinuity` depend on this
     provenance check while leaving the full distributed campaign-continuity gate
     red until the DCE campaign store and continuity tests are implemented.
-- [x] **T-PKG-23** Extend the `crucible-cas` ratchet-seam merge marker to name the
+- [x] **T-PKG-23** Extend the `crucible-store` ratchet-seam merge marker to name the
   fleet-visible store + dependency-gated invalidation as the SAME seam behind the
   unchanged narrow interface (merge bar = gate:content-address /
   gate:replay-oracle / gate:e2e-determinism), keeping Crucible standalone (no
   RFC-0007 dependency). — satisfies [PKG-45]; spec §26.9, §26.11.
   - Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`: the
-    `crucible-cas` module docs name `SharedDagStore` and
+    `crucible-store` module docs name `SharedDagStore` and
     `InvalidationQuery::evaluate` as the same future ratchet seam behind
     `DagStore::put`/`DagStore::get`/`DagStore::has`. The check preserves the
     merge bar (`gate:content-address`, `gate:replay-oracle`,

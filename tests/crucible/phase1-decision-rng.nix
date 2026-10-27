@@ -4,19 +4,19 @@
   attrPath ? "checks.crucible.phase1.decisionRng",
   taskIds ? ["T-DET-15" "T-PAT-5"],
 }: let
-  simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
-  decisionRngTest = builtins.readFile ../../crates/crucible-sim/tests/decision_rng.rs;
-  layer0Gate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
+  simLib = builtins.readFile ../../crates/crucible/crucible-determinism/src/lib.rs;
+  decisionRngTest = builtins.readFile ../../crates/crucible/crucible-determinism/tests/decision_rng.rs;
+  layer0Gate = builtins.readFile ../../crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
-  rngDrawModel = builtins.readFile ../../crates/crucible/src/model/materialized/rng_draw.rs;
-  decisionCodec = builtins.readFile ../../crates/crucible/src/model/binary_state.rs;
+  rngDrawModel = builtins.readFile ../../crates/crucible/crucible-engine/src/model/materialized/rng_draw.rs;
+  decisionCodec = builtins.readFile ../../crates/crucible/crucible-engine/src/model/binary_state.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-sim/src/lib.rs" simLib [
+    failuresFor "crates/crucible/crucible-determinism/src/lib.rs" simLib [
       {
         label = "decision RNG type";
         needle = "pub struct DecisionRng";
@@ -90,7 +90,7 @@
         needle = "self.fork_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, link_name)";
       }
     ]
-    ++ forbiddenFor "crates/crucible-sim/src/lib.rs" simLib [
+    ++ forbiddenFor "crates/crucible/crucible-determinism/src/lib.rs" simLib [
       {
         label = "default randomized hasher";
         needle = "DefaultHasher";
@@ -108,7 +108,7 @@
         needle = "fn splitmix64";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/decision_rng.rs" decisionRngTest [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/decision_rng.rs" decisionRngTest [
       {
         label = "published-derivation reference test";
         needle = "decision_rng_matches_the_published_derivation";
@@ -154,13 +154,13 @@
         needle = "decision_rng_names_the_keyed_algorithm_and_refused_legacy";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" layer0Gate [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs" layer0Gate [
       {
         label = "layer0 gate uses real decision RNG";
         needle = "DecisionRng::new";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/materialized/rng_draw.rs" rngDrawModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/materialized/rng_draw.rs" rngDrawModel [
       {
         label = "recorded draws carry a typed address";
         needle = "pub address: RngDrawAddress,";
@@ -170,7 +170,7 @@
         needle = "LinkFrame {";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/binary_state.rs" decisionCodec [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/binary_state.rs" decisionCodec [
       {
         label = "unaddressed draw encoding is refused";
         needle = "rng draw without a draw address is a retired decision encoding and is refused";
@@ -185,7 +185,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-5 completion names DecisionRng";
-        needle = "`crucible_sim::DecisionRng`";
+        needle = "`crucible_determinism::DecisionRng`";
       }
       {
         label = "T-PAT-5 completion names node domain";

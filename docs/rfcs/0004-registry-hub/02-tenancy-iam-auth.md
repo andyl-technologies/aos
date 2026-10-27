@@ -48,7 +48,7 @@ Two principal planes that never cross:
 - **Humans** get cookie sessions (`__Host-aos_session`, opaque 256-bit
   random, `Secure; HttpOnly; SameSite=Lax`; only the SHA-256 of the
   session id is stored — the same high-entropy-secret rationale as
-  `aos-server`'s token store). Native: a `sessions` table. Workers: KV
+  `aos-build-server`'s token store). Native: a `sessions` table. Workers: KV
   with native TTL plus a D1 row for enumeration and "revoke all
   sessions"; KV is eventually consistent, so revocation tombstones D1
   and destructive operations re-check it. Defaults: 7-day idle
@@ -57,8 +57,8 @@ Two principal planes that never cross:
   re-authentication within the last 10 minutes. Human authorization is
   computed from `memberships` per request — role changes take effect
   immediately, no static scopes.
-- **Machines** keep the existing `aos-server` pattern
-  (`crates/aos-server/src/auth.rs`, `tokens.rs`): `aos_`-prefixed
+- **Machines** keep the existing `aos-build-server` pattern
+  (`crates/packages/aos-build-server/src/auth.rs`, `tokens.rs`): `aos_`-prefixed
   provisioning tokens, hashed at rest, exchanged at `/oauth2/token` for
   short-TTL JWTs — with scope generalized from `views` to
   `{path_prefix, permissions[]}` (e.g. `acme/infra/prod` +
@@ -90,7 +90,7 @@ verification of the wasm claims is part of the phase-1/2 spikes):
 - **Per-org OIDC SSO** — phase 3. The `openidconnect` crate is
   wasm-clean by construction (pure-RustCrypto JWS verification,
   pluggable `AsyncHttpClient` — implemented over `worker::Fetch` on
-  Workers and `aos-net`/hyper natively). Authorization-code + PKCE
+  Workers and `aos-transfer`/hyper natively). Authorization-code + PKCE
   always; per-org IdP config with encrypted client secrets;
   **domain capture** (email-first login: `user@acme.com` routes to
   acme's IdP when `acme.com` is DNS-TXT-verified, forced if the org

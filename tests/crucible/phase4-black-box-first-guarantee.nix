@@ -6,7 +6,7 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  blackBoxTest = builtins.readFile ../../crates/crucible/tests/black_box_first_guarantee.rs;
+  blackBoxTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -24,7 +24,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/black_box_first_guarantee.rs" blackBoxTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
         label = "complete black-box scenario determinism test";
         needle = "complete_black_box_scenario_runs_deterministically_without_guest_marker";
@@ -110,7 +110,7 @@
         needle = "remain T-TRIG-19";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/black_box_first_guarantee.rs" blackBoxTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
         label = "trigger action decision variant";
         needle = "Decision::Trigger";
@@ -143,7 +143,10 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase4-black-box-first-guarantee";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.sed
       ];
@@ -155,7 +158,7 @@ in
             set -eu
             cd crates
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --test black_box_first_guarantee \
               -- --test-threads=1
           '';

@@ -10,9 +10,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  cliE2eGate = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
-  e2eHarness = builtins.readFile ../../crates/crucible-harness/src/e2e.rs;
-  harnessE2eGate = builtins.readFile ../../crates/crucible-harness/tests/gate_e2e_determinism.rs;
+  cliE2eGate = builtins.readFile ../../crates/crucible/crucible-cli/tests/gate_e2e_determinism.rs;
+  e2eHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/e2e.rs;
+  harnessE2eGate = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_e2e_determinism.rs;
   nativeRunner = ./_e2e-determinism-native-runner.sh;
   nativeRunnerSource = builtins.readFile nativeRunner;
   fleetRunner = builtins.readFile ./_fleet-runner.nix;
@@ -20,7 +20,7 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
+    failuresFor "crates/crucible/crucible-cli/tests/gate_e2e_determinism.rs" cliE2eGate [
       {
         label = "CLI modeled artifact component";
         needle = "e2e_artifact_component_runs_mock_fault_and_property_corpus";
@@ -34,7 +34,7 @@
         needle = "e2e_artifact_component_rejects_build_identity_drift";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/e2e.rs" e2eHarness [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/e2e.rs" e2eHarness [
       {
         label = "representative artifact";
         needle = "pub fn representative_mock_e2e_artifact";
@@ -48,7 +48,7 @@
         needle = "MissingDifferentMachineProfile";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_e2e_determinism.rs" harnessE2eGate [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_e2e_determinism.rs" harnessE2eGate [
       {
         label = "hostile-profile artifact comparison";
         needle = "gate_e2e_determinism_runs_fault_injected_multi_vm_artifact_under_adversarial_profiles";
@@ -175,7 +175,7 @@ in
             crucible-cargo test \
               -p crucible-cli --test gate_e2e_determinism -- --test-threads=1
             crucible-cargo test \
-              -p crucible-harness --test gate_e2e_determinism -- --test-threads=1
+              -p crucible-test-support --test gate_e2e_determinism -- --test-threads=1
 
             ${pkgs.bash}/bin/bash -n ${nativeRunner}
           '';

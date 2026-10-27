@@ -10,35 +10,40 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliCargo = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliProduction = import ./_rust-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-cli/src/main.rs;
-    fragmentDirs = [../../crates/crucible-cli/src/cli];
-  };
+  cliProduction = import ./_cli-production-source.nix {inherit lib;};
   cliRunProduction = builtins.concatStringsSep "\n" [
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-cli/src/cli/control.rs;
+      entry = ../../crates/crucible/crucible-cli/src/cli/control.rs;
     })
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-cli/src/cli/run_save.rs;
+      entry = ../../crates/crucible/crucible-cli/src/cli/run_save.rs;
     })
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-cli/src/cli/verify_serve.rs;
+      entry = ../../crates/crucible/crucible-cli/src/cli/verify_serve.rs;
     })
   ];
   sessionCore = import ./_crucible-session-source.nix {inherit lib;};
-  apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  apiServer = import ./_rust-module-source.nix {
+  apiLifecycle = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/server.rs;
+    component = "lifecycle";
   };
-  apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
+  };
+  apiStreaming = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "streaming";
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -59,7 +64,7 @@
         needle = "`T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "run scenario argument";
         needle = "scenario: Option<String>";
@@ -357,7 +362,7 @@
         needle = "cli_run_workflow_acknowledges_interactive_reader_commands";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionCore [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionCore [
       {
         label = "live snapshot outcome mirror";
         needle = "outcome_kind: AtomicU8";
@@ -387,7 +392,7 @@
         needle = "outcome_kind_from_engine_state";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" apiLifecycle [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" apiLifecycle [
       {
         label = "quiescent lifecycle loop";
         needle = "pub struct QuiescentLifecycleLoop";
@@ -433,7 +438,7 @@
         needle = "pub terminal_savepoint: Option<ContentHash>";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" apiClient [
       {
         label = "RPC list-sessions decodes outcome";
         needle = "parse_outcome_field";
@@ -451,7 +456,7 @@
         needle = "\"session terminal savepoint\"";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/server.rs" apiServer [
       {
         label = "production HTTP/2 lifecycle server";
         needle = "pub async fn serve_lifecycle_http2";
@@ -493,7 +498,7 @@
         needle = "fn content_hash_option_wire";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" apiStreaming [
       {
         label = "streaming command uses actor-yield budget";
         needle = "max_actor_yields: u64";
@@ -507,10 +512,10 @@
         needle = "StreamingApiError::StateDidNotAdvance";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliCargo [
+    ++ failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on API lifecycle";
-        needle = "crucible-api = { path = \"../crucible-api\" }";
+        needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
       }
       {
         label = "CLI owns async runtime for local double workflow";
@@ -535,13 +540,13 @@
         needle = "`T-CLI-6` remains open. `checks.crucible.phase5.cliRunWorkflow` currently";
       }
     ]
-    ++ forbiddenFor "crates/crucible-api/src/streaming.rs" apiStreaming [
+    ++ forbiddenFor "crates/crucible/crucible-control-api/src/streaming.rs" apiStreaming [
       {
         label = "ignored streaming actor-yield budget";
         needle = "_max_actor_yields: u64";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/{main.rs,cli/**}" cliProduction [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/{main.rs,cli/**}" cliProduction [
       {
         label = "CLI owns scheduler loop";
         needle = builtins.concatStringsSep "_" ["drive" "quantum("];
@@ -571,7 +576,7 @@
         needle = "streams_canonical_event_log: true";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/run-workflow" cliRunProduction [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/run-workflow" cliRunProduction [
       {
         label = "CLI run workflow owns raw stdin parser loop";
         needle = builtins.concatStringsSep "::" ["std" "io" "stdin"];

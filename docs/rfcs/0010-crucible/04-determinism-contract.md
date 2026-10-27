@@ -316,7 +316,7 @@ differ.
 | E5 | `gettimeofday`/`clock_gettime`/RTC reads | Guest reads wall-clock-derived time | RTC/wall-clock base is a fixed, configured epoch; the clock advances only by exact ticks (4.3); no host time enters | launch + patch |
 | E6 | Emulated timer devices (LAPIC, PIT, RTC, HPET) | Timer fire ordering/timing relative to instructions | All are virtual-clock-driven; the clock is logical-tick-derived, so deadlines map to deterministic ticks | launch |
 | E7 | CPU/timer interrupt delivery timing | An interrupt taken one instruction earlier/later forks the path | TCG delivers CPU/timer interrupts at deterministic translation-block boundaries under icount; their virtual-clock deadlines use logical ticks | launch |
-| E7a | Asynchronous device-completion delivery timing | A virtio-rng entropy completion is serviced from a host-scheduled main-loop bottom half, so its completion interrupt lands at a host-timing-dependent instruction and forks the path — even when the completion payload (seeded entropy) is byte-pure. Inherent to upstream icount, which pins virtual *time* but not the *icount* of an async completion. Block/9p *completion* icounts are instead pinned by the crucible shmem substrate, but each initial virtqueue kick must enter that substrate deterministically. | In sim mode, `crucible-det-virtio-ioeventfd` and `crucible-det-rng-delivery` dispatch and complete virtio-rng synchronously. `crucible-9p-sync-kick` dispatches the initial 9p kick synchronously. Each launched `crucible-shmem` virtio-blk device sets `ioeventfd=off`, so its request callback likewise runs on the requesting vCPU boundary; after that boundary, the explicit device-wait advance/commit barrier owns its modeled completion. Plain TCG/icount and unrelated virtio devices remain upstream-identical. No QEMU record/replay (NG-6). | launch + plugin + patch |
+| E7a | Asynchronous device-completion delivery timing | A virtio-rng entropy completion is serviced from a host-scheduled main-loop bottom half, so its completion interrupt lands at a host-timing-dependent instruction and forks the path — even when the completion payload (seeded entropy) is byte-pure. Inherent to upstream icount, which pins virtual *time* but not the *icount* of an async completion. Block/9p *completion* icounts are instead pinned by the crucible shmem substrate, but each initial virtqueue kick must enter that substrate deterministically. | In sim mode, `crucible-det-virtio-ioeventfd` and `crucible-det-rng-delivery` dispatch and complete virtio-rng synchronously. `crucible-9p-sync-kick` dispatches the initial 9p kick synchronously. Each launched `crucible-qemu-shmem` virtio-blk device sets `ioeventfd=off`, so its request callback likewise runs on the requesting vCPU boundary; after that boundary, the explicit device-wait advance/commit barrier owns its modeled completion. Plain TCG/icount and unrelated virtio devices remain upstream-identical. No QEMU record/replay (NG-6). | launch + plugin + patch |
 | E8 | Guest entropy pool seeding (`getrandom`, `/dev/urandom`, `random.trust_cpu`) | Guest CSPRNG seeded from true entropy diverges | Seed the guest deterministically via firmware (`fw_cfg`) random-seed and/or controlled RDRAND; the seed is a pure function of the scenario seed (4.7) | launch |
 | E9 | QEMU-internal use of host RNG (`qemu_guest_getrandom`, glib `GRand`) | QEMU device models / MACs / IDs draw from host entropy, perturbing device state in `T` | Seed QEMU's guest-random and glib PRNG deterministically from the run seed (`qemu-deterministic-getrandom`, `qemu-deterministic-glib-prng`) | patch |
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
@@ -827,7 +827,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   producer/consumer timing) shared by all determinism gates. — satisfies
   [DET-38]; spec §4.11.
   - Completed by `checks.crucible.phase1.adversarialHostFixture`: the shared
-    `crucible_harness::adversarial` fixture now publishes the canonical
+    `crucible_test_support::adversarial` fixture now publishes the canonical
     host-adversary profile matrix, seeded task-order and logical-affinity
     planning that drives worker partitioning, deterministic jitter/load
     injection, varied worker counts, and a role-aware producer/consumer skew
@@ -866,7 +866,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   bit-identical aggregate-icount trajectory across runs. — satisfies [DET-5],
   [DET-29]; spec §4.2.1, §4.8.
   - Completed by `checks.crucible.phase1.contractAIsolation`: the isolated
-    `crucible-sim::contract_a::ContractADriver` now models `N > 1` vCPU runs on
+    `crucible_determinism::contract_a::ContractADriver` now models `N > 1` vCPU runs on
     a single aggregate icount axis, samples every vCPU register file plus the RR
     cursor at each aggregate-icount boundary, folds that material into the run
     fingerprint, and proves replayed aggregate-icount trajectories are
@@ -911,7 +911,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `checks.crucible.phase2.qemuPreemptionInject`: the plugin contract samples
     the authoritative sender vCPU and RR quantum, applies the fixed modeled
     node-icount IPI latency, and rounds to the next RR switch with
-    `crucible_protocol::deterministic_ipi_delivery_icount`; the exact-source
+    `crucible_qemu_protocol::deterministic_ipi_delivery_icount`; the exact-source
     QEMU microtest proves that the resulting mailbox command reaches
     `qemu_plugin_inject_preemption` and rejects an out-of-window coordinate.
 - [x] **T-DET-31** Implement app-requested randomness served from the single

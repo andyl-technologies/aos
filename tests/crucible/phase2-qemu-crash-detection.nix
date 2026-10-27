@@ -6,9 +6,9 @@
 }: let
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  crashLib = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
-  crashTest = builtins.readFile ../../crates/crucible-qemu/tests/crash_detection.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
+  crashLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/crash_detection.rs;
+  crashTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/crash_detection.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "**[QEMU-32]** The host MUST detect an unexpected child exit";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "crash detection module";
         needle = "mod crash_detection;";
@@ -41,7 +41,7 @@
         needle = "QemuChildExitProbe";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/crash_detection.rs" crashLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/crash_detection.rs" crashLib [
       {
         label = "scheduler-facing status enum";
         needle = "pub enum QemuNodeRunStatus";
@@ -96,7 +96,7 @@
       }
       {
         label = "plugin frame I/O dependency";
-        needle = "use crucible_protocol::FrameIoError";
+        needle = "use crucible_qemu_protocol::FrameIoError";
       }
       {
         label = "detector API";
@@ -127,7 +127,7 @@
         needle = "pub fn detect_qmp_result";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/crash_detection.rs" crashTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/crash_detection.rs" crashTest [
       {
         label = "unexpected child exit test";
         needle = "unexpected_child_exit_surfaces_typed_crashed_node_status";
@@ -174,6 +174,8 @@ in
     mkCrucibleTestGate {
       pname = "crucible-phase2-qemu-crash-detection";
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
         pkgs.sed
       ];
@@ -184,7 +186,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test crash_detection \
               -- --test-threads=1
           '';
@@ -200,7 +202,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:control-responsive,gate:divergence-bisect
-            rust_test=crucible-qemu::crash_detection
+            rust_test=crucible_qemu_host::crash_detection
             crash_causes=unexpected-child-exit,plugin-ipc-close,qmp-disconnect
             host_hooks=std-process-child,plugin-frame-io,qmp-io
             status=typed-crashed-node

@@ -7,16 +7,16 @@
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  cargoManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   shmem = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/ring_coverage.rs)
   ];
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  protocol = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
@@ -26,24 +26,24 @@
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
         label = "T-HARN-3 completion note";
-        needle = "Completed by `crucible::SimDouble`";
+        needle = "Completed by `crucible_engine::SimDouble`";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" cargoManifest [
+    ++ failuresFor "crates/crucible/crucible-engine/Cargo.toml" cargoManifest [
       {
         label = "shared shmem dependency";
-        needle = ''crucible-shmem = { path = "../crucible-shmem", optional = true }'';
+        needle = ''crucible-qemu-shmem = { path = "../crucible-qemu-shmem", optional = true }'';
       }
       {
         label = "shared protocol dependency";
-        needle = ''crucible-protocol = { path = "../crucible-protocol" }'';
+        needle = ''crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }'';
       }
       {
         label = "test-double feature dependencies";
-        needle = ''test-double = ["dep:crucible-shmem"]'';
+        needle = ''test-double = ["dep:crucible-qemu-shmem"]'';
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "SimDouble export";
         needle = "SimDouble";
@@ -57,7 +57,7 @@
         needle = "SimInstructionScript";
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "SimDouble type";
         needle = "pub struct SimDouble";
@@ -163,7 +163,7 @@
         needle = "sim_double_delivers_inbound_frames_by_canonical_key";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem split modules" shmem [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem split modules" shmem [
       {
         label = "shmem ABI region";
         needle = "pub struct RegionHeader";
@@ -193,7 +193,7 @@
         needle = "pub enum RegionAllocationAccessError";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocol [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocol [
       {
         label = "host/plugin codec";
         needle = "pub fn control_decode_host_msg";
@@ -213,7 +213,7 @@
         needle = "simDouble = import ./phase1-sim-double.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "wall-clock dependency";
         needle = "SystemTime";
@@ -245,7 +245,7 @@ in
           script = ''
             set -eu
             crucible-cargo test \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               sim_double_ \
               -- --test-threads=1
@@ -256,7 +256,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:sim-double
-            sim_double=crucible::SimDouble
+            sim_double=crucible_engine::SimDouble
             shared_shmem_abi=true
             shared_spsc_queue=true
             shared_protocol_codec=true

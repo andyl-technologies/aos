@@ -13,15 +13,15 @@
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliCampaignRun = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-cli/src/cli/campaign_run.rs;
+    entry = ../../crates/crucible/crucible-cli/src/cli/campaign_run.rs;
   };
   daemonCampaignLifecycle = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+    entry = ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   };
-  portableArtifactConstants = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
-  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  portableArtifactConstants = builtins.readFile ../../crates/crucible/crucible-cli/src/portable_artifact_constants.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible/crucible-cli/tests/machine_readable.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible/crucible-cli/tests/campaign_process.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -60,7 +60,7 @@
         needle = "use the same fail-closed Campaign owner";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "save arguments";
         needle = "struct SaveArgs";
@@ -82,7 +82,7 @@
         needle = "cli_save_selector_proof_rejects_invalid_breakpoint_evidence";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/campaign_run.rs" cliCampaignRun [
+    ++ failuresFor "crates/crucible/crucible-cli/src/cli/campaign_run.rs" cliCampaignRun [
       {
         label = "Campaign-owned QEMU save";
         needle = "fn run_local_qemu_campaign_save_workflow";
@@ -112,7 +112,7 @@
         needle = "campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonCampaignLifecycle [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonCampaignLifecycle [
       {
         label = "reached-stop exact capture";
         needle = "pub fn with_reached_stop_savepoint_capture";
@@ -122,19 +122,19 @@
         needle = "pub const fn savepoint";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
+    ++ failuresFor "crates/crucible/crucible-cli/src/portable_artifact_constants.rs" portableArtifactConstants [
       {
         label = "sole current savepoint handle schema";
         needle = "crucible.savepoint-handle.v6";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+    ++ failuresFor "crates/crucible/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "machine-readable session-owned save rejection";
         needle = "cli_save_machine_readable_jsonl_rejects_session_owned_export";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+    ++ failuresFor "crates/crucible/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
       {
         label = "packaged Campaign save and native resume regression";
         needle = "campaign_virtual_time_save_feeds_native_resume";
