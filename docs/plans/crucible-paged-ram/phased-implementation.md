@@ -95,13 +95,21 @@ All 240 resource-library tests, strict resource-library Clippy and 95 policy
 controls pass for that checkpoint. The retained separate host-library strict
 check reports 22 unresolved diagnostics. The inventory contains 651 model, 25
 format and nineteen native bindings, with 142 requirements uncovered, none
-qualified and no advertised capabilities. Required application compilation for
-these saved source snapshots remains pending at this checkpoint.
+qualified and no advertised capabilities.
+
+Mandatory application compilation passes for merged checkpoint `88b82491e6`
+at `c9r9dng1pydk481q4d0mi3xzibxm5msc-aos-test-targets-0.1.0`. All 5,472
+committed Rust, TOML and lockfile inputs match its frozen workspace source.
+The saved compiler records contain 185 executable test targets from all 58
+selected application packages: 56 library, 53 binary and 76 integration targets.
+The build exits successfully after installation and fixup. It compiles without
+running tests and supplies no native activation, physical-return, paging or
+performance qualification. Earlier individual source-snapshot invocations
+without observed terminal results remain unverified.
 
 `6495de07eb` merges master through `903d5248ba` without conflicts. Core evaluation
-passes; merged-source application compilation is also pending. Complete
-containing prebirth payment, native Cleanup entry and physical-return producers
-remain unfinished. The [process-lifetime design](process-lifetime-profile.md)
+passes. Complete containing prebirth payment, native Cleanup entry and
+physical-return producers remain unfinished. The [process-lifetime design](process-lifetime-profile.md)
 describes their separate obligations without enabling a new contract.
 
 #### Source collection before host retirement
