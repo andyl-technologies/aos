@@ -31,6 +31,16 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The exact firmware-enrollment prerequisite shared by the lifecycle-funded
+  and selected-initializer VMs passes at
+  `/nix/store/1bc0fyp3zl60n4qxpakf64h14588hdg0-aos-fleet-test-secure-boot-enrolled-vars-0`
+  (NAR hash `sha256-OJUIe0OjdlIKcwKAbW17Q+aFk8OwjSuSEqcQXUqEPjw=`).
+  Its retained result is `PASS`; ordinary startup and unfunded Sandbox refusal
+  pass before and after key enrollment, Secure Boot enforces after reboot, and
+  the enforcing OVMF variable store is exported. This is the shared firmware
+  prerequisite, not either funded VM's result. Parent compilation, installed
+  producer entry, TPM provisioning and the connected lifecycle remain pending.
+
 - The linked scan then passed the helper file cut and found inherited socket
   observation from `devicekit_disk_t` to an initial producer. Both upstream
   blanket socket-observation interfaces now exclude the existing private-custody
