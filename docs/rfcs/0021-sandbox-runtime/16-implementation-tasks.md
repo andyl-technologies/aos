@@ -31,6 +31,18 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The selected parent build reached packaged unit execution, then failed 52
+  Method46 fixtures at protected opening before their test actions. These new
+  cases require trusted root-to-fixture ancestry, like the existing native
+  Journal cases. Commit `5513f52c17` adds their exact names to the established
+  sandbox exclusion profile and makes the QEMU Domain check require every
+  excluded Domain case to report success in its complete, unfiltered suite.
+  Default, CI and host-native selections remain unchanged. Profile and generated
+  guest-script checks pass; the guest run, rebuilt parent and enforcing startup
+  remain pending. Commit `3d7664cf3c` also moves manual-unit inactivity checks
+  inside both boot checks, covering execution before the real power cycle.
+  Neither change supplies installed producer or public lifecycle qualification.
+
 - The exact firmware-enrollment prerequisite shared by the lifecycle-funded
   and selected-initializer VMs passes at
   `/nix/store/1bc0fyp3zl60n4qxpakf64h14588hdg0-aos-fleet-test-secure-boot-enrolled-vars-0`
