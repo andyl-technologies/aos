@@ -31,3 +31,6 @@ impl CompleteOriginalRestorationSource {
 
 #[path = "settled17/prebirth_loan.rs"]
 mod prebirth_loan;
+
+#[path = "settled17/model18_construction.rs"]
+mod model18_construction;

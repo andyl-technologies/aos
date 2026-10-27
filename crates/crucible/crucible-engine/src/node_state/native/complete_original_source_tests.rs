@@ -292,6 +292,49 @@ fn native_ticket_does_not_infer_missing_restoration_data_from_signed_archive() {
 }
 
 #[test]
+fn model18_quote_refuses_modeled_and_equal_foreign_sources_without_spending_custody() {
+    let (_directory, source) = fixture();
+    let duplicate = self::source(source.archive().clone());
+    let owners = native_ids(&source);
+    let ticket = source.take_native_ticket(&owners[0]).unwrap();
+    let issued = source.inner.native_issued.get();
+    let retained = source.inner.capture_owned_storage().unwrap();
+    let duplicate_retained = duplicate.inner.capture_owned_storage().unwrap();
+
+    // A signed modeled archive is not a production current17 collection. An
+    // equal archive in another Source cannot lend this ticket's model either.
+    for candidate in [&source, &duplicate] {
+        for maximum in [0, usize::MAX] {
+            assert!(
+                candidate
+                    .original_restored_model18_quote_formatter_temporary_data(&ticket, maximum)
+                    .is_err()
+            );
+            assert!(
+                candidate
+                    .original_restored_model18_construction_data(&ticket, maximum)
+                    .is_err()
+            );
+        }
+    }
+
+    ticket.authenticate_source(&source).unwrap();
+    assert_eq!(source.inner.native_issued.get(), issued);
+    assert_eq!(source.inner.capture_owned_storage().unwrap(), retained);
+    assert_eq!(
+        duplicate.inner.capture_owned_storage().unwrap(),
+        duplicate_retained
+    );
+    assert!(!source.inner.target_started.get());
+    assert!(!duplicate.inner.target_started.get());
+    assert!(source.inner.target.borrow().is_none());
+    assert!(duplicate.inner.target.borrow().is_none());
+    assert!(source.take_native_ticket(&owners[0]).is_err());
+    assert!(source.take_native_ticket(&owners[1]).is_ok());
+    assert!(CompleteOriginalRestorationSource::original_restored_model18_construction_counter_scratch_data() > 0);
+}
+
+#[test]
 fn selected_transaction_spends_each_original_owner_and_cannot_enter_legacy_context() {
     let (_directory, source) = fixture();
     let ids = native_ids(&source);
