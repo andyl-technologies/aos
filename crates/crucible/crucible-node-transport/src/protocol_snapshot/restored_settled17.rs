@@ -372,6 +372,8 @@ mod sealed;
 pub use capture_outputs::{
     RestoredSettledNative17CaptureOutputPlan, ValidatedRestoredSettledNative17CaptureOutputs,
 };
+pub(crate) use sealed::RestoredSettledNative18ModelAdoption;
+
 pub use sealed::{
     RestoredSettledHistoryVerifierData, RestoredSettledNative17DecodeAttempt,
     RestoredSettledNativeImportModelConstructionData, SealedHistoricalRestoredSettledNative17,

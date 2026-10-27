@@ -7,6 +7,10 @@ mod launch;
 #[path = "reader/capacities.rs"]
 mod capacities;
 
+#[path = "reader/adoption18.rs"]
+mod adoption18;
+pub(crate) use adoption18::NativeCurrentGraph18ModelAdoption;
+
 use super::{
     BorrowedNativeCurrentGraph17Plan, NativeCurrentGraph17ReadLimits,
     NativeCurrentGraph17RootSpans, borrowed::SelectedControl17Pass, hello::NativeHello17Data,

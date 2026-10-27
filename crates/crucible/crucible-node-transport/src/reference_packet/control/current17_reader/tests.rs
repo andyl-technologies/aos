@@ -160,6 +160,68 @@ fn actual_producer_and_reactive_writers_roundtrip_every_control_field_and_spare(
 }
 
 #[test]
+fn graph18_model_adoption_moves_actual_control_model_and_keeps_other_original_fields()
+-> Result<(), ProviderError> {
+    use crate::reference_packet::continuation_models::settled_reader::adoption18::CurrentModel18Program;
+    use crate::reference_packet::service::PacketConnectedSourceProgram;
+    use std::os::unix::net::UnixDatagram;
+
+    for reactive in [false, true] {
+        let actual = actual_control(reactive);
+        let expected = match &actual.program {
+            NativeProgram::OutputOnly(program) => PacketConnectedSourceProgram::Producer {
+                program: program.definition(),
+            },
+            NativeProgram::Connected(program) => PacketConnectedSourceProgram::Reactive {
+                program: program.definition().clone(),
+            },
+            NativeProgram::RestorationInProgress => return Err(invalid()),
+        };
+        let captured = capture(&actual);
+        let mut data = read(&captured, true)?.ok_or_else(invalid)?;
+        let model = serde_json::to_vec(
+            &data
+                .model_data()
+                .ok_or_else(invalid)?
+                .borrowed_program17_data(),
+        )
+        .unwrap();
+        let originals =
+            serde_json::to_vec(&(&data.originals, &data.content, &data.terminals)).unwrap();
+        let mut adoption = None;
+
+        data.prepare_current_model18_into(&expected, &mut adoption)?;
+
+        assert!(data.model_data().is_none());
+        assert!(data.fenced && data.native_effect_attempted && !data.admitted);
+        assert_eq!(
+            serde_json::to_vec(&(&data.originals, &data.content, &data.terminals)).unwrap(),
+            originals
+        );
+        assert!(
+            data.prepare_current_model18_into(&expected, &mut adoption)
+                .is_err()
+        );
+        let adoption = adoption.as_mut().ok_or_else(invalid)?;
+        let (socket, _peer) = UnixDatagram::pair()?;
+        adoption.bind_effect_socket(&mut Some(socket))?;
+        let mut completed = None;
+        adoption.take_completed_into(&mut completed)?;
+        let transferred = match completed.as_ref().ok_or_else(invalid)? {
+            CurrentModel18Program::Producer(program) => {
+                serde_json::to_vec(&("producer", program.borrowed_settled_model_data())).unwrap()
+            }
+            CurrentModel18Program::Reactive(program) => {
+                serde_json::to_vec(&("reactive", program.borrowed_settled_model_data())).unwrap()
+            }
+        };
+        assert_eq!(transferred, model);
+        assert!(adoption.take_completed_into(&mut None).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn raw_schema_order_roles_and_missing_fields_are_not_normalized() {
     let captured = capture(&actual_control(false));
     let text = std::str::from_utf8(&captured.input).unwrap();

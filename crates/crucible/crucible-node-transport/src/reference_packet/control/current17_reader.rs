@@ -689,4 +689,6 @@ pub(crate) use retained::{
 
 mod output_pair17;
 
+mod model_adoption18;
+
 pub(crate) use retained::preflight_current_rooted_control17_fields_data;

@@ -19,6 +19,10 @@ use crate::retained_metadata::{
 };
 use crucible_node_format::{Validate, canonical};
 
+#[path = "sealed/model_adoption18.rs"]
+mod model_adoption18;
+pub(crate) use model_adoption18::RestoredSettledNative18ModelAdoption;
+
 #[path = "sealed/model_construction18.rs"]
 mod model_construction18;
 pub use model_construction18::RestoredSettledNativeImportModelConstructionData;

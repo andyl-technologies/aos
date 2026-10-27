@@ -13,8 +13,9 @@ use super::super::cold_admission::NativeCold17GraphAdmission;
 use crate::ProviderError;
 use crate::protocol_snapshot::native_wholegraph17::{
     NativeCurrentGraph17DecodeAttempt, NativeCurrentGraph17ReadLimits,
-    read_native_current_graph17_with_admission_into_data,
+    NativeCurrentGraph18ModelAdoption, read_native_current_graph17_with_admission_into_data,
 };
+use crate::reference_packet::service::PacketConnectedSourceProgram;
 use std::alloc::Layout;
 use std::mem::size_of;
 
@@ -93,6 +94,27 @@ impl NativeGraph17DecodeCache {
             },
             admission,
         )
+    }
+
+    /// Moves the same spent decoder bank into its enclosing18 model attempt.
+    ///
+    /// The enclosing owner retains the entire archive before entry and admits
+    /// the destination header and model validation separately. Moving the bank
+    /// leaves this cache spent; no replacement decoder can renew its history.
+    ///
+    /// # Errors
+    /// Refuses a cache that never started or the underlying once-only model
+    /// transition. Occupied output preserves the original bank. Any later
+    /// refusal retains the bank and its initialized children in that output.
+    pub(in crate::protocol_snapshot::restored_settled17) fn prepare_model18_into(
+        &mut self,
+        program: &PacketConnectedSourceProgram,
+        output: &mut Option<NativeCurrentGraph18ModelAdoption>,
+    ) -> Result<(), ProviderError> {
+        if !self.started {
+            return Err(refused());
+        }
+        NativeCurrentGraph18ModelAdoption::prepare_into(&mut self.slots, program, output)
     }
 
     /// Includes actual slot capacity and every initialized child's backing.
