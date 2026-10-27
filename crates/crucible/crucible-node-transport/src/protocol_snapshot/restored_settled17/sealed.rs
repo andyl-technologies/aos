@@ -19,6 +19,10 @@ use crate::retained_metadata::{
 };
 use crucible_node_format::{Validate, canonical};
 
+#[path = "sealed/model_construction18.rs"]
+mod model_construction18;
+pub use model_construction18::RestoredSettledNativeImportModelConstructionData;
+
 #[path = "sealed_graph_cache.rs"]
 mod graph_cache;
 use graph_cache::NativeGraph17DecodeCache;

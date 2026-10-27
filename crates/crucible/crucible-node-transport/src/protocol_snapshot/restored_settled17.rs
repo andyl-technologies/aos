@@ -374,7 +374,7 @@ pub use capture_outputs::{
 };
 pub use sealed::{
     RestoredSettledHistoryVerifierData, RestoredSettledNative17DecodeAttempt,
-    SealedHistoricalRestoredSettledNative17,
+    RestoredSettledNativeImportModelConstructionData, SealedHistoricalRestoredSettledNative17,
     restored_settled_native17_decode_construction_transient_bytes_data,
 };
 

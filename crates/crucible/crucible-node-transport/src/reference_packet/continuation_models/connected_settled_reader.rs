@@ -1,4 +1,8 @@
-//! Reads current reactive state without creating a live actor or input authority.
+//! Reads current reactive DATA and transfers validated fields into a fresh program.
+//!
+//! The reader creates no socket or input authority. The separate adoption helper
+//! moves complete decoded fields into an already owned socket; enclosing native
+//! admission, archive authentication and physical Hold custody remain required.
 
 use super::*;
 use crate::protocol_snapshot::owned11::typed::{
@@ -9,6 +13,9 @@ pub(in crate::reference_packet) struct ReactiveModel17Data(ConnectedState);
 
 #[path = "connected_settled_reader/prepared.rs"]
 pub(in crate::reference_packet) mod prepared;
+
+#[path = "connected_settled_reader/adoption18_construction.rs"]
+mod adoption18_construction;
 
 historical_struct!(OriginalStage {
     record: PacketStageRecord,
@@ -24,6 +31,66 @@ historical_struct!(OriginalCommit {
 });
 
 impl ReactiveModel17Data {
+    /// Matches the complete actual fresh definition without constructing a DTO.
+    ///
+    /// # Errors
+    /// Refuses another definition while preserving all decoded current fields.
+    pub(in crate::reference_packet) fn authenticate_definition18_data(
+        &self,
+        definition: &PacketConnectedDefinition,
+    ) -> Result<(), ProviderError> {
+        if &self.0.definition != definition {
+            return Err(ProviderError::Correlation(
+                "current model adoption definition",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Moves complete decoded fields into the actual caller-owned fresh socket.
+    ///
+    /// The enclosing retained adoption attempt completes validation before
+    /// entry. This infallible move preserves logical queues and capacities;
+    /// historical process identity stays in the caller's original archive.
+    pub(in crate::reference_packet) fn into_program18_data(
+        self,
+        effect_socket: UnixDatagram,
+    ) -> PacketConnectedProgram {
+        let ConnectedState {
+            definition,
+            native_pid: _,
+            reached,
+            gate_closed,
+            reactions,
+            delivered_inputs,
+            publications,
+            outputs,
+            stages,
+            grants,
+            retired,
+            reactions_completed,
+            packet_effects,
+            failed,
+        } = self.0;
+        PacketConnectedProgram {
+            definition,
+            native_pid: std::process::id(),
+            effect_socket,
+            reached,
+            gate_closed,
+            reactions,
+            delivered_inputs,
+            publications,
+            outputs,
+            stages,
+            grants,
+            retired,
+            reactions_completed,
+            packet_effects,
+            failed,
+        }
+    }
+
     /// Reads every defining reactive field with the caller's unchanged ledger.
     ///
     /// # Errors
@@ -291,7 +358,7 @@ mod tests {
     };
 
     #[test]
-    fn paired_reactive_current_writer_preserves_inbox_payload_and_all_fields() {
+    fn paired_reactive_current_writer_preserves_inbox_payload_and_all_fields_and_adoption18() {
         let (effect, _peer) = UnixDatagram::pair().unwrap();
         let endpoint = |node| Endpoint {
             node_id: Id::new(node).unwrap(),
@@ -380,6 +447,89 @@ mod tests {
         );
         assert_eq!(decoded.0.outputs.capacity(), actual.outputs.capacity());
         assert_eq!(decoded.0.stages.capacity(), actual.stages.capacity());
+
+        use crate::reference_packet::continuation_models::settled_reader::adoption18::{
+            CurrentModel18Adoption, CurrentModel18Program,
+        };
+        use crate::reference_packet::service::PacketConnectedSourceProgram;
+        use std::os::fd::AsRawFd;
+
+        let mut build = Ledger::new(rows.rows(), limits);
+        let mut model = read_settled_model17_data(&input, &mut build, true).unwrap();
+        assert!(build.rows.next().is_none());
+        let current = model.as_ref().unwrap();
+        let formatter = current
+            .adoption18_quote_formatter_temporary_data(usize::MAX)
+            .unwrap();
+        assert!(formatter > 0);
+        assert_eq!(
+            current
+                .adoption18_quote_formatter_temporary_data(formatter)
+                .unwrap(),
+            formatter
+        );
+        assert!(
+            current
+                .adoption18_quote_formatter_temporary_data(formatter - 1)
+                .is_err()
+        );
+        let construction = current.adoption18_construction_data(usize::MAX).unwrap();
+        assert!(construction.requested_terms_data()[2] > 0);
+        assert_eq!(
+            current
+                .adoption18_construction_data(construction.requested_bytes())
+                .unwrap(),
+            construction
+        );
+        assert!(
+            current
+                .adoption18_construction_data(construction.requested_bytes() - 1)
+                .is_err()
+        );
+        let mut attempt = None;
+        let program = PacketConnectedSourceProgram::Reactive {
+            program: actual.definition.clone(),
+        };
+        CurrentModel18Adoption::prepare_into(&mut model, &program, &mut attempt).unwrap();
+        assert!(model.is_none());
+        let attempt = attempt.as_mut().unwrap();
+        let bytes = attempt.retained_requested_storage_data(usize::MAX).unwrap();
+        let (effect, _fresh_peer) = UnixDatagram::pair().unwrap();
+        let descriptor = effect.as_raw_fd();
+        let mut effect = Some(effect);
+        attempt.bind_effect_socket(&mut effect).unwrap();
+        assert!(effect.is_none());
+        assert_eq!(
+            attempt.retained_requested_storage_data(usize::MAX).unwrap(),
+            bytes
+        );
+        let mut completed = None;
+        attempt.take_completed_into(&mut completed).unwrap();
+        let Some(CurrentModel18Program::Reactive(restored)) = completed else {
+            panic!("expected complete reactive transfer");
+        };
+        assert_eq!(restored.effect_socket.as_raw_fd(), descriptor);
+        assert_eq!(restored.native_pid, std::process::id());
+        assert_eq!(
+            serde_json::to_vec(&restored.borrowed_settled_model_data()).unwrap(),
+            serde_json::to_vec(&actual.borrowed_settled_model_data()).unwrap(),
+        );
+        assert_eq!(restored.reactions.capacity(), actual.reactions.capacity());
+        assert_eq!(
+            restored.reactions[0].payload.allocation_capacity(),
+            actual.reactions[0].payload.allocation_capacity(),
+        );
+        assert_eq!(
+            restored.delivered_inputs.capacity(),
+            actual.delivered_inputs.capacity()
+        );
+        assert_eq!(
+            restored.publications.capacity(),
+            actual.publications.capacity()
+        );
+        assert_eq!(restored.outputs.capacity(), actual.outputs.capacity());
+        assert_eq!(restored.stages.capacity(), actual.stages.capacity());
+        assert!(attempt.take_completed_into(&mut None).is_err());
     }
 }
 

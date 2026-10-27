@@ -19,6 +19,9 @@ mod vocabulary;
 #[path = "settled_reader/prepared.rs"]
 pub(crate) mod prepared;
 
+#[path = "settled_reader/adoption18.rs"]
+pub(crate) mod adoption18;
+
 /// Keeps the complete current logical model, without a live effect descriptor.
 pub(crate) struct PacketSettledModel17Data {
     state: CurrentModel,
