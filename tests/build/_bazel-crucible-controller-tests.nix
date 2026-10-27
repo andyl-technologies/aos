@@ -80,6 +80,7 @@
       "AGENTS.md"
       "CONTRIBUTING.md"
       "README.md"
+      "LICENSES"
       "default.nix"
       "crates"
       "tools/bazel"
@@ -91,6 +92,9 @@
       "pkgs/default.nix"
       "pkgs/emulation/qemu.nix"
       "pkgs/emulation/qemu-patches"
+      "pkgs/emulation/crucible-qemu-plugin.nix"
+      "pkgs/emulation/_crucible-qemu-bazel-installed.nix"
+      "pkgs/tools/crucible/_debug-gateway.nix"
     ];
     dependencyProfile = "controller-tests";
     cargoProfile = "release";
@@ -110,7 +114,7 @@
         aos_native = pkgs.aosBazelStoreLibraries;
         aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
         aos_controller_features = import ./_bazel-crucible-controller-feature-evidence.nix {inherit pkgs;};
-        aos_architecture = pkgs.aosBazelArchitecture;
+        aos_architecture = import ./_bazel-crucible-controller-audit-inputs.nix {inherit pkgs;};
       };
     analysisTargets = targets ++ testTargets;
   };
@@ -168,6 +172,13 @@ in {
       "//crates/crucible/crucible-test-support:crate_layer_graph_controller"
       "//crates/crucible/crucible-test-support:crate_artifact_types_controller"
     ];
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
+  license-boundary = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-license-boundary";
+    inherit workspace;
+    targets = ["//crates/crucible/crucible-test-support:gate_license_boundary_controller"];
     retainActionGraph = true;
     sharedBuildCache = false;
   };

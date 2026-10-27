@@ -120,3 +120,15 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "license_boundary_audit_inputs",
+    testonly = True,
+    srcs = [
+        "interface/crucible-shmem-abi.toml",
+        "include/crucible_shmem_abi.h",
+        "src/abi_version.in",
+        "tests/fixtures/shmem_abi_golden.fixture",
+    ],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

@@ -26095,7 +26095,7 @@
     }
   ],
   "contracts": {
-    "BUILD.bazel": "b050119690733c933b09aadd9f7352a35bdac3865f3a56813f7bc8e3176c578d",
+    "BUILD.bazel": "294e8300706ff3b3aa12d14c827fe92e18723e5f513c296e4aacdfe63d0b4556",
     "MODULE.bazel": "bc6d9ce89fcf31d2849fbce69521a0e47d0e9ae14d0c6bff251c9f91c9f789d6",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/crucible-campaign/BUILD.bazel": "1a2e842213958a46d6b186e994200cd40967579a6372b0579f54552aa3080072",
@@ -26104,7 +26104,7 @@
     "crates/crucible/crucible-engine/BUILD.bazel": "f7dee896f3a6945f08e2a6fdc1a9b53fb28b99bc737cbde219f11dd21edaa81d",
     "crates/crucible/crucible-qemu-host/BUILD.bazel": "f05061fe6299a834375d8d5ebca6c3e92922e1e110434c97053cb1664efb7ef5",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
-    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "15bc5c10c980b44fe3cf72c041c9858a786c95853c2b15f75bb8e60c9b6380ee",
+    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
     "crates/linux/aos-linux-project-quota/BUILD.bazel": "a6d9b30f18d9f0bbaf9854bf062a951d77312f16585adcc503114953c359319b",
     "docs/rfcs/0020-crucible-campaigns/BUILD.bazel": "f4416c4057ab60fabfe793576e9db45dfd4bc58353f11554cefcf4fb3eb60f91",

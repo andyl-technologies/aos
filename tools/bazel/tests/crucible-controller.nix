@@ -20,6 +20,36 @@ in
     };
     test-feature-policy = test-graph.feature-policy;
     test-architecture = test-graph.architecture;
+    test-license-boundary = test-graph.license-boundary;
+    test-license-boundary-cargo = import ../../../tests/build/_bazel-crucible-controller-license-cargo.nix {inherit pkgs;};
+    test-license-boundary-parity = let
+      inputs = import ../../../tests/build/_bazel-crucible-controller-audit-inputs.nix {inherit pkgs;};
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-license-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_license.py"
+            "verify_controller_architecture.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-license-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_license.py \
+          --strict ${test-graph.license-boundary} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.license-boundary} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-license-boundary-cargo} --cargo-root ${test-license-boundary-cargo.src} \
+          --graph ${inputs}/architecture.json --closures ${inputs}/license-closures.json --output "$out"
+      '';
     test-architecture-cargo = import ../../../tests/build/_bazel-cargo-oracle.nix {
       inherit pkgs;
       pname = "aos-bazel-crucible-controller-architecture-cargo-oracle";

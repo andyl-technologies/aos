@@ -113,12 +113,18 @@ aos_rust_test(
             "AOS_FEATURE_AUDIT_PYTHON": "@aos_tools//:python",
         } if source == "tests/feature_powerset.rs" else {
             "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+            "AOS_BAZEL_LICENSE_CLOSURES": "@aos_architecture//:license-closures.json",
+        } if source == "tests/gate_license_boundary.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
         } if source in ["tests/control_plane_boundary.rs", "tests/crate_layer_graph.rs", "tests/crate_artifact_types.rs"] else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",
             "//tests/crucible:testing-standards-baseline.txt",
             "//docs/rfcs/0010-crucible:spec_index_audit",
-        ] + (["@aos_controller_features//:tools"] if source == "tests/feature_powerset.rs" else []),
+        ] + (["@aos_controller_features//:tools"] if source == "tests/feature_powerset.rs" else []) + ([
+            "//:license_boundary_audit_inputs",
+            "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
+        ] if source == "tests/gate_license_boundary.rs" else []),
         deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
     )
     for source in CONTROLLER_INTEGRATIONS

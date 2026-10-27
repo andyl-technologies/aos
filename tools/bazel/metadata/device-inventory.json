@@ -14230,7 +14230,7 @@
     "crates/crucible/crucible-determinism/BUILD.bazel": "a78908ae84b086c9a35a3b0c0c136b9a8cd1c08d3e492a5463be1d7ab9917480",
     "crates/crucible/crucible-device/BUILD.bazel": "de960010d9860be56520a3d4e4d1bb8a43b1a012b6466182deff7d65e47a2eae",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
-    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "15bc5c10c980b44fe3cf72c041c9858a786c95853c2b15f75bb8e60c9b6380ee",
+    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
     "docs/rfcs/0020-crucible-campaigns/BUILD.bazel": "f4416c4057ab60fabfe793576e9db45dfd4bc58353f11554cefcf4fb3eb60f91",
     "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",

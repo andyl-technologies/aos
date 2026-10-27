@@ -4358,10 +4358,26 @@ nix-build -A checks.build.bazel.license-closures --no-out-link
 ```
 
 The [configured closure receipt](tests/evidence/crucible-license-closures.json)
-retains the four inventories and their source bindings. This export is a
-preparatory step: the existing Rust license gate still needs its Bazel adapter
-and Cargo/Bazel parity qualification. It does not qualify native-library licenses
-or replace the ABI, QEMU source-retention, or publication gates.
+retains the four inventories and their source bindings. The existing static Rust
+license audit consumes these configured closures and the declared architecture
+graph in its Bazel backend. Component licenses, internal production boundaries,
+artifact roles, and external license choices retain the existing policy. Policy
+documents, packaging builders, QEMU patches, and shared-memory ABI fixtures are
+explicit test inputs. Cargo execution remains an independent oracle.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-license-boundary-parity --no-out-link
+```
+
+The [license audit receipt](tests/evidence/crucible-controller-license-boundary.json)
+binds independent strict and broad sandbox builds to the Cargo cases, exact Rust
+and fixture bytes, and both executed JSON inputs. Fourteen controls exercise the
+actual graph backend with Cargo unavailable. The
+[inventory receipt](tests/evidence/crucible-controller-license-inventories.json)
+retains 22 configured analyses for 21 refreshed families and verifies all 80 source
+guards and 79 dependency SDK contracts. This static audit does not qualify
+native-library licenses or replace the separate ABI, QEMU source-retention,
+runtime, or publication gates.
 
 `checks.build.bazel.controller-native.check` qualifies the controller's pinned
 `ring` dependency using four uncached builds. Strict and broad source selections

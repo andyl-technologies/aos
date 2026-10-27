@@ -41420,7 +41420,7 @@
     "crates/crucible/crucible-guest/BUILD.bazel": "ec523c92518d5aa347a9c467ced565f3516dfdd275fcef253d265904a636ac61",
     "crates/crucible/crucible-qemu-host/BUILD.bazel": "f05061fe6299a834375d8d5ebca6c3e92922e1e110434c97053cb1664efb7ef5",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
-    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "15bc5c10c980b44fe3cf72c041c9858a786c95853c2b15f75bb8e60c9b6380ee",
+    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
     "crates/crucible/crucible-session/BUILD.bazel": "e26185e11ac173d4d0decf8658a0beccc1a2d826ff2181ba1937b7af4e224719",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "5bc9c50360faeb40761376bdde766aa204116c4d8d09250fe8c79bbefc6e27ba",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",

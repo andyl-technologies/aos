@@ -66,6 +66,8 @@ struct Document {
 struct Package {
     name: String,
     directory: String,
+    version: Option<String>,
+    license: Option<String>,
     production_targets: BTreeSet<String>,
     production_dependencies: Option<BTreeSet<String>>,
 }
@@ -76,6 +78,32 @@ struct Edge {
 }
 
 impl Architecture {
+    /// Returns the source package's declared version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or version metadata is absent.
+    pub(crate) fn package_version(&self, name: &str) -> io::Result<&str> {
+        self.packages
+            .get(name)
+            .and_then(|package| package.version.as_deref())
+            .filter(|version| !version.is_empty())
+            .ok_or_else(|| io::Error::other("source package omitted its version"))
+    }
+
+    /// Returns the source package's explicit license expression.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ownership or license metadata is absent.
+    pub(crate) fn package_license(&self, name: &str) -> io::Result<&str> {
+        self.packages
+            .get(name)
+            .and_then(|package| package.license.as_deref())
+            .filter(|license| !license.is_empty())
+            .ok_or_else(|| io::Error::other("source package omitted its license"))
+    }
+
     /// Returns a package's validated repository-relative source directory.
     ///
     /// # Errors
