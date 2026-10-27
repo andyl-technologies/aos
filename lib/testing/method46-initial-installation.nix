@@ -22,6 +22,7 @@
   parentMessage = purpose: "Manual ${purpose} floor initialization requires explicit, separate Parent06 receiving and sender subdivisions.";
   credentialMessage = purpose: "Manual ${purpose} floor initialization requires its independent public approval pin and the actual normal owners' complete external public credential sources.";
   policyMessage = purpose: "Manual ${purpose} floor initialization requires the selected production policy's independent service/helper roles and fixed image labels.";
+  listenerMessage = purpose: "Manual ${purpose} floor initialization requires its fixed service context and original approval and public-output delivery.";
   manualMessage = "Manual initial-floor units must remain unbootstrapped, argument-free and bound to their exact original delivery; normal startup cannot initialize.";
   sourceListener = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-domain/src/method46_initial_startup/approval_listener.rs;
   managerPatch = builtins.readFile ../../pkgs/system/patches/0041-method46-initial-parent06.patch;
@@ -52,6 +53,51 @@
       && rejects (credentialMessage purpose) incomplete
       && rejects (policyMessage purpose) incomplete)
     purposes;
+
+  # Exercise the listener assertion independently of the unavailable installed
+  # policy and funding. Each override must invalidate an otherwise valid
+  # listener, rather than merely observing an unrelated admission failure.
+  listenerOverrides = purpose: let
+    foreign =
+      if purpose == "controller"
+      then "storage"
+      else "controller";
+  in [
+    {Service = "aos-sandbox-${foreign}-floor-initialize.service";}
+    {ListenSequentialPacket = "/run/aos/sandbox/method46-${foreign}-initial.sock";}
+    {FileDescriptorName = "foreign-approval";}
+    {Accept = true;}
+    {SocketUser = "nobody";}
+    {SocketGroup = "nobody";}
+    {SocketMode = "0666";}
+    {DirectoryMode = "0755";}
+    {Backlog = 2;}
+    {PassCredentials = false;}
+    {PassPIDFD = false;}
+    {PassSecurity = true;}
+    {PassSubjectBeforeListen = false;}
+  ];
+  listenerAssertions = builtins.all (purpose: let
+    unit = "aos-sandbox-${purpose}-floor-initialize";
+    hasValidListener = system:
+      builtins.any (check: check.message == listenerMessage purpose && check.assertion) system.config.assertions;
+    changedSocket = override:
+      incomplete.extendModules {
+        modules = [{systemd.sockets.${unit}.socketConfig = lib.mapAttrs (_: lib.mkForce) override;}];
+      };
+    changedService = override:
+      incomplete.extendModules {
+        modules = [{systemd.services.${unit}.serviceConfig = lib.mapAttrs (_: lib.mkForce) override;}];
+      };
+  in
+    hasValidListener incomplete
+    && builtins.all (override: rejects (listenerMessage purpose) (changedSocket override)) (listenerOverrides purpose)
+    && builtins.all (override: rejects (listenerMessage purpose) (changedService override)) [
+      {SELinuxContext = "system_u:system_r:init_t";}
+      {StandardOutput = "inherit";}
+      {StandardError = "null";}
+    ])
+  purposes;
 
   forConfigurationModules = configurationModules: let
     evaluated = mkSystem {
@@ -95,5 +141,5 @@
     units = lib.genAttrs selected projection;
   };
 in {
-  inherit incompleteAssertions forConfigurationModules;
+  inherit incompleteAssertions listenerAssertions forConfigurationModules;
 }

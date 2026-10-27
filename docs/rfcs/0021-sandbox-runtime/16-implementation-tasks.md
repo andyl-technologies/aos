@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The two manual initializers now share the existing fixed-unit public-output
+  socket owner with offline provisioning. Exact unit/context pairs select
+  separate Controller and Storage output labels; foreign contexts, ignored
+  context errors and label setup/restoration failures terminate the executor.
+  Initializers therefore need no generic PID1 socket read/write grant merely
+  to retain journal output. Native C checks pass with and without SELinux
+  support, covering all three manual purposes and ordinary-unit exclusion.
+  The systemd package also requires both new labels in the installed executor;
+  its full package build passes on an audited 795-derivation closure without
+  production policy. The exact output derivation and all three installed
+  executor labels are independently verified. Actual module assertions pin
+  service context, journal output, the root-only approval listener and its
+  credential/PIDFD/subject delivery. Fresh actual-module evaluation and its
+  check derivation pass, rejecting all 32 individual overrides across both
+  purposes independently of the still-missing installed policy and funding.
+  The check's audited 494-derivation closure excludes production policy.
+  These are output and delivery prerequisites, not installed provisioning or
+  MAC qualification. The initial service/helper policy roles remain missing,
+  and admission remains closed.
+
 - The image modules now declare separately selected manual Controller/Storage
   initializer services and approval sockets, with no boot activation links.
   Both explicit Parent06 subdivisions must be selected with each definition;
@@ -59,8 +79,10 @@ Recent committed startup fixes close narrower prerequisites:
   derivation independently verified. The final actual-module regression passes
   after fresh evaluation, including the fixed descriptor roster and three-owner
   socket comparison. Its audited closure excludes production policy. The
-  corrected-source full-target build is still running on its audited
-  833-derivation closure without production policy. Enforcing startup,
+  corrected-source full-target build's process, log and output are no longer
+  available, so no terminal result is claimed. A replacement is running on an
+  audited 833-derivation closure without production policy; all 8,862 tracked
+  Rust and Cargo files match its frozen source. Enforcing startup,
   positive original Source provisioning, both journal hooks and complete
   lifecycle/crash/power-loss qualification remain open; admission stays closed.
 

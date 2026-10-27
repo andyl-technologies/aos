@@ -239,6 +239,30 @@ in {
             message = "Manual ${purpose} floor initialization requires the selected production policy's independent service/helper roles and fixed image labels.";
           }
           {
+            # PID1 derives the listening socket's SID from this exact service
+            # context. A foreign Service= or context changes the inherited
+            # socket's authority before the initializer receives its descriptor.
+            assertion =
+              (service.serviceConfig.SELinuxContext or null)
+              == "system_u:system_r:aos_method46_${purpose}_initial_t"
+              && (service.serviceConfig.StandardOutput or null) == "journal"
+              && (service.serviceConfig.StandardError or null) == "inherit"
+              && (socket.socketConfig.Service or null) == "${role.unit}.service"
+              && (socket.socketConfig.ListenSequentialPacket or null) == role.socket
+              && (socket.socketConfig.FileDescriptorName or null) == "aos-method46-initial-approval"
+              && (socket.socketConfig.Accept or null) == false
+              && (socket.socketConfig.SocketUser or null) == "root"
+              && (socket.socketConfig.SocketGroup or null) == "root"
+              && (socket.socketConfig.SocketMode or null) == "0600"
+              && (socket.socketConfig.DirectoryMode or null) == "0700"
+              && (socket.socketConfig.Backlog or null) == 1
+              && (socket.socketConfig.PassCredentials or null) == true
+              && (socket.socketConfig.PassPIDFD or null) == true
+              && (socket.socketConfig.PassSecurity or null) == false
+              && (socket.socketConfig.PassSubjectBeforeListen or null) == true;
+            message = "Manual ${purpose} floor initialization requires its fixed service context and original approval and public-output delivery.";
+          }
+          {
             assertion =
               cfg.${purpose}.approvalPublicKeyCredential
               != null
