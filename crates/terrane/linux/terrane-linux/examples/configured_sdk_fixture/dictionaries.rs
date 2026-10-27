@@ -134,9 +134,20 @@ pub(super) fn run(root: &Path, owner: u32, recovered_only: bool) -> FixtureResul
     let result = runtime.block_on(async {
         let original = config.open_local_repository(Role::Serve, TokioLocalFs, TokioClock).await?;
         let profile = original.chunk_profile();
-        let base = b"native chain terminal dictionary vocabulary ".repeat(32);
-        let middle = b"native chain terminal dictionary vocabulary and selected content ".repeat(64);
-        let content = b"native chain terminal dictionary vocabulary and selected content file ".repeat(128);
+        // Policy cases deliberately share the same public owner. Distinct
+        // instance content keeps each cold-read control independent; a fresh
+        // recovery actor uses the same instance and therefore the same digests.
+        let instance = root.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("missing dictionary fixture instance")?;
+        let base = format!("native chain terminal dictionary vocabulary {instance} ")
+            .repeat(32).into_bytes();
+        let middle = format!(
+            "native chain terminal dictionary vocabulary {instance} and selected content "
+        ).repeat(64).into_bytes();
+        let content = format!(
+            "native chain terminal dictionary vocabulary {instance} and selected content file "
+        ).repeat(128).into_bytes();
         let base_id = identity(&base)?;
         let middle_id = identity(&middle)?;
         let content_id = identity(&content)?;
@@ -162,9 +173,18 @@ pub(super) fn run(root: &Path, owner: u32, recovered_only: bool) -> FixtureResul
             return Ok(());
         }
 
-        let bad_base = b"independent rejected terminal dictionary ".repeat(32);
-        let bad_middle = b"independent rejected terminal dictionary middle ".repeat(64);
-        let bad_content = b"independent rejected terminal dictionary content ".repeat(128);
+        let cold_identities = [base_id.clone(), middle_id.clone(), content_id.clone()];
+        if native.has(&cold_identities).await? != [false; 3] {
+            return Err("cold dictionary fixture already has native chain residents".into());
+        }
+        println!("PASS: dictionary instance starts without any native chain residents");
+
+        let bad_base = format!("independent rejected terminal dictionary {instance} ")
+            .repeat(32).into_bytes();
+        let bad_middle = format!("independent rejected terminal dictionary {instance} middle ")
+            .repeat(64).into_bytes();
+        let bad_content = format!("independent rejected terminal dictionary {instance} content ")
+            .repeat(128).into_bytes();
         let bad_ids = [identity(&bad_base)?, identity(&bad_middle)?, identity(&bad_content)?];
         let bodies = BTreeMap::from([
             (base_id.terrane_v1_digest()?, base_body.clone()),

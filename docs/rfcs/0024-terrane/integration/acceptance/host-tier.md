@@ -312,8 +312,11 @@ The all-feature eviction guest refuses initial provisioning with `pending
 directory skeleton bound exceeded`: the expanded 107-domain fixture requires
 1,070 retained scaffold directories, exceeding the helper's fixed 1,024 bound.
 This failure precedes recovery and supplies no evidence about the later SDK
-dictionary case. The outstanding original SDK aggregate is requested separately
-with its original source, selectors and resource limits; it remains pending.
+dictionary case. A separate request for the outstanding original SDK aggregate
+at the same source fails in 170.771 seconds. The original inline dictionary
+read-through and fresh-owner recovery controls pass, but `never-dictionaries`
+exits 1 in 7.969 seconds, with 84.949 seconds remaining at actor start. The
+aggregate remains failed; its original logs and VM images are retained.
 
 The corrected supervisor partitions its complete 109-domain inventory into
 disjoint real administrative ledgers with 1,020 and 70 scaffold directories.
@@ -325,6 +328,18 @@ ledger observations must cover every original owner/domain/project and scaffold
 before any candidate is seeded. Python compilation, complete source assignment
 checks and PLAN-2 ownership pass; corrected-source native qualification is still
 required. No trunk task is newly accepted.
+
+The two SDK policy fixtures share the original public cache owner. Source
+inspection finds that both generated identical dictionary-chain plaintext while
+each required exactly three cold lower reads. The second fixture could therefore
+recover the first fixture's chain before that assertion. The dictionary fixture
+now includes its stable instance name in both valid and corrupt chain content,
+while a fresh recovery actor retains the same identities for its instance. Each
+cold control must independently observe all three native residents absent before
+reading. Exact lower request counts, corrupt-chain refusal, original encodings
+and fresh-owner recovery assertions remain required. This addresses the observed
+source-level precondition conflict; corrected native execution is still needed
+to determine whether it resolves the failure.
 
 ## Clause coverage
 

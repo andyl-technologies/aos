@@ -890,6 +890,7 @@ def run(driver, image, wipe_only=False, refusals=False):
                                 ["configured-sdk-cache-example", "read-cache-dictionaries", root, 840],
                                 mount_policy="readonly")
         for witness in [
+                b"PASS: dictionary instance starts without any native chain residents",
                 b"PASS: actual confined native lower driver verifies nested dictionary chains before admission",
                 b"PASS: corrupt terminal dictionary cannot warm a partial native chain",
                 b"PASS: actual confined native dictionary read-through completes without original publication writes"]:
