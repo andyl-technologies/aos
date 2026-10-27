@@ -32,6 +32,12 @@
     if purpose == "controller"
     then "controllerService"
     else "storageBroker";
+  rootSigningSource = "/run/credentials/@system/qualification-root-noapply-signing";
+  rootPublicSource = "/run/credentials/@system/qualification-root-noapply-public";
+  rootCredentials = cfg.systemd.services.aos-sandbox-policy-authorityd.serviceConfig.LoadCredential;
+  hostCredentials = cfg.systemd.services.aos-sandbox-hostd.serviceConfig.LoadCredential;
+  recoveryCredentials = cfg.systemd.services.aos-sandbox-policy-cache-recovery.serviceConfig.LoadCredential or [];
+  hasSource = source: entries: builtins.any (lib.hasSuffix ":${source}") entries;
 
   refusesIncomplete = purpose: let
     name = unitName purpose;
@@ -61,7 +67,9 @@
     assert settings.TasksMax == budget.pids;
     assert settings.CPUQuota == "${toString (budget.cpu-micros-per-period / 1000)}%";
     assert settings.LimitNOFILE == parent.fixedOpenFilesPerProcess;
-    assert builtins.length settings.LoadCredential == 28; {
+    assert builtins.length settings.LoadCredential == 29;
+    assert builtins.elem "method46-normal-root-noapply-public-key-v2:${rootPublicSource}" settings.LoadCredential;
+    assert !(hasSource rootSigningSource settings.LoadCredential); {
       inherit (settings) MemoryMax TasksMax CPUQuota LimitNOFILE SELinuxContext;
       credentialCount = builtins.length settings.LoadCredential;
     });
@@ -71,6 +79,12 @@
   assert cfg.aos.security.selinux._productionPolicy.passthru.method46InitialPurposes == purposes;
   assert cfg.aos.sandbox.resourceBank.policy.capacity.tmpfs-bytes == 1073741824;
   assert cfg.systemd.services.aos-sandboxd.wantedBy == [];
+  assert builtins.elem "root-noapply-floor-signing:${rootSigningSource}" rootCredentials;
+  assert builtins.elem "root-noapply-floor-public:${rootPublicSource}" rootCredentials;
+  assert builtins.elem "root-noapply-floor-public:${rootPublicSource}" hostCredentials;
+  assert !(hasSource rootSigningSource hostCredentials);
+  assert !(hasSource rootSigningSource recoveryCredentials);
+  assert !(hasSource rootPublicSource recoveryCredentials);
   assert builtins.all refusesIncomplete purposes;
     builtins.deepSeq projection true;
 in

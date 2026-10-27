@@ -31,6 +31,20 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The installed-VM configuration now declares normal Root's independent
+  NoApply signing credential and Host's paired public pin through their existing
+  production options. Both initializers borrow that same public source through
+  their closed roster, bringing each to 29 external credential sources. The
+  installation check requires exact Root/Host aliases, rejects delivery of the
+  private source to Host or either initializer, and requires the history-recovery
+  service to receive neither source. The `aos-dev --release` check passes with
+  both receiving-limit projections and the existing eight invalid configurations;
+  its audited 494-derivation closure excludes production policy and its exact
+  output derivation is independently verified. This wires external credential
+  names only: it does not provision key bytes, establish original Source entry,
+  qualify native Parent06 fit or execute TPM/MAC/lifecycle recovery. The previous
+  networkd approval remains pending and admission stays closed.
+
 - A reusable installed-VM configuration now selects both real manual initializer
   services with their separate M/F subdivisions, required normal-owner floors,
   caller-supplied public approval pins and actual Host/Storage session credential

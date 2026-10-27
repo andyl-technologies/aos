@@ -37,7 +37,11 @@ in
             brokerSessionManifest = "qualification-host-broker-manifest";
             brokerSessionHelloKey = "qualification-host-broker-hello";
             brokerSessionOutcomeKey = "qualification-host-broker-outcome";
+            rootNoApplyFloorPublicKey = "qualification-root-noapply-public";
           };
+          # Normal Root owns the independent signer. Initializers borrow only
+          # Host's public pin through their existing closed credential roster.
+          policyAuthority.credentials.rootNoApplyFloorSigningKey = "qualification-root-noapply-signing";
           storageBroker = {
             method46TpmFloor = floor "storage";
             credentials = {
