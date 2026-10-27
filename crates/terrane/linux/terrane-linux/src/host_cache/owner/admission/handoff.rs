@@ -73,9 +73,11 @@ impl CachedAdmission {
         // A dictionary can have the same plaintext identity as its dependent
         // chunk while using another actual encoding/inode. Hash subtraction
         // would lose that dependency; the original retained jobs establish it.
-        if matches!(&job.input, Input::Metadata { .. }) && !job.dependencies.is_empty() {
+        if matches!(&job.input, Input::Metadata { .. } | Input::DataPack { .. })
+            && !job.dependencies.is_empty()
+        {
             return Err(invalid(
-                "metadata admission unexpectedly retains a dictionary",
+                "closed pack admission unexpectedly retains an external dictionary job",
             ));
         }
         let mut dependencies = Vec::new();

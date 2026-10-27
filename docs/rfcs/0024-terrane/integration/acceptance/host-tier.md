@@ -135,9 +135,26 @@ one-hop restriction with bounded iterative verification of the actual older
 dependency jobs, original envelope edges, native bytes and retained protection.
 Both increments pass feature-enabled all-target Clippy with warnings denied.
 Their required application compilation and guest qualification remain pending;
-the earlier run does not qualify either later source. Whole-pack admission,
-direct consumer reads and unit eviction remain separate implementation work.
-Trunk acceptance remains 28/64.
+the earlier run does not qualify either later source.
+
+Cold recovery now imports an original data pack/index pair when all dictionary
+dependencies remain inside that pack. Consumer grants retain that actual
+completed pair, pin the selected identity and its container, and decode original
+positioned reads without creating standalone copies. Both complete native files
+are checked before and after decoding; a native or content failure rejects the
+original publisher observation. Registry absence is typed separately from native
+missing-file errors, so damaged standalone custody cannot silently select a pack.
+Eviction treats the pair and its member hashes as one allocation unit.
+
+The recovery fixture adds original raw and nested-dictionary consumer reads,
+grace refusal, paired retirement and independent observer descriptors. It checks
+that physical charges survive unlink until the last descriptions close while
+unrelated consumers remain usable. These new assertions are not yet guest
+qualified. All-target feature-enabled Clippy passes with warnings denied, and
+source inventories match 151/279 ordinary tests plus five creator tests. These
+are compilation and source checks only. External dictionary transfer, complete
+packed-manifest reassembly, required application compilation and physical
+qualification remain open. Trunk acceptance remains 28/64.
 
 ## Clause coverage
 

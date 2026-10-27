@@ -15,7 +15,8 @@ pub(super) mod handoff;
 mod io;
 mod memory;
 pub(in crate::host_cache::owner) mod metadata;
-pub(in crate::host_cache::owner) mod metadata_reads;
+pub(in crate::host_cache::owner) mod pack_reads;
+pub(in crate::host_cache::owner) mod packed_body;
 pub(in crate::host_cache::owner) mod pressure;
 pub(in crate::host_cache::owner) mod read_custody;
 pub(in crate::host_cache::owner) mod reads;
@@ -95,6 +96,12 @@ pub(in crate::host_cache::owner) enum Input {
     },
     /// Describes an untrusted complete metadata pack and detached index.
     Metadata {
+        expected_id: PackId,
+        pack: Arc<Vec<u8>>,
+        index: Arc<Vec<u8>>,
+    },
+    /// Retains a complete data pair imported from genuine verified recovery.
+    DataPack {
         expected_id: PackId,
         pack: Arc<Vec<u8>>,
         index: Arc<Vec<u8>>,
@@ -284,8 +291,15 @@ fn refuse_completed(
             (
                 Input::Metadata {
                     expected_id: first, ..
+                }
+                | Input::DataPack {
+                    expected_id: first, ..
                 },
                 Input::Metadata {
+                    expected_id: second,
+                    ..
+                }
+                | Input::DataPack {
                     expected_id: second,
                     ..
                 },

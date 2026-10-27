@@ -28,6 +28,7 @@ mod tests;
 pub use inspection::{NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue};
 pub(in crate::host_cache) use manifest::VerifiedRecoveryManifest;
 pub use quarantine::NativeQuarantinedInode;
+pub(in crate::host_cache) use verification::bounded_pack;
 pub use verification::{
     DerivedIndexRepair, DetachedIndexStatus, VerifiedEncodedBody, VerifiedStandaloneChunk,
 };

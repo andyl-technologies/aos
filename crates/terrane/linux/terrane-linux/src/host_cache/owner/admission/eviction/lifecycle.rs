@@ -480,6 +480,8 @@ fn original_inspection(files: &[File], expected: (u64, u64, u64)) -> io::Result<
 fn original_payloads(job: &AdmissionJob) -> Vec<Arc<Vec<u8>>> {
     match &job.input {
         super::Input::Chunk { encoded, .. } => vec![Arc::clone(encoded)],
-        super::Input::Metadata { index, pack, .. } => vec![Arc::clone(index), Arc::clone(pack)],
+        super::Input::Metadata { index, pack, .. } | super::Input::DataPack { index, pack, .. } => {
+            vec![Arc::clone(index), Arc::clone(pack)]
+        }
     }
 }

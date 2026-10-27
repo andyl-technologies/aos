@@ -14,6 +14,8 @@ mod indexes;
 mod inline;
 #[path = "recovery/metadata.rs"]
 mod metadata;
+#[path = "recovery/packed_eviction.rs"]
+mod packed_eviction;
 #[path = "recovery/pending.rs"]
 pub(super) mod pending;
 #[path = "recovery/pending_packs.rs"]

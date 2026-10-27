@@ -1,4 +1,4 @@
-//! Retains verified metadata admitted before its sealed object was published.
+//! Retains verified native pack pairs across cold recovery and owner import.
 //!
 //! Actual matched pack/index sources enter the acknowledged running registry
 //! before cold inventory descriptors can disappear. Selection grants no serving
@@ -9,10 +9,11 @@ use crate::host_cache::{DerivedIndexRepair, NativeRecoveryInspection, VerifiedEn
 use std::{io, os::unix::fs::MetadataExt, sync::Arc};
 use terrane_sdk::pack::PackReader;
 
-/// Selects independently verified metadata pairs from the complete inventory.
+/// Selects independently verified metadata and closed data pairs from the inventory.
 ///
 /// # Errors
-/// Refuses unresolved candidates, data packs and changed or unbounded pairs.
+/// Refuses unresolved candidates, external data dictionaries and changed or
+/// unbounded pairs. External dictionary transfer requires separate owner jobs.
 pub(super) fn select(
     inventory: &NativeRecoveryInspection,
     referenced: &[Arc<crate::host_cache::NativeManifestSource>],
@@ -58,7 +59,19 @@ pub(super) fn select(
             }
             continue;
         }
-        source.metadata_bytes()?;
+        let (bytes, index) = source.pair_bytes()?;
+        let pack = PackReader::open(&bytes).map_err(io::Error::other)?;
+        if pack.header().class() == terrane_sdk::pack::PackClass::Data {
+            let (limits, max_entries) = source.read_policy();
+            super::admission::packed_body::verify(
+                &bytes,
+                &index,
+                source.pack_id(),
+                source.layout().layout().chunk_profile(),
+                limits,
+                max_entries,
+            )?;
+        }
         sources.push(Arc::clone(source));
     }
     Ok(sources)
@@ -107,7 +120,7 @@ pub(super) fn check(
 pub(super) fn hashes(sources: &[Arc<DerivedIndexRepair>]) -> io::Result<Vec<String>> {
     let mut hashes = Vec::new();
     for source in sources {
-        let (bytes, _) = source.metadata_bytes()?;
+        let (bytes, _) = source.pair_bytes()?;
         let pack = PackReader::open(&bytes).map_err(io::Error::other)?;
         hashes.push(hex(source.pack_identity().digest()));
         hashes.extend(pack.entries().iter().map(|entry| hex(entry.hash())));

@@ -1,4 +1,4 @@
-//! Binds metadata consumers to the original completed pack and detached index.
+//! Binds metadata and packed-chunk consumers to original completed native pairs.
 //!
 //! Immutable admitted bytes select a record; they never replace native reads.
 //! Both original descriptors are checked and read before returning a body. A
@@ -25,11 +25,17 @@ use std::{
     os::unix::fs::{FileExt, MetadataExt},
     sync::{Arc, Mutex},
 };
-use terrane_format::identity::{Identity, IdentityKind, TERRANE_V1};
-use terrane_sdk::{host::cache::HostDomainLocation, pack::PackReader};
+use terrane_format::{
+    chunking::ChunkProfile,
+    identity::{Identity, IdentityKind, TERRANE_V1},
+};
+use terrane_sdk::{
+    host::cache::{HostDomainLocation, HostReadLimits},
+    pack::PackReader,
+};
 
 /// Retains one genuine cache admission and both original native members.
-pub(in crate::host_cache::owner) struct AdmittedMetadataRead {
+pub(in crate::host_cache::owner) struct AdmittedPackRead {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     job: Arc<Mutex<AdmissionJob>>,
     observation: Arc<EncodedReadObservation>,
@@ -41,6 +47,13 @@ pub(in crate::host_cache::owner) struct AdmittedMetadataRead {
     project: u32,
     uid: u32,
     gid: u32,
+    chunk: Option<ChunkRead>,
+}
+
+struct ChunkRead {
+    profile: ChunkProfile,
+    limits: HostReadLimits,
+    max_entries: usize,
 }
 
 struct Member {
@@ -51,7 +64,7 @@ struct Member {
     mode: u32,
 }
 
-impl AdmittedMetadataRead {
+impl AdmittedPackRead {
     /// Selects only a verified record in a completed, physically registered pair.
     ///
     /// # Errors
@@ -82,9 +95,7 @@ impl AdmittedMetadataRead {
         executor.check_physical_worker()?;
         let context = executor.admission_context()?;
         context.check_current().map_err(io::Error::other)?;
-        if matches!(identity.kind(), IdentityKind::Chunk | IdentityKind::Pack)
-            || identity.profile() != TERRANE_V1.name()
-        {
+        if identity.kind() == IdentityKind::Pack || identity.profile() != TERRANE_V1.name() {
             return Err(invalid(
                 "metadata consumer requires a canonical metadata identity",
             ));
@@ -96,8 +107,14 @@ impl AdmittedMetadataRead {
         check_snapshot(&owner)?;
         for resource in executor.admission_jobs() {
             let job = super::backing::lock(resource)?;
-            let Input::Metadata { pack, index, .. } = &job.input else {
-                continue;
+            let (pack, index, chunk) = match &job.input {
+                Input::Metadata { pack, index, .. } if identity.kind() != IdentityKind::Chunk => {
+                    (pack, index, false)
+                }
+                Input::DataPack { pack, index, .. } if identity.kind() == IdentityKind::Chunk => {
+                    (pack, index, true)
+                }
+                _ => continue,
             };
             if !job.complete {
                 continue;
@@ -169,6 +186,16 @@ impl AdmittedMetadataRead {
                 project: owner.preparation.config.project_id,
                 uid: owner.preparation.config.content_uid,
                 gid: owner.preparation.config.content_gid,
+                chunk: chunk.then(|| ChunkRead {
+                    profile: owner.preparation.config.location.chunk_profile().clone(),
+                    limits: owner.preparation.config.reads,
+                    max_entries: owner
+                        .preparation
+                        .config
+                        .state
+                        .records
+                        .min(owner.preparation.config.inventory_entries),
+                }),
             };
             drop(job);
             drop(owner);
@@ -176,13 +203,10 @@ impl AdmittedMetadataRead {
             context.check_current().map_err(io::Error::other)?;
             return Ok(read);
         }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            MissingCachedMetadata,
-        ))
+        Err(io::Error::new(io::ErrorKind::NotFound, MissingCachedPack))
     }
 
-    /// Borrows the selected canonical metadata identity.
+    /// Borrows the selected canonical chunk or metadata identity.
     pub(in crate::host_cache::owner) fn identity(&self) -> &Identity {
         &self.identity
     }
@@ -221,42 +245,32 @@ impl AdmittedMetadataRead {
     pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         self.check_native()?;
         let result = (|| {
-            let mut scratch = [0_u8; 8192];
-            for member in &self.members {
-                for (position, expected) in member.expected.chunks(scratch.len()).enumerate() {
-                    let offset = position
-                        .checked_mul(scratch.len())
-                        .and_then(|offset| u64::try_from(offset).ok())
-                        .ok_or_else(|| invalid("metadata verification offset overflow"))?;
-                    member
-                        .file
-                        .read_exact_at(&mut scratch[..expected.len()], offset)?;
-                    if &scratch[..expected.len()] != expected {
+            self.check_bytes()?;
+            let body = match &self.chunk {
+                Some(policy) => super::packed_body::decode(
+                    &self.members[1].expected,
+                    &self.identity,
+                    &policy.profile,
+                    policy.limits,
+                    policy.max_entries,
+                    |range| self.read_range(range),
+                )?,
+                None => {
+                    let body = self.read_range(self.range.clone())?;
+                    if TERRANE_V1
+                        .calculate(self.identity.kind(), &body)
+                        .map_err(io::Error::other)?
+                        != self.identity
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "original metadata pair bytes changed",
+                            "original metadata body identity changed",
                         ));
                     }
+                    body
                 }
-            }
-            let mut body = Vec::new();
-            body.try_reserve_exact(self.range.len())
-                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
-            body.resize(self.range.len(), 0);
-            self.members[1].file.read_exact_at(
-                &mut body,
-                u64::try_from(self.range.start).map_err(io::Error::other)?,
-            )?;
-            if TERRANE_V1
-                .calculate(self.identity.kind(), &body)
-                .map_err(io::Error::other)?
-                != self.identity
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "original metadata body identity changed",
-                ));
-            }
+            };
+            self.check_bytes()?;
             Ok(body)
         })();
         if let Err(error) = &result
@@ -270,6 +284,72 @@ impl AdmittedMetadataRead {
         let body = result?;
         self.check_native()?;
         Ok(body)
+    }
+
+    /// Returns the original stored envelope after verifying its complete native chain.
+    ///
+    /// # Errors
+    /// Refuses changed pair or dictionary bytes, invalid content, exhausted
+    /// allocation bounds, and failure to read the original selected range.
+    pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        if self.chunk.is_none() {
+            return self.read_verified();
+        }
+        drop(self.read_verified()?);
+        let body = self.read_range(self.range.clone()).inspect_err(|error| {
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::OutOfMemory | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+            ) {
+                self.observation.reject(2);
+            }
+        })?;
+        if self.members[1].expected.get(self.range.clone()) != Some(body.as_slice()) {
+            self.observation.reject(2);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "original data envelope changed after verification",
+            ));
+        }
+        self.check_native()?;
+        Ok(body)
+    }
+
+    fn read_range(&self, range: Range<usize>) -> io::Result<Vec<u8>> {
+        if self.members[1].expected.get(range.clone()).is_none() {
+            return Err(invalid("selected body exceeds original pack"));
+        }
+        let mut body = Vec::new();
+        body.try_reserve_exact(range.len())
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        body.resize(range.len(), 0);
+        self.members[1].file.read_exact_at(
+            &mut body,
+            u64::try_from(range.start).map_err(io::Error::other)?,
+        )?;
+        Ok(body)
+    }
+
+    fn check_bytes(&self) -> io::Result<()> {
+        let mut scratch = [0_u8; 8192];
+        for member in &self.members {
+            for (position, expected) in member.expected.chunks(scratch.len()).enumerate() {
+                let offset = position
+                    .checked_mul(scratch.len())
+                    .and_then(|offset| u64::try_from(offset).ok())
+                    .ok_or_else(|| invalid("pack verification offset overflow"))?;
+                member
+                    .file
+                    .read_exact_at(&mut scratch[..expected.len()], offset)?;
+                if &scratch[..expected.len()] != expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "original pack pair bytes changed",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Recognizes the actual original job while consumer custody exists.
@@ -366,21 +446,21 @@ fn invalid(message: &'static str) -> io::Error {
 
 /// Distinguishes an exhausted actual registry from missing or damaged backing.
 #[derive(Debug)]
-struct MissingCachedMetadata;
+struct MissingCachedPack;
 
-impl std::fmt::Display for MissingCachedMetadata {
+impl std::fmt::Display for MissingCachedPack {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("actual cached metadata admission absent")
+        formatter.write_str("actual cached pack admission absent")
     }
 }
 
-impl std::error::Error for MissingCachedMetadata {}
+impl std::error::Error for MissingCachedPack {}
 
 /// Recognizes only absence established by a complete actual admission lookup.
 pub(in crate::host_cache::owner) fn cache_absent(error: &io::Error) -> bool {
     error
         .get_ref()
-        .is_some_and(|source| source.is::<MissingCachedMetadata>())
+        .is_some_and(|source| source.is::<MissingCachedPack>())
 }
 
 #[cfg(test)]
@@ -389,7 +469,7 @@ mod tests {
 
     #[test]
     fn registry_absence_never_masks_native_missing_or_corrupt_backing() {
-        let absent = io::Error::new(io::ErrorKind::NotFound, MissingCachedMetadata);
+        let absent = io::Error::new(io::ErrorKind::NotFound, MissingCachedPack);
         assert!(cache_absent(&absent));
 
         for error in [

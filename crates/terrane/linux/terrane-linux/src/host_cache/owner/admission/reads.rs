@@ -96,9 +96,8 @@ impl AdmittedRead {
                 selected = Some((length, final_chunk, members));
                 break;
             }
-            let (length, final_chunk, members) = selected.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "actual cached admission absent")
-            })?;
+            let (length, final_chunk, members) = selected
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, MissingCachedChunk))?;
             (
                 Arc::clone(owner.preparation.layout()),
                 owner.preparation.config.project_id,
@@ -507,4 +506,23 @@ pub(in crate::host_cache::owner) fn metadata_activity_order(
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
+}
+
+/// Distinguishes a complete registry miss from failed original native backing.
+#[derive(Debug)]
+struct MissingCachedChunk;
+
+impl std::fmt::Display for MissingCachedChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("actual cached standalone admission absent")
+    }
+}
+
+impl std::error::Error for MissingCachedChunk {}
+
+/// Recognizes only absence established by a complete actual standalone lookup.
+pub(in crate::host_cache::owner) fn cache_absent(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<MissingCachedChunk>())
 }

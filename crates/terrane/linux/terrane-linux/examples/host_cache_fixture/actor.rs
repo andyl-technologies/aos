@@ -125,7 +125,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         return require_empty_capabilities();
     }
     let original = snapshot(&inputs)?;
-    if mode == "refuse-encoded" && inputs.domain == "tenant:encoded-data-pack" {
+    if matches!(mode, "refuse-encoded" | "recover-encoded")
+        && inputs.domain == "tenant:encoded-data-pack"
+    {
         super::recovery::encoded::inspect_pack(&preparation.recovery_inspector()?)?;
         if snapshot(&inputs)? != original {
             return Err(io::Error::other("packed inspection changed cold policy"));

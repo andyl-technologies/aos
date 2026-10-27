@@ -88,6 +88,14 @@ impl DerivedIndexRepair {
         self.index.as_ref().map(RetainedFile::file)
     }
 
+    /// Returns finite read and inventory policy from the original preparation.
+    pub(in crate::host_cache) fn read_policy(&self) -> (HostReadLimits, usize) {
+        (
+            self.pack.context().reads,
+            self.pack.context().max_candidates,
+        )
+    }
+
     /// Reads a chunk's original envelope from the independently verified pack.
     ///
     /// The descriptor comes from the original verified record. Whole-pack and
@@ -116,12 +124,12 @@ impl DerivedIndexRepair {
         Ok(selected)
     }
 
-    /// Reads the original verified metadata pair within its inspection budget.
+    /// Reads the exact original verified pair without granting admission authority.
     ///
     /// # Errors
-    /// Refuses data packs, changed sources, missing or mismatching indexes and
-    /// an actual pair larger than the configured bounded read window.
-    pub(in crate::host_cache) fn metadata_bytes(&self) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    /// Refuses changed sources, an absent or mismatched index, and a pair larger
+    /// than the original authenticated preparation's bounded read window.
+    pub(in crate::host_cache) fn pair_bytes(&self) -> io::Result<(Vec<u8>, Vec<u8>)> {
         self.check_current()?;
         if self.status != DetachedIndexStatus::Matches {
             return Err(invalid(
@@ -133,10 +141,6 @@ impl DerivedIndexRepair {
         TERRANE_V1
             .verify(self.pack_identity(), &pack)
             .map_err(invalid)?;
-        let reader = bounded_pack(&pack, self.pack.context().reads)?;
-        if reader.header().class() != terrane_sdk::pack::PackClass::Meta {
-            return Err(invalid("native metadata recovery refuses a data pack"));
-        }
         let index = self
             .index
             .as_ref()
@@ -497,7 +501,13 @@ pub(super) fn check_plaintext_budget(length: usize, plaintext_budget: usize) -> 
 }
 
 /// PackReader allocates decoded records. Bound those before parsing untrusted counts.
-pub(super) fn bounded_pack(bytes: &[u8], limits: HostReadLimits) -> io::Result<PackReader<'_>> {
+///
+/// # Errors
+/// Refuses invalid framing, unchecked record allocations and exceeded read bounds.
+pub(in crate::host_cache) fn bounded_pack(
+    bytes: &[u8],
+    limits: HostReadLimits,
+) -> io::Result<PackReader<'_>> {
     let footer = bytes
         .len()
         .checked_sub(FOOTER_SIZE)

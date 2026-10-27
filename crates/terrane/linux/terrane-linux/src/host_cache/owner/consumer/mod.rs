@@ -439,7 +439,7 @@ impl NativeMetadataOwner {
     ) -> io::Result<Option<NativeConsumerLease>> {
         match self.pin_resident_metadata(identity, expires).await {
             Ok(lease) => Ok(Some(lease)),
-            Err(error) if super::admission::metadata_reads::cache_absent(&error) => Ok(None),
+            Err(error) if super::admission::pack_reads::cache_absent(&error) => Ok(None),
             Err(error) => Err(error),
         }
     }

@@ -31,16 +31,22 @@ use terrane_sdk::{
 const RAW: &[u8] = b"original raw FIFO allocation";
 const SEALED: &[u8] = b"original sealed FIFO allocation";
 
-struct Observed {
+/// Retains independent inode observations without granting native authority.
+pub(super) struct Observed {
     file: File,
     bytes: Vec<u8>,
     device: u64,
     inode: u64,
-    allocated: u64,
+    /// Captures original allocated blocks for last-description charge checks.
+    pub(super) allocated: u64,
 }
 
 impl Observed {
-    fn new(file: File, bytes: Vec<u8>) -> io::Result<Self> {
+    /// Captures and checks the actual original regular-file descriptor.
+    ///
+    /// # Errors
+    /// Refuses changed bytes or inode metadata and allocation overflow.
+    pub(super) fn new(file: File, bytes: Vec<u8>) -> io::Result<Self> {
         let metadata = file.metadata()?;
         let observed = Self {
             file,
@@ -56,7 +62,11 @@ impl Observed {
         Ok(observed)
     }
 
-    fn check(&self, links: u64) -> io::Result<()> {
+    /// Checks original bytes and inode identity at the required link count.
+    ///
+    /// # Errors
+    /// Refuses native read errors and changed original bytes or metadata.
+    pub(super) fn check(&self, links: u64) -> io::Result<()> {
         let metadata = self.file.metadata()?;
         let mut bytes = vec![0; self.bytes.len()];
         self.file.read_exact_at(&mut bytes, 0)?;
@@ -521,7 +531,11 @@ fn admit(
     Ok((original, report.release_grace_ends_at))
 }
 
-fn pressure(
+/// Requests actual pressure relative to this owner's freshly measured usage.
+///
+/// # Errors
+/// Refuses arithmetic overflow or failed real owner census or eviction.
+pub(super) fn pressure(
     owner: &NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
@@ -561,7 +575,11 @@ fn retired(
     ))
 }
 
-fn observe(
+/// Captures the actual owner census after a synchronized zero-pressure command.
+///
+/// # Errors
+/// Refuses a failed census, exceeded capacity or failed observation output.
+pub(super) fn observe(
     owner: &NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
     kind: &str,
@@ -672,7 +690,11 @@ fn emit(message: &str) -> io::Result<()> {
     out.flush()
 }
 
-fn control(expected: &str) -> io::Result<()> {
+/// Waits for an exact ordinary supervisor message without granting authority.
+///
+/// # Errors
+/// Refuses input errors, premature EOF and any other control message.
+pub(super) fn control(expected: &str) -> io::Result<()> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     if line.trim_end() != expected {

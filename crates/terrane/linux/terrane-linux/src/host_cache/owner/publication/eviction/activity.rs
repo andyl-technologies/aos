@@ -201,7 +201,7 @@ impl Registry {
     /// Refuses exhausted finite activity storage.
     pub(in crate::host_cache::owner) fn for_metadata(
         &mut self,
-        source: &crate::host_cache::owner::admission::metadata_reads::AdmittedMetadataRead,
+        source: &crate::host_cache::owner::admission::pack_reads::AdmittedPackRead,
         limit: usize,
     ) -> io::Result<ReadActivities> {
         self.for_admission_allocations(source.original_allocations(), limit)

@@ -116,7 +116,9 @@ pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
         Input::Chunk { encoded, .. } if job.files.len() == 1 => {
             native::check_current(owner, &job.files[0], encoded)
         }
-        Input::Metadata { pack, index, .. } if job.files.len() == 2 => {
+        Input::Metadata { pack, index, .. } | Input::DataPack { pack, index, .. }
+            if job.files.len() == 2 =>
+        {
             native::check_current(owner, &job.files[0], index)?;
             native::check_current(owner, &job.files[1], pack)
         }
@@ -132,7 +134,7 @@ fn dependency(job: &AdmissionJob) -> io::Result<Option<Dependency>> {
                 .map_err(io::Error::other)?
                 .codec
         }
-        Input::Metadata { .. } => Codec::Raw,
+        Input::Metadata { .. } | Input::DataPack { .. } => Codec::Raw,
     };
     match (codec, job.dependencies.as_slice()) {
         (Codec::ZstdDictionary(digest), [source]) => Ok(Some(Dependency {

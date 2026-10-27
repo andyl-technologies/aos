@@ -108,7 +108,7 @@ pub(in crate::host_cache::owner) async fn import(
 /// Registers an original verified pair without replacing either canonical inode.
 ///
 /// # Errors
-/// Refuses changed or nonmetadata sources, invalid indexes, exhausted bounds,
+/// Refuses changed sources, external data dictionaries, invalid indexes, exhausted bounds,
 /// insufficient metadata funding and failed durable registration or handoff.
 pub(in crate::host_cache::owner) async fn import_metadata(
     executor: &mut NativeOwnerExecutor,
@@ -118,9 +118,14 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         .admission_context()?
         .check_current()
         .map_err(io::Error::other)?;
-    let (pack, index) = source.metadata_bytes()?;
+    let (pack, index) = source.pair_bytes()?;
     let pack = Arc::new(pack);
     let index = Arc::new(index);
+    let data = terrane_sdk::pack::PackReader::open(&pack)
+        .map_err(io::Error::other)?
+        .header()
+        .class()
+        == terrane_sdk::pack::PackClass::Data;
     let custody = Arc::clone(executor.custody());
     let hashes = {
         let owner = custody
@@ -135,7 +140,12 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         let bounds = AdmissionBounds::new(config)?;
         bounds.check(pack.len(), index.len())?;
         bounds.check(pack.capacity(), index.capacity())?;
-        super::metadata::verify(
+        let verify = if data {
+            super::packed_body::verify
+        } else {
+            super::metadata::verify
+        };
+        verify(
             &pack,
             &index,
             source.pack_id(),
@@ -144,11 +154,20 @@ pub(in crate::host_cache::owner) async fn import_metadata(
             config.inventory_entries.min(config.state.records),
         )?
     };
-    let resource = executor.register_admission(Input::Metadata {
-        expected_id: source.pack_id(),
-        pack: Arc::clone(&pack),
-        index: Arc::clone(&index),
-    })?;
+    let input = if data {
+        Input::DataPack {
+            expected_id: source.pack_id(),
+            pack: Arc::clone(&pack),
+            index: Arc::clone(&index),
+        }
+    } else {
+        Input::Metadata {
+            expected_id: source.pack_id(),
+            pack: Arc::clone(&pack),
+            index: Arc::clone(&index),
+        }
+    };
+    let resource = executor.register_admission(input)?;
     let result = async {
         let reservation = {
             let mut job = backing::lock(&resource)?;

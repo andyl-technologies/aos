@@ -25,7 +25,7 @@ pub(super) async fn retain_running(
     identity: Identity,
 ) -> io::Result<RetainedManifest> {
     let context = executor.admission_context()?;
-    super::super::admission::metadata_reads::AdmittedMetadataRead::prepare_retention(
+    super::super::admission::pack_reads::AdmittedPackRead::prepare_retention(
         executor,
         identity.clone(),
     )?

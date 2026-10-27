@@ -355,7 +355,9 @@ pub(in crate::host_cache::owner) fn capture(
                     Input::Chunk { descriptor, .. } => {
                         BTreeSet::from([state::hex(descriptor.digest())])
                     }
-                    Input::Metadata { .. } => job.hashes.iter().cloned().collect(),
+                    Input::Metadata { .. } | Input::DataPack { .. } => {
+                        job.hashes.iter().cloned().collect()
+                    }
                 };
                 units.push(EncodedAllocation {
                     order: job.order,
@@ -439,8 +441,8 @@ fn inode(file: &File) -> io::Result<(u64, u64, u64)> {
 fn input_bytes(job: &AdmissionJob, index: usize) -> io::Result<&[u8]> {
     match (&job.input, index) {
         (Input::Chunk { encoded, .. }, 0) => Ok(encoded),
-        (Input::Metadata { index, .. }, 0) => Ok(index),
-        (Input::Metadata { pack, .. }, 1) => Ok(pack),
+        (Input::Metadata { index, .. } | Input::DataPack { index, .. }, 0) => Ok(index),
+        (Input::Metadata { pack, .. } | Input::DataPack { pack, .. }, 1) => Ok(pack),
         _ => Err(invalid(
             "encoded allocation member differs from original input",
         )),
@@ -479,7 +481,7 @@ pub(super) fn key_for_input(input: &Input) -> io::Result<BodyKey> {
                 .ok_or_else(|| invalid("encoded eviction envelope absent"))?,
             ..Default::default()
         }),
-        Input::Metadata { expected_id, .. } => Ok(BodyKey {
+        Input::Metadata { expected_id, .. } | Input::DataPack { expected_id, .. } => Ok(BodyKey {
             kind: BodyKind::Pack as i32,
             pack_id: expected_id.as_bytes().to_vec(),
             ..Default::default()

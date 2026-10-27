@@ -61,7 +61,7 @@ impl NativeOwnerExecutor {
     /// Refuses another worker/root, exhausted registry storage or native errors.
     pub(in crate::host_cache::owner) fn metadata_read_activity(
         &self,
-        source: &crate::host_cache::owner::admission::metadata_reads::AdmittedMetadataRead,
+        source: &crate::host_cache::owner::admission::pack_reads::AdmittedPackRead,
     ) -> io::Result<ReadActivities> {
         self.check_physical_worker()?;
         let owner = self

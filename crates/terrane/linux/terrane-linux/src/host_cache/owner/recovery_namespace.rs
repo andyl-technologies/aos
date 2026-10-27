@@ -416,7 +416,7 @@ impl SharedNamespaceObservation {
                     "metadata pair belongs to another retained domain root",
                 ));
             }
-            source.metadata_bytes()?;
+            source.pair_bytes()?;
             let id = source.pack_id();
             let base = PathBuf::from("objects/pack").join(format!("{:02x}", id.as_bytes()[0]));
             let index = source

@@ -139,7 +139,7 @@ fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
     writer.seal().map_err(io::Error::other)
 }
 
-fn metadata_paths(inputs: &Inputs) -> [std::path::PathBuf; 2] {
+pub(super) fn pack_paths(inputs: &Inputs) -> [std::path::PathBuf; 2] {
     let id = PackId::from_random_bytes([117; 16]);
     let parent = inputs
         .root
@@ -248,7 +248,7 @@ pub(crate) fn seed() -> io::Result<()> {
         "tenant:encoded-metadata" | "tenant:encoded-metadata-only" | "tenant:encoded-data-pack"
     ) {
         let pair = metadata_pair(inputs.domain == "tenant:encoded-data-pack")?;
-        let [index, pack] = metadata_paths(&inputs);
+        let [index, pack] = pack_paths(&inputs);
         let parent = pack
             .parent()
             .ok_or_else(|| invalid("metadata pair shard missing"))?;
@@ -334,6 +334,54 @@ pub(crate) fn seed() -> io::Result<()> {
     Ok(())
 }
 
+fn verify_packed_consumers(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    expires: u64,
+) -> io::Result<()> {
+    let standalone_before = standalone_count(inputs)?;
+    for chunk in packed_chunks()? {
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, &chunk.bytes)
+            .map_err(io::Error::other)?;
+        let lease = runtime.block_on(owner.pin_resident_chunk(identity, expires))?;
+        if lease.read_verified()? != chunk.bytes || lease.read_encoded()? != chunk.encoded {
+            return Err(invalid(
+                "original data pack did not serve its verified chunk envelope",
+            ));
+        }
+        if path(inputs, &chunk, chunk.encoded[0])?.exists() {
+            return Err(invalid(
+                "data pack read substituted a standalone extraction",
+            ));
+        }
+        runtime.block_on(owner.release_consumer_lease(&lease))?;
+    }
+    if standalone_before != standalone_count(inputs)? {
+        return Err(invalid(
+            "data pack consumers allocated standalone chunk copies",
+        ));
+    }
+    println!(
+        "PASS cold data pack serves original raw and nested dictionary envelopes through actual consumer pins without standalone extraction"
+    );
+    Ok(())
+}
+
+fn standalone_count(inputs: &Inputs) -> io::Result<usize> {
+    let mut count = 0_usize;
+    for shard in fs::read_dir(inputs.root.join("chunks"))? {
+        for entry in fs::read_dir(shard?.path())? {
+            entry?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("fixture chunk count overflow"))?;
+        }
+    }
+    Ok(count)
+}
+
 /// Verifies recovery refusal or real post-Resume consumer reads over original inodes.
 ///
 /// # Errors
@@ -375,9 +423,9 @@ pub(crate) fn run(
         .collect::<io::Result<Vec<_>>>()?;
     let metadata = if matches!(
         inputs.domain.as_str(),
-        "tenant:encoded-metadata" | "tenant:encoded-metadata-only"
+        "tenant:encoded-metadata" | "tenant:encoded-metadata-only" | "tenant:encoded-data-pack"
     ) {
-        metadata_paths(inputs)
+        pack_paths(inputs)
             .into_iter()
             .map(|path| {
                 let value = fs::metadata(&path)?;
@@ -442,6 +490,10 @@ pub(crate) fn run(
         .as_secs()
         .checked_add(90)
         .ok_or_else(|| invalid("encoded consumer expiry overflow"))?;
+    if inputs.domain == "tenant:encoded-data-pack" {
+        verify_packed_consumers(owner, runtime, inputs, expires)?;
+    }
+    let mut retained_consumers = Vec::new();
     for (chunk, inode) in chunks.iter().zip(inodes) {
         let identity = TERRANE_V1
             .calculate(IdentityKind::Chunk, &chunk.bytes)
@@ -453,7 +505,11 @@ pub(crate) fn run(
                 "recovered encoded consumer changed plaintext or original inode",
             ));
         }
-        runtime.block_on(owner.release_consumer_lease(&lease))?;
+        if inputs.domain == "tenant:encoded-data-pack" {
+            retained_consumers.push(lease);
+        } else {
+            runtime.block_on(owner.release_consumer_lease(&lease))?;
+        }
     }
     let state = runtime
         .block_on(CacheState::load(
@@ -493,6 +549,9 @@ pub(crate) fn run(
         println!(
             "PASS cold raw, Zstd, dictionary and metadata candidates recovered; original inodes served under durable consumer pins; cold promises preserved; no Ready"
         );
+    }
+    if inputs.domain == "tenant:encoded-data-pack" {
+        super::packed_eviction::run(owner, runtime, inputs, &retained_consumers)?;
     }
     Ok(())
 }

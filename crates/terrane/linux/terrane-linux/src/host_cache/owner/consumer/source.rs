@@ -7,7 +7,7 @@ use super::invalid;
 use crate::host_cache::{
     NativeChunkSpan, NativeResidentChunkSource,
     owner::{
-        admission::{AdmissionJob, metadata_reads::AdmittedMetadataRead, reads::AdmittedRead},
+        admission::{AdmissionJob, pack_reads::AdmittedPackRead, reads::AdmittedRead},
         publication::{
             self,
             eviction::{ReadActivities, ReadActivity},
@@ -41,8 +41,8 @@ pub(in crate::host_cache::owner) struct ConsumerSource {
 enum Backing {
     Sealed(NativeResidentChunkSource),
     Object(Box<SealedObjectSource>),
-    Metadata {
-        source: Box<AdmittedMetadataRead>,
+    Pack {
+        source: Box<AdmittedPackRead>,
         activity: ReadActivities,
     },
     Encoded {
@@ -129,13 +129,13 @@ impl ConsumerSource {
         identity: Identity,
     ) -> io::Result<Self> {
         if identity.kind() != IdentityKind::Chunk {
-            let source = AdmittedMetadataRead::prepare(executor, identity)?;
+            let source = AdmittedPackRead::prepare(executor, identity)?;
             let activity = executor.metadata_read_activity(&source)?;
             let mut hashes: Vec<_> = source.digests().map(super::state::hex).collect();
             hashes.sort();
             hashes.dedup();
             return Ok(Self {
-                backing: Backing::Metadata {
+                backing: Backing::Pack {
                     source: Box::new(source),
                     activity,
                 },
@@ -158,7 +158,22 @@ impl ConsumerSource {
                 hashes,
             });
         }
-        let source = AdmittedRead::prepare(executor, identity)?;
+        let source = match AdmittedRead::prepare(executor, identity.clone()) {
+            Ok(source) => source,
+            Err(error) if super::super::admission::reads::cache_absent(&error) => {
+                let source = AdmittedPackRead::prepare(executor, identity)?;
+                let activity = executor.metadata_read_activity(&source)?;
+                let hashes = source.digests().map(super::state::hex).collect();
+                return Ok(Self {
+                    backing: Backing::Pack {
+                        source: Box::new(source),
+                        activity,
+                    },
+                    hashes,
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let activity = executor.admission_read_activity(&source)?;
         let mut hashes: Vec<_> = source.digests().map(super::state::hex).collect();
         hashes.sort();
@@ -178,7 +193,7 @@ impl ConsumerSource {
             Backing::Sealed(source) => source.identity(),
             Backing::Object(source) => source.identity(),
             Backing::Encoded { source, .. } => source.identity(),
-            Backing::Metadata { source, .. } => source.identity(),
+            Backing::Pack { source, .. } => source.identity(),
         }
     }
 
@@ -196,7 +211,7 @@ impl ConsumerSource {
             Backing::Sealed(source) => source.check_protected(owner),
             Backing::Object(source) => source.check_protected(owner),
             Backing::Encoded { source, .. } => source.check_protected(owner),
-            Backing::Metadata { source, .. } => source.check_protected(owner),
+            Backing::Pack { source, .. } => source.check_protected(owner),
         }
     }
 
@@ -209,7 +224,7 @@ impl ConsumerSource {
             Backing::Sealed(source) => source.check_consumer_backing(owner),
             Backing::Object(source) => source.check_consumer_backing(owner),
             Backing::Encoded { source, .. } => source.check_consumer_backing(owner),
-            Backing::Metadata { source, .. } => source.check_consumer_backing(owner),
+            Backing::Pack { source, .. } => source.check_consumer_backing(owner),
         }
     }
 
@@ -224,7 +239,7 @@ impl ConsumerSource {
                 io::ErrorKind::Unsupported,
                 "whole-object grants expose sealed backing, not metadata or chunk bytes",
             )),
-            Backing::Metadata { source, activity } => {
+            Backing::Pack { source, activity } => {
                 let bytes = source.read_verified()?;
                 activity.record()?;
                 Ok(bytes)
@@ -249,8 +264,8 @@ impl ConsumerSource {
                 io::ErrorKind::Unsupported,
                 "whole-object grants do not expose encoded content",
             )),
-            Backing::Metadata { source, activity } => {
-                let bytes = source.read_verified()?;
+            Backing::Pack { source, activity } => {
+                let bytes = source.read_encoded()?;
                 activity.record()?;
                 Ok(bytes)
             }
@@ -282,7 +297,7 @@ impl ConsumerSource {
                     backing: allocated,
                 })
             }
-            Backing::Metadata { source, .. } => Ok(Allocation {
+            Backing::Pack { source, .. } => Ok(Allocation {
                 sealed: 0,
                 backing: source.synchronize_pin_backing()?,
             }),
@@ -298,7 +313,7 @@ impl ConsumerSource {
         match &self.backing {
             Backing::Sealed(_) | Backing::Object(_) => false,
             Backing::Encoded { source, .. } => source.retains(job),
-            Backing::Metadata { source, .. } => source.retains(job),
+            Backing::Pack { source, .. } => source.retains(job),
         }
     }
 }
@@ -316,7 +331,7 @@ pub(in crate::host_cache::owner) fn storage_bytes(
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(
             AdmittedRead::storage_bytes(domain, records)?
-                .max(AdmittedMetadataRead::storage_bytes()?)
+                .max(AdmittedPackRead::storage_bytes()?)
                 .max(SealedObjectSource::storage_bytes()),
         )
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
