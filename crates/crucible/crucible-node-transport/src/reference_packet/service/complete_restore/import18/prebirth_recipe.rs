@@ -42,6 +42,15 @@ pub use identity::{
     native_import18_recipe_identity_counter_scratch_data,
 };
 
+#[path = "prebirth_recipe/lease_identity.rs"]
+mod lease_identity;
+pub use lease_identity::{
+    native_import18_mapping_lease_identity_counter_scratch_data,
+    native_import18_mapping_lease_identity_data,
+    native_import18_mapping_nonce_counter_scratch_data, native_import18_mapping_nonce_data,
+    native_import18_mapping_occurrence_counter_scratch_data,
+};
+
 #[path = "prebirth_recipe/decoder_partials.rs"]
 mod decoder_partials;
 
@@ -307,7 +316,8 @@ impl PacketNativeImport18PrebirthRecipeData {
     /// Actual Source/collection/ticket/Plan guards remain the caller's duty.
     ///
     /// # Errors
-    /// Refuses another nonce, generation or selected public/base-private launch.
+    /// Refuses another nonce, generation, selected public/base-private launch or
+    /// a mapping commitment not independently derived from those same operands.
     pub fn authenticate_birth_operands_data(
         &self,
         nonce: &[u8; 32],
@@ -315,14 +325,13 @@ impl PacketNativeImport18PrebirthRecipeData {
         selected_launch_identity: &[u8; 32],
         private_launch_identity: &[u8; 32],
     ) -> Result<(), ProviderError> {
-        if &self.fields.nonce != nonce
-            || self.fields.generation != generation
-            || &self.fields.selected_launch_identity != selected_launch_identity
-            || &self.fields.private_launch_identity != private_launch_identity
-        {
-            return Err(invalid());
-        }
-        Ok(())
+        lease_identity::authenticate_mapping_fields(
+            &self.fields,
+            nonce,
+            generation,
+            selected_launch_identity,
+            private_launch_identity,
+        )
     }
 
     /// Matches the exact same retained semantic bank and defining encoded upper.
@@ -565,7 +574,8 @@ pub const fn native_import18_prebirth_recipe_construction_transient_data() -> us
 
 /// Names this fixed declaration/matcher's actual controls, not full producer work.
 pub fn native_import18_prebirth_recipe_counter_scratch_data() -> usize {
-    size_of::<PacketNativeImport18PrebirthRecipeWireData>()
+    native_import18_mapping_occurrence_counter_scratch_data()
+        + size_of::<PacketNativeImport18PrebirthRecipeWireData>()
         + size_of::<&RecipeFields>()
         + size_of::<PacketNativeImport18NativeFamily>()
         + size_of::<PacketNativeImport18SourceFamily>()

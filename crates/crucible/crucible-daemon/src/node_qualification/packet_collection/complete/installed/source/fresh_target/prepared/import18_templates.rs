@@ -23,6 +23,9 @@ use std::mem::{size_of, size_of_val};
 #[path = "import18_templates/registration_plan.rs"]
 mod registration_plan;
 
+#[path = "import18_templates/mapping_custody.rs"]
+mod mapping_custody;
+
 #[path = "import18_derivation.rs"]
 mod derivation;
 
@@ -45,6 +48,7 @@ enum Stage {
     InitialBanks,
     PrivateSeed,
     PrivateBirth,
+    MappingLease,
     DerivationFailed,
 }
 
@@ -64,6 +68,7 @@ struct Member {
     initial_projection: Option<PacketNativeImport18InitialConstructionData>,
     launch_identity: Option<PacketNativeImport18LaunchIdentityData>,
     mapping_nonce: Option<[u8; 32]>,
+    mapping_lease_data: Option<([u8; 32], crucible_node_format::U64, [u8; 32])>,
 }
 
 impl Member {
@@ -84,6 +89,7 @@ impl Member {
             initial_projection: None,
             launch_identity: None,
             mapping_nonce: None,
+            mapping_lease_data: None,
         }
     }
 }
@@ -115,6 +121,7 @@ struct MemberObservation<'a> {
     initial_projection: &'a Option<PacketNativeImport18InitialConstructionData>,
     launch_identity: &'a Option<PacketNativeImport18LaunchIdentityData>,
     mapping_nonce: &'a Option<[u8; 32]>,
+    mapping_lease_data: &'a Option<([u8; 32], crucible_node_format::U64, [u8; 32])>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -135,6 +142,7 @@ impl<'a> MemberObservation<'a> {
             initial_projection,
             launch_identity,
             mapping_nonce,
+            mapping_lease_data,
         } = member;
         Self {
             stage,
@@ -152,6 +160,7 @@ impl<'a> MemberObservation<'a> {
             initial_projection,
             launch_identity,
             mapping_nonce,
+            mapping_lease_data,
         }
     }
 }
@@ -191,6 +200,7 @@ impl MemberObservation<'_> {
             initial_projection: _,
             launch_identity: _,
             mapping_nonce: _,
+            mapping_lease_data: _,
         } = *self;
         if let Some(bank) = declaration_encoding {
             counter
@@ -214,7 +224,7 @@ impl MemberObservation<'_> {
             // initial-lifecycle owners, including later Bootstrap journals.
             // The stage selects a data visitor; original Source/deployment
             // custody and unresolved native-read obligations remain mandatory.
-            let read = if *stage == Stage::PrivateBirth {
+            let read = if matches!(stage, Stage::PrivateBirth | Stage::MappingLease) {
                 source.original_initial_lifecycle_deployment_storage_data(
                     &context,
                     counter.remaining(),
@@ -292,6 +302,10 @@ const fn member_field_references_data() -> usize {
         + size_of::<&Option<SourceBirthDerivationJob>>()
         + size_of::<&Option<[usize; 3]>>()
         + size_of::<&Option<Vec<u8>>>()
+        + size_of::<&Option<PacketNativeImport18InitialConstructionData>>()
+        + size_of::<&Option<PacketNativeImport18LaunchIdentityData>>()
+        + size_of::<&Option<[u8; 32]>>()
+        + size_of::<&Option<([u8; 32], crucible_node_format::U64, [u8; 32])>>()
 }
 
 const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_data input
@@ -776,6 +790,8 @@ impl PreparedCompleteRestoration {
             size_of::<[u8; 32]>(),
             size_of::<Result<[u8; 32], RuntimeError>>() * 2,
             size_of::<&Member>(),
+            size_of::<std::slice::Iter<'static, Member>>(),
+            mapping_custody::counter_scratch_data(),
         ];
         terms.iter().try_fold(size_of_val(&terms), |total, bytes| {
             total.checked_add(*bytes).ok_or(RuntimeError::ResourceLimit)
@@ -881,6 +897,10 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
         ));
         assert!(std::ptr::eq(view.launch_identity, &member.launch_identity));
         assert!(std::ptr::eq(view.mapping_nonce, &member.mapping_nonce));
+        assert!(std::ptr::eq(
+            view.mapping_lease_data,
+            &member.mapping_lease_data
+        ));
     }
 
     let mut expected = Counter::new(usize::MAX);

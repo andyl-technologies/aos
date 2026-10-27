@@ -107,6 +107,31 @@ fn genuine_ordinary_sources_refuse_seed_without_spending_or_rebinding() {
         assert!(source.native_import18_derivation_mechanism.is_none());
         assert!(source.native_import18_birth_construction.is_none());
         assert!(!source.ack_birth_attempted);
+        assert!(
+            source
+                .native_import18_mapping_lease_construction_data(usize::MAX)
+                .is_err()
+        );
+        assert!(
+            source
+                .prepare_native_import18_mapping_lease_into(usize::MAX)
+                .is_err()
+        );
+        assert!(
+            source
+                .native_import18_original_mapping_lease_data()
+                .is_err()
+        );
+        source
+            .with_native_import18_recipe_history_data(|history| {
+                assert!(!history.mapping.started);
+                assert!(!history.mapping.failed);
+                assert_eq!(history.mapping.generation, U64::new(0));
+                assert!(history.mapping.nonce.is_none());
+                assert!(history.mapping.identity.is_none());
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(source.isolated_derivation_known_backing_data(0), Ok(0));
     }
 }

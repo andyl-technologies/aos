@@ -71,6 +71,10 @@ pub use phase::PacketNativeImport18Phase;
 pub use prebirth_recipe::{
     NATIVE_IMPORT18_PREBIRTH_RECIPE_SCHEMA, PacketNativeImport18PrebirthPhase,
     PacketNativeImport18PrebirthRecipeData, PacketNativeImport18PrebirthRecipeWireData,
+    native_import18_mapping_lease_identity_counter_scratch_data,
+    native_import18_mapping_lease_identity_data,
+    native_import18_mapping_nonce_counter_scratch_data, native_import18_mapping_nonce_data,
+    native_import18_mapping_occurrence_counter_scratch_data,
     native_import18_prebirth_recipe_construction_transient_data,
     native_import18_prebirth_recipe_counter_scratch_data,
     native_import18_recipe_identity_construction_data,

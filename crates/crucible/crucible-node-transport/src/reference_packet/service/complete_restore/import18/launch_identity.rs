@@ -61,9 +61,12 @@ pub fn native_import18_launch_identity_construction_data(
     maximum: usize,
 ) -> Result<(usize, usize), ProviderError> {
     let formatter = launch_formatter_data(launch)?;
-    let mut projection = Projection::new(maximum)?;
+    // This metadata walk also reports parser geometry, but the constructor
+    // below only serializes and canonicalizes. Restrict its actual owners
+    // after projection; parser-only DATA must not reject an exact quote.
+    let mut projection = Projection::new(usize::MAX)?;
     projection.add_value(launch)?;
-    let shape = projection.finish(maximum)?;
+    let shape = projection.finish(usize::MAX)?;
     let temporary = shape
         .dom_and_canonical_scratch_bytes
         .checked_add(shape.canonical_output_requested_bytes)

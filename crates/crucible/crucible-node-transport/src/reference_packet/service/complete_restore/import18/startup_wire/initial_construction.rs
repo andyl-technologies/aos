@@ -471,6 +471,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + source_authentication_counter_scratch_data()
         + native_import18_startup_wire_counter_scratch_data()
         + native_import18_launch_identity_counter_scratch_data()
+        + native_import18_mapping_nonce_counter_scratch_data()
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
@@ -609,6 +610,10 @@ pub(in crate::reference_packet) fn authenticate_initial_headers_data(
             "original import18 recipe launch DATA",
         ));
     }
+    let nonce = native_import18_mapping_nonce_data(key);
+    // The original Source-local once owner advances from zero to one exactly
+    // once. Target and World generations cannot renew that occurrence.
+    recipe.authenticate_mapping_occurrence_data(&actual, &nonce, U64::new(1))?;
     recipe.authenticate_identity_data(derived.maximum_encoded_bytes[0])?;
     Ok(())
 }

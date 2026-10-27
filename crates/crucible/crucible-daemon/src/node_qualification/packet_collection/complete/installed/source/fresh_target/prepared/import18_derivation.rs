@@ -16,10 +16,11 @@ impl PreparedCompleteRestoration {
         let retained = !self.import18_templates.failed
             && self.import18_templates.funded_complete
             && self.import18_templates.members.iter().all(|member| {
-                member.stage == Stage::PrivateBirth
+                member.stage == Stage::MappingLease
                     && member.initial_projection.is_some()
                     && member.launch_identity.is_some()
                     && member.mapping_nonce.is_some()
+                    && member.mapping_lease_data.is_some()
                     && member
                         .declaration_encoding
                         .as_ref()
@@ -36,7 +37,7 @@ impl PreparedCompleteRestoration {
     #[cfg(feature = "test-support")]
     fn authenticate_funded_mapping_nonces_data(&self) -> Result<(), RuntimeError> {
         let [retained, transient, scratch] =
-            PacketCompleteSemanticSource::native_import18_original_mapping_nonce_counter_data();
+            PacketCompleteSemanticSource::native_import18_mapping_lease_counter_data();
         let scratch = scratch
             .checked_add(size_of::<[[u8; 32]; 3]>())
             .and_then(|bytes| bytes.checked_add(size_of::<&Self>()))
@@ -54,6 +55,16 @@ impl PreparedCompleteRestoration {
                 .completed_data()?
                 .native_import18_original_mapping_nonce_data()?;
             if member.mapping_nonce != Some(nonce) || nonce == [0; 32] {
+                return Err(RuntimeError::InvalidReceipt);
+            }
+            let mapping = member
+                .output
+                .completed_data()?
+                .native_import18_original_mapping_lease_data()?;
+            if member.mapping_lease_data != Some(mapping)
+                || mapping.0 != nonce
+                || mapping.1 != crucible_node_format::U64::new(1)
+            {
                 return Err(RuntimeError::InvalidReceipt);
             }
             nonces[selected] = nonce;
@@ -243,11 +254,19 @@ impl PreparedCompleteRestoration {
                 }
                 Stage::InitialBanks => self.prepare_funded_private_seed(selected)?,
                 Stage::PrivateSeed => self.prepare_funded_private_birth(selected)?,
-                Stage::PrivateBirth => {}
+                Stage::PrivateBirth => self.prepare_funded_mapping_lease(selected)?,
+                Stage::MappingLease => {}
                 _ => return Err(RuntimeError::OutstandingObligations),
             }
+            if self.import18_templates.members[selected].stage == Stage::PrivateBirth {
+                self.prepare_funded_mapping_lease(selected)?;
+            }
         }
-        Ok(true)
+        Ok(self
+            .import18_templates
+            .members
+            .iter()
+            .all(|member| member.stage == Stage::MappingLease))
     }
 
     /// Reserves actual initial-lifecycle banks before constructing private Birth.
@@ -610,6 +629,7 @@ impl PreparedCompleteRestoration {
                     | Stage::InitialBanks
                     | Stage::PrivateSeed
                     | Stage::PrivateBirth
+                    | Stage::MappingLease
                     | Stage::DerivationFailed
             ) {
                 let cancelled = member

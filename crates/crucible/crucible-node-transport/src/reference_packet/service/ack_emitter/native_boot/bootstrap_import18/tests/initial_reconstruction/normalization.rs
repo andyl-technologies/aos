@@ -62,7 +62,8 @@ pub(super) fn normalization(case: &str) -> Value {
         "target_owner_binding": binding, "target_activation": "inert-activation",
         "target_generation": "1", "target_owner_generation": "1",
         "transaction_id": "inert-transaction", "commit_request_id": "inert-commit",
-        "lease_generation": "1", "nonce": Bytes::new(vec![0;32]),
+        "lease_generation": "1",
+        "nonce": Bytes::new(native_import18_mapping_nonce_data(&[23; 32]).to_vec()),
         "limits": {
             "role_maximums": [snapshot.length, after.length, control.length, anchor.length, journal.length],
             "immutable_objects":"32", "immutable_bytes":"4096", "immutable_depth":"4",

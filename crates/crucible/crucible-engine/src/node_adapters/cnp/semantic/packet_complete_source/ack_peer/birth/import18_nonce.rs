@@ -5,9 +5,10 @@
 
 use super::OriginalAckPeerBirth;
 use crate::node_contract::RuntimeError;
+use crucible_node_transport::reference_packet::service::complete_restore::import18::{
+    native_import18_mapping_nonce_counter_scratch_data, native_import18_mapping_nonce_data,
+};
 use std::mem::size_of;
-
-const MAPPING_NONCE_DOMAIN: &str = "source-owned.packet-native-import-mapping-nonce/18";
 
 impl OriginalAckPeerBirth {
     /// Returns the mapping challenge without lending or copying the private key.
@@ -18,7 +19,7 @@ impl OriginalAckPeerBirth {
         &self,
     ) -> Result<[u8; 32], RuntimeError> {
         self.authenticate_unstarted_storage_phase_with_error::<RuntimeError>()?;
-        let nonce = mapping_nonce(&self.key);
+        let nonce = native_import18_mapping_nonce_data(&self.key);
         self.authenticate_unstarted_storage_phase_with_error::<RuntimeError>()?;
         Ok(nonce)
     }
@@ -27,22 +28,13 @@ impl OriginalAckPeerBirth {
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer) fn import18_mapping_nonce_counter_scratch_data()
     -> usize {
         size_of::<&Self>()
-            + size_of::<&[u8; 32]>()
-            + size_of::<blake3::Hasher>()
-            + size_of::<blake3::Hash>()
-            + size_of::<[u8; 32]>()
+            + native_import18_mapping_nonce_counter_scratch_data()
             + size_of::<Result<[u8; 32], RuntimeError>>()
             + size_of::<Result<(), RuntimeError>>() * 2
             + size_of::<std::thread::Thread>()
             + size_of::<std::thread::ThreadId>()
             + size_of::<u32>()
     }
-}
-
-fn mapping_nonce(key: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new_derive_key(MAPPING_NONCE_DOMAIN);
-    hasher.update(key);
-    *hasher.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -52,11 +44,14 @@ mod tests {
     #[test]
     fn mapping_challenge_is_stable_and_separate_from_boot_and_sdk_challenges() {
         let key = [42; 32];
-        let nonce = mapping_nonce(&key);
+        let nonce = native_import18_mapping_nonce_data(&key);
 
-        assert_eq!(nonce, mapping_nonce(&key));
-        assert_eq!(nonce, blake3::derive_key(MAPPING_NONCE_DOMAIN, &key));
-        assert_ne!(nonce, mapping_nonce(&[43; 32]));
+        assert_eq!(nonce, native_import18_mapping_nonce_data(&key));
+        assert_eq!(
+            nonce,
+            blake3::derive_key("source-owned.packet-native-import-mapping-nonce/18", &key)
+        );
+        assert_ne!(nonce, native_import18_mapping_nonce_data(&[43; 32]));
         assert_ne!(nonce, [0; 32]);
         assert_ne!(nonce, key);
         for domain in [

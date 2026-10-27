@@ -107,3 +107,25 @@ fn construction_ignores_spare_capacity_without_discounting_retained_storage() {
     let after = crate::retained_metadata::observe_retained_native_launch(&launch).unwrap();
     assert!(after.vector_capacity_bytes > retained.vector_capacity_bytes);
 }
+
+#[test]
+fn complete_construction_quote_is_repeatable_at_exact_credit() {
+    let mut launch = launch();
+    launch.selection.realization.extensions.insert(
+        "construction-input".to_owned(),
+        serde_json::json!(vec![
+            serde_json::json!({"values": ["one", "two", "three"]});
+            1024
+        ]),
+    );
+    let private = Id::new("exact-construction-private-launch").unwrap();
+    let row = native_import18_launch_identity_construction_data(&launch, usize::MAX).unwrap();
+    let exact = row.0.checked_add(row.1).unwrap();
+
+    assert_eq!(
+        native_import18_launch_identity_construction_data(&launch, exact).unwrap(),
+        row
+    );
+    assert!(native_import18_launch_identity_construction_data(&launch, exact - 1).is_err());
+    derive_native_import18_launch_identity_data(&launch, &private, exact).unwrap();
+}

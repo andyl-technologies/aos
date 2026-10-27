@@ -1,9 +1,9 @@
-//! Observes actual Source18 recipe slots without selecting their retention path.
+//! Retains Source18 mapping custody and observes the remaining recipe slots.
 //!
 //! The retained header, history and metadata getters support the real Source
-//! census and strict empty-state guards. Production recipe retention and its
-//! dedicated constructor rows remain unimported until their genuine current
-//! prebirth loan closure exists. This module issues no recipe or Initial result.
+//! census and strict empty-state guards. The original Source owns one mapping
+//! attempt; an announcement cannot reconstruct it. Complete five-phase recipe
+//! retention remains separate. This module issues no Recipe or Initial result.
 
 use super::*;
 use crate::node_contract::RuntimeError;
@@ -13,6 +13,10 @@ use crucible_node_transport::reference_packet::service::complete_restore::import
 };
 use std::mem::size_of;
 
+#[path = "import18_recipe/mapping.rs"]
+mod mapping;
+use mapping::OriginalMappingLeaseAttempt;
+
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Import18RecipeOwner {
     started: bool,
     completed: bool,
@@ -20,6 +24,7 @@ pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct Impor
     recipe: Option<PacketNativeImport18PrebirthRecipeData>,
     initial: Option<PacketNativeImport18InitialFundingData>,
     launch: Option<PacketNativeImport18LaunchIdentityData>,
+    mapping: OriginalMappingLeaseAttempt,
 }
 
 /// Borrows logical recipe state without lending live launch or Plan identities.
@@ -32,6 +37,8 @@ pub(crate) struct Import18RecipeHistoryData<'a> {
     pub(crate) failed: bool,
     pub(crate) recipe: Option<&'a PacketNativeImport18PrebirthRecipeData>,
     pub(crate) initial: Option<&'a PacketNativeImport18InitialFundingData>,
+    /// Preserves original occurrence history, including incomplete mapping custody.
+    pub(crate) mapping: mapping::MappingLeaseHistoryData,
 }
 
 impl Import18RecipeOwner {
@@ -50,13 +57,15 @@ impl Import18RecipeOwner {
             recipe,
             initial,
             launch,
+            mapping,
         } = self;
         census.observe_inline_data(started)?;
         census.observe_inline_data(completed)?;
         census.observe_inline_data(failed)?;
         census.observe_inline_data(recipe)?;
         census.observe_inline_data(initial)?;
-        census.observe_inline_data(launch)
+        census.observe_inline_data(launch)?;
+        mapping.record_retained_capacity_data(census)
     }
 
     /// Names the actual fixed recipe-history field references and controls.
@@ -70,8 +79,10 @@ impl Import18RecipeOwner {
                 &Option<PacketNativeImport18PrebirthRecipeData>,
                 &Option<PacketNativeImport18InitialFundingData>,
                 &Option<PacketNativeImport18LaunchIdentityData>,
+                &OriginalMappingLeaseAttempt,
             )>()
             + size_of::<Result<(), RuntimeError>>()
+            + OriginalMappingLeaseAttempt::retained_capacity_counter_scratch_data()
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn empty() -> Self {
@@ -82,6 +93,7 @@ impl Import18RecipeOwner {
             recipe: None,
             initial: None,
             launch: None,
+            mapping: OriginalMappingLeaseAttempt::empty(),
         }
     }
 }
@@ -113,6 +125,7 @@ impl PacketCompleteSemanticSource {
                 failed: owner.failed,
                 recipe: owner.recipe.as_ref(),
                 initial: owner.initial.as_ref(),
+                mapping: owner.mapping.history_data(),
             };
             inspect(&view)
         };

@@ -8,9 +8,10 @@ use crate::reference_packet::service::ack_emitter::native_boot::measure_original
 use crate::reference_packet::service::complete_restore::import18::{
     PacketNativeImport18PrebirthRecipeWireData, PacketNativeImport18SelectedLaunchWireData,
     derive_native_import18_launch_identity_data, inert_bootstrap_fixtures,
-    initial_construction_from_wire_data,
+    initial_construction_from_wire_data, native_import18_mapping_lease_identity_data,
+    native_import18_mapping_nonce_data,
 };
-use crucible_node_format::{Bytes, Id, canonical};
+use crucible_node_format::{Bytes, Id, U64, canonical};
 use serde_json::{Value, json};
 
 /// Prepares an independent image oracle outside the timed receiver operation.
@@ -235,6 +236,23 @@ fn operands(case: &str) -> [Value; 3] {
     .unwrap();
     recipe["selected_launch_identity"] = json!(actual_identity.selected_launch_identity_data());
     recipe["private_launch_identity"] = json!(actual_identity.private_launch_identity_data());
+    let mut nonce = native_import18_mapping_nonce_data(&[23; 32]);
+    if case == "initial_mapping_nonce" {
+        nonce[0] ^= 1;
+    }
+    let generation = U64::new(if case == "initial_mapping_generation" {
+        2
+    } else {
+        1
+    });
+    let mut lease =
+        native_import18_mapping_lease_identity_data(&actual_identity, &nonce, generation).unwrap();
+    if case == "initial_mapping_identity" {
+        lease[0] ^= 1;
+    }
+    recipe["nonce"] = json!(nonce);
+    recipe["generation"] = json!(generation);
+    recipe["lease_identity"] = json!(lease);
     if case == "initial_bad_selected_launch_identity" {
         recipe["selected_launch_identity"] = json!(([11; 32]));
     }
@@ -460,6 +478,21 @@ pub(super) fn assert_child(
                 ))
             ));
         }
+        if matches!(
+            case,
+            "initial_mapping_nonce" | "initial_mapping_identity" | "initial_mapping_generation"
+        ) {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 mapping occurrence DATA"
+                ))
+            ));
+            assert!(owner.initial_reconstruction_started);
+            assert!(owner.initial_reconstruction_row.is_some());
+            assert!(owner.initial_construction.is_some());
+            assert!(owner.reconstruct_initial_data().is_err());
+        }
         if matches!(case, "initial_producer" | "initial_reactive")
             || case.starts_with("initial_inputs_")
             || case.starts_with("initial_framing_")
@@ -632,6 +665,19 @@ fn initial_reconstruction_requires_original_source_cut_and_custody() {
         "initial_changed_raw",
         "initial_foreign",
         "initial_independent_peak",
+    ] {
+        flight(case);
+    }
+}
+
+#[test]
+fn original_mapping_occurrence_refuses_coherent_foreign_announcements() {
+    // Each fault precedes complete recipe hashing, all copied headers and the
+    // actual prefix MAC. Agreement between those copies cannot repair it.
+    for case in [
+        "initial_mapping_nonce",
+        "initial_mapping_identity",
+        "initial_mapping_generation",
     ] {
         flight(case);
     }

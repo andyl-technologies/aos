@@ -60,6 +60,13 @@ impl Operands {
         wire.fields.decoder_limits[9] = U64::new(u64::try_from(usize::MAX / 16).unwrap());
         wire.fields.selected_launch_identity = launch_identity.selected_launch_identity_data();
         wire.fields.private_launch_identity = launch_identity.private_launch_identity_data();
+        wire.fields.nonce = native_import18_mapping_nonce_data(&[23; 32]);
+        wire.fields.lease_identity = native_import18_mapping_lease_identity_data(
+            &launch_identity,
+            &wire.fields.nonce,
+            wire.fields.generation,
+        )
+        .unwrap();
         wire.validate_data().unwrap();
 
         Self {
@@ -174,6 +181,43 @@ fn initial_producer_refuses_each_foreign_birth_and_launch_operand() {
     inputs = operands.inputs();
     inputs.host_executable = &other_executable;
     assert!(derive_native_import18_initial_funding_data(&inputs, usize::MAX / 16).is_err());
+}
+
+#[test]
+fn initial_producer_refuses_a_coherently_rehashed_foreign_mapping_commitment() {
+    for reactive in [false, true] {
+        let operands = Operands::new(reactive);
+        let mut recipe = operands.recipe;
+        recipe.fields.lease_identity[0] ^= 1;
+        recipe.fields.identity = recipe
+            .announcement_data()
+            .reconstructed_identity_data(usize::MAX / 16)
+            .unwrap();
+        recipe
+            .announcement_data()
+            .authenticate_identity_data(usize::MAX / 16)
+            .unwrap();
+        let mut inputs = operands.inputs();
+        inputs.recipe = &recipe;
+        let launch = derive_native_import18_launch_identity_data(
+            inputs.launch,
+            inputs.private_launch,
+            usize::MAX / 16,
+        )
+        .unwrap();
+
+        assert!(
+            recipe
+                .authenticate_birth_operands_data(
+                    inputs.nonce,
+                    inputs.generation,
+                    &launch.selected_launch_identity_data(),
+                    &launch.private_launch_identity_data(),
+                )
+                .is_err()
+        );
+        assert!(derive_native_import18_initial_funding_data(&inputs, usize::MAX / 16).is_err());
+    }
 }
 
 #[test]

@@ -30,6 +30,9 @@ mod launch_identity;
 #[path = "source_declaration/mapping_nonce.rs"]
 mod mapping_nonce;
 
+#[path = "source_declaration/mapping_custody.rs"]
+mod mapping_custody;
+
 const UNAVAILABLE: &str = "original import18 declaration unavailable";
 const CHANGED: &str = "original import18 declaration changed";
 
