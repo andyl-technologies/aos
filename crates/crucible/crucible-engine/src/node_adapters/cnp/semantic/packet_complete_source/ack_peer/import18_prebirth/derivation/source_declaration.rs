@@ -27,6 +27,9 @@ mod initial_funding;
 #[path = "source_declaration/launch_identity.rs"]
 mod launch_identity;
 
+#[path = "source_declaration/mapping_nonce.rs"]
+mod mapping_nonce;
+
 const UNAVAILABLE: &str = "original import18 declaration unavailable";
 const CHANGED: &str = "original import18 declaration changed";
 

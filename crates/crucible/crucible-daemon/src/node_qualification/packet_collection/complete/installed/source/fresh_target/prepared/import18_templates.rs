@@ -63,6 +63,7 @@ struct Member {
     declaration_encoding: Option<Vec<u8>>,
     initial_projection: Option<PacketNativeImport18InitialConstructionData>,
     launch_identity: Option<PacketNativeImport18LaunchIdentityData>,
+    mapping_nonce: Option<[u8; 32]>,
 }
 
 impl Member {
@@ -82,6 +83,7 @@ impl Member {
             declaration_encoding: None,
             initial_projection: None,
             launch_identity: None,
+            mapping_nonce: None,
         }
     }
 }
@@ -112,6 +114,7 @@ struct MemberObservation<'a> {
     declaration_encoding: &'a Option<Vec<u8>>,
     initial_projection: &'a Option<PacketNativeImport18InitialConstructionData>,
     launch_identity: &'a Option<PacketNativeImport18LaunchIdentityData>,
+    mapping_nonce: &'a Option<[u8; 32]>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -131,6 +134,7 @@ impl<'a> MemberObservation<'a> {
             declaration_encoding,
             initial_projection,
             launch_identity,
+            mapping_nonce,
         } = member;
         Self {
             stage,
@@ -147,6 +151,7 @@ impl<'a> MemberObservation<'a> {
             declaration_encoding,
             initial_projection,
             launch_identity,
+            mapping_nonce,
         }
     }
 }
@@ -185,6 +190,7 @@ impl MemberObservation<'_> {
             declaration_encoding,
             initial_projection: _,
             launch_identity: _,
+            mapping_nonce: _,
         } = *self;
         if let Some(bank) = declaration_encoding {
             counter
@@ -766,6 +772,10 @@ impl PreparedCompleteRestoration {
             size_of::<&usize>(),
             size_of::<Option<usize>>(),
             size_of::<Result<usize, RuntimeError>>(),
+            // The mapping challenge remains Copy DATA beside the real Birth.
+            size_of::<[u8; 32]>(),
+            size_of::<Result<[u8; 32], RuntimeError>>() * 2,
+            size_of::<&Member>(),
         ];
         terms.iter().try_fold(size_of_val(&terms), |total, bytes| {
             total.checked_add(*bytes).ok_or(RuntimeError::ResourceLimit)
@@ -826,6 +836,7 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
     for (index, launch) in launches.iter().enumerate() {
         let member = &mut templates.members[index];
         member.stage = Stage::RegistrationPlan;
+        member.mapping_nonce = Some([index as u8 + 1; 32]);
         member.declaration_encoding_row = Some([37, 11, 5]);
         member.declaration_encoding = Some(Vec::with_capacity(37 + index));
         member.registration.begin_data().unwrap();
@@ -869,6 +880,7 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
             &member.initial_projection
         ));
         assert!(std::ptr::eq(view.launch_identity, &member.launch_identity));
+        assert!(std::ptr::eq(view.mapping_nonce, &member.mapping_nonce));
     }
 
     let mut expected = Counter::new(usize::MAX);

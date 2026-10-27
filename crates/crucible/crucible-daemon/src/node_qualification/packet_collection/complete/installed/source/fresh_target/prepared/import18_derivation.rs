@@ -19,6 +19,7 @@ impl PreparedCompleteRestoration {
                 member.stage == Stage::PrivateBirth
                     && member.initial_projection.is_some()
                     && member.launch_identity.is_some()
+                    && member.mapping_nonce.is_some()
                     && member
                         .declaration_encoding
                         .as_ref()
@@ -28,6 +29,40 @@ impl PreparedCompleteRestoration {
             && self
                 .authenticate_funded_initial_source_census_data()
                 .is_ok()
+            && self.authenticate_funded_mapping_nonces_data().is_ok()
+    }
+
+    /// Checks repeatable, distinct challenges from the three real private Births.
+    #[cfg(feature = "test-support")]
+    fn authenticate_funded_mapping_nonces_data(&self) -> Result<(), RuntimeError> {
+        let [retained, transient, scratch] =
+            PacketCompleteSemanticSource::native_import18_original_mapping_nonce_counter_data();
+        let scratch = scratch
+            .checked_add(size_of::<[[u8; 32]; 3]>())
+            .and_then(|bytes| bytes.checked_add(size_of::<&Self>()))
+            .and_then(|bytes| bytes.checked_add(size_of::<usize>() * 2))
+            .and_then(|bytes| bytes.checked_add(size_of::<[u8; 32]>() * 2))
+            .and_then(|bytes| bytes.checked_add(size_of::<Result<(), RuntimeError>>()))
+            .ok_or(RuntimeError::ResourceLimit)?;
+        self.observe_import18_templates_data([retained, transient, scratch])?;
+
+        let mut nonces = [[0; 32]; 3];
+        for selected in 0..3 {
+            let member = &self.import18_templates.members[selected];
+            let nonce = member
+                .output
+                .completed_data()?
+                .native_import18_original_mapping_nonce_data()?;
+            if member.mapping_nonce != Some(nonce) || nonce == [0; 32] {
+                return Err(RuntimeError::InvalidReceipt);
+            }
+            nonces[selected] = nonce;
+        }
+        if nonces[0] == nonces[1] || nonces[0] == nonces[2] || nonces[1] == nonces[2] {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+
+        self.observe_import18_templates_data([0; 3])
     }
 
     /// Checks actual Source components only after funding their complete visitor.
@@ -417,8 +452,26 @@ impl PreparedCompleteRestoration {
         let prewalk = prewalk.and_then(|row| observed.map(|()| row))?;
         self.observe_import18_templates_data(prewalk)?;
         self.prepare_funded_launch_identity(selected)?;
+        self.prepare_funded_mapping_nonce(selected)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
+    }
+
+    fn prepare_funded_mapping_nonce(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.note_funded_operation_stage("deriving original mapping nonce");
+        self.observe_import18_templates_data(
+            PacketCompleteSemanticSource::native_import18_original_mapping_nonce_counter_data(),
+        )?;
+        let derived = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_original_mapping_nonce_data();
+        let result = derived.map(|nonce| {
+            self.import18_templates.members[selected].mapping_nonce = Some(nonce);
+        });
+        // Release the original Source/Birth loan before either census outcome.
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)
     }
 
     fn prepare_funded_launch_identity(&mut self, selected: usize) -> Result<(), RuntimeError> {

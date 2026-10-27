@@ -23,6 +23,9 @@ mod metadata;
 #[path = "birth/history.rs"]
 mod history;
 
+#[path = "birth/import18_nonce.rs"]
+mod import18_nonce;
+
 // Batch the same complete-byte check without retaining a whole executable.
 // Every defining scratch quote below and in the startup children uses this bank.
 const HOST_EXECUTABLE_STREAM_BYTES: usize = 256 * 1024;

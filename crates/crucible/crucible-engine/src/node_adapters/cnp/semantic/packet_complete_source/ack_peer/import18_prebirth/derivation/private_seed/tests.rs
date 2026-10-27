@@ -81,6 +81,11 @@ fn genuine_ordinary_sources_refuse_seed_without_spending_or_rebinding() {
         assert!(source.native_import18_source_declaration_data().is_err());
         assert!(
             source
+                .native_import18_original_mapping_nonce_data()
+                .is_err()
+        );
+        assert!(
+            source
                 .native_import18_declaration_encoding_construction_data(usize::MAX)
                 .is_err()
         );
