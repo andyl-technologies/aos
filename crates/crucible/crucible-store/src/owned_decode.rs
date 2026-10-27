@@ -893,6 +893,7 @@ impl DecodeCustody {
 /// drops; a growth reservation therefore covers the simultaneous old/new peak.
 ///
 /// # Errors
+///
 /// Refuses capacity overflow, allocation failure or original resource exhaustion.
 pub fn reserve_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), DecodeAdmissionError> {
     let required = values
@@ -907,6 +908,33 @@ pub fn reserve_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), Deco
             budget.charge_array::<T>(required)?;
         }
         values
+            .try_reserve_exact(additional)
+            .map_err(|source| match &budget {
+                Some(budget) => budget.0.refusals.allocation_error(source),
+                None => DecodeAdmissionError::new(source),
+            })?;
+    }
+    Ok(())
+}
+
+/// Reserves exact additional UTF-8 storage before extending an owned string.
+///
+/// The previous allocation remains charged until the enclosing decoded owner
+/// drops; a growth reservation therefore covers the simultaneous old/new peak.
+///
+/// # Errors
+/// Refuses capacity overflow, allocation failure or original resource exhaustion.
+pub fn reserve_string(value: &mut String, additional: usize) -> Result<(), DecodeAdmissionError> {
+    let required = value
+        .len()
+        .checked_add(additional)
+        .ok_or_else(|| scoped_refusal(AccountRefusal::ArrayOverflow))?;
+    if required > value.capacity() {
+        let budget = current_budget();
+        if let Some(budget) = &budget {
+            budget.charge_array::<u8>(required)?;
+        }
+        value
             .try_reserve_exact(additional)
             .map_err(|source| match &budget {
                 Some(budget) => budget.0.refusals.allocation_error(source),

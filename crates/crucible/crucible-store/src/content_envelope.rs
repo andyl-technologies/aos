@@ -81,6 +81,19 @@ impl ContentChild {
         Ok(Self { role, id })
     }
 
+    /// Builds a bounded child reference under the active original account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-identifier or original allocation-admission failure.
+    pub fn new_admitted(role: &str, id: ContentId) -> Result<Self, ContentEnvelopeError> {
+        validate_identifier(role, MAX_CHILD_ROLE_BYTES)?;
+        let mut owned = String::new();
+        crate::owned_decode::reserve_string(&mut owned, role.len())?;
+        owned.push_str(role);
+        Ok(Self { role: owned, id })
+    }
+
     /// Returns the stable semantic role within the parent record.
     #[must_use]
     pub fn role(&self) -> &str {
@@ -138,6 +151,25 @@ impl ContentEnvelope {
             });
         }
         Ok(envelope)
+    }
+
+    /// Builds a canonical envelope whose schema text uses original admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structural errors as [`Self::new`], or an original
+    /// allocation-admission failure for the retained schema name.
+    pub fn new_admitted(
+        schema_name: &str,
+        schema_version: u32,
+        children: BTreeSet<ContentChild>,
+        body: Vec<u8>,
+    ) -> Result<Self, ContentEnvelopeError> {
+        validate_identifier(schema_name, MAX_SCHEMA_NAME_BYTES)?;
+        let mut owned = String::new();
+        crate::owned_decode::reserve_string(&mut owned, schema_name.len())?;
+        owned.push_str(schema_name);
+        Self::new(owned, schema_version, children, body)
     }
 
     /// Returns the record-specific schema name.

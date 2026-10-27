@@ -804,6 +804,29 @@ fn unscoped_vector_capacity_refusal_preserves_the_actual_source() {
 }
 
 #[test]
+fn string_growth_refusal_precedes_allocation_and_preserves_the_value()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let _scope = budget.enter();
+    let mut value = String::from("retained");
+    let capacity = value.capacity();
+
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            reserve_string(&mut value, authority.maximum as usize).unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(value, "retained");
+    assert_eq!(value.capacity(), capacity);
+    assert_eq!(budget.failure()?, Some(error));
+    Ok(())
+}
+
+#[test]
 fn receipt_vector_allocator_refusal_is_prepaid_sticky_and_returns_unused_credit()
 -> Result<(), DecodeAdmissionError> {
     use crucible_host_resources::test_support::TestAllocationObserver;

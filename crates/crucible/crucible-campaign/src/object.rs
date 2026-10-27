@@ -667,8 +667,8 @@ impl ObjectEnvelope {
         children: BTreeSet<ContentChild>,
         body: Vec<u8>,
     ) -> Result<Self, CampaignCodecError> {
-        let envelope =
-            ContentEnvelope::new(record_kind.schema_name(), schema_version, children, body)?;
+        let schema_name = record_kind.schema_name();
+        let envelope = ContentEnvelope::new_admitted(schema_name, schema_version, children, body)?;
         Ok(Self {
             record_kind,
             envelope,

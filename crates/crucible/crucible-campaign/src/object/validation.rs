@@ -357,10 +357,15 @@ pub(crate) fn content_children<I, R>(
 ) -> Result<BTreeSet<ContentChild>, CampaignCodecError>
 where
     I: IntoIterator<Item = (R, ContentId)>,
-    R: Into<String>,
+    R: AsRef<str>,
 {
-    children
-        .into_iter()
-        .map(|(role, id)| ContentChild::new(role, id).map_err(CampaignCodecError::from))
-        .collect()
+    let mut admitted = BTreeSet::new();
+    for (role, id) in children {
+        let child = ContentChild::new_admitted(role.as_ref(), id)?;
+        if !admitted.contains(&child) {
+            crucible_store::owned_decode::charge_btree_set_entry::<ContentChild>()?;
+            admitted.insert(child);
+        }
+    }
+    Ok(admitted)
 }
