@@ -284,18 +284,11 @@ fn parse_pack_entries(path: &str, bytes: &[u8]) -> Result<Vec<PackedEntry>> {
                 trailer_start,
                 start,
             )?),
-            7 => {
-                let end = position
-                    .checked_add(OBJECT_ID_BYTES)
-                    .context("reference-delta header overflows")?;
-                let oid = bytes
-                    .get(position..end)
-                    .context("reference-delta base is truncated")?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("reference-delta base has the wrong length"))?;
-                position = end;
-                PackedKind::ReferenceDelta(oid)
-            }
+            7 => PackedKind::ReferenceDelta(read_reference_delta_base(
+                bytes,
+                &mut position,
+                trailer_start,
+            )?),
             _ => bail!("companion pack contains a reserved object type"),
         };
 
@@ -553,6 +546,25 @@ fn parse_offset_delta_base(
         .context("offset-delta base precedes the pack")
 }
 
+fn read_reference_delta_base(
+    bytes: &[u8],
+    position: &mut usize,
+    limit: usize,
+) -> Result<[u8; OBJECT_ID_BYTES]> {
+    let payload = bytes
+        .get(*position..limit)
+        .context("reference-delta base is truncated")?;
+    let oid = payload
+        .get(..OBJECT_ID_BYTES)
+        .context("reference-delta base is truncated")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("reference-delta base has the wrong length"))?;
+    *position = position
+        .checked_add(OBJECT_ID_BYTES)
+        .context("reference-delta header overflows")?;
+    Ok(oid)
+}
+
 fn read_delta_varint(bytes: &[u8], position: &mut usize) -> Result<usize> {
     let mut value = 0_usize;
     let mut shift = 0_u32;
@@ -797,6 +809,49 @@ mod tests {
         ];
         let (path, index, pack) = finish_pack(pack, entries);
         validate_against_pack(&path, &index, &pack).unwrap();
+    }
+
+    #[test]
+    fn truncated_offset_delta_headers_stop_at_the_pack_trailer() {
+        for header in [vec![0x60], vec![0x60, 0x80]] {
+            let mut pack = b"PACK".to_vec();
+            pack.extend_from_slice(&2_u32.to_be_bytes());
+            pack.extend_from_slice(&1_u32.to_be_bytes());
+            pack.extend_from_slice(&header);
+
+            let (index_path, _, pack) = finish_pack(pack, Vec::new());
+            let pack_path = companion_pack_path(&index_path).unwrap();
+            let error = validate_pack(&pack_path, &pack).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("companion pack entry is truncated"),
+                "unexpected error for {header:?}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_truncated_reference_delta_base_returns_an_error() {
+        for base_bytes in 0..OBJECT_ID_BYTES {
+            let mut pack = b"PACK".to_vec();
+            pack.extend_from_slice(&2_u32.to_be_bytes());
+            pack.extend_from_slice(&1_u32.to_be_bytes());
+            pack.push(0x70);
+            pack.extend(std::iter::repeat_n(0x41, base_bytes));
+
+            let (index_path, _, pack) = finish_pack(pack, Vec::new());
+            let pack_path = companion_pack_path(&index_path).unwrap();
+            let error = validate_pack(&pack_path, &pack).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("reference-delta base is truncated"),
+                "unexpected error for {base_bytes} base bytes: {error:#}"
+            );
+        }
     }
 
     #[test]
