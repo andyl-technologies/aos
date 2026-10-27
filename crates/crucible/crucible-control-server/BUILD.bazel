@@ -92,6 +92,7 @@ rust_library(
 rust_binary(
     name = "crucible-qemu-test-oracle",
     testonly = True,
+    tags = ["manual"],
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_root = "src/bin/qemu_test_oracle.rs",
@@ -110,17 +111,19 @@ rust_binary(
 aos_package(
     name = "qemu_test_oracle_artifact",
     testonly = True,
+    tags = ["manual"],
     package = RUST_PACKAGE,
     artifacts = {":crucible-qemu-test-oracle": "bin/crucible-qemu-test-oracle"},
     executables = ["bin/crucible-qemu-test-oracle"],
 )
 
-rust_clippy(name = "qemu_test_oracle_clippy", testonly = True, deps = [":crucible-qemu-test-oracle"])
-rustfmt_test(name = "qemu_test_oracle_format", targets = [":crucible-qemu-test-oracle"])
+rust_clippy(name = "qemu_test_oracle_clippy", testonly = True, tags = ["manual"], deps = [":crucible-qemu-test-oracle"])
+rustfmt_test(name = "qemu_test_oracle_format", tags = ["manual"], targets = [":crucible-qemu-test-oracle"])
 
 aos_license_check(
     name = "qemu_test_oracle_license_closure",
     testonly = True,
+    tags = ["manual"],
     roots = [":crucible-qemu-test-oracle"],
     license_domain = "apache-host",
 )

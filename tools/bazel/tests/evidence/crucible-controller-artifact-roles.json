@@ -1,0 +1,338 @@
+{
+  "application_compilation_source_binding": {
+    "derivation": "/nix/store/i0zxp3h92mkvjqd9v44s8fycvdrrw8y4-aos-test-targets-0.1.0.drv",
+    "rust_sources_sha256": {
+      "crates/crucible/crucible-test-support/tests/crate_artifact_types.rs": "0263f0672dc9c778b2c8f56ff2b556a9251a2da8c89d3b4ca68828f40c0719ea",
+      "crates/crucible/crucible-test-support/tests/support/architecture.rs": "3180b66ba6a40bc8ea692470b4022d080e23c6fdaa54cb50a4135030a36c769a",
+      "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs": "878e45bf43bcd0fdde142869bf2929dfc8cee073e4215193aec5c1b08958ee88"
+    },
+    "source": "/nix/store/spd1v3k5gra5si5ka2pijjh5wc07lss4-aos-workspace-src"
+  },
+  "audited_crucible_packages": [
+    "crucible-campaign",
+    "crucible-cli",
+    "crucible-control-api",
+    "crucible-control-client",
+    "crucible-control-server",
+    "crucible-daemon",
+    "crucible-determinism",
+    "crucible-device",
+    "crucible-engine",
+    "crucible-guest",
+    "crucible-qemu-debug-gateway",
+    "crucible-qemu-host",
+    "crucible-qemu-plugin",
+    "crucible-qemu-protocol",
+    "crucible-qemu-shmem",
+    "crucible-session",
+    "crucible-store",
+    "crucible-store-s3",
+    "crucible-test-support"
+  ],
+  "builds": {
+    "conservative": {
+      "actions": {
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "ee34fecb9696a5eb55f3da3813c2f93421ff4ebe186e0368e69258920138f934",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "bc6ff698a43cd46dce8b7f2addd71e596d5a40c3ccc37ba6b2c08022c6580036",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "e9219c1a42dbc5976b891c53cd661236af908fcbc82079022a6bc12c196cc432",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "78df8470565b870625b69cab42732636ef7073a999fc52df4a3f5b0d6447baf9",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "c0df518b747e0a4acdd0c97b868ebdbaa9bc9ab3d06d08ccd2033290b3bf76c1",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "0758546b38d9e7c67564d556e52d813698ce8a6e98504942be6a2e8b938bbce0",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:control_plane_boundary_controller": {
+            "executed": [
+              "architecture_metadata_preserves_declared_dependency_names",
+              "architecture_metadata_rejects_incomplete_or_inconsistent_graphs",
+              "cli_uses_only_declared_host_composition_dependencies",
+              "control_plane_boundary_allows_api_and_session_dependencies",
+              "control_plane_boundary_rejects_direct_engine_dependency",
+              "control_plane_boundary_rejects_target_specific_engine_dependency",
+              "control_plane_boundary_rejects_workspace_engine_alias"
+            ],
+            "ignored": []
+          },
+          "//crates/crucible/crucible-test-support:crate_artifact_types_controller": {
+            "executed": [
+              "artifact_type_rules_reject_extra_or_missing_outputs",
+              "bazel_artifacts::bazel_artifact_roles_reject_extra_missing_and_wrong_kind_products",
+              "bazel_artifacts::bazel_oracle_requires_manual_test_only_feature_gating",
+              "binary_artifacts::gateway_test_oracle_requires_a_closed_opt_in_artifact_surface",
+              "crucible_packages_expose_declared_artifact_types"
+            ],
+            "ignored": []
+          },
+          "//crates/crucible/crucible-test-support:crate_layer_graph_controller": {
+            "executed": [
+              "crucible_runtime_dependencies_follow_layer_graph",
+              "layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_graph_inputs": {
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/control_plane_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ],
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_artifact_types_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ],
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_layer_graph_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ]
+      },
+      "derivation": "/nix/store/7az84dx02ckjxmr78jv8kmahzykf6k5m-aos-bazel-crucible-controller-architecture-tests-1.drv",
+      "execution_sha256": "c7fd1d0fb3fe39ea3e1045bf634b3de73ef3a0647550df1d71959e028ac90a9a",
+      "output": "/nix/store/bdph8s95v8gl4syh27w21yqysxwhinaj-aos-bazel-crucible-controller-architecture-tests-1",
+      "selected_source_count": 3755,
+      "source": "/nix/store/zh855ljrppzq5zyjxazhrk5a4zym7pjf-aos-bazel-workspace",
+      "source_receipt_sha256": "456f48f29346c5ad3d8a53b773f2aa6edc993fbf94f48c90fbeb81d0380e195e"
+    },
+    "strict": {
+      "actions": {
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "ee34fecb9696a5eb55f3da3813c2f93421ff4ebe186e0368e69258920138f934",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "bc6ff698a43cd46dce8b7f2addd71e596d5a40c3ccc37ba6b2c08022c6580036",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "e9219c1a42dbc5976b891c53cd661236af908fcbc82079022a6bc12c196cc432",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "78df8470565b870625b69cab42732636ef7073a999fc52df4a3f5b0d6447baf9",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "c0df518b747e0a4acdd0c97b868ebdbaa9bc9ab3d06d08ccd2033290b3bf76c1",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "0758546b38d9e7c67564d556e52d813698ce8a6e98504942be6a2e8b938bbce0",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:control_plane_boundary_controller": {
+            "executed": [
+              "architecture_metadata_preserves_declared_dependency_names",
+              "architecture_metadata_rejects_incomplete_or_inconsistent_graphs",
+              "cli_uses_only_declared_host_composition_dependencies",
+              "control_plane_boundary_allows_api_and_session_dependencies",
+              "control_plane_boundary_rejects_direct_engine_dependency",
+              "control_plane_boundary_rejects_target_specific_engine_dependency",
+              "control_plane_boundary_rejects_workspace_engine_alias"
+            ],
+            "ignored": []
+          },
+          "//crates/crucible/crucible-test-support:crate_artifact_types_controller": {
+            "executed": [
+              "artifact_type_rules_reject_extra_or_missing_outputs",
+              "bazel_artifacts::bazel_artifact_roles_reject_extra_missing_and_wrong_kind_products",
+              "bazel_artifacts::bazel_oracle_requires_manual_test_only_feature_gating",
+              "binary_artifacts::gateway_test_oracle_requires_a_closed_opt_in_artifact_surface",
+              "crucible_packages_expose_declared_artifact_types"
+            ],
+            "ignored": []
+          },
+          "//crates/crucible/crucible-test-support:crate_layer_graph_controller": {
+            "executed": [
+              "crucible_runtime_dependencies_follow_layer_graph",
+              "layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_graph_inputs": {
+        "//crates/crucible/crucible-test-support:control_plane_boundary_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/control_plane_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ],
+        "//crates/crucible/crucible-test-support:crate_artifact_types_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_artifact_types_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ],
+        "//crates/crucible/crucible-test-support:crate_layer_graph_controller": [
+          "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_layer_graph_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+        ]
+      },
+      "derivation": "/nix/store/q8gc930h8npk9g06bmnpmlzadszgxaiw-aos-bazel-crucible-controller-architecture-tests-1.drv",
+      "execution_sha256": "0b5518195699939f3047492d19d32068c35b9da17d363eb4150d0e575da97c75",
+      "output": "/nix/store/crdmd97qjmlcg66cxawygm1k9n54nlbh-aos-bazel-crucible-controller-architecture-tests-1",
+      "selected_source_count": 3755,
+      "source": "/nix/store/7q8vfpb4pkpyadv16lfzrlsk2jv1lnag-aos-bazel-workspace",
+      "source_receipt_sha256": "456f48f29346c5ad3d8a53b773f2aa6edc993fbf94f48c90fbeb81d0380e195e"
+    }
+  },
+  "declared_compilation_target_count": 397,
+  "declared_package_count": 80,
+  "graph": "/nix/store/cyv6bs40fp49pafyiaqm28i7m0nfi39z-aos-bazel-architecture/architecture.json",
+  "graph_backend_controls": {
+    "actual_graph_cases": {
+      "control_plane_boundary": [
+        "architecture_metadata_preserves_declared_dependency_names",
+        "architecture_metadata_rejects_incomplete_or_inconsistent_graphs",
+        "cli_uses_only_declared_host_composition_dependencies",
+        "control_plane_boundary_allows_api_and_session_dependencies",
+        "control_plane_boundary_rejects_direct_engine_dependency",
+        "control_plane_boundary_rejects_target_specific_engine_dependency",
+        "control_plane_boundary_rejects_workspace_engine_alias"
+      ],
+      "crate_artifact_types": [
+        "artifact_type_rules_reject_extra_or_missing_outputs",
+        "bazel_artifacts::bazel_artifact_roles_reject_extra_missing_and_wrong_kind_products",
+        "bazel_artifacts::bazel_oracle_requires_manual_test_only_feature_gating",
+        "binary_artifacts::gateway_test_oracle_requires_a_closed_opt_in_artifact_surface",
+        "crucible_packages_expose_declared_artifact_types"
+      ],
+      "crate_layer_graph": [
+        "crucible_runtime_dependencies_follow_layer_graph",
+        "layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles"
+      ]
+    },
+    "rejected": {
+      "cli-direct-engine": {
+        "diagnostic": "direct dependency",
+        "exit_code": 101
+      },
+      "cli-wrong-root": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "cycle": {
+        "diagnostic": "dependency cycle",
+        "exit_code": 101
+      },
+      "guest-outside-layer-one": {
+        "diagnostic": "in-VM L2 crate",
+        "exit_code": 101
+      },
+      "host-static-library": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "missing-artifact-metadata": {
+        "diagnostic": "architecture omitted compilation target metadata",
+        "exit_code": 101
+      },
+      "missing-declaration": {
+        "diagnostic": "Bazel audit omitted its declared architecture input",
+        "exit_code": 101
+      },
+      "missing-file": {
+        "diagnostic": "No such file or directory",
+        "exit_code": 101
+      },
+      "oracle-in-wildcards": {
+        "diagnostic": "manual test-only qemu-test-oracle",
+        "exit_code": 101
+      },
+      "plugin-not-cdylib": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "runtime-test-support": {
+        "diagnostic": "test-only `crucible-test-support`",
+        "exit_code": 101
+      },
+      "upward-edge": {
+        "diagnostic": "upward dependency",
+        "exit_code": 101
+      }
+    }
+  },
+  "graph_derivation": "/nix/store/mshr15vig76hlzrjqj5n28pccibr994d-aos-bazel-architecture.drv",
+  "graph_output": "/nix/store/cyv6bs40fp49pafyiaqm28i7m0nfi39z-aos-bazel-architecture",
+  "graph_query_sha256": "7c8179fec5deb4cdf53188ed060d6e6dd40d71dfdd27cd8d85be8f54543d9e8d",
+  "graph_sha256": "b590115bdb93ce1ffcb6e4c2762ffa0eb2f116ff7f738757d48673da831fe41c",
+  "inventory_receipt": "tools/bazel/tests/evidence/crucible-controller-artifact-inventories.json",
+  "inventory_receipt_sha256": "3bf8eec03331aacf83133a128cf6ac28078d9e59f7c560c5879d506b5b253f48",
+  "limits": [
+    "Three structural audit targets only; other controller runtime and acceptance gates remain separate.",
+    "Cargo is an independent compilation/runtime oracle and is not called by the Bazel audits.",
+    "Graph mutations execute the same Rust policy assertions through Cargo-compiled oracle binaries."
+  ],
+  "oracle": "/nix/store/yvfmvkzs7rg57qkar82pdc6x94vx0f0r-aos-bazel-crucible-controller-architecture-cargo-oracle-1",
+  "oracle_derivation": "/nix/store/3l9jy48h7cc5dy7aikiwra47dw911y5j-aos-bazel-crucible-controller-architecture-cargo-oracle-1.drv",
+  "pending_checkpoint_validation": [
+    "required checks.rust.aos-test-targets application compilation"
+  ],
+  "public_controller_cutover_qualified": false,
+  "qualification_derivation": "/nix/store/42cy8mwhdj8s6wics89f45rq81fh7fqh-aos-bazel-crucible-controller-architecture-parity.drv",
+  "qualification_helper_source": "/nix/store/z7gc2grl6qx1d3d0d40dvsvd28v571y5-aos-controller-architecture-qualification-tools",
+  "qualification_output": "/nix/store/najww7jrv5p0c6r0iy6pc3vbbzmiv4aa-aos-bazel-crucible-controller-architecture-parity",
+  "schema_version": 1,
+  "scope": "Three controller structural audits, including the artifact roles of all nineteen Crucible packages.",
+  "source_sha256": {
+    "crates/crucible/crucible-control-server/BUILD.bazel": "6915291e5dffec374ee3a9713b8d85e79d0374a33179c0dd7b6597d48c5b5156",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "752ec77024d8d2895d777e414ad18cd55eb9255bb3de58bcddb6306066c7464f",
+    "crates/crucible/crucible-test-support/tests/control_plane_boundary.rs": "ef2cebf641c43dc2d55a9604a559e24fe7f091fa4ac7af09c1fb65a8988ccc17",
+    "crates/crucible/crucible-test-support/tests/crate_artifact_types.rs": "0263f0672dc9c778b2c8f56ff2b556a9251a2da8c89d3b4ca68828f40c0719ea",
+    "crates/crucible/crucible-test-support/tests/crate_layer_graph.rs": "5a6f6d0db2462c715aeed77720fabdf4040d7fa7f01c3994496e09e8bba66eed",
+    "crates/crucible/crucible-test-support/tests/support/architecture.rs": "3180b66ba6a40bc8ea692470b4022d080e23c6fdaa54cb50a4135030a36c769a",
+    "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs": "878e45bf43bcd0fdde142869bf2929dfc8cee073e4215193aec5c1b08958ee88",
+    "pkgs/build-support/_bazel/architecture.nix": "f293b2a6688d7e39640e01d272b8608dad3a2a9388e32de9386dcfc63eeb5e04",
+    "tests/build/_bazel-crucible-controller-tests.nix": "bd1657e30e769efa0e86e7b87d9254d94ab27868dbdf036484df8e8305042155",
+    "tools/bazel/metadata/export_architecture.py": "b7dc9e28e4d654697be543164a21b5bdb8861726683cd65177f9ea062c173562",
+    "tools/bazel/tests/crucible-controller.nix": "4b7af4691f7bd071434b97a2b28ff26e482b7e1883c21d24d6f7759e889ceff2",
+    "tools/bazel/tests/test_architecture_export.py": "096e025aab489f4fe84ea9e37b1fbc5804d1f07241b5a17d3519bbcd90c801e3",
+    "tools/bazel/tests/verify_controller_architecture.py": "2cbac337975b7c5d75ac89ef5653930a94d2c9f4fa627462ed00fe99c87703d1"
+  },
+  "status": "PASS",
+  "validation": {
+    "core_evaluation_output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+    "current_dependency_sdk_profiles": 79,
+    "current_source_inventories": 80,
+    "helper_tests": 500,
+    "helper_tests_status": "PASS"
+  }
+}

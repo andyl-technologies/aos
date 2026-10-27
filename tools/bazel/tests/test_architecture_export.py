@@ -12,13 +12,20 @@ from export_architecture import attribute_values, export, repository_packages
 
 
 def attribute(name, kind, value):
-    field = {"STRING": "stringValue", "LABEL": "stringValue",
+    field = {"STRING": "stringValue", "LABEL": "stringValue", "STRING_LIST": "stringListValue",
              "LABEL_LIST": "stringListValue", "BOOLEAN": "booleanValue"}[kind]
     return {"name": name, "type": kind, field: value}
 
 
 def record(label, kind, *attrs):
-    return {"type": "RULE", "rule": {"name": label, "ruleClass": kind, "attribute": list(attrs)}}
+    attrs = list(attrs)
+    if kind in {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library"}:
+        defaults = [attribute("crate_root", "LABEL", label.partition(":")[0] + ":src/lib.rs"),
+                    attribute("crate_name", "STRING", label.partition(":")[2]),
+                    attribute("crate_features", "STRING_LIST", []),
+                    attribute("tags", "STRING_LIST", [])]
+        attrs.extend(row for row in defaults if row["name"] not in {item["name"] for item in attrs})
+    return {"type": "RULE", "rule": {"name": label, "ruleClass": kind, "attribute": attrs}}
 
 
 def source(package, **overrides):
@@ -118,7 +125,7 @@ class ArchitectureExportTests(unittest.TestCase):
         for additional in [attribute("deps", "LABEL_LIST", []), selected("deps", "LABEL", {"//conditions:default": "//x:y"})]:
             malformed = copy.deepcopy(original)
             if additional["type"] == "SELECTOR_LIST":
-                malformed["rule"]["attribute"].pop()
+                malformed["rule"]["attribute"] = [row for row in malformed["rule"]["attribute"] if row["name"] != "deps"]
             malformed["rule"]["attribute"].append(additional)
             with self.subTest(additional=additional), self.assertRaises(ValueError):
                 export([source("app"), malformed], {})
@@ -145,6 +152,67 @@ class ArchitectureExportTests(unittest.TestCase):
             }))
             with self.assertRaisesRegex(ValueError, "conflicting"):
                 repository_packages(directory)
+
+    def test_artifacts_retain_test_only_variants_roots_features_and_tags(self):
+        records = [source("app"), compilation("app"), record(
+            "//crates/app:oracle", "rust_binary", attribute("testonly", "BOOLEAN", True),
+            attribute("crate_root", "LABEL", "//crates/app:src/bin/oracle.rs"),
+            attribute("crate_name", "STRING", "oracle"),
+            attribute("crate_features", "STRING_LIST", ["opt-in"]),
+            attribute("tags", "STRING_LIST", ["manual"]))]
+        result = export(records, {})
+        oracle = result["compilation_targets"]["//crates/app:oracle"]
+
+        self.assertEqual(oracle, {"package": "app", "kind": "rust_binary", "crate_name": "oracle",
+                                 "crate_roots": ["src/bin/oracle.rs"], "features": ["opt-in"],
+                                 "tags": ["manual"], "test_only": True})
+        self.assertEqual(result["packages"][0]["production_targets"], ["//crates/app:lib"])
+
+    def test_artifact_roots_and_features_preserve_selector_union(self):
+        records = [source("app"), record(
+            "//crates/app:lib", "rust_library", attribute("testonly", "BOOLEAN", False),
+            selected("crate_root", "LABEL", {"//conditions:default": "//crates/app:src/lib.rs",
+                                              "//platform:other": "//crates/app:src/other.rs"}),
+            selected("crate_features", "STRING_LIST", {"//conditions:default": ["default"],
+                                                       "//platform:other": ["other"]}))]
+        artifact = export(records, {})["compilation_targets"]["//crates/app:lib"]
+        self.assertEqual(artifact["crate_roots"], ["src/lib.rs", "src/other.rs"])
+        self.assertEqual(artifact["features"], ["default", "other"])
+
+    def test_single_implicit_root_uses_source_identity_and_normalizes_default_crate_name(self):
+        rule = record("//crates/app:some-command", "rust_binary",
+                      attribute("testonly", "BOOLEAN", False), attribute("crate_name", "STRING", ""),
+                      attribute("crate_root", "LABEL", ""),
+                      attribute("srcs", "LABEL_LIST", ["//crates/app:examples/header.rs"]))
+        # An absent optional label has no stringValue in streamed query output.
+        next(row for row in rule["rule"]["attribute"] if row["name"] == "crate_root").pop("stringValue")
+        artifact = export([source("app"), rule], {})["compilation_targets"]["//crates/app:some-command"]
+        self.assertEqual(artifact["crate_roots"], ["examples/header.rs"])
+        self.assertEqual(artifact["crate_name"], "some_command")
+
+    def test_artifacts_reject_escaped_or_ambiguous_roots_and_configurable_test_selection(self):
+        for root in ["//crates/other:src/lib.rs", "//crates/app:../escape.rs", "//crates/app:/absolute.rs"]:
+            rule = record("//crates/app:lib", "rust_library", attribute("testonly", "BOOLEAN", False),
+                          attribute("crate_root", "LABEL", root))
+            with self.subTest(root=root), self.assertRaises(ValueError):
+                export([source("app"), rule], {})
+        for sources in [[], ["//crates/app:a.rs", "//crates/app:b.rs"]]:
+            rule = compilation("app")
+            attrs = rule["rule"]["attribute"]
+            next(row for row in attrs if row["name"] == "crate_root").pop("stringValue")
+            attrs.append(attribute("srcs", "LABEL_LIST", sources))
+            with self.subTest(sources=sources), self.assertRaises(ValueError):
+                export([source("app"), rule], {})
+        rule = compilation("app")
+        next(row for row in rule["rule"]["attribute"] if row["name"] == "testonly")["type"] = "SELECTOR_LIST"
+        with self.assertRaisesRegex(ValueError, "test-only selection"):
+            export([source("app"), rule], {})
+
+    def test_static_library_artifacts_cannot_disappear_from_the_audit(self):
+        rule = compilation("app")
+        rule["rule"]["ruleClass"] = "rust_static_library"
+        result = export([source("app"), rule], {})
+        self.assertEqual(result["compilation_targets"]["//crates/app:lib"]["kind"], "rust_static_library")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ in
       inherit pkgs;
       pname = "aos-bazel-crucible-controller-architecture-cargo-oracle";
       packages = ["crucible-test-support"];
-      cargoFlags = ["--test" "control_plane_boundary" "--test" "crate_layer_graph"];
+      cargoFlags = ["--test" "control_plane_boundary" "--test" "crate_layer_graph" "--test" "crate_artifact_types"];
       captureCompilerArguments = true;
     };
     test-architecture-parity = let

@@ -32,7 +32,7 @@ in
     ${pkgs.python3}/bin/python3 ${root + "/tools/bazel/launcher.py"} \
       --config ${workspace.configuration} --workspace "$PWD/workspace" \
       --output-base "$TMPDIR/bazel" --nix-sandbox -- query \
-      'kind("(_source_package|rust_library|rust_binary|rust_proc_macro|rust_shared_library|cargo_build_script|alias|.*_profile_required) rule", //crates/... union //third_party/rust:all union //tools/bazel/rules:all)' \
+      'kind("(_source_package|rust_library|rust_binary|rust_proc_macro|rust_shared_library|rust_static_library|cargo_build_script|alias|.*_profile_required) rule", //crates/... union //third_party/rust:all union //tools/bazel/rules:all)' \
       --output=streamed_jsonproto --proto:flatten_selects=false > "$out/rules.jsonl"
 
     ${pkgs.python3}/bin/python3 ${root + "/tools/bazel/metadata/export_architecture.py"} \

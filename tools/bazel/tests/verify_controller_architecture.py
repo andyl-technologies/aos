@@ -15,11 +15,11 @@ from verify_pilot import cases, verify
 from verify_source_audits import executed_cases, oracle_binary
 
 
-TARGETS = {"control_plane_boundary": 7, "crate_layer_graph": 2}
+TARGETS = {"control_plane_boundary": 7, "crate_layer_graph": 2, "crate_artifact_types": 5}
 PREFIX = "//crates/crucible/crucible-test-support:"
 
 
-def invoke(binary, graph, case=None):
+def invoke(binary, graph, case=None, source_root=None):
     """Selects the declared graph backend without relying on Cargo discovery."""
     environment = dict(os.environ)
     environment.pop("AOS_BAZEL_ARCHITECTURE", None)
@@ -29,7 +29,7 @@ def invoke(binary, graph, case=None):
     arguments = [str(binary), "--test-threads=1", "--nocapture"]
     if case:
         arguments += ["--exact", case]
-    return subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=120)
+    return subprocess.run(arguments, cwd=source_root, env=environment, capture_output=True, text=True, timeout=120)
 
 
 def add_edge(graph, package_name, dependency):
@@ -43,14 +43,18 @@ def add_edge(graph, package_name, dependency):
     })
 
 
-def negative_controls(binaries, graph_path):
+def negative_controls(binaries, graph_path, source_root):
     """Executes real audit assertions with valid and adversarial graph inputs."""
     original = json.loads(graph_path.read_text())
+
+    def run(binary, graph, case=None):
+        return invoke(binary, graph, case, source_root)
+
     expectations = {
         name: cases(binary) for name, binary in binaries.items()
     }
     for name, binary in binaries.items():
-        result = invoke(binary, graph_path)
+        result = run(binary, graph_path)
         if result.returncode or executed_cases(result.stdout) != expectations[name]:
             raise ValueError("actual graph backend did not execute all audit cases: " + name)
 
@@ -74,7 +78,7 @@ def negative_controls(binaries, graph_path):
             add_edge(graph, package, dependency)
             path = scratch / (name + ".json")
             path.write_text(json.dumps(graph))
-            result = invoke(binaries[target], path, case)
+            result = run(binaries[target], path, case)
             if result.returncode == 0 or diagnostic not in result.stdout + result.stderr:
                 raise ValueError("graph mutation did not reach its existing policy assertion: " + name)
             rejected[name] = {"exit_code": result.returncode, "diagnostic": diagnostic}
@@ -84,9 +88,33 @@ def negative_controls(binaries, graph_path):
             ("missing-declaration", None, "Bazel audit omitted its declared architecture input"),
             ("missing-file", scratch / "absent.json", "No such file or directory"),
         ]:
-            result = invoke(binaries["control_plane_boundary"], graph, case)
+            result = run(binaries["control_plane_boundary"], graph, case)
             if result.returncode == 0 or diagnostic not in result.stdout + result.stderr:
                 raise ValueError("missing graph input did not fail closed: " + name)
+            rejected[name] = {"exit_code": result.returncode, "diagnostic": diagnostic}
+
+        artifact_case = "crucible_packages_expose_declared_artifact_types"
+        for name, label, field, value, diagnostic in [
+            ("plugin-not-cdylib", "//crates/crucible/crucible-qemu-plugin:plugin", "kind", "rust_library",
+             "declared Bazel artifact surface"),
+            ("host-static-library", "//crates/crucible/crucible-session:lib", "kind", "rust_static_library",
+             "declared Bazel artifact surface"),
+            ("cli-wrong-root", "//crates/crucible/crucible-cli:crucible", "crate_roots", ["src/wrong.rs"],
+             "declared Bazel artifact surface"),
+            ("oracle-in-wildcards", "//crates/crucible/crucible-control-server:crucible-qemu-test-oracle", "tags", [],
+             "manual test-only qemu-test-oracle"),
+            ("missing-artifact-metadata", None, None, None, "architecture omitted compilation target metadata"),
+        ]:
+            graph = copy.deepcopy(original)
+            if label:
+                graph["compilation_targets"][label][field] = value
+            else:
+                graph.pop("compilation_targets")
+            path = scratch / (name + ".json")
+            path.write_text(json.dumps(graph))
+            result = run(binaries["crate_artifact_types"], path, artifact_case)
+            if result.returncode == 0 or diagnostic not in result.stdout + result.stderr:
+                raise ValueError("artifact mutation did not reach its declared policy assertion: " + name)
             rejected[name] = {"exit_code": result.returncode, "diagnostic": diagnostic}
     return {"actual_graph_cases": expectations, "rejected": rejected}
 
@@ -137,11 +165,15 @@ def qualify(options):
             "selected_source_count": len(sources["sources_sha256"]),
             "execution_sha256": hashlib.sha256((build / "evidence/execution.json").read_bytes()).hexdigest(),
         }
-    evidence["graph_backend_controls"] = negative_controls(binaries, options.graph)
+    evidence["graph_backend_controls"] = negative_controls(binaries, options.graph, options.strict_root)
+    graph = json.loads(options.graph.read_text())
+    evidence["graph"] = str(options.graph)
     evidence["graph_sha256"] = graph_digest
+    evidence["declared_package_count"] = len(graph["packages"])
+    evidence["declared_compilation_target_count"] = len(graph["compilation_targets"])
     evidence["oracle"] = str(options.oracle)
     evidence["limits"] = [
-        "Two structural audit targets only; other controller runtime and acceptance gates remain separate.",
+        "Three structural audit targets only; other controller runtime and acceptance gates remain separate.",
         "Cargo is an independent compilation/runtime oracle and is not called by the Bazel audits.",
         "Graph mutations execute the same Rust policy assertions through Cargo-compiled oracle binaries.",
     ]

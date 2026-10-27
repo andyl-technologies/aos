@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 
-RUST_RULES = {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library"}
+RUST_RULES = {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library"}
 PROFILE_RULES = {
     name + "_profile_required" for name in [
         "device", "store", "guest", "engine", "quota", "session", "control",
@@ -31,7 +31,7 @@ def attribute_values(attribute, expected):
                 for value in attribute_values({**entry, "type": expected}, expected)]
     if attribute["type"] != expected:
         raise ValueError("unexpected architecture attribute type")
-    if expected == "LABEL_LIST":
+    if expected in {"LABEL_LIST", "STRING_LIST"}:
         return attribute.get("stringListValue", [])
     if expected in {"LABEL", "STRING"}:
         return [attribute["stringValue"]] if "stringValue" in attribute else []
@@ -46,6 +46,47 @@ def attributes(rule):
             raise ValueError("duplicate architecture rule attribute")
         result[attribute["name"]] = attribute
     return result
+
+
+def compilation_target(label, rule, owner):
+    """Retains artifact identity for every Rust root, including test-only copies.
+
+    Feature variants remain separate records. Consumers decide which artifacts
+    form a product surface; the exporter never hides examples or generators by
+    guessing from their target names.
+    """
+    attrs = attributes(rule)
+    if attrs["testonly"]["type"] != "BOOLEAN":
+        raise ValueError("architecture test-only selection must not be configurable")
+    roots = attribute_values(attrs["crate_root"], "LABEL")
+    if not roots:
+        # rules_rust accepts a single Rust source without an explicit crate_root.
+        # Ambiguous implicit roots must be declared before metadata can own them.
+        roots = [source for source in attribute_values(attrs["srcs"], "LABEL_LIST") if source.endswith(".rs")]
+        if len(roots) != 1:
+            raise ValueError("architecture artifact requires an unambiguous crate root: " + label)
+    prefix = "//" + owner["directory"] + ":"
+    relative_roots = []
+    for root in roots:
+        if not root.startswith(prefix):
+            raise ValueError("architecture artifact root escapes its source package: " + label)
+        relative = root.removeprefix(prefix)
+        path = Path(relative)
+        if path.is_absolute() or path.as_posix() != relative or ".." in path.parts or not relative.endswith(".rs"):
+            raise ValueError("invalid architecture artifact root: " + label)
+        relative_roots.append(relative)
+    names = attribute_values(attrs["crate_name"], "STRING")
+    if len(names) != 1:
+        raise ValueError("architecture artifact requires an unambiguous crate name: " + label)
+    return {
+        "package": owner["name"],
+        "kind": rule["ruleClass"],
+        "crate_name": names[0] or label.partition(":")[2].replace("-", "_"),
+        "crate_roots": sorted(set(relative_roots)),
+        "features": sorted(set(attribute_values(attrs["crate_features"], "STRING_LIST"))),
+        "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+        "test_only": attrs["testonly"].get("booleanValue", False),
+    }
 
 
 def repository_packages(directory):
@@ -136,17 +177,19 @@ def export(records, repositories):
     production = {name: set() for name in names}
     targets = {name: [] for name in names}
     target_edges = {}
+    compilations = {}
     for label, rule in sorted(rules.items()):
         if rule["ruleClass"] not in RUST_RULES:
             continue
         attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("Rust target has no declared source package")
+        compilations[label] = compilation_target(label, rule, owner)
         if attrs["testonly"]["type"] != "BOOLEAN":
             raise ValueError("architecture test-only selection must not be configurable")
         if attrs["testonly"].get("booleanValue", False):
             continue
-        owner = catalog.get(label.partition(":")[0])
-        if owner is None:
-            raise ValueError("production Rust target has no declared source package")
         name = owner["name"]
         targets[name].append(label)
         edges = []
@@ -169,6 +212,7 @@ def export(records, repositories):
             for identity in catalog.values()
         ], key=lambda package: package["name"]),
         "target_dependencies": target_edges,
+        "compilation_targets": compilations,
         "unavailable_profile_targets": dict(sorted(unavailable.items())),
         "native_dependencies": sorted(native),
     }

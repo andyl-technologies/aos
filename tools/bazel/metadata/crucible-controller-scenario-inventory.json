@@ -41412,7 +41412,7 @@
     "crates/crucible/crucible-campaign/BUILD.bazel": "1a2e842213958a46d6b186e994200cd40967579a6372b0579f54552aa3080072",
     "crates/crucible/crucible-control-api/BUILD.bazel": "04dc3502e6b718c12fd48bd42dffe53f13c96e8c280132bbc937beb2728158e6",
     "crates/crucible/crucible-control-client/BUILD.bazel": "278745da17af2ab8bc38c7fe3e42bf348e312e2267c5897791a04039c5bea85d",
-    "crates/crucible/crucible-control-server/BUILD.bazel": "3fe1d752e19ab417324a5365aa3c348d5a7f331f25b3174db2e6c23894d95710",
+    "crates/crucible/crucible-control-server/BUILD.bazel": "6915291e5dffec374ee3a9713b8d85e79d0374a33179c0dd7b6597d48c5b5156",
     "crates/crucible/crucible-daemon/BUILD.bazel": "0917852a4533484117de19f2b3263090b2ffa7bada2999a1c0597ef0a6ff0cf3",
     "crates/crucible/crucible-determinism/BUILD.bazel": "a78908ae84b086c9a35a3b0c0c136b9a8cd1c08d3e492a5463be1d7ab9917480",
     "crates/crucible/crucible-device/BUILD.bazel": "de960010d9860be56520a3d4e4d1bb8a43b1a012b6466182deff7d65e47a2eae",

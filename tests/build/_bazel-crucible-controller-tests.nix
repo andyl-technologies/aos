@@ -166,6 +166,7 @@ in {
     targets = [
       "//crates/crucible/crucible-test-support:control_plane_boundary_controller"
       "//crates/crucible/crucible-test-support:crate_layer_graph_controller"
+      "//crates/crucible/crucible-test-support:crate_artifact_types_controller"
     ];
     retainActionGraph = true;
     sharedBuildCache = false;

@@ -17,6 +17,12 @@ mod workspace;
 #[path = "support/artifact_type_binaries.rs"]
 mod binary_artifacts;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
+#[path = "support/artifact_type_bazel.rs"]
+mod bazel_artifacts;
+
 use binary_artifacts::{forbid_binary_targets, gateway_test_oracle_failures};
 
 use std::error::Error;
@@ -123,18 +129,24 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
 
 #[test]
 fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Error>> {
-    let crates_dir = workspace_crates_dir()?;
     let mut failures = Vec::new();
 
-    assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
+    if let Some(graph) = architecture::load()? {
+        failures.extend(bazel_artifacts::artifact_failures(
+            &graph,
+            &std::env::current_dir()?,
+        )?);
+    } else {
+        let crates_dir = workspace_crates_dir()?;
+        assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
+        for spec in ARTIFACT_SPECS {
+            let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
+            let manifest_path = package_dir.join("Cargo.toml");
+            let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
+            let layout = PackageLayout::from_package_dir(&package_dir);
 
-    for spec in ARTIFACT_SPECS {
-        let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
-        let manifest_path = package_dir.join("Cargo.toml");
-        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
-        let layout = PackageLayout::from_package_dir(&package_dir);
-
-        failures.extend(artifact_type_failures(spec, &manifest, &layout));
+            failures.extend(artifact_type_failures(spec, &manifest, &layout));
+        }
     }
 
     assert!(

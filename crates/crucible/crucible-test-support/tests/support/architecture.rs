@@ -30,6 +30,26 @@ const SELECTION: &str = "union of all declared production platform/feature branc
 /// Holds validated source ownership and production package edges.
 pub(crate) struct Architecture {
     packages: BTreeMap<String, Package>,
+    compilations: Option<BTreeMap<String, CompilationTarget>>,
+}
+
+/// Describes one declared Rust compilation, before selecting platform branches.
+#[derive(serde::Deserialize)]
+pub(crate) struct CompilationTarget {
+    /// Names the source package that owns the target.
+    pub(crate) package: String,
+    /// Names the actual Bazel Rust rule class.
+    pub(crate) kind: String,
+    /// Names the Rust crate after Bazel's default name normalization.
+    pub(crate) crate_name: String,
+    /// Holds package-relative source roots across every selector branch.
+    pub(crate) crate_roots: BTreeSet<String>,
+    /// Holds the union of explicitly compiled crate features.
+    pub(crate) features: BTreeSet<String>,
+    /// Holds declared target tags, including wildcard exclusions.
+    pub(crate) tags: BTreeSet<String>,
+    /// Identifies targets restricted to test-only dependents.
+    pub(crate) test_only: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -39,6 +59,7 @@ struct Document {
     query_sha256: String,
     packages: Vec<Package>,
     target_dependencies: BTreeMap<String, Vec<Edge>>,
+    compilation_targets: Option<BTreeMap<String, CompilationTarget>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -55,6 +76,42 @@ struct Edge {
 }
 
 impl Architecture {
+    /// Returns a package's validated repository-relative source directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the package has no declared source ownership.
+    pub(crate) fn package_directory(&self, package: &str) -> io::Result<&Path> {
+        self.packages
+            .get(package)
+            .map(|package| Path::new(&package.directory))
+            .ok_or_else(|| io::Error::other("package has no declared source ownership"))
+    }
+
+    /// Iterates over a package's declared Rust compilations, including helpers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for absent ownership or omitted artifact metadata.
+    pub(crate) fn compilation_targets(
+        &self,
+        package: &str,
+    ) -> io::Result<impl Iterator<Item = (&str, &CompilationTarget)>> {
+        if !self.packages.contains_key(package) {
+            return Err(io::Error::other(
+                "artifact package has no declared ownership",
+            ));
+        }
+        let targets = self
+            .compilations
+            .as_ref()
+            .ok_or_else(|| io::Error::other("architecture omitted compilation target metadata"))?;
+        Ok(targets
+            .iter()
+            .filter(move |(_, target)| target.package == package)
+            .map(|(label, target)| (label.as_str(), target)))
+    }
+
     /// Iterates over the declared source package names, including test support.
     pub(crate) fn package_names(&self) -> impl Iterator<Item = &str> {
         self.packages.keys().map(String::as_str)
@@ -176,5 +233,42 @@ pub(crate) fn parse(contents: &str) -> io::Result<Architecture> {
         ));
     }
 
-    Ok(Architecture { packages })
+    if let Some(compilations) = &document.compilation_targets {
+        for (label, target) in compilations {
+            let package = packages
+                .get(&target.package)
+                .ok_or_else(|| io::Error::other("artifact target has no source package"))?;
+            if !label.starts_with(&format!("//{}:", package.directory))
+                || target.crate_name.is_empty()
+                || target.crate_roots.is_empty()
+                || !matches!(
+                    target.kind.as_str(),
+                    "rust_library"
+                        | "rust_binary"
+                        | "rust_proc_macro"
+                        | "rust_shared_library"
+                        | "rust_static_library"
+                )
+                || target.crate_roots.iter().any(|root| {
+                    !root.ends_with(".rs")
+                        || Path::new(root)
+                            .components()
+                            .any(|part| !matches!(part, Component::Normal(_)))
+                })
+                || package.production_targets.contains(label) == target.test_only
+            {
+                return Err(io::Error::other("invalid architecture compilation target"));
+            }
+        }
+        if !targets.iter().all(|label| compilations.contains_key(label)) {
+            return Err(io::Error::other(
+                "production target omitted artifact metadata",
+            ));
+        }
+    }
+
+    Ok(Architecture {
+        packages,
+        compilations: document.compilation_targets,
+    })
 }

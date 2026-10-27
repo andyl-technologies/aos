@@ -4308,8 +4308,9 @@ used by the transport regression test, without selecting first-party Cargo
 metadata. It does not launch nested Cargo builds. Other Cargo-dependent structural
 audits still require migration before the full combined test suite can pass.
 
-The controller's `control_plane_boundary` and `crate_layer_graph` audits consume
-the declared `aos_architecture` repository. Its source-built Bazel query unions
+The controller's `control_plane_boundary`, `crate_layer_graph`, and
+`crate_artifact_types` audits consume the declared `aos_architecture` repository.
+Its source-built Bazel query unions
 production dependency edges across platform and feature branches, while retaining
 source ownership and explicitly unmodeled test-only packages. The shared Rust
 reader rejects missing inputs and inconsistent package/target records. Existing
@@ -4326,11 +4327,21 @@ checks identical selected Rust/protocol source bytes, and binds the executed
 audits to their actual graph input digest. It also runs adversarial graph inputs
 through the same Rust policy assertions. The union query does not establish
 cross-platform execution or replace the separate ABI and license gates.
-The [structural audit receipt](tests/evidence/crucible-controller-architecture.json)
-retains the executed cases, graph-input bindings, and adversarial controls.
-The [inventory receipt](tests/evidence/crucible-controller-architecture-inventories.json)
-binds all 80 source inventories to regenerated configured analyses and verifies
-the 79 unchanged dependency SDK source contracts.
+The [structural audit receipt](tests/evidence/crucible-controller-artifact-roles.json)
+retains fourteen executed cases per build, graph-input bindings, and twelve
+adversarial controls. The
+[inventory receipt](tests/evidence/crucible-controller-artifact-inventories.json)
+binds the eleven changed source inventories to regenerated configured analyses
+and verifies all 80 source guards and 79 dependency SDK source contracts.
+
+Artifact metadata retains each Rust rule's kind, crate name, package-relative
+source roots, feature branches, tags, and test-only flag. The artifact audit
+checks all 19 Crucible packages without reading first-party Cargo manifests.
+Feature copies must agree on the logical product surface; examples remain
+explicit source roots, and development libraries cannot hide extra shared or
+static libraries. The QEMU test oracle and its package, lint, format, and license targets
+carry `manual` tags to keep this optional helper out of ordinary wildcard builds.
+Its binary remains test-only and explicitly enables `qemu-test-oracle`.
 
 `checks.build.bazel.controller-native.check` qualifies the controller's pinned
 `ring` dependency using four uncached builds. Strict and broad source selections
