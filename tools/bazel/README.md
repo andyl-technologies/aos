@@ -4291,6 +4291,23 @@ The separate `test-cargo` oracle captures the ordinary controller's combined
 selection; the three executable graphs do not establish test-graph parity.
 Discovery does not run the test cases or qualify their behavior.
 
+The combined graph is available through `test-graph.compilation` and
+`test-graph.tests`. The `test-cases` and `test-features` checks compare its
+discovered cases, ignore lists, and compiled features with the independent
+Cargo oracle. Both require `test-sources` to verify identical selected Rust
+and API protocol inputs from the actual compiler source snapshots; their
+outputs retain the per-source digests. `test-feature-policy` runs the existing
+six-case feature audit using the nine Bazel feature compilations and live
+production policy checks.
+Its declared evidence repository binds every Crucible Rust source to the
+qualification tree, and the test rejects changed, missing, or extra sources.
+The same check is exposed as
+`checks.build.bazel.crucible-controller.feature-policy`. Its source inventory
+includes the runner wrappers, execution policy, and declared upstream SDK lock
+used by the transport regression test, without selecting first-party Cargo
+metadata. It does not launch nested Cargo builds. Other Cargo-dependent structural
+audits still require migration before the full combined test suite can pass.
+
 These are compilation and generator checks. Public controller integration still
 requires its mandatory suite tests, Clippy, documentation, doctests, installed
 metadata and closure checks, and the applicable ABI and license gates. Native

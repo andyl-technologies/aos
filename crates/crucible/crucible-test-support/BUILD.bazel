@@ -74,13 +74,6 @@ rust_doc_test(
 # number in env!("CARGO_MANIFEST_DIR"), making audit binaries depend on scheduling.
 SOURCE_AUDIT_COMPILER_ENV = {"CARGO_MANIFEST_DIR": "crates/crucible/crucible-test-support"}
 
-# This legacy consumer is compiled for inventory comparison only. The declared
-# toolchain Cargo supports sysroot metadata and rejects first-party builds;
-# runtime qualification requires migrating these nested checks to Bazel.
-CONTROLLER_FEATURE_COMPILER_ENV = dict(SOURCE_AUDIT_COMPILER_ENV.items() + {
-    "CARGO": "$(execpath @aos_tools//:cargo)",
-}.items())
-
 # The full controller includes every harness integration root, including the
 # audits whose Cargo-dependent runtime inputs still need migration. These
 # declarations establish compilation coverage, not passing runtime parity.
@@ -111,14 +104,19 @@ aos_rust_test(
         lint_config = "//tools/bazel/rules:workspace_lints",
         crate_root = source,
         srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs", "tests/support/**/*.rs"], allow_empty = True),
-        compile_data = CONTROLLER_COMPILE_INPUTS + (["@aos_tools//:cargo"] if source == "tests/feature_powerset.rs" else []),
-        rustc_env = CONTROLLER_FEATURE_COMPILER_ENV if source == "tests/feature_powerset.rs" else SOURCE_AUDIT_COMPILER_ENV,
+        compile_data = CONTROLLER_COMPILE_INPUTS,
+        rustc_env = SOURCE_AUDIT_COMPILER_ENV,
         env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+        runfile_env = {
+            "AOS_FEATURE_EVIDENCE": "@aos_controller_features//:features.json",
+            "AOS_FEATURE_AUDIT_SCRIPT": "@aos_controller_features//:controller_feature_evidence.py",
+            "AOS_FEATURE_AUDIT_PYTHON": "@aos_tools//:python",
+        } if source == "tests/feature_powerset.rs" else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",
             "//tests/crucible:testing-standards-baseline.txt",
             "//docs/rfcs/0010-crucible:spec_index_audit",
-        ],
+        ] + (["@aos_controller_features//:tools"] if source == "tests/feature_powerset.rs" else []),
         deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
     )
     for source in CONTROLLER_INTEGRATIONS

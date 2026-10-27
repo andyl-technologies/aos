@@ -80,12 +80,16 @@ def controller_library(package, sources, common_deps, library_names = [], compil
 def controller_tests(package, integrations, dependencies, development_deps = [], unit_compile_data = [], unit_data = [], compile_inputs = {}, source_inputs = {}, runtime_inputs = {}, environments = {}, runfile_environments = {}, ignored_only = []):
     """Preserves package-owned fixtures while using the combined library graph."""
     features = controller_features(package)
+    # rules_rust's default includes the compile action's temporary sandbox.
+    # Runtime source discovery uses workspace-relative runfiles instead.
+    compiler_environment = {"CARGO_MANIFEST_DIR": native.package_name()}
     aos_rust_test(
         name = "unit_controller",
         package = package,
         lint_config = "//tools/bazel/rules:workspace_lints",
         crate = ":lib_controller",
         crate_features = features,
+        rustc_env = compiler_environment,
         compile_data = unit_compile_data,
         data = unit_data,
         deps = development_deps,
@@ -106,6 +110,7 @@ def controller_tests(package, integrations, dependencies, development_deps = [],
             runfile_env = runfile_environments.get(source, {}),
             allow_ignored_only = source in ignored_only,
             crate_features = features,
+            rustc_env = compiler_environment,
             deps = [":lib_controller"] + dependencies + development_deps,
         )
         binaries.append(":" + name + "_binary")

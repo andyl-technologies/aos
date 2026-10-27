@@ -18,8 +18,17 @@ in
       inherit pkgs;
       sourceInventory = null;
     };
+    test-feature-policy = test-graph.feature-policy;
+    test-sources = pkgs.runCommand "aos-bazel-crucible-controller-test-sources" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${./verify_compiler_sources.py} \
+        --inventory ${test-graph.compilation}/inventory.json \
+        --bazel-root ${test-graph.workspace.source} --cargo-root ${test-cargo.src} \
+        --output "$out/sources.json"
+    '';
     test-features = pkgs.runCommand "aos-bazel-crucible-controller-test-features" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
+      cp ${test-sources}/sources.json "$out/sources.json"
       cp ${./verify_protocol.py} verify_protocol.py
       cp ${./verify_pilot.py} verify_pilot.py
       ${pkgs.python3}/bin/python3 verify_protocol.py --features-only \
@@ -31,6 +40,7 @@ in
     '';
     test-cases = pkgs.runCommand "aos-bazel-crucible-controller-test-cases" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
+      cp ${test-sources}/sources.json "$out/sources.json"
       ${pkgs.python3}/bin/python3 ${./verify_controller_cases.py} \
         --inventory ${test-graph.compilation}/inventory.json \
         --discovery ${test-graph.compilation}/test-cases.json \

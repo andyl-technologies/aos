@@ -108360,7 +108360,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "9e22f4df46641bd8abfd55179339c45e9910dedb11ecf0b46fb7320005821576",
+    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/BUILD.bazel": "8c4094dbbcf911efdfe8c6a615b3021622a21816c119695c7e6a6779f2ee45cc",
     "crates/activation/aos-activation-bpf-lsm/BUILD.bazel": "193476826ce035c2dadf5713813d4587d397a4f59417fa2f940eb92d807f7d95",
@@ -108409,7 +108409,7 @@
     "crates/crucible/crucible-session/BUILD.bazel": "e26185e11ac173d4d0decf8658a0beccc1a2d826ff2181ba1937b7af4e224719",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "5bc9c50360faeb40761376bdde766aa204116c4d8d09250fe8c79bbefc6e27ba",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
-    "crates/crucible/crucible-test-support/BUILD.bazel": "79067c4eade800e6e371f9f08e3b48b7e7beb48fadcd578c843dba2141679913",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "a512fa2816197c07d367fccb7c133851c18bee712995fd5da61d857d5b8aeccc",
     "crates/hub/aos-hub-api/BUILD.bazel": "4c50befe92642cc15aa9c4e23100ac1bfee440500a5dbb2a03218f0b859a1dd2",
     "crates/hub/aos-hub-client/BUILD.bazel": "e27eb0fa91e5d1f521e16734db8783f337e402020e600e34c84a3db8ac35952d",
     "crates/hub/aos-hub-console/BUILD.bazel": "2be1adf9bf59017aababf40a07b14c2c44523e7ff850326f3a2b7cb6250aabe9",
@@ -108627,7 +108627,7 @@
     "tools/bazel/rules/bpf.bzl": "b1ba3f536d62a8a1745394052ecaca77e017e03e1c7ea0a77d235e5de78c7bba",
     "tools/bazel/rules/build_script.bzl": "a57bbc5e69a7a6f214de65ac7decb12e5adc7706d0339f40830cc9c72b7e8c89",
     "tools/bazel/rules/compile.bzl": "a7bd2d4a3216ca96b3f46e7a47e50f1d9cd4ee056025c84b450f73c32814113e",
-    "tools/bazel/rules/controller_graph.bzl": "a88183c643304c4926f424dc1197ddad360fdc5ac28f809933f0f1a5f040750b",
+    "tools/bazel/rules/controller_graph.bzl": "fe5ebb41d8dbf7e9e35934893158e0abc6ee7648a55e3723569e5d1b65468b5e",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467",
     "tools/bazel/rules/crucible_cli_graph.bzl": "b9d1a4caaef2c6d7ff14834fe13b391c9ff759a33bb9f38bab5b44c9e74fba48",
     "tools/bazel/rules/daemon_graph.bzl": "8983b8582ac1b7971d4ce75a9bcaf7f141f4037cd848a512ab8cc99339d0fd0d",

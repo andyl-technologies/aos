@@ -15342,7 +15342,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "9e22f4df46641bd8abfd55179339c45e9910dedb11ecf0b46fb7320005821576",
+    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/activation/aos-activation-storage/BUILD.bazel": "c596939ba7714d840fb4e46de22121aa18ca13fc29a1d1f1e9be13997c25c7cf",
     "crates/activation/aos-activation/BUILD.bazel": "8b86fdfb0e438a67d19dd0c63fdd1feadaa47c98f8a13e5cea8d284b5b70ce33",
@@ -15532,7 +15532,7 @@
     "tools/bazel/rules/bpf.bzl": "b1ba3f536d62a8a1745394052ecaca77e017e03e1c7ea0a77d235e5de78c7bba",
     "tools/bazel/rules/build_script.bzl": "a57bbc5e69a7a6f214de65ac7decb12e5adc7706d0339f40830cc9c72b7e8c89",
     "tools/bazel/rules/compile.bzl": "a7bd2d4a3216ca96b3f46e7a47e50f1d9cd4ee056025c84b450f73c32814113e",
-    "tools/bazel/rules/controller_graph.bzl": "a88183c643304c4926f424dc1197ddad360fdc5ac28f809933f0f1a5f040750b",
+    "tools/bazel/rules/controller_graph.bzl": "fe5ebb41d8dbf7e9e35934893158e0abc6ee7648a55e3723569e5d1b65468b5e",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467",
     "tools/bazel/rules/crucible_cli_graph.bzl": "b9d1a4caaef2c6d7ff14834fe13b391c9ff759a33bb9f38bab5b44c9e74fba48",
     "tools/bazel/rules/daemon_graph.bzl": "8983b8582ac1b7971d4ce75a9bcaf7f141f4037cd848a512ab8cc99339d0fd0d",

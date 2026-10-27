@@ -1,0 +1,94 @@
+{
+  "bound_rust_sources": 2218,
+  "broad": {
+    "actions": {
+      "Rustc": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "75271d987a78af88f149001bc336df6fc8f5d618ee5f391fb3bdbe7e755a4432",
+        "runner": "linux-sandbox"
+      },
+      "TestRunner": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "0f46df3a32a140314ce616f43fef9ac8577e9c5566af2f553b68f94c8af8e1e6",
+        "runner": "linux-sandbox"
+      }
+    },
+    "binary_sha256": "95c70eefbc81ac19fe9c2a04bfbda73a1f7ba307f55be38c92bfcb099f26f2b5",
+    "cargo_compiler_environment_absent": true,
+    "cases": [
+      "crucible_features_resolve_for_declared_powersets",
+      "crucible_guest_is_not_a_default_core_dependency",
+      "crucible_manifest_feature_layout_is_explicit",
+      "guest_dependency_policy_rejects_default_feature_activation",
+      "guest_dependency_policy_rejects_direct_required_dependency",
+      "shipped_crates_do_not_enable_the_test_double"
+    ],
+    "output": "/nix/store/9s8glxjqzsx3w5flqhwbjspf7dn0k4bw-aos-bazel-crucible-controller-feature-policy-test-conservative-1",
+    "xml_sha256": "a10b39514cf1b85d077584192bf91c3db04ffa47132aa6b23a99491fe97bdca6"
+  },
+  "byte_parity_scope": "feature_powerset_controller_binary only; the other four previously differing binaries have separate compilation/discovery evidence in crucible-controller-determinism.json. Whole-controller byte and action parity remain unqualified.",
+  "evidence_repository": "/nix/store/l5ra4mf7rnjaldskc703pk2f350cg984-aos-bazel-controller-feature-evidence",
+  "evidence_sha256": "2f2df881de9497a585b7054b1e14b97ec3dada05a225e89f4f90adb8ca65b82f",
+  "feature_compilations": 9,
+  "helper_tests": {
+    "result": "PASS",
+    "tests": 481
+  },
+  "public_controller_cutover_qualified": false,
+  "qualified_cases": 6,
+  "runtime_inventory": {
+    "analysis_output": "/nix/store/8pxw55s68cs0212c1hgncr67lx6l6xj0-aos-bazel-crucible-controller-test-inventory-1",
+    "distinct_reports": 1007,
+    "first_party_cargo_metadata_selected": false,
+    "path": "tools/bazel/metadata/crucible-controller-tests-inventory.json",
+    "roots": 554,
+    "sha256": "652ff63e680732ceb37505d39bfd6025bffe89ae11e1baa1fa07876398973b66",
+    "sources": 3899,
+    "wrapper_roots": 268
+  },
+  "schema_version": 1,
+  "scope": "Six-case controller feature audit only; other controller runtime, platform, ABI, license and performance acceptance remain outstanding.",
+  "source_sha256": {
+    "MODULE.bazel": "2d0cf50c6b49a5944ea3fe7dfa48e8ca76cdf10af16a31960d0ef15abf0742ac",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "a512fa2816197c07d367fccb7c133851c18bee712995fd5da61d857d5b8aeccc",
+    "crates/crucible/crucible-test-support/tests/feature_powerset.rs": "8649a22703fd3dd9d840636f9124e7bad68503e38fce6695bd6dc493cb449b4b",
+    "tests/build/_bazel-crucible-controller-feature-evidence.nix": "ac98042f5491df3ed6c32fd97a524b5fc6dc578dd1b16a97a580e5978863e711",
+    "tests/build/_bazel-crucible-controller-tests.nix": "e3c913884ee0f08d9d5c3eff1a9eb4951ee59599f13673efb798578074229850",
+    "tools/bazel/rules/controller_graph.bzl": "fe5ebb41d8dbf7e9e35934893158e0abc6ee7648a55e3723569e5d1b65468b5e",
+    "tools/bazel/tests/controller_feature_evidence.py": "beacc0c1707b99d62652804c5f4c3b9aaf61d66a5278f4acd73cb0ffc7bf89a2",
+    "tools/bazel/tests/test_controller_feature_evidence.py": "4e4c9d15fd64b06e2a0d810c27035c04583299f9067256242ad6820fb2fad125"
+  },
+  "strict": {
+    "actions": {
+      "Rustc": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "75271d987a78af88f149001bc336df6fc8f5d618ee5f391fb3bdbe7e755a4432",
+        "runner": "linux-sandbox"
+      },
+      "TestRunner": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "0f46df3a32a140314ce616f43fef9ac8577e9c5566af2f553b68f94c8af8e1e6",
+        "runner": "linux-sandbox"
+      }
+    },
+    "binary_sha256": "95c70eefbc81ac19fe9c2a04bfbda73a1f7ba307f55be38c92bfcb099f26f2b5",
+    "cargo_compiler_environment_absent": true,
+    "cases": [
+      "crucible_features_resolve_for_declared_powersets",
+      "crucible_guest_is_not_a_default_core_dependency",
+      "crucible_manifest_feature_layout_is_explicit",
+      "guest_dependency_policy_rejects_default_feature_activation",
+      "guest_dependency_policy_rejects_direct_required_dependency",
+      "shipped_crates_do_not_enable_the_test_double"
+    ],
+    "output": "/nix/store/1rma62fr20dw2g7m9srgljg7qpzhrlyr-aos-bazel-crucible-controller-feature-policy-test-1",
+    "xml_sha256": "61c453e4aac0612e0714cafe08a084cee29b08b9fac5123d16c0a862926a3be0"
+  },
+  "strict_broad_binary_parity": true,
+  "test_execution_qualified": true,
+  "whole_controller_test_execution_qualified": false
+}

@@ -98,6 +98,7 @@ aos_tools = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tool
 aos_tools(name = "aos_tools")
 aos_tools(name = "aos_native")
 aos_tools(name = "aos_cli_runtime")
+aos_tools(name = "aos_controller_features")
 aos_tools(name = "aos_cli_test_sources")
 aos_tools(name = "aos_codegen")
 aos_tools(name = "aos_wasm_tools")
