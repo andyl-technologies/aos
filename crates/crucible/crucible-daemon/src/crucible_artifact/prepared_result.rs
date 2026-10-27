@@ -57,10 +57,9 @@ use crucible_campaign::{
     SelectableDeclaration, Selection, StopOutcome,
 };
 use crucible_engine::{
-    AssertionPhase, ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
+    ContentHash, ExecutionFingerprint, FailureClusterReportFailure, FailureKind,
     FailureTriageReplayEvidence, FindingReproductionArtifact, FingerprintSample, NodeId,
-    ObservableEventPayload, ScenarioDefForm, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    VirtualTime,
+    ScenarioDefForm, VirtualTime,
 };
 use thiserror::Error;
 

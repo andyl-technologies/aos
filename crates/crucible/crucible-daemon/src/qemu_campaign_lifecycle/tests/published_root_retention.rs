@@ -5,7 +5,7 @@
 //! boundary is drained, which final entries sealing receives, whether a
 //! world is prepared, and when a pending root reaches the pool sink.
 
-use crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use crucible_campaign::{ChoiceCoordinate, ChoiceOpportunity};
 
 use super::super::test_support::{Order, RetentionFactory, Script, entry, retention_trace};

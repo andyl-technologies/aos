@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
     CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERIES,
+    ConfigurationId, CoverageProjection,
     MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate,
     ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
     ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,

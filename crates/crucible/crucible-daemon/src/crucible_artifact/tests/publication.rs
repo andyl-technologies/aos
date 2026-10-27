@@ -7,8 +7,7 @@ use crucible_campaign::{
     FindingExactRetentionIncomplete,
 };
 use crucible_engine::{
-    EventLogTime, FailureClusterReportFailure, FailureTriageReplayEvidence, Icount, NodeId,
-    SchedulerEventLogEntry,
+    EventLogTime, FailureClusterReportFailure, Icount, NodeId, SchedulerEventLogEntry,
 };
 
 fn prepared_finding_triage_logs() -> (Vec<SchedulerEventLogEntry>, Vec<SchedulerEventLogEntry>) {

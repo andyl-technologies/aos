@@ -8,7 +8,8 @@
 //! CRUCIBLE-HOT-FORK-INSTALL-QUARANTINE-V1 source=retained-until-exit error=..
 //! ```
 
-use crucible_control_api::{LifecycleApiError, SourceMemoryRegions};
+use crate::SourceMemoryRegions;
+use crucible_control_api::LifecycleApiError;
 
 /// Writes a child world's measured private dirty bytes against its budget.
 ///

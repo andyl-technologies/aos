@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use crucible_campaign::{ChoiceValue, IntegerValue};
-use crucible_engine::{Configuration, ContentHash, Decision, NodeId};
+use crucible_engine::{Configuration, ConfigurationPrefix, ContentHash, Decision, NodeId};
 use crucible_qemu_protocol::app_random_branch_plan::{
     AppRandomBranchPlan, AppRandomBranchPlanEntry, MAX_APP_RANDOM_BRANCH_PLAN_ENTRIES,
 };

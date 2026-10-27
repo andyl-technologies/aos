@@ -12,8 +12,8 @@ use crucible_campaign::{
     ConfigurationArtifactId, ExecutorRejection, ResolvedSelection, StopOutcome,
 };
 use crucible_engine::{
-    Configuration, Decision, NetworkFaultSelectable, ScenarioDefForm, SelectionDecision,
-    SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
+    Configuration, ConfigurationPrefix, Decision, NetworkFaultSelectable, ScenarioDefForm,
+    SelectionDecision, SignalFaultCampaignReplayPlan, SignalFaultSelectable, try_step,
 };
 use std::io::Write as _;
 use std::sync::OnceLock;

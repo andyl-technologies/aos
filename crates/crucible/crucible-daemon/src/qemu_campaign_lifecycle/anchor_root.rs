@@ -467,7 +467,7 @@ fn replay_to_anchor<F, D>(
 
 /// Returns why a prepared world differs from the replayed anchor boundary.
 fn anchor_world_mismatch(
-    world: &crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    world: &crate::vm_lifecycle::ProductionVmHotForkSourceWorld,
     plan: &QemuAnchorPlan,
     proof: QemuSavepointReplayProof,
     input: &CrucibleAttemptExecution,
@@ -495,7 +495,7 @@ fn anchor_world_mismatch(
 /// Offers an authenticated anchor world to the pool.
 fn admit_anchor<FE, DE>(
     plan: QemuAnchorPlan,
-    world: crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorld,
+    world: crate::vm_lifecycle::ProductionVmHotForkSourceWorld,
     input: &CrucibleAttemptExecution,
 ) -> Result<QemuAnchorRootOutcome, AttemptWorkerFailure<QemuFreshExecutionRunnerError<FE, DE>>> {
     // The whole prefix to the anchor ran under the attempt's own replay mode.

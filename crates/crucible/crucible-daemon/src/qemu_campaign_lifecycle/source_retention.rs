@@ -35,8 +35,8 @@ use crucible_engine::{
     Configuration, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
     SignalFaultCampaignReplayPlan,
 };
-use crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorld;
-use crucible_control_api::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible_campaign::{
     AttemptStartMode, CampaignHash, CampaignLineageId, ConfigurationId,
     ExecutorCompatibilityProfile,

@@ -4,7 +4,7 @@
 //! shows how its memory splits by QEMU region class, and the child profile
 //! derived here is what each forked child reserves while leased.
 
-use crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorldResourceUsage;
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorldResourceUsage;
 
 use crate::{
     HotCheckpointResourceProfile, HotCheckpointResourceProfileError, QemuHotForkSourceWorldKey,

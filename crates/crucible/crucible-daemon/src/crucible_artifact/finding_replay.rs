@@ -21,8 +21,8 @@ use crucible_campaign::{
     SelectableDeclaration, SelectableId, Selection, SelectionId, SelectionOrigin,
 };
 use crucible_engine::{
-    Configuration, Decision, FailureTriageReplayEvidence, FindingReproductionArtifact,
-    SignalFaultSelectable,
+    Configuration, ConfigurationPrefix, Decision, FailureTriageReplayEvidence,
+    FindingReproductionArtifact, SignalFaultSelectable,
 };
 use crucible_store::content_store::ContentId;
 

@@ -44,6 +44,7 @@ use crucible_engine::{
     ContentHash, DagStore, FindingReproductionArtifact, FingerprintSample, MemoryDagStore, NodeId,
     ReproductionArtifact, SchedulerEventLogEntry, VirtualTime, VmArchitecture,
 };
+use crucible_store::content_store::ContentId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -1,9 +1,8 @@
 //! Start replay limit and progress failures report how far replay progressed.
 
 use super::*;
-use crate::qemu_campaign_lifecycle::start_replay_log::{
-    StartReplayProgress, start_replay_limit_failure,
-};
+use crate::qemu_campaign_lifecycle::failure_classification::start_replay_limit_failure;
+use crate::qemu_campaign_lifecycle::start_replay_log::StartReplayProgress;
 
 type ReplayFailure = AttemptWorkerFailure<QemuFreshExecutionRunnerError<String, String>>;
 

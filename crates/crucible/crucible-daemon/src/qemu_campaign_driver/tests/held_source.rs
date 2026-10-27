@@ -5,11 +5,12 @@
 
 use super::*;
 use crucible_engine::QuantumLoop;
-use crucible_control_api::{
-    LifecycleApiError, ProductionVmLifecycleConfig, ProductionVmNodeGeneration,
-    ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher,
-    ProductionVmNodeLease, build_production_vm_lifecycle_loop_with_launcher,
+use crate::{
+    ProductionVmLifecycleConfig, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
+    build_production_vm_lifecycle_loop_with_launcher,
 };
+use crucible_control_api::LifecycleApiError;
 use crucible_qemu_protocol::SelectableRegister;
 use crucible_qemu_host::{
     QemuTestHotForkOutcome, QemuTestQuantumBoundary, scripted_hot_fork_source_with_script_for_test,
@@ -112,7 +113,7 @@ impl ProductionVmNodeLauncher for HeldSourceLauncher {
     fn launch_restored(
         &mut self,
         _request: ProductionVmNodeLaunchRequest<'_>,
-        _admission: crucible_control_api::ProductionVmExactNodeRestoreAdmission,
+        _admission: crate::ProductionVmExactNodeRestoreAdmission,
     ) -> Result<ProductionVmNodeLaunch, LifecycleApiError> {
         Err(LifecycleApiError::LoopFactory {
             message: String::from("held-source fixture has no restore authority"),

@@ -7,7 +7,7 @@
 // crucible-lint: allow panic-shortcut -- fixtures use panic shortcuts for exact failures.
 #![allow(clippy::expect_used)]
 
-use crucible_daemon::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmHotForkSourceWorld,
     prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test,
 };

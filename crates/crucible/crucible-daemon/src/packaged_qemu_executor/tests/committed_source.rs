@@ -4,7 +4,7 @@
 //! factories construct the same wrapper chain used by the packaged executor.
 
 use super::*;
-use crucible_control_api::ProductionVmLifecycleLoop;
+use crate::ProductionVmLifecycleLoop;
 
 struct SuppliedLifecycleFactory(Option<ProductionVmLifecycleLoop>);
 

@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use crucible_control_api::ProductionExactCheckpointNotReady;
+use crate::ProductionExactCheckpointNotReady;
 
 /// Names why the current boundary cannot enter an exact checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]

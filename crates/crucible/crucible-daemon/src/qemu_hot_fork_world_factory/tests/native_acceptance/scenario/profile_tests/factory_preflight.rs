@@ -7,14 +7,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crucible_engine::WorldIoNodeKind;
-use crucible_daemon::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmExactNodeRestoreAdmission, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
     ProductionVmNodeLauncher,
 };
-use crucible_control_api::{
-    LifecycleApiError, ProductionVmLifecycleConfig,
-    build_production_vm_lifecycle_loop_with_launcher,
-};
+use crate::{ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop_with_launcher};
+use crucible_control_api::LifecycleApiError;
 
 use super::*;
 

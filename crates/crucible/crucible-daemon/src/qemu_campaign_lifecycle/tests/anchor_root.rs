@@ -7,7 +7,7 @@
 //! so a kept world authenticates against the replay proof exactly as a
 //! production anchor must.
 
-use crucible_daemon::vm_lifecycle::{
+use crate::vm_lifecycle::{
     ProductionVmHotForkSourceWorld,
     prepared_multi_node_hot_fork_source_world_after_selections_for_scenario_for_test,
 };

@@ -21,8 +21,8 @@ use crucible_qemu_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
 };
 
-use crate::QemuAttemptProcessResourceGuard;
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
+use crate::{ProductionEventLogSegments, QemuAttemptProcessResourceGuard};
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayChoices, GuardedCampaignReplaySelection,
 };

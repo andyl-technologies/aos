@@ -13,8 +13,8 @@ use crucible_engine::{
     Configuration, NodeId, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
     SelectionDecision, VirtualTime,
 };
-use crucible_daemon::vm_lifecycle::ProductionVmHotForkSourceWorld;
-use crucible_control_api::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 
 use super::{
     QemuFinalBoundaryDrain, QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,

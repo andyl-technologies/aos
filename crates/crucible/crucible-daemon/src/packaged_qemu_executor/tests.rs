@@ -1170,7 +1170,7 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         &mut self,
     ) -> Result<Option<crate::QemuExactCheckpointRefusal>, SchedulerError> {
         Ok(Some(crate::QemuExactCheckpointRefusal::Named(
-            crucible_control_api::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+            crate::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
         )))
     }
 
@@ -1391,7 +1391,7 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
             .exact_checkpoint_refusal()
             .expect("delegated checkpoint refusal"),
         Some(crate::QemuExactCheckpointRefusal::Named(
-            crucible_control_api::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+            crate::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
         ))
     );
 

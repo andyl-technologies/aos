@@ -5,7 +5,7 @@
 
 use super::super::savepoint_refusal::savepoint_capture_refusal_row;
 use super::*;
-use crucible_control_api::ProductionExactCheckpointNotReady;
+use crate::ProductionExactCheckpointNotReady;
 
 /// Reaches its single-quantum stop at a boundary the lifecycle refuses.
 struct RefusingStopLifecycle {

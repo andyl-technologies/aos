@@ -112,14 +112,14 @@ mod tests {
     use std::error::Error;
 
     use crucible_engine::{Configuration, EventLogOffset, ScenarioDefForm, VirtualTime};
-    use crucible_control_api::ProductionFaultEvidenceSnapshot;
+    use crate::ProductionFaultEvidenceSnapshot;
 
     use super::*;
 
     fn evidence(frontier: u64) -> Result<ContinuationEvidence, Box<dyn Error>> {
         let source = ScenarioDefForm::from_canonical_toml(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/crucible/fixtures/e2e-determinism.scenario.toml"
+            "/../../../tests/crucible/fixtures/e2e-determinism.scenario.toml"
         )))?;
         Ok(ContinuationEvidence {
             reply_events: Vec::new(),
