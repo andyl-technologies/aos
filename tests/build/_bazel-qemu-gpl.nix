@@ -128,6 +128,10 @@ in rec {
         --readelf ${pkgs.binutils}/bin/readelf --output "$out/elf.json"
     '';
   gateway-tests = import ./_bazel-qemu-gateway-tests.nix {inherit pkgs;};
+  gateway-release-tests = import ./_bazel-qemu-gateway-tests.nix {
+    inherit pkgs;
+    release = true;
+  };
   plugin-tests = import ./_bazel-qemu-plugin-tests.nix {inherit pkgs;};
   inventory = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-qemu-gpl-production-inventory";

@@ -1,17 +1,14 @@
 ##! Qualifies GPL lifecycle tests using an independently linked Apache oracle.
 {
   pkgs,
+  release ? false,
   hostSourceInventory ? ../../tools/bazel/metadata/qemu-test-oracle-host-inventory.json,
   testSourceInventory ? ../../tools/bazel/metadata/qemu-gateway-process-test-inventory.json,
 }: let
   root = ../..;
-  oracle = pkgs.callPackage ../../pkgs/emulation/_crucible-qemu-bazel-oracle.nix {
-    sourceInventory = hostSourceInventory;
+  execution = pkgs.callPackage ../../pkgs/emulation/_crucible-qemu-bazel-gateway-tests.nix {
+    inherit hostSourceInventory testSourceInventory release;
   };
-  inherit (oracle) hostBuild hostPackage hostWorkspace testTools hostDevelopment hostFormat hostInventory;
-  sourceDirectories = ["tools/bazel" "third_party/rust" "crates"];
-  gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
-  protocol = "//crates/crucible/crucible-qemu-protocol:";
   hostPackages = {
     crucible-control-server = "crates/crucible/crucible-control-server";
     crucible-control-client = "crates/crucible/crucible-control-client";
@@ -34,54 +31,25 @@
     name = "aos-qemu-process-parity-tools";
     filter = path: type: type == "directory" || pkgs.lib.hasSuffix ".py" path;
   };
-  testTargets = [
-    "${gateway}unit"
-    "${gateway}bin_crucible-debug-gateway"
-    "${gateway}process_lifecycle"
-    "${gateway}test_license_closure"
-    "${gateway}production_license_closure"
-  ];
-  testWorkspace = pkgs.mkAosBazelWorkspace {
-    inherit root;
-    sourceInventory = testSourceInventory;
-    sourceDirectories = pkgs.lib.optionals (testSourceInventory == null) sourceDirectories;
-    dependencyProfile = "qemu-gpl-tests";
-    analysisTargets = testTargets;
-    repositories =
-      pkgs.aosBazelRepositories
-      // pkgs.aosBazelRustRepositories.qemu-gpl-tests
-      // {aos_qemu_test_tools = testTools;};
-  };
 in rec {
-  inherit hostBuild hostPackage hostWorkspace testWorkspace testTools hostPackageOptions hostDevelopment hostFormat hostInventory;
-  cargo = import ./_bazel-qemu-process-cargo.nix {inherit pkgs;};
-  tests = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-qemu-gateway-process-tests";
-    workspace = testWorkspace;
-    targets = testTargets;
-    retainActionGraph = true;
-  };
-  codecTests = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-qemu-test-oracle-codec-tests";
-    workspace = testWorkspace;
-    targets = ["${protocol}test_oracle_unit"];
-  };
-  testDevelopment = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-gateway-test-development";
-    workspace = testWorkspace;
-    targets = ["${gateway}test_clippy"];
-  };
-  testFormat = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-qemu-gateway-test-format";
-    workspace = testWorkspace;
-    targets = ["${gateway}test_format"];
-  };
-  testInventory = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-gateway-process-test-inventory";
-    workspace = testWorkspace;
-    inventoryOnly = true;
-    targets = testTargets ++ ["${gateway}test_clippy" "${gateway}test_format" "${protocol}test_oracle_unit"];
-  };
+  inherit
+    (execution)
+    hostBuild
+    hostPackage
+    hostWorkspace
+    testWorkspace
+    testTools
+    hostDevelopment
+    hostFormat
+    hostInventory
+    tests
+    codecTests
+    testDevelopment
+    testFormat
+    testInventory
+    ;
+  inherit hostPackageOptions;
+  cargo = import ./_bazel-qemu-process-cargo.nix {inherit pkgs release;};
   parity = pkgs.runCommand "aos-bazel-qemu-gateway-process-parity" {buildDeps = [pkgs.python3];} ''
     mkdir -p "$out"
     export PYTHONDONTWRITEBYTECODE=1

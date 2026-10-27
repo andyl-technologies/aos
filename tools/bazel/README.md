@@ -4220,3 +4220,39 @@ separate from installed-package parity. Foreign execution, full production
 flight qualification, performance acceptance, default cutover and Cargo removal
 remain separate migration work. No application Rust or existing fixture is
 changed by this package conversion.
+
+## Embedded QEMU debug gateway package
+
+The suite's `passthru.debugGateway` exposes `passthru.withBuildDriver "bazel"`,
+a reverse selector and a Cargo fallback. Cargo remains the default. Calling the
+private package constructor in `pkgs/tools/crucible/_debug-gateway.nix` also
+allows independent gateway evaluation without evaluating the Apache controller.
+The suite accepts `debugGatewayBuildDriver = "bazel"` through its ordinary
+override interface; `debugGatewayPackage` continues to accept an explicit package
+for comparative suite checks.
+
+```sh
+nix-build tools/bazel/tests/qemu-gateway-production.nix -A all --no-out-link
+nix-build tools/bazel/tests/qemu-gateway-tests.nix -A release.parity --no-out-link
+```
+
+Every Bazel gateway realization requires the unchanged unit, binary and process
+lifecycle assertions in the release profile, with its independently linked
+Apache oracle. Package qualification compares the complete installed layout,
+ELF imports, runtime closure, license files, argument rejection, production
+features and compiler profiles against the ordinary package. The release check
+compares test inventories and compiler arguments with an independent Cargo
+execution. These argument audits retain their existing limits and do not prove
+complete compiler or linker semantic equivalence.
+
+Gateway production analysis selects only its two first-party crates and four
+declared artifact roots. Its strict inventory contains 62 configured reports,
+29 files and two source directories. Full suite execution, live debugger
+behavior, release source retention, foreign execution, performance acceptance,
+default cutover and final Cargo removal remain separate qualification work.
+Existing application and fixture failures are retained for baseline comparison;
+this conversion does not change application Rust or unrelated test behavior.
+
+The [gateway package receipt](tests/evidence/qemu-gateway-public-production-package.json)
+retains installed-package and release-test comparisons, source snapshots and
+equivalence checks against the original package and test constructors.

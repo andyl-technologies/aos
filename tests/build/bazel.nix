@@ -167,6 +167,7 @@ in
     qemu-host = import ./_bazel-qemu-host.nix {inherit pkgs;};
     qemu-gpl = import ./_bazel-qemu-gpl.nix {inherit pkgs;};
     qemu-plugin-production = import ./_bazel-qemu-plugin-production.nix {inherit pkgs;};
+    qemu-gateway-production = import ./_bazel-qemu-gateway-production.nix {inherit pkgs;};
     abi-owners = import ./_bazel-abi-owners.nix {inherit pkgs;};
     store-s3 = import ./_bazel-store-s3.nix {inherit pkgs;};
     daemon = import ./_bazel-daemon.nix {inherit pkgs;};
@@ -545,6 +546,7 @@ in
             qemu-plugin-abi
             qemu-gpl.all
             qemu-plugin-production.all
+            qemu-gateway-production.all
             source-selection
             source-catalog.all
             release-metadata.all
