@@ -96,6 +96,35 @@ fn compressed(bytes: &[u8], dictionary: &[u8], maximum: usize) -> FixtureResult<
     Ok(encoded)
 }
 
+/// Reports only a fixed stage, result class and original lower request count.
+///
+/// Raw errors can contain configuration or authority material. These finite
+/// labels locate a failed native read without relaxing the fixture's redaction.
+fn observed(
+    phase: &'static str,
+    reads: &AtomicUsize,
+    result: Result<Vec<u8>, StoreFailure>,
+) -> Result<Vec<u8>, StoreFailure> {
+    let class = match &result {
+        Ok(_) => "ok",
+        Err(error) => match error.kind() {
+            StoreErrorKind::Absent(_) => "absent",
+            StoreErrorKind::Corrupt(_) => "corrupt",
+            StoreErrorKind::Capacity => "capacity",
+            StoreErrorKind::Unsupported => "unsupported",
+            StoreErrorKind::Unavailable { .. } => "unavailable",
+            StoreErrorKind::Invalid(_) => "invalid",
+            StoreErrorKind::Denied { .. } => "denied",
+            StoreErrorKind::ReadOnly => "read-only",
+        },
+    };
+    eprintln!(
+        "NATIVE_DICTIONARY_READ phase={phase} result={class} lower_reads={}",
+        reads.load(Ordering::Relaxed),
+    );
+    result
+}
+
 /// Executes cold nested reads and corrupt-terminal refusal with original native owners.
 ///
 /// # Errors
@@ -162,10 +191,12 @@ pub(super) fn run(root: &Path, owner: u32, recovered_only: bool) -> FixtureResul
         if recovered_only {
             // This fresh process has no lower provider. Successful reads must
             // use the original, independently recovered native admissions.
-            for (identity, expected) in [
-                (&base_id, &base_body), (&middle_id, &middle_body), (&content_id, &content_body),
+            for (phase, identity, expected) in [
+                ("recovered-terminal", &base_id, &base_body),
+                ("recovered-middle", &middle_id, &middle_body),
+                ("recovered-root", &content_id, &content_body),
             ] {
-                if native.get(identity, None).await? != *expected {
+                if observed(phase, &reads, native.get(identity, None).await)? != *expected {
                     return Err("fresh native recovery changed an original chain encoding".into());
                 }
             }
@@ -206,24 +237,36 @@ pub(super) fn run(root: &Path, owner: u32, recovered_only: bool) -> FixtureResul
             bodies, reads: Arc::clone(&reads),
         }, policy);
 
-        let encoded = driver.get(&content_id, None).await?;
+        let encoded = observed("lower-root", &reads, driver.get(&content_id, None).await)?;
         if encoded != content_body || reads.load(Ordering::Relaxed) != 3 {
+            eprintln!(
+                "NATIVE_DICTIONARY_READ phase=lower-root-shape result=mismatch lower_reads={}",
+                reads.load(Ordering::Relaxed),
+            );
             return Err("native driver did not fetch the exact cold dictionary chain".into());
         }
         let verified = terrane_sdk::codec::decode_verified(
             &encoded, content.len(), profile, true, &content_id, Some(&middle),
         )?;
-        if verified.plaintext() != content
-            || driver.native().get(&base_id, None).await? != base_body
-            || driver.native().get(&middle_id, None).await? != middle_body
-            || driver.native().get(&content_id, None).await? != content_body
-            || reads.load(Ordering::Relaxed) != 3
-        {
+        if verified.plaintext() != content {
+            return Err("native dictionary verification or original dependency encoding changed".into());
+        }
+        for (phase, identity, expected) in [
+            ("resident-terminal", &base_id, &base_body),
+            ("resident-middle", &middle_id, &middle_body),
+            ("resident-root", &content_id, &content_body),
+        ] {
+            let actual = observed(phase, &reads, driver.native().get(identity, None).await)?;
+            if actual != *expected {
+                return Err("native dictionary verification or original dependency encoding changed".into());
+            }
+        }
+        if reads.load(Ordering::Relaxed) != 3 {
             return Err("native dictionary verification or original dependency encoding changed".into());
         }
         println!("PASS: actual confined native lower driver verifies nested dictionary chains before admission");
 
-        match driver.get(&bad_ids[2], None).await {
+        match observed("corrupt-lower-root", &reads, driver.get(&bad_ids[2], None).await) {
             Err(error) if matches!(error.kind(), StoreErrorKind::Corrupt(_)) => {}
             _ => return Err("corrupt terminal did not refuse the complete native lower read".into()),
         }

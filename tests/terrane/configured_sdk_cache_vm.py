@@ -240,7 +240,10 @@ def run_actor(driver, label, command, success, mount_policy, maintained, on_read
             (driver.ROOT / "proof-logs" / ("native-sdk-" + label + "." + suffix)).write_bytes(data)
             print(data.decode("utf-8", errors="replace"), end="", flush=True)
 
-    driver.require(process.returncode == (0 if success else 1),
+    expected_status = 0 if success else 1
+    if process.returncode != expected_status or "-dictionaries" in label:
+        policy_diagnostics(driver, label)
+    driver.require(process.returncode == expected_status,
                    "native SDK actor exit status: " + label)
     if maintained:
         driver.require(stopped, "native cache exited before supervised SIGTERM: " + label)
@@ -264,6 +267,48 @@ def run_actor(driver, label, command, success, mount_policy, maintained, on_read
         output[0] = b"".join(line for line in output[0].splitlines(keepends=True)
                              if not line.startswith(REPOSITORY_OBSERVATION))
     return tuple(map(bytes, output))
+
+
+def policy_diagnostics(driver, label):
+    """Preserves bounded row counts without emitting identities or authority data."""
+    purposes = {
+        "admission", "admission-grace", "publication", "publication-grace",
+        "cache-dependency", "consumer", "consumer-grace", "metadata", "cold",
+    }
+    result = {}
+    for domain in ["public", "private"]:
+        path = driver.ROOT / "positive" / domain / "state/cache/records.toml"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 65536:
+                    result[domain] = {"snapshot": "outside-bound"}
+                    continue
+                payload = os.read(descriptor, 65537)
+            finally:
+                os.close(descriptor)
+            if len(payload) > 65536:
+                result[domain] = {"snapshot": "outside-bound"}
+                continue
+            policy = tomllib.loads(payload.decode())
+            counts = {key: len(policy.get(key, []))
+                      for key in ["pins", "reservations", "leases", "residences", "exposures"]}
+            classes = {}
+            for row in policy.get("pins", []):
+                purpose = row["owner"].split(":", 1)[0]
+                purpose = purpose if purpose in purposes else "other"
+                classes[purpose] = classes.get(purpose, 0) + 1
+            result[domain] = {"snapshot_bytes": len(payload), "row_counts": counts,
+                              "pin_purposes": classes,
+                              "future_hold_bytes": sum(row["bytes"] for row in policy.get("reservations", []))}
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError, AttributeError):
+            # The original actor's outcome remains authoritative. A missing or
+            # unreadable diagnostic must neither replace it nor disclose errors.
+            result[domain] = {"snapshot": "unreadable"}
+    encoded = json.dumps({"actor": label, "domains": result}, sort_keys=True)
+    (driver.ROOT / "proof-logs" / ("native-sdk-" + label + ".policy-counts.json")).write_text(encoded + "\n")
+    print("NATIVE_SDK_POLICY_COUNTS " + encoded, flush=True)
 
 
 def verify_owner_locks(driver, held, expected=None):

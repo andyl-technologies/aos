@@ -453,6 +453,27 @@ publication or cancellation success. Cyclic allocation-unit lifetime,
 metadata-only GC tracing, remaining host integration and full T2–T6 acceptance
 remain open. No task is newly accepted; trunk acceptance remains 28/64.
 
+## Corrected-instance SDK qualification failure
+
+The original SDK request at `97759e2c21` still fails in `never-dictionaries`.
+Both policy instances now pass the explicit absence check for all three native
+chain identities, so distinct instance content corrects the previous cold-state
+precondition. The inline dictionary and fresh recovery controls pass. The never
+actor exits 1 after 7.923 seconds with 91.722 seconds remaining at its start.
+This is a failure before the guest deadline, not a completed SDK proof.
+
+The original runtime source guards, logs, both retained failed build directories
+and original rootfs identities are preserved separately from the successful
+source/application/image artifact reviews. The actor's deliberately redacted
+failure does not identify which subsequent lower or resident read failed. New
+fixture diagnostics report finite read stages, result classes and actual lower
+request counts. The guest supervisor records bounded policy row counts and
+fixed pin-purpose classes after dictionary actors or unexpected exits. They
+emit no content identity, arbitrary purpose, configuration text or error chain.
+All original exact encoding, request-count, corruption and recovery assertions
+remain. These diagnostics still require source compilation and native execution;
+they do not resolve or accept the remaining failure. Trunk acceptance is 28/64.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |
