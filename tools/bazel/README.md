@@ -4364,8 +4364,23 @@ The [test metadata receipt](tests/evidence/crucible-test-target-metadata.json)
 retains 1,249 compilations, 1,250 wrappers, 172 unit compilations with inherited
 roots, and 70 feature selections. It verifies unchanged production and dependency fields,
 all declared test root bytes, and compatibility with the structural, license,
-and dependency audit readers. Gate mapping and campaign traceability still
-need their consumers converted to these records.
+and dependency audit readers. Campaign traceability still needs its consumer
+converted to these records.
+
+`gate_target_mapping` now consumes those records directly. It requires exact
+owned integration roots, checks required features on every declared compilation
+branch, and requires an unfiltered runnable wrapper for each mapped source.
+Its original gate catalog, process-helper assertions, and Cargo fixtures remain
+unchanged. The [mapping receipt](tests/evidence/crucible-controller-gate-target-mapping.json)
+retains both original cases through strict/broad Bazel execution and the
+independent Cargo oracle, 24 rejected inputs, and a valid concatenated-feature
+control. The [declaration receipt](tests/evidence/crucible-controller-gate-target-inventories.json)
+limits the configured changes to its architecture runfile and shared reader
+source, with all 80 source guards and 79 SDK contracts checked.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-gate-targets-parity --no-out-link
+```
 
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link

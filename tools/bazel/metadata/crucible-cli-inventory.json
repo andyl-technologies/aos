@@ -83512,7 +83512,7 @@
     "crates/crucible/crucible-session/BUILD.bazel": "e26185e11ac173d4d0decf8658a0beccc1a2d826ff2181ba1937b7af4e224719",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "5bc9c50360faeb40761376bdde766aa204116c4d8d09250fe8c79bbefc6e27ba",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
-    "crates/crucible/crucible-test-support/BUILD.bazel": "75e3cbbabb1b4e007197e1df77fa4a6eb35253763b9ba14ef8c8e37bcefc72b2",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "6440ce0e2fb20a7493cab3e06662ac939ad95406b4ed93140fa6647e72ce662e",
     "crates/linux/aos-linux-project-quota/BUILD.bazel": "a6d9b30f18d9f0bbaf9854bf062a951d77312f16585adcc503114953c359319b",
     "tests/crucible/BUILD.bazel": "13741fe0b9138f9171503c5194732633d5f87cd3f3ec9563d7ffa95e2d32c767",
     "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",

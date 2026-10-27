@@ -5,6 +5,12 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
+#[path = "support/test_targets.rs"]
+mod test_targets;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
@@ -47,14 +53,23 @@ const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[
 
 #[test]
 fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Error>> {
-    let root = workspace_root();
+    let declared = test_targets::load()?;
+    let root = if declared.is_some() {
+        std::env::current_dir()?
+    } else {
+        workspace_root()
+    };
     let crates_dir = root.join("crates");
     let mut failures = Vec::new();
 
     for target in gate_targets() {
-        let manifest_path =
-            workspace::package_directory(&crates_dir, target.package)?.join("Cargo.toml");
-        if !manifest_path.is_file() {
+        let package_directory = if let Some(declared) = &declared {
+            root.join(declared.package_directory(target.package)?)
+        } else {
+            workspace::package_directory(&crates_dir, target.package)?
+        };
+        let manifest_path = package_directory.join("Cargo.toml");
+        if declared.is_none() && !manifest_path.is_file() {
             failures.push(format!(
                 "{}: package for {} does not exist",
                 target.package, target.gate
@@ -69,7 +84,7 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             ));
         }
 
-        let test_path = workspace::package_directory(&crates_dir, target.package)?
+        let test_path = package_directory
             .join("tests")
             .join(format!("{}.rs", target.test_target));
         if !test_path.is_file() {
@@ -89,33 +104,40 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             &display_repo_path(&test_path, &root),
         ));
 
-        // Every feature-gated integration target must declare each feature in
-        // its `[[test]]` entry and pin an explicit path so default workspace
-        // test discovery cannot compile it under the wrong feature set.
-        for required_feature in target.required_features {
-            if !manifest_test_target_requires_feature(
-                &fs::read_to_string(&manifest_path)?.parse()?,
+        if let Some(declared) = &declared {
+            failures.extend(declared.integration_findings(
+                target.package,
                 target.test_target,
-                required_feature,
-            ) {
+                target.required_features,
+            )?);
+        } else {
+            // Cargo's independent oracle pins feature requirements and paths
+            // in each explicit test entry until its consumers are retired.
+            for required_feature in target.required_features {
+                if !manifest_test_target_requires_feature(
+                    &fs::read_to_string(&manifest_path)?.parse()?,
+                    target.test_target,
+                    required_feature,
+                ) {
+                    failures.push(format!(
+                        "{}:{} Cargo manifest must set required-features containing {:?}",
+                        target.package, target.test_target, required_feature
+                    ));
+                }
+            }
+
+            if !target.required_features.is_empty()
+                && !manifest_test_target_has_path(
+                    &fs::read_to_string(&manifest_path)?.parse()?,
+                    target.test_target,
+                    &format!("tests/{}.rs", target.test_target),
+                )
+            {
                 failures.push(format!(
-                    "{}:{} Cargo manifest must set required-features containing {:?}",
-                    target.package, target.test_target, required_feature
+                    "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
+                    target.package, target.test_target, target.test_target
                 ));
             }
-        }
-
-        if !target.required_features.is_empty()
-            && !manifest_test_target_has_path(
-                &fs::read_to_string(&manifest_path)?.parse()?,
-                target.test_target,
-                &format!("tests/{}.rs", target.test_target),
-            )
-        {
-            failures.push(format!(
-                "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
-                target.package, target.test_target, target.test_target
-            ));
         }
 
         // The `crucible-engine` SimDouble gates specifically require test-double.

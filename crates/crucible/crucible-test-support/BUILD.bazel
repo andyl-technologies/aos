@@ -123,6 +123,7 @@ aos_rust_test(
             "tests/harness_components.rs",
             "tests/standalone_dependencies.rs",
             "tests/single_scheduler_boundary.rs",
+            "tests/gate_target_mapping.rs",
         ] else {},
         data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
             "//tests/crucible:engineering-hygiene-baseline.txt",

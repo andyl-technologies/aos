@@ -21,6 +21,34 @@ in
     test-feature-policy = test-graph.feature-policy;
     test-architecture = test-graph.architecture;
     test-dependencies = test-graph.dependencies;
+    test-gate-targets = test-graph.gate-targets;
+    test-gate-targets-cargo = import ../../../tests/build/_bazel-crucible-controller-gate-targets-cargo.nix {inherit pkgs;};
+    test-gate-targets-parity = let
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-gate-target-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_gate_targets.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-gate-target-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_gate_targets.py \
+          --strict ${test-graph.gate-targets} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.gate-targets} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-gate-targets-cargo} --cargo-root ${test-gate-targets-cargo.src} \
+          --graph ${pkgs.aosBazelArchitecture}/architecture.json --output "$out"
+      '';
     test-dependencies-cargo = import ../../../tests/build/_bazel-crucible-controller-dependency-cargo.nix {inherit pkgs;};
     test-dependencies-parity = let
       helpers = builtins.path {

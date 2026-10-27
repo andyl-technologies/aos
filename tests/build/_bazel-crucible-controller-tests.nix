@@ -193,4 +193,11 @@ in {
     retainActionGraph = true;
     sharedBuildCache = false;
   };
+  gate-targets = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-gate-targets";
+    inherit workspace;
+    targets = ["//crates/crucible/crucible-test-support:gate_target_mapping_controller"];
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
 }
