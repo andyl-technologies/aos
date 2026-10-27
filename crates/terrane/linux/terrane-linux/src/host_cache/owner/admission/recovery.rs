@@ -154,7 +154,8 @@ pub(in crate::host_cache::owner) async fn import_metadata(
         bounds.check(pack.len(), index.len())?;
         bounds.check(pack.capacity(), index.capacity())?;
         if data {
-            let verified = super::metadata::verify_data(executor, &owner, None, &input)?;
+            let verified =
+                super::metadata::verify_data(executor, &owner, None, &input, Some(source))?;
             (verified.hashes, verified.dependencies, verified.edges)
         } else {
             let hashes = super::metadata::verify(

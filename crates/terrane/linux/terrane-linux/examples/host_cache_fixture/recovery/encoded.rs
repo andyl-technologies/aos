@@ -96,13 +96,21 @@ enum PackFixture {
     Metadata,
     ClosedData,
     ExternalData,
+    DictionaryData,
 }
 
 fn metadata_pair(fixture: PackFixture) -> io::Result<terrane_sdk::pack::SealedPack> {
-    let id = PackId::from_random_bytes([117; 16]);
+    let id_byte = if matches!(fixture, PackFixture::DictionaryData) {
+        118
+    } else {
+        117
+    };
+    let id = PackId::from_random_bytes([id_byte; 16]);
     let class = match fixture {
         PackFixture::Metadata => PackClass::Meta,
-        PackFixture::ClosedData | PackFixture::ExternalData => PackClass::Data,
+        PackFixture::ClosedData | PackFixture::ExternalData | PackFixture::DictionaryData => {
+            PackClass::Data
+        }
     };
     let mut writer = PackWriter::new(id, class, false);
     if class == PackClass::Data {
@@ -121,12 +129,12 @@ fn metadata_pair(fixture: PackFixture) -> io::Result<terrane_sdk::pack::SealedPa
             .collect::<io::Result<BTreeMap<_, _>>>()?;
         let profile = ChunkProfile::cdc_1m([0; 32]);
         let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
-        let first = if matches!(fixture, PackFixture::ExternalData) {
-            2
-        } else {
-            0
+        let selected = match fixture {
+            PackFixture::ExternalData => &chunks[2..],
+            PackFixture::DictionaryData => &chunks[..2],
+            _ => chunks.as_slice(),
         };
-        for chunk in chunks.into_iter().skip(first) {
+        for chunk in selected {
             let identity = TERRANE_V1
                 .calculate(IdentityKind::Chunk, &chunk.bytes)
                 .map_err(io::Error::other)?;
@@ -151,7 +159,10 @@ fn metadata_pair(fixture: PackFixture) -> io::Result<terrane_sdk::pack::SealedPa
 
 /// Seeds real standalone dictionary originals before their dependent cold pair.
 fn cold_chunks(inputs: &Inputs) -> io::Result<Vec<Chunk>> {
-    if inputs.domain == "tenant:encoded-metadata-only" || super::packed_manifest::selected(inputs) {
+    if inputs.domain == "tenant:encoded-metadata-only"
+        || inputs.domain == "tenant:encoded-cross-pack"
+        || super::packed_manifest::selected(inputs)
+    {
         return Ok(Vec::new());
     }
     let mut chunks = chunks()?;
@@ -162,7 +173,10 @@ fn cold_chunks(inputs: &Inputs) -> io::Result<Vec<Chunk>> {
 }
 
 pub(super) fn pack_paths(inputs: &Inputs) -> [std::path::PathBuf; 2] {
-    let id = PackId::from_random_bytes([117; 16]);
+    paths_for_id(inputs, PackId::from_random_bytes([117; 16]))
+}
+
+fn paths_for_id(inputs: &Inputs, id: PackId) -> [std::path::PathBuf; 2] {
     let parent = inputs
         .root
         .join(format!("objects/pack/{:02x}", id.as_bytes()[0]));
@@ -270,10 +284,13 @@ pub(crate) fn seed() -> io::Result<()> {
             | "tenant:encoded-metadata-only"
             | "tenant:encoded-data-pack"
             | "tenant:encoded-external-data-pack"
+            | "tenant:encoded-cross-pack"
     ) {
         let fixture = match inputs.domain.as_str() {
             "tenant:encoded-data-pack" => PackFixture::ClosedData,
-            "tenant:encoded-external-data-pack" => PackFixture::ExternalData,
+            "tenant:encoded-external-data-pack" | "tenant:encoded-cross-pack" => {
+                PackFixture::ExternalData
+            }
             _ => PackFixture::Metadata,
         };
         let pair = metadata_pair(fixture)?;
@@ -282,6 +299,19 @@ pub(crate) fn seed() -> io::Result<()> {
             .parent()
             .ok_or_else(|| invalid("metadata pair shard missing"))?;
         directory(&inputs.root.join("objects/pack"), 840, 845, 0o2770)?;
+        directory(parent, 840, 845, 0o2770)?;
+        write(&inputs, &index, pair.index_object(), 840, 845, 0o640)?;
+        write(&inputs, &pack, pair.bytes(), 840, 845, 0o640)?;
+        File::open(parent)?.sync_all()?;
+        File::open(inputs.root.join("objects/pack"))?.sync_all()?;
+        File::open(inputs.root.join("objects"))?.sync_all()?;
+    }
+    if inputs.domain == "tenant:encoded-cross-pack" {
+        let pair = metadata_pair(PackFixture::DictionaryData)?;
+        let [index, pack] = paths_for_id(&inputs, PackId::from_random_bytes([118; 16]));
+        let parent = pack
+            .parent()
+            .ok_or_else(|| invalid("dictionary pair shard absent"))?;
         directory(parent, 840, 845, 0o2770)?;
         write(&inputs, &index, pair.index_object(), 840, 845, 0o640)?;
         write(&inputs, &pack, pair.bytes(), 840, 845, 0o640)?;
@@ -396,7 +426,11 @@ fn verify_packed_consumers(
             "data pack consumers allocated standalone chunk copies",
         ));
     }
-    if external {
+    if inputs.domain == "tenant:encoded-cross-pack" {
+        println!(
+            "PASS cold cross-pack consumers read all original nested records without standalone extraction"
+        );
+    } else if external {
         println!(
             "PASS cold external data pair serves its original packed root through nested standalone dictionary custody without extraction"
         );
@@ -462,8 +496,13 @@ pub(crate) fn run(
             | "tenant:encoded-metadata-only"
             | "tenant:encoded-data-pack"
             | "tenant:encoded-external-data-pack"
+            | "tenant:encoded-cross-pack"
     ) {
-        pack_paths(inputs)
+        let mut paths = pack_paths(inputs).to_vec();
+        if inputs.domain == "tenant:encoded-cross-pack" {
+            paths.extend(paths_for_id(inputs, PackId::from_random_bytes([118; 16])));
+        }
+        paths
             .into_iter()
             .map(|path| {
                 let value = fs::metadata(&path)?;
@@ -533,7 +572,9 @@ pub(crate) fn run(
         .ok_or_else(|| invalid("encoded consumer expiry overflow"))?;
     if matches!(
         inputs.domain.as_str(),
-        "tenant:encoded-data-pack" | "tenant:encoded-external-data-pack"
+        "tenant:encoded-data-pack"
+            | "tenant:encoded-external-data-pack"
+            | "tenant:encoded-cross-pack"
     ) {
         verify_packed_consumers(owner, runtime, inputs, expires)?;
     }
@@ -585,7 +626,11 @@ pub(crate) fn run(
             "encoded recovery lost cold promises or invented sealed residences",
         ));
     }
-    if inputs.domain == "tenant:encoded-metadata-only" {
+    if inputs.domain == "tenant:encoded-cross-pack" {
+        println!(
+            "PASS cold cross-pack recovery imports original dictionary pairs before dependents, releases inspection descriptors and preserves cold promises; no Ready"
+        );
+    } else if inputs.domain == "tenant:encoded-metadata-only" {
         println!(
             "PASS cold metadata pair recovered; original pair registered after Resume; cold promises preserved; no Ready"
         );

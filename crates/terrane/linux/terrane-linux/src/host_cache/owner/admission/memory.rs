@@ -129,8 +129,26 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
             count.checked_mul(size_of::<std::sync::Arc<std::sync::Mutex<AdmissionJob>>>())
         })
         .ok_or_else(overflow)?;
+    // Both original and fresh cold inventories can retain external edge
+    // bindings. Count each pack's maximum record window plus the pair-order
+    // graph, whose nodes are bounded by the original inventory policy.
+    let recovery_edges = config
+        .inventory_entries
+        .checked_mul(config.reads.max_allocation_bytes / terrane_format::pack_format::RECORD_SIZE)
+        .and_then(|count| count.checked_mul(2))
+        .and_then(|count| count.checked_mul(size_of::<(terrane_format::identity::Digest, usize)>()))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                config
+                    .inventory_entries
+                    .checked_mul(config.inventory_entries)?
+                    .checked_mul(2 * size_of::<usize>())?,
+            )
+        })
+        .ok_or_else(overflow)?;
     total
         .checked_add(dictionary_walk)
+        .and_then(|bytes| bytes.checked_add(recovery_edges))
         .and_then(|bytes| {
             bytes.checked_add(
                 super::dictionary_read::DictionaryRead::storage_bytes(

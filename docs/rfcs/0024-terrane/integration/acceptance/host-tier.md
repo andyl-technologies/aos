@@ -231,7 +231,7 @@ external-dictionary recovery path remain unqualified. Cross-pack dictionary
 custody, cyclic pack-unit lifecycle and full trunk qualification remain open.
 Acceptance remains 28/64.
 
-Producer data packs can now retain dictionaries in earlier actual data-pack
+At `833c0048fc`, producer data packs can retain dictionaries in earlier data-pack
 admissions as well as standalone admissions. A bounded flat read graph binds
 each record range to its original pack and index descriptors, verifies complete
 original bytes before and after positioned reads, and decodes from the terminal
@@ -255,6 +255,32 @@ Cold cross-pack recovery ordering, standalone chunks using packed dictionaries,
 cyclic pack-unit lifecycle, metadata-only dictionary tracing and full trunk
 qualification remain open. No additional task is accepted.
 
+Cold pair inspection now retains each direct external dictionary's original
+source binding alongside its verified plaintext. Pair selection orders imports
+by those inspected inode edges and requires every dictionary source to match an
+independently verified standalone candidate or complete original pair. Running
+import matches the dictionary against that same inspected inode, rather than
+selecting another representation by digest. Pair ordering is iterative and
+preserves unrelated source order; cyclic allocation-unit graphs still require
+coordinated admission and lifetime handling and remain explicitly unsupported
+by this sequential path.
+
+The new `encoded-cross-pack` recovery case seeds two original pairs with no
+standalone chunks. The dictionary pair sorts after its dependent, so successful
+import requires dependency ordering. A fresh confined owner must recover and
+Resume, release all inspection descriptors, and read every nested chunk from
+its original pack. An independent observer retains all four original inodes
+and checks record ranges, exact dictionary edges, durable container protection,
+bootstrap funding, unchanged namespace and preservation of an existing cold
+pin, lease and reservation. Two order-selection tests cover dependent and
+unrelated pairs plus cyclic or absent source units. Exact source inventories
+contain 156/284 ordinary tests plus five creator tests; feature-enabled and
+minimal all-target Clippy, Python syntax and PLAN-2 ownership checks pass.
+Current-source application compilation and native execution remain pending.
+Standalone chunks using packed dictionaries, cyclic pack-unit lifecycle,
+metadata-only dictionary tracing and complete trunk qualification remain open.
+Acceptance stays at 28/64.
+
 Separately, frozen `d9435d032d` passes required application compilation (190
 targets across 59 packages), complete comparison of 8,306 immutable source files,
 all four image artifact reviews and prerequisite execution review. Its 32 output
@@ -267,6 +293,13 @@ four image artifact reviews and prerequisite execution review. Its 32 outputs
 are rooted and seven original controller records are preserved before scratch
 cleanup. These results qualify build artifacts only, not native runtime or the
 subsequent dictionary implementation.
+
+Frozen `6c75e641b6` passes prerequisite execution review, required application
+compilation (190 targets across 59 packages), full comparison of 8,309 immutable
+source files and all four image artifact reviews. Its 32 output paths are rooted
+and seven original controller records are preserved before scratch cleanup.
+These results do not establish native runtime acceptance or qualify later
+dictionary changes.
 
 ## Clause coverage
 

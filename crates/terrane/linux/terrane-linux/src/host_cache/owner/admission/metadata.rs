@@ -49,7 +49,7 @@ pub(super) async fn run(
         super::AdmissionBounds::new(config)?.check(pack.len(), index.len())?;
         super::AdmissionBounds::new(config)?.check(pack.capacity(), index.capacity())?;
         let hashes = if data {
-            let verified = verify_data(executor, &owner, Some(resource), &job.input)?;
+            let verified = verify_data(executor, &owner, Some(resource), &job.input, None)?;
             job.dependencies = verified.dependencies;
             job.dictionary_edges = verified.edges;
             verified.hashes
@@ -137,6 +137,7 @@ pub(super) fn verify_data(
     owner: &Custody,
     current: Option<&Arc<Mutex<AdmissionJob>>>,
     input: &Input,
+    inspected: Option<&crate::host_cache::DerivedIndexRepair>,
 ) -> io::Result<VerifiedData> {
     let Input::DataPack {
         expected_id,
@@ -160,8 +161,11 @@ pub(super) fn verify_data(
         config.reads,
         config.inventory_entries.min(config.state.records),
         |digest| {
+            let original = inspected
+                .map(|source| source.dictionary_source(digest))
+                .transpose()?;
             let (plaintext, source) =
-                super::dictionary_read::verify(executor, current, owner, digest)?;
+                super::dictionary_read::verify(executor, current, owner, digest, original)?;
             external_hashes
                 .try_reserve_exact(2)
                 .map_err(io::Error::other)?;

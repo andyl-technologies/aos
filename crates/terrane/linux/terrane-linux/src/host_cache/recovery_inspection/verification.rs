@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, fs::File, io, sync::Arc};
 use terrane_format::{
     chunking::ChunkProfile,
     codec::Codec,
-    identity::{Descriptor, Identity, IdentityKind, TERRANE_V1},
+    identity::{Descriptor, Digest, Identity, IdentityKind, TERRANE_V1},
     pack_format::{RECORD_SIZE, Record, index_count},
 };
 use terrane_sdk::{
@@ -42,6 +42,7 @@ pub struct DerivedIndexRepair {
     pack: RetainedFile,
     index: Option<RetainedFile>,
     dependencies: Vec<VerifiedDependency>,
+    dictionary_edges: Vec<(Digest, usize)>,
     derived: ReconstructedPackIndex,
     status: DetachedIndexStatus,
     index_hash: Option<blake3::Hash>,
@@ -94,6 +95,48 @@ impl DerivedIndexRepair {
             self.pack.context().reads,
             self.pack.context().max_candidates,
         )
+    }
+
+    /// Borrows exact external dictionary edges and their inspected original files.
+    ///
+    /// # Errors
+    /// Refuses changed native custody or a lost original dependency binding.
+    pub(in crate::host_cache) fn dictionary_sources(&self) -> io::Result<Vec<(Digest, &File)>> {
+        self.check_current()?;
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(self.dictionary_edges.len())
+            .map_err(io::Error::other)?;
+        for (digest, index) in &self.dictionary_edges {
+            let source = self
+                .dependencies
+                .get(*index)
+                .ok_or_else(|| invalid("inspected dictionary lost its original source"))?;
+            sources.push((*digest, source.source.file()));
+        }
+        Ok(sources)
+    }
+
+    /// Borrows one exact external edge's original source file.
+    ///
+    /// # Errors
+    /// Refuses changed sources and missing or duplicate original edge bindings.
+    pub(in crate::host_cache) fn dictionary_source(&self, digest: &Digest) -> io::Result<&File> {
+        self.check_current()?;
+        let mut edges = self
+            .dictionary_edges
+            .iter()
+            .filter(|(edge, _)| edge == digest);
+        let (_, index) = edges
+            .next()
+            .ok_or_else(|| invalid("inspected external dictionary edge absent"))?;
+        if edges.next().is_some() {
+            return Err(invalid("inspected external dictionary edge is ambiguous"));
+        }
+        self.dependencies
+            .get(*index)
+            .map(|source| source.source.file())
+            .ok_or_else(|| invalid("inspected dictionary source disappeared"))
     }
 
     /// Reads a chunk's original envelope from the independently verified pack.
@@ -395,6 +438,7 @@ pub(super) fn pack(
     let mut dictionaries = BTreeMap::new();
     let mut dependencies = Vec::new();
     let mut dictionary_bytes = 0_usize;
+    let mut dictionary_edges = Vec::new();
     for entry in reader
         .entries()
         .iter()
@@ -417,7 +461,7 @@ pub(super) fn pack(
                 .max_allocation_bytes
                 .checked_sub(dictionary_bytes)
                 .ok_or_else(|| invalid("dictionary budget overflow"))?;
-            let plaintext = dictionary(
+            let (plaintext, source) = super::dictionaries::resolve_with_source(
                 context,
                 &digest,
                 Some((&reader, &bytes)),
@@ -425,6 +469,12 @@ pub(super) fn pack(
                 &mut dependencies,
                 remaining,
             )?;
+            if let Some(source) = source {
+                dictionary_edges
+                    .try_reserve_exact(1)
+                    .map_err(io::Error::other)?;
+                dictionary_edges.push((digest, source));
+            }
             dictionary_bytes = dictionary_bytes
                 .checked_add(plaintext.len())
                 .ok_or_else(|| invalid("dictionary budget overflow"))?;
@@ -471,6 +521,7 @@ pub(super) fn pack(
         pack: source,
         index,
         dependencies,
+        dictionary_edges,
         derived,
         status,
         index_hash,

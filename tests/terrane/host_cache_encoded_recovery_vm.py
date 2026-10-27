@@ -13,7 +13,7 @@ from source_cleanup_vm import files, quota
 CASES = ["encoded-recovery", "encoded-cold", "encoded-corrupt", "encoded-duplicate",
          "encoded-missing-dictionary", "encoded-unknown", "encoded-sealed", "encoded-old-range",
          "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack"]
+         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack"]
 
 
 def seed(vm, uuid):
@@ -38,6 +38,22 @@ def seed(vm, uuid):
     vm.metadata(path, 840, 844, 0o640)
     with path.open("rb") as file:
         os.fsync(file.fileno())
+    # Ordinary root promises must survive actual pack dependency import too.
+    root = vm.root("encoded-cross-pack")
+    pack = next(path for path in (root / "objects/pack/75").glob("*.pack"))
+    data = pack.read_bytes()
+    offset = struct.unpack_from("<Q", data, len(data) - 16)[0]
+    digest = data[offset + 12:offset + 44].hex()
+    path = root / "state/cache/records.toml"
+    path.write_text('version = 1\nresidences = []\n'
+                    '[[pins]]\nowner = "cold-cross-pack"\nhash = "' + digest + '"\n'
+                    'expires = 9223372036854775807\n'
+                    '[[leases]]\nowner = "cold-cross-pack"\nexpires = 9223372036854775807\n'
+                    '[[reservations]]\nid = "' + 'b' * 32 + '"\nowner = "' + vm.owner("encoded-cross-pack")
+                    + '"\nbytes = 262144\n')
+    vm.metadata(path, 840, 844, 0o640)
+    with path.open("rb") as file:
+        os.fsync(file.fileno())
     # This contradictory cold range was never durably removed. A valid sealed
     # body and standalone encoding cannot authorize recovery to erase that row.
     sealed = next(path for path in (vm.root("encoded-old-range") / "sealed").glob("*/*")
@@ -55,7 +71,7 @@ def run(vm, uuid):
     """Checks real consumer reads, unchanged source inodes and retained cold promises."""
     for case in CASES:
         recovers = case in {"encoded-recovery", "encoded-cold", "encoded-sealed", "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack"}
+                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack", "encoded-cross-pack"}
         sources = list((vm.root(case) / "chunks").glob("*/*")) + list((vm.root(case) / "objects/pack").glob("*/*"))
         before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes())
                   for path in sources if path.is_file()}
@@ -73,6 +89,8 @@ def run(vm, uuid):
                 witness = "PASS actual packed manifest rejects a wrong whole-file hash while retaining original pairs and durable copy funding; no Ready"
             elif case == "encoded-packed-manifest":
                 witness = "PASS actual packed manifest verifies repeated dictionary-backed chunks and whole-file hashes, publishes immutable ranges and releases private pair reads under durable container grace without standalone extraction; no Ready"
+            elif case == "encoded-cross-pack":
+                witness = "PASS cold cross-pack recovery imports original dictionary pairs before dependents, releases inspection descriptors and preserves cold promises; no Ready"
             elif case == "encoded-metadata-only":
                 witness = "original pair registered after Resume"
             else:
@@ -94,10 +112,15 @@ def run(vm, uuid):
                     "PASS cold external data pair serves its original packed root through nested standalone dictionary custody without extraction") == 1,
                     "missing original cold external-dictionary consumer witness")
                 check_external_pack(vm, case, before, new)
+            if case == "encoded-cross-pack":
+                vm.require(output.splitlines().count(
+                    "PASS cold cross-pack consumers read all original nested records without standalone extraction") == 1,
+                    "missing cold original cross-pack consumer witness")
+                check_cross_pack(vm, case, before, new)
 
         if case == "encoded-data-pack":
             retire_data_pack(vm, uuid, check_recovery)
-        elif case == "encoded-external-data-pack":
+        elif case in {"encoded-external-data-pack", "encoded-cross-pack"}:
             originals = []
             try:
                 for path in sources:
@@ -111,6 +134,53 @@ def run(vm, uuid):
         else:
             check_recovery(vm.actor(case, "recover-encoded" if recovers else "refuse-encoded", uuid))
     print("PASS actual cold encoded recovery, original consumer custody and refusal controls", flush=True)
+
+
+def check_cross_pack(vm, case, originals, state):
+    """Checks original cold pack edges, exact container protection and funding."""
+    from cross_pack_admission_vm import records
+
+    root = vm.root(case)
+    vm.require(len(originals) == 4 and not files(root / "chunks")
+               and not files(root / "pending-delete"),
+               "cold cross-pack recovery changed its four-inode allocation layout")
+    _, _, dictionaries = records(vm, root, 118, 2)
+    _, _, content = records(vm, root, 117, 1)
+    terminal = b"packed terminal vocabulary " * 16
+    middle = b"packed terminal vocabulary intermediate " * 64
+    payload = b"packed terminal vocabulary intermediate content " * 128
+    by_length = {length: (digest, codec, body)
+                 for digest, (length, codec, body) in dictionaries.items()}
+    vm.require(set(by_length) == {len(terminal), len(middle)},
+               "cold dictionary pair has another original record graph")
+    terminal_id, terminal_codec, terminal_body = by_length[len(terminal)]
+    middle_id, middle_codec, middle_body = by_length[len(middle)]
+    root_id, (length, codec, body) = next(iter(content.items()))
+    vm.require(terminal_codec == 0 and terminal_body == b"\0" + terminal
+               and middle_codec == codec == 2 and length == len(payload)
+               and middle_body[1:33].hex() == terminal_id
+               and body[1:33].hex() == middle_id and root_id not in dictionaries,
+               "cold cross-pack observer lost the actual original dictionary edges")
+    grace = {}
+    for row in state["pins"]:
+        if row["owner"].startswith("admission-grace:"):
+            grace.setdefault(row["owner"], set()).add(row["hash"])
+    vm.require(len(grace) == 2 and sorted(map(len, grace.values())) == [3, 4],
+               "cold cross-pack cache handoff lost original pair protection")
+    source = next(values for values in grace.values() if len(values) == 3)
+    container = source - set(dictionaries)
+    dependencies = [row for row in state["pins"]
+                    if row["owner"].startswith("cache-dependency:")]
+    vm.require(set(dictionaries) <= source and len(container) == 1
+               and len(dependencies) == 2
+               and {row["hash"] for row in dependencies} == {middle_id} | container
+               and len(state["reservations"]) == 1
+               and state["reservations"][0]["bytes"] == 262144
+               and quota(vm, case) + 262144 <= 6 * 1024 * 1024
+               and any(row["owner"] == "cold-cross-pack" and row["hash"] == root_id
+                       for row in state["pins"]),
+               "cold cross-pack recovery lost original dependencies, cold promises or funding")
+    print("PASS independent cold observer verifies four original pack inodes, dictionary edges, durable container protection and retained cold promises", flush=True)
 
 
 def check_external_pack(vm, case, originals, state):

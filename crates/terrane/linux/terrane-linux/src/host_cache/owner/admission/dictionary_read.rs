@@ -295,8 +295,9 @@ pub(super) fn verify(
     current: Option<&Arc<Mutex<AdmissionJob>>>,
     owner: &Custody,
     digest: &Digest,
+    original: Option<&File>,
 ) -> io::Result<(Vec<u8>, Arc<Mutex<AdmissionJob>>)> {
-    let source = selection::find(executor, current, digest)?;
+    let source = selection::find(executor, current, digest, original)?;
     let read = selection::capture(owner, executor.custody(), &source, digest, false)?;
     if read.sources.iter().any(|source| {
         !executor

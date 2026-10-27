@@ -116,6 +116,7 @@ CASES += ["admission-data-pack"]
 CASES += ["admission-external-data-pack"]
 CASES += ["encoded-external-data-pack"]
 CASES += ["admission-cross-pack"]
+CASES += ["encoded-cross-pack"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"

@@ -4,16 +4,19 @@
 //! before cold inventory descriptors can disappear. Selection grants no serving
 //! authority; every import still funds and synchronizes its actual owner job.
 
+mod order;
+
 use super::recovery_candidates::{self, RecoveryCase};
 use crate::host_cache::{DerivedIndexRepair, NativeRecoveryInspection, VerifiedEncodedBody};
 use std::{io, os::unix::fs::MetadataExt, sync::Arc};
 use terrane_sdk::pack::PackReader;
 
-/// Selects verified pairs whose external dictionaries have standalone cold custody.
+/// Selects verified pairs in the order of their original dictionary sources.
 ///
 /// # Errors
-/// Refuses unresolved candidates, unavailable standalone dictionaries and changed
-/// or unbounded pairs. Inspection never substitutes for running admission custody.
+/// Refuses unresolved candidates, unavailable original dictionaries, changed or
+/// unbounded pairs and cyclic pack-unit dependencies. Inspection never grants
+/// running admission custody.
 pub(super) fn select(
     inventory: &NativeRecoveryInspection,
     referenced: &[Arc<crate::host_cache::NativeManifestSource>],
@@ -74,35 +77,11 @@ pub(super) fn select(
                     limits,
                     max_entries,
                 )?;
-            } else {
-                // DerivedIndexRepair already verified every original body and
-                // retained dictionary inode. Require genuine complete standalone
-                // candidates here; Resume must import them before this pair.
-                for digest in external {
-                    let dictionary = inventory
-                        .candidates()
-                        .iter()
-                        .find_map(|candidate| match candidate.verified() {
-                            Some(VerifiedEncodedBody::Chunk(chunk))
-                                if chunk.identity().digest() == digest =>
-                            {
-                                Some(chunk)
-                            }
-                            _ => None,
-                        })
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::Unsupported,
-                                "data recovery requires original standalone dictionary custody",
-                            )
-                        })?;
-                    dictionary.check_current()?;
-                }
             }
         }
         sources.push(Arc::clone(source));
     }
-    Ok(sources)
+    order::original_sources(inventory, sources)
 }
 
 /// Selects actual external edges to import before the original data pair.

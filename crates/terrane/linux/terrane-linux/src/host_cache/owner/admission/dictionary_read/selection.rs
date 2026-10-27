@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::host_cache::owner::admission::{Input, backing};
+use std::os::unix::fs::MetadataExt;
 use terrane_sdk::pack::{PackClass, PackReader};
 
 /// Selects a completed source in this physical worker's actual registry.
@@ -12,7 +13,9 @@ pub(super) fn find(
     executor: &NativeOwnerExecutor,
     current: Option<&Arc<Mutex<AdmissionJob>>>,
     digest: &Digest,
+    original: Option<&File>,
 ) -> io::Result<Arc<Mutex<AdmissionJob>>> {
+    let original = original.map(File::metadata).transpose()?;
     // Prefer the existing standalone registration when both representations
     // exist. A damaged chosen original is an error, never a source fallback.
     for standalone in [true, false] {
@@ -21,6 +24,16 @@ pub(super) fn find(
                 continue;
             }
             let job = backing::lock(resource)?;
+            if let Some(original) = &original {
+                let Some(file) = job.files.last().and_then(|member| member.readonly.as_ref())
+                else {
+                    continue;
+                };
+                let current = file.metadata()?;
+                if (current.dev(), current.ino()) != (original.dev(), original.ino()) {
+                    continue;
+                }
+            }
             if job.complete
                 && matches!(&job.input, Input::Chunk { .. }) == standalone
                 && contains(&job, digest)?
