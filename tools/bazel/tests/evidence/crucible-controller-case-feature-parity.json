@@ -1,0 +1,33 @@
+{
+  "cases": {
+    "binaries": 268,
+    "cases": 5651,
+    "ignored_cases": 75,
+    "output": "/nix/store/g1zpv830yq0n2v1704iz7fkciv53drjj-aos-bazel-crucible-controller-test-cases",
+    "sha256": "6cd03d0cec80eaa5c849ae27af7572893c783a62f8f36db2298078eca3252ee1"
+  },
+  "compiler_inputs": {
+    "bazel": {
+      "derivation": "/nix/store/2n2f5hfp4msld0xkswnbkgccb3hjfnzm-aos-bazel-crucible-controller-test-compilation-1.drv",
+      "output": "/nix/store/wj7ahf28kb2bjn84wbcy9cx1f0nfmn4y-aos-bazel-crucible-controller-test-compilation-1",
+      "source": "/nix/store/hv79v5v7ql2klld4wwsdgdqy9zgj9z2w-aos-bazel-workspace"
+    },
+    "cargo": {
+      "derivation": "/nix/store/dwgpsiblf55rd1q4dclcjm1b7hf61yqq-aos-bazel-crucible-controller-test-cargo-1.drv",
+      "output": "/nix/store/4ybpvlf407pq698anil632m4581zsczq-aos-bazel-crucible-controller-test-cargo-1",
+      "source": "/nix/store/4j0l0gy23gf6ibklvp215va73qwwy67c-crucible-workspace-src"
+    },
+    "selected_source_bytes_equal": true,
+    "selection": "All selected first-party Rust and API protocol compiler inputs",
+    "source_count": 3753,
+    "source_digest_manifest_sha256": "e9f452d2f6f027c077308cf0cd8eb3b585dbff32e5f71eed3f8cb244cf680b28"
+  },
+  "features": {
+    "output": "/nix/store/sxgqy3aipfgrqh7183r4klvbff88lw8c-aos-bazel-crucible-controller-test-features",
+    "sha256": "98cbbcc7c02abf6771243ba37c8c46b92ab75b4baa1db012f56026c2808f597d"
+  },
+  "public_controller_cutover_qualified": false,
+  "schema_version": 1,
+  "scope": "Standard controller Cargo case and compiled-feature comparison, captured before the feature-audit runtime migration. This does not qualify current controller test execution.",
+  "test_execution_qualified": false
+}
