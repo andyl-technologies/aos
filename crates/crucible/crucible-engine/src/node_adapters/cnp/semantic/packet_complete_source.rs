@@ -1293,6 +1293,9 @@ mod retained_registry;
 #[path = "packet_complete_source/retained_storage.rs"]
 mod retained_storage;
 
+#[path = "packet_complete_source/source_capacity.rs"]
+mod source_capacity;
+
 #[path = "packet_complete_source/storage_error.rs"]
 pub(in crate::node_adapters::cnp::semantic) mod storage_error;
 pub use retained_storage::PacketCompleteSourceRetainedStorage;

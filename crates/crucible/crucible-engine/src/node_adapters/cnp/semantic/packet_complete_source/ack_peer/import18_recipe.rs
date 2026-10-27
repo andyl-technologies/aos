@@ -35,6 +35,45 @@ pub(crate) struct Import18RecipeHistoryData<'a> {
 }
 
 impl Import18RecipeOwner {
+    /// Observes the fixed retained history without constructing Recipe DATA.
+    ///
+    /// # Errors
+    /// Refuses checked traversal-work overflow without changing owning slots.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            started,
+            completed,
+            failed,
+            recipe,
+            initial,
+            launch,
+        } = self;
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(completed)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(recipe)?;
+        census.observe_inline_data(initial)?;
+        census.observe_inline_data(launch)
+    }
+
+    /// Names the actual fixed recipe-history field references and controls.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retained_capacity_counter_scratch_data()
+    -> usize {
+        size_of::<&Self>()
+            + size_of::<(
+                &bool,
+                &bool,
+                &bool,
+                &Option<PacketNativeImport18PrebirthRecipeData>,
+                &Option<PacketNativeImport18InitialFundingData>,
+                &Option<PacketNativeImport18LaunchIdentityData>,
+            )>()
+            + size_of::<Result<(), RuntimeError>>()
+    }
+
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn empty() -> Self {
         Self {
             started: false,

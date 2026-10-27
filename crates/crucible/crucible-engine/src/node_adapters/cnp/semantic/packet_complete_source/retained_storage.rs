@@ -13,8 +13,9 @@ use std::rc::Rc;
 #[path = "retained_storage/deployment.rs"]
 mod deployment;
 
+/// Selects an existing original Source observation phase.
 #[derive(Clone, Copy)]
-enum PrebirthStoragePurpose<'a> {
+pub(super) enum PrebirthStoragePurpose<'a> {
     Code,
     ReportStartup,
     TemplateConstruction,
@@ -115,7 +116,12 @@ impl PacketCompleteSemanticSource {
         self.original_prebirth_storage_data(PrebirthStoragePurpose::ReportStartup, maximum)
     }
 
-    fn authenticate_prebirth_storage_phase_with_error<
+    /// Authenticates the original creator, observation phase and deployment.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked custody, busy holders, unsupported native or
+    /// association state, or a missing required original deployment obligation.
+    pub(super) fn authenticate_prebirth_storage_phase_with_error<
         E: crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError,
     >(
         &self,
@@ -330,10 +336,8 @@ impl PacketCompleteSemanticSource {
         >,
         RuntimeError,
     > {
-        let known = self.original_prebirth_storage_data_with_error::<RuntimeError>(
-            PrebirthStoragePurpose::IsolatedTemplate(context),
-            maximum,
-        )?;
+        let facts = self.original_isolated_template_capacity_data(context, usize::MAX, None)?;
+        let known = Self::complete_retained_metadata_storage_precredit_data(&facts, maximum)?;
         let lease = self
             .native_import18_derivation_mechanism
             .as_ref()
@@ -349,6 +353,7 @@ impl PacketCompleteSemanticSource {
     pub fn isolated_template_deployment_counter_scratch_data() -> usize {
         use crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
         Self::retained_requested_storage_precredit_scratch_data()
+            .saturating_add(Self::prebirth_source_capacity_counter_scratch_data())
             .saturating_add(Self::isolated_derivation_counter_scratch_data())
             .saturating_add(Self::native_import18_private_birth_counter_scratch_data())
             .saturating_add(std::mem::size_of::<SourceDeploymentStorageRead<'static>>() * 2)
